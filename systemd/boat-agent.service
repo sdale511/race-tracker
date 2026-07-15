@@ -1,0 +1,23 @@
+[Unit]
+Description=Race Tracker Boat Agent
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/race-tracker
+Environment=GPS_PORT=/dev/ttyAMA0
+Environment=GPS_BAUD=115200
+Environment=RADIO_PORT=/dev/ttyUSB0
+Environment=RADIO_BAUD=57600
+Environment=BOAT_ID=1
+Environment=TX_INTERVAL_MS=2000
+Environment=LOG_DIR=/home/pi/race-logs
+ExecStart=/usr/bin/node src/boatAgent.js
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/pi/race-logs/boat-agent.log
+StandardError=append:/home/pi/race-logs/boat-agent.log
+
+[Install]
+WantedBy=multi-user.target
