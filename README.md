@@ -92,6 +92,41 @@ sudo cp systemd/boat-agent.service /etc/systemd/system/
 sudo systemctl enable --now boat-agent
 ```
 
+## Simulation mode (no hardware)
+
+Set `SIMULATE=1` to run `boat` and `base` with no GPS or radio hardware
+attached. In this mode:
+- `src/simGps.js` generates fake GPS fixes for a boat sailing a closed
+  triangular racecourse loop (leeward/windward/wing) around a configurable
+  center point, in place of the real UBX-NAV-PVT parser.
+- `src/simRadioLink.js` replaces the serial radio link with a UDP socket
+  carrying the exact same 21-byte frames (`src/protocol.js`), so the real
+  encode/decode/checksum path is still exercised end to end — just without
+  serial ports.
+
+Run both in separate terminals, on the same machine or over a LAN:
+```
+# terminal 1 - base station
+SIMULATE=1 npm run base
+
+# terminal 2 - boat agent
+SIMULATE=1 BOAT_ID=1 npm run boat
+```
+For multiple simulated boats, run more `npm run boat` instances with
+different `BOAT_ID` values pointed at the same base station.
+
+CSV logs land in `./race-logs` by default in simulation mode (instead of
+the Pi's `/home/pi/race-logs`), and the base station's console/CSV/UDP GGA
+output all work exactly as they would with real hardware.
+
+| Var | Default | Purpose |
+|---|---|---|
+| `SIM_HOST` / `SIM_PORT` | `127.0.0.1` / `41234` | Where boatAgent sends sim radio frames; baseStation listens here |
+| `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
+| `SIM_SPEED_KN` | 6 | Simulated boat speed |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | Newport, RI | Center point of the simulated racecourse |
+| `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
+
 ## Connecting to your race committee software
 
 `src/baseStation.js` currently:

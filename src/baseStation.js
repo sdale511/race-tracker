@@ -16,7 +16,13 @@ const dgram = require('dgram');
 //                       your chosen software's actual ingestion format is
 //                       (HTTP POST to a cloud API, TCP NMEA stream, etc).
 
-const radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+let radio;
+if (config.simulate) {
+  const { SimRadioLink } = require('./simRadioLink');
+  radio = new SimRadioLink({ mode: 'listen', port: config.sim.port });
+} else {
+  radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+}
 radio.on('error', (err) => console.error('[radio] error:', err.message));
 radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 
@@ -103,6 +109,10 @@ function checksum(str) {
   return cs.toString(16).toUpperCase().padStart(2, '0');
 }
 
-console.log(`[baseStation] listening on radio ${config.radio.port} @ ${config.radio.baud}`);
+if (config.simulate) {
+  console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);
+} else {
+  console.log(`[baseStation] listening on radio ${config.radio.port} @ ${config.radio.baud}`);
+}
 console.log(`[baseStation] logging to ${csvPath}`);
 console.log(`[baseStation] broadcasting NMEA GGA over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`);

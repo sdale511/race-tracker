@@ -6,16 +6,46 @@ const { SdLogger } = require('./sdLogger');
 const protocol = require('./protocol');
 
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
-console.log(`[boatAgent] GPS  ${config.gps.port} @ ${config.gps.baud}`);
-console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
+if (config.simulate) {
+  console.log('[boatAgent] SIMULATE=1 - using a fake GPS track + UDP-simulated radio (no hardware)');
+  console.log(`[boatAgent] sim radio -> ${config.sim.host}:${config.sim.port}`);
+} else {
+  console.log(`[boatAgent] GPS  ${config.gps.port} @ ${config.gps.baud}`);
+  console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
+}
 
 const sdLogger = new SdLogger({ logDir: config.logDir, boatId: config.boatId });
-const radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+
+let radio;
+if (config.simulate) {
+  const { SimRadioLink } = require('./simRadioLink');
+  radio = new SimRadioLink({
+    mode: 'send',
+    host: config.sim.host,
+    port: config.sim.port,
+    packetLossPct: config.sim.packetLossPct,
+  });
+} else {
+  radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+}
 radio.on('error', (err) => console.error('[radio] error:', err.message));
 radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 
 let lastTx = 0;
 let lastPvt = null;
+
+function handlePvt(pvt) {
+  lastPvt = pvt;
+  sdLogger.logPvt(pvt); // log every fix, full rate
+
+  const now = Date.now();
+  if (now - lastTx >= config.txIntervalMs) {
+    lastTx = now;
+    const frame = protocol.encode(config.boatId, pvt);
+    const sent = radio.send(frame);
+    if (!sent) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+  }
+}
 
 function openGps() {
   const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {
@@ -39,21 +69,21 @@ function openGps() {
     // worry if this fires constantly.
   });
 
-  parser.on('nav-pvt', (pvt) => {
-    lastPvt = pvt;
-    sdLogger.logPvt(pvt); // log every fix, full rate
-
-    const now = Date.now();
-    if (now - lastTx >= config.txIntervalMs) {
-      lastTx = now;
-      const frame = protocol.encode(config.boatId, pvt);
-      const sent = radio.send(frame);
-      if (!sent) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
-    }
-  });
+  parser.on('nav-pvt', handlePvt);
 }
 
-openGps();
+if (config.simulate) {
+  const { SimGpsSource } = require('./simGps');
+  const gps = new SimGpsSource({
+    centerLat: config.sim.centerLat,
+    centerLon: config.sim.centerLon,
+    speedKn: config.sim.speedKn,
+    hz: config.sim.gpsHz,
+  });
+  gps.on('nav-pvt', handlePvt);
+} else {
+  openGps();
+}
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
 setInterval(() => {
