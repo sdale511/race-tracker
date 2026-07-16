@@ -25,18 +25,23 @@ module.exports = {
 
   // --- GPS (simpleRTK2B LR, ZED-F9P) ---
   // Wire this UART directly to the Pi. This link is Pi<->GPS only, so
-  // baud/bandwidth here is NOT the constraint (the radio link is).
+  // baud/bandwidth here is NOT the constraint (the radio link is) - default
+  // matches the ZED-F9P's factory-default UART1 baud so no baud reconfig
+  // step is needed on the module, just enabling NAV-PVT/disabling NMEA.
   gps: {
     port: process.env.GPS_PORT || '/dev/ttyAMA0',
-    baud: parseInt(process.env.GPS_BAUD || '115200', 10),
+    baud: parseInt(process.env.GPS_BAUD || '38400', 10),
   },
 
-  // --- Telemetry radio (transparent-serial style, e.g. RFD900x/SiK) ---
+  // --- Telemetry radio (transparent-serial style, e.g. Digi XBee SX) ---
   // Whatever bytes you write to this port are transmitted over the air and
-  // appear byte-for-byte on the matching radio at the base station.
+  // appear byte-for-byte on the matching radio at the base station. Default
+  // matches the XBee SX's factory-default baud (9600), so no radio-side
+  // reconfig is needed out of the box. If you use an RFD900x/SiK radio
+  // instead, override RADIO_BAUD - their factory default is typically 57600.
   radio: {
     port: process.env.RADIO_PORT || '/dev/ttyUSB0',
-    baud: parseInt(process.env.RADIO_BAUD || '57600', 10),
+    baud: parseInt(process.env.RADIO_BAUD || '9600', 10),
   },
 
   // --- Identity & timing ---

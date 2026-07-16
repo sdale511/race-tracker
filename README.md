@@ -46,8 +46,10 @@ This frees `/dev/ttyAMA0` for the GPS instead of the console.
 
 ## GPS configuration (one-time, via u-center or ubxtool)
 
-By default the ZED-F9P outputs a mix of NMEA sentences. For this app you
-want `UBX-NAV-PVT` enabled and NMEA disabled on the UART feeding the Pi:
+By default the ZED-F9P outputs a mix of NMEA sentences at 38400 baud, which
+this app's `GPS_BAUD` default already matches - no baud reconfiguration
+needed. For this app you just want `UBX-NAV-PVT` enabled and NMEA disabled
+on the UART feeding the Pi:
 
 ```
 ubxtool -P 27.11 -p CFG-VALSET -z CFG-MSGOUT-UBX_NAV_PVT_UART1,1
@@ -55,7 +57,8 @@ ubxtool -P 27.11 -p CFG-VALSET -z CFG-UART1OUTPROT-NMEA,0
 ubxtool -P 27.11 -p CFG-VALSET -z CFG-RATE-MEAS,1000   # 1Hz; raise if you want faster fixes
 ```
 Save the config to flash on the module (`-p CFG-VALSET ... ,,,, 7` or via
-u-center's "Save Config") so it survives power cycles.
+u-center's "Save Config") so it survives power cycles — otherwise it reverts
+to NMEA-only output on the next power-up.
 
 The simpleRTK2B LR's onboard LoRa radio is a **separate concern** — that's
 normally used for RTCM3 correction data between your RTK base and this
@@ -65,12 +68,17 @@ that link.
 ## Radio configuration
 
 Pair two radios (boat + base) on the same netid/frequency/baud, in
-transparent-serial mode. Set `RADIO_BAUD` in the env/config to match
-whatever baud you configure on the radios themselves. Higher baud = faster
-frame delivery but shorter range/reliability at a given power — this is a
-real-world tuning step you'll need to do on the water. **Antenna height
-matters a lot for going over water at >2mi; get both ends as high as
-practical.**
+transparent-serial mode. `RADIO_BAUD` defaults to 9600 to match the Digi
+XBee SX's factory default, so two out-of-box XBee SX modules need no
+baud reconfiguration - just confirm both share the same Network ID
+(`ATID`, via XCTU), which fresh-from-factory modules already do. If you
+raise the radio's baud for faster frame delivery, or use a different radio
+(e.g. RFD900x/SiK, whose factory default is typically 57600), override
+`RADIO_BAUD` to match whatever you configure on the radios themselves.
+Higher baud = faster frame delivery but shorter range/reliability at a
+given power — this is a real-world tuning step you'll need to do on the
+water. **Antenna height matters a lot for going over water at >2mi; get
+both ends as high as practical.**
 
 ## Running
 
@@ -146,8 +154,8 @@ build that adapter once you know the target.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART |
-| `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 57600 | Telemetry radio UART |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 38400 | GPS UART |
+| `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
 | `TX_INTERVAL_MS` | 2000 | How often a frame is sent over radio (SD log is always full-rate) |
 | `LOG_DIR` | `/home/pi/race-logs` | Where CSV logs go (put this on the SD card) |
