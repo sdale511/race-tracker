@@ -1,5 +1,6 @@
 const config = require('./config');
 const { RadioLink } = require('./radioLink');
+const { RedisStore } = require('./redisStore');
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
@@ -7,11 +8,12 @@ const dgram = require('dgram');
 // Base station: sits at the committee boat/shore with the matching radio.
 // Decodes incoming frames and fans them out to whatever your race tracking
 // software needs. You haven't picked that software yet, so this ships with
-// three generic adapters you can mix/match/replace once you know the target:
+// four generic adapters you can mix/match/replace once you know the target:
 //
 //   1. console/JSON  - always on, good for debugging
 //   2. CSV file       - one row per fix, per boat
-//   3. UDP broadcast  - many tools can ingest a simple NMEA GGA sentence
+//   3. Redis          - queryable per-boat or fleet-wide tracks, see redisStore.js
+//   4. UDP broadcast  - many tools can ingest a simple NMEA GGA sentence
 //                       over UDP; swap outputFrame() below for whatever
 //                       your chosen software's actual ingestion format is
 //                       (HTTP POST to a cloud API, TCP NMEA stream, etc).
@@ -38,9 +40,12 @@ const UDP_BROADCAST_ADDR = process.env.UDP_BROADCAST_ADDR || '255.255.255.255';
 const UDP_PORT = parseInt(process.env.UDP_PORT || '10110', 10); // 10110 is the conventional NMEA-over-UDP port
 udpSocket.bind(() => udpSocket.setBroadcast(true));
 
+const redisStore = new RedisStore({ url: config.redis.url });
+
 radio.on('frame', (decoded) => {
   logToConsole(decoded);
   logToCsv(decoded);
+  redisStore.recordFix(decoded, new Date()).catch((err) => console.error('[redis] write failed:', err.message));
   outputFrame(decoded); // <- swap/extend this for your actual race software
 });
 
@@ -115,4 +120,5 @@ if (config.simulate) {
   console.log(`[baseStation] listening on radio ${config.radio.port} @ ${config.radio.baud}`);
 }
 console.log(`[baseStation] logging to ${csvPath}`);
+console.log(`[baseStation] recording fixes to Redis at ${config.redis.url}`);
 console.log(`[baseStation] broadcasting NMEA GGA over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`);

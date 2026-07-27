@@ -69,6 +69,7 @@ class SimGpsSource extends EventEmitter {
     this.emit('nav-pvt', {
       fixType: 3,
       gnssFixOk: true,
+      diffSoln: true,
       carrSoln: 2, // RTK fixed - simulate a healthy link
       numSV: 14,
       lat,

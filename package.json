@@ -9,6 +9,7 @@
     "base": "node src/baseStation.js"
   },
   "dependencies": {
+    "ioredis": "^5.11.1",
     "serialport": "^12.0.0"
   }
 }

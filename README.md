@@ -139,7 +139,8 @@ output all work exactly as they would with real hardware.
 
 `src/baseStation.js` currently:
 1. Logs every decoded fix to console + CSV
-2. Broadcasts a synthesized `$GPGGA` NMEA sentence over UDP (port 10110,
+2. Records every decoded fix to Redis (see below) for querying tracks later
+3. Broadcasts a synthesized `$GPGGA` NMEA sentence over UDP (port 10110,
    the conventional NMEA-over-UDP port) — some tracking tools can ingest
    this directly
 
@@ -149,6 +150,28 @@ Wind, or in-house), the `outputFrame()` function is the one place to change
 cloud ingestion API is common for the commercial platforms; check their
 integration docs since most of them expect a per-boat auth token). Happy to
 build that adapter once you know the target.
+
+## Redis track storage
+
+Every fix the base station decodes is recorded into Redis by `src/redisStore.js`
+(`REDIS_URL`, default `redis://127.0.0.1:6379`), indexed two ways so both
+common queries are a single range read:
+
+- `boat:<id>:track` — one sorted set per boat, scored by the fix's own GPS
+  timestamp (ms since epoch). Use `getBoatTrack(boatId, fromMs, toMs)` (either
+  bound optional) to get that boat's track, optionally within a timeframe.
+- `all:track` — one sorted set holding every boat's fixes together, same
+  scoring. Use `getAllTrack(fromMs, toMs)` to get all boats' positions within
+  a timeframe without knowing boat IDs up front.
+- `boats:known` — a set of every boat ID that's ever reported in
+  (`knownBoatIds()`), for discovering which boats exist without scanning keys.
+
+Each stored entry is the decoded frame (`boatId, timestamp, lat, lon,
+speedKnots, headingDeg, gnssFixOk, carrSoln, numSV`) plus `receivedAt` (the
+base's own wall-clock time, useful for spotting radio-link latency/drops).
+If Redis is unreachable, `baseStation.js` logs the error and keeps running —
+console/CSV/UDP output are unaffected, matching this app's "SD/console never
+blocks on the network" philosophy elsewhere.
 
 ## Tuning knobs (env vars)
 
@@ -160,6 +183,7 @@ build that adapter once you know the target.
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
 | `TX_INTERVAL_MS` | 2000 | How often a frame is sent over radio (SD log is always full-rate). Actual TX timing is jittered +/-20% (and randomized on startup) so a fleet transmitting on a shared channel doesn't cluster/collide |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Base station only — where decoded fixes are recorded for track queries, see "Redis track storage" above |
 
 ## What still needs real-hardware testing
 

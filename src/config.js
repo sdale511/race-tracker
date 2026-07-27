@@ -61,4 +61,11 @@ module.exports = {
   // is relative to this package (not the shell's cwd), so it works the same
   // whether you're on the Pi or testing on a laptop.
   logDir: process.env.LOG_DIR || path.join(__dirname, '..', 'race-logs'),
+
+  // --- Redis (base station only) ---
+  // Where baseStation.js records every decoded fix, so tracks can be queried
+  // per-boat or across the whole fleet for a timeframe. See redisStore.js.
+  redis: {
+    url: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+  },
 };
