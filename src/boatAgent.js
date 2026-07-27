@@ -11,7 +11,11 @@ if (config.simulate) {
   console.log(`[boatAgent] sim radio -> ${config.sim.host}:${config.sim.port}`);
 } else {
   console.log(`[boatAgent] GPS  ${config.gps.port} @ ${config.gps.baud}`);
-  console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
+  if (config.radio.enabled) {
+    console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
+  } else {
+    console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
+  }
 }
 
 const sdLogger = new SdLogger({ logDir: config.logDir, boatId: config.boatId });
@@ -25,25 +29,45 @@ if (config.simulate) {
     port: config.sim.port,
     packetLossPct: config.sim.packetLossPct,
   });
-} else {
+  radio.on('error', (err) => console.error('[radio] error:', err.message));
+  radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+} else if (config.radio.enabled) {
   radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+  radio.on('error', (err) => console.error('[radio] error:', err.message));
+  radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+} else {
+  radio = { send: () => false };
 }
-radio.on('error', (err) => console.error('[radio] error:', err.message));
-radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 
-let lastTx = 0;
+// Jitter TX timing (+/-20%) so a fleet of boats powering on together (e.g.
+// at a race start) doesn't transmit in lockstep and collide on the shared
+// radio channel. The first interval is a full random draw so boats don't
+// even start out synchronized.
+function jitteredTxIntervalMs() {
+  const jitter = config.txIntervalMs * 0.2;
+  return config.txIntervalMs + (Math.random() * 2 - 1) * jitter;
+}
+
+let lastTx = Date.now();
+let nextTxIntervalMs = Math.random() * config.txIntervalMs;
 let lastPvt = null;
 
 function handlePvt(pvt) {
   lastPvt = pvt;
   sdLogger.logPvt(pvt); // log every fix, full rate
+  console.log(
+    `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+      `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
+      `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
+  );
 
   const now = Date.now();
-  if (now - lastTx >= config.txIntervalMs) {
+  if (now - lastTx >= nextTxIntervalMs) {
     lastTx = now;
+    nextTxIntervalMs = jitteredTxIntervalMs();
     const frame = protocol.encode(config.boatId, pvt);
     const sent = radio.send(frame);
-    if (!sent) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+    if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
   }
 }
 
@@ -87,14 +111,7 @@ if (config.simulate) {
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
 setInterval(() => {
-  if (!lastPvt) {
-    console.log('[boatAgent] waiting for first GPS fix...');
-  } else {
-    console.log(
-      `[boatAgent] last fix: ${lastPvt.lat.toFixed(6)},${lastPvt.lon.toFixed(6)} ` +
-        `fixType=${lastPvt.fixType} carrSoln=${lastPvt.carrSoln} numSV=${lastPvt.numSV}`
-    );
-  }
+  if (!lastPvt) console.log('[boatAgent] waiting for first GPS fix...');
 }, 10000);
 
 process.on('SIGINT', () => {

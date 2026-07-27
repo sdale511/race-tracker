@@ -82,6 +82,7 @@ class UbxParser extends EventEmitter {
     return {
       fixType: p.readUInt8(20),          // 0 no fix, 2 2D, 3 3D
       gnssFixOk: !!(flags & 0x01),
+      diffSoln: !!(flags & 0x02),        // true as soon as RTCM corrections are being applied
       carrSoln,                          // RTK status
       numSV: p.readUInt8(23),
       lon: p.readInt32LE(24) * 1e-7,     // degrees

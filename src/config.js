@@ -1,3 +1,5 @@
+const path = require('path');
+
 // Central configuration. Override any of these with environment variables,
 // e.g. GPS_PORT=/dev/ttyAMA0 BOAT_ID=7 npm run boat
 
@@ -40,6 +42,9 @@ module.exports = {
   // reconfig is needed out of the box. If you use an RFD900x/SiK radio
   // instead, override RADIO_BAUD - their factory default is typically 57600.
   radio: {
+    // NO_RADIO=1 skips opening the radio port entirely (e.g. bench-testing
+    // GPS alone, no radio hardware attached) - fixes still log to SD.
+    enabled: process.env.NO_RADIO !== '1' && process.env.NO_RADIO !== 'true',
     port: process.env.RADIO_PORT || '/dev/ttyUSB0',
     baud: parseInt(process.env.RADIO_BAUD || '9600', 10),
   },
@@ -52,7 +57,8 @@ module.exports = {
   txIntervalMs: parseInt(process.env.TX_INTERVAL_MS || '2000', 10),
 
   // --- Local logging (microSD) ---
-  // Point this at a path that's actually on the SD card / a mounted volume.
-  // In simulation mode, default to a local folder instead of the Pi's path.
-  logDir: process.env.LOG_DIR || (simulate ? './race-logs' : '/home/pi/race-logs'),
+  // On the boat Pi, override LOG_DIR to point at the SD card mount. Default
+  // is relative to this package (not the shell's cwd), so it works the same
+  // whether you're on the Pi or testing on a laptop.
+  logDir: process.env.LOG_DIR || path.join(__dirname, '..', 'race-logs'),
 };

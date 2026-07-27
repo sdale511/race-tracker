@@ -13,7 +13,7 @@ class SdLogger {
     this.filePath = path.join(logDir, `boat${boatId}_${sessionStamp}.csv`);
     fs.writeFileSync(
       this.filePath,
-      'timestamp_iso,lat,lon,height_m,speed_kn,heading_deg,fix_type,carr_soln,num_sv,h_acc_m\n'
+      'timestamp_iso,lat,lon,height_m,speed_kn,heading_deg,fix_type,diff_soln,carr_soln,num_sv,h_acc_m\n'
     );
   }
 
@@ -27,6 +27,7 @@ class SdLogger {
       speedKn.toFixed(2),
       pvt.headMotDeg.toFixed(1),
       pvt.fixType,
+      pvt.diffSoln,
       pvt.carrSoln,
       pvt.numSV,
       (pvt.hAccMm / 1000).toFixed(2),

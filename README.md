@@ -123,8 +123,8 @@ SIMULATE=1 BOAT_ID=1 npm run boat
 For multiple simulated boats, run more `npm run boat` instances with
 different `BOAT_ID` values pointed at the same base station.
 
-CSV logs land in `./race-logs` by default in simulation mode (instead of
-the Pi's `/home/pi/race-logs`), and the base station's console/CSV/UDP GGA
+CSV logs land in `./race-logs` (relative to the package, regardless of mode)
+unless you override `LOG_DIR`, and the base station's console/CSV/UDP GGA
 output all work exactly as they would with real hardware.
 
 | Var | Default | Purpose |
@@ -156,9 +156,10 @@ build that adapter once you know the target.
 |---|---|---|
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 38400 | GPS UART |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
+| `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely (e.g. bench-testing GPS with no radio attached) — fixes still log to SD |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
-| `TX_INTERVAL_MS` | 2000 | How often a frame is sent over radio (SD log is always full-rate) |
-| `LOG_DIR` | `/home/pi/race-logs` | Where CSV logs go (put this on the SD card) |
+| `TX_INTERVAL_MS` | 2000 | How often a frame is sent over radio (SD log is always full-rate). Actual TX timing is jittered +/-20% (and randomized on startup) so a fleet transmitting on a shared channel doesn't cluster/collide |
+| `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 
 ## What still needs real-hardware testing
 
