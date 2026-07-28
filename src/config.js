@@ -1,12 +1,34 @@
 const path = require('path');
+require('dotenv').config();
 
 // Central configuration. Override any of these with environment variables,
 // e.g. GPS_PORT=/dev/ttyAMA0 BOAT_ID=7 npm run boat
+// A git-ignored .env file in the project root is loaded automatically (see
+// dotenv above), so secrets like REDIS_PASSWORD can live there instead of
+// being typed on the command line or hardcoded in this file.
 
 // SIMULATE=1 replaces the real GPS + radio hardware with a fake GPS track
 // and a UDP-based stand-in for the radio link, so boatAgent/baseStation can
 // be run and tested with no hardware attached (see simGps.js, simRadioLink.js).
 const simulate = process.env.SIMULATE === '1' || process.env.SIMULATE === 'true';
+
+// Redis connection presets, selected via REDIS_ENV. Hostnames/ports are fine
+// to keep in source; credentials are not, so those always come from the
+// environment. See "redis" section below for how REDIS_URL can override this
+// entirely for ad-hoc use.
+const REDIS_CONNECTIONS = {
+  local: {
+    host: '127.0.0.1',
+    port: 6379,
+  },
+  production: {
+    host: 'redis-16266.c60.us-west-1-2.ec2.cloud.redislabs.com',
+    port: 16266,
+    username: process.env.REDIS_USERNAME || 'default',
+    password: process.env.REDIS_PASSWORD,
+    ...(process.env.REDIS_TLS === '1' || process.env.REDIS_TLS === 'true' ? { tls: {} } : {}),
+  },
+};
 
 module.exports = {
   simulate,
@@ -17,10 +39,16 @@ module.exports = {
     host: process.env.SIM_HOST || '127.0.0.1',
     port: parseInt(process.env.SIM_PORT || '41234', 10),
     gpsHz: parseFloat(process.env.SIM_GPS_HZ || '2'),
-    speedKn: parseFloat(process.env.SIM_SPEED_KN || '6'),
-    // Default course center: Newport, RI.
-    centerLat: parseFloat(process.env.SIM_CENTER_LAT || '41.4901'),
-    centerLon: parseFloat(process.env.SIM_CENTER_LON || '-71.3128'),
+    // Landsailers, unlike water boats, go much faster downwind than up -
+    // low rolling resistance lets apparent wind build well past true wind
+    // speed on a reach/run.
+    upwindSpeedKn: parseFloat(process.env.SIM_UPWIND_SPEED_KN || '30'),
+    downwindSpeedKn: parseFloat(process.env.SIM_DOWNWIND_SPEED_KN || '55'),
+    // How many laps (start/finish line crossings, finish direction) each
+    // simulated boat sails before it stops.
+    lapCount: parseInt(process.env.SIM_LAP_COUNT || '2', 10),
+    centerLat: parseFloat(process.env.SIM_CENTER_LAT || '40.8744'),
+    centerLon: parseFloat(process.env.SIM_CENTER_LON || '-119.2024'),
     // % chance (0-100) each frame is dropped, to simulate radio range dropouts.
     packetLossPct: parseFloat(process.env.SIM_PACKET_LOSS || '0'),
   },
@@ -65,7 +93,13 @@ module.exports = {
   // --- Redis (base station only) ---
   // Where baseStation.js records every decoded fix, so tracks can be queried
   // per-boat or across the whole fleet for a timeframe. See redisStore.js.
+  //
+  // REDIS_ENV picks a connection preset below (default 'local'). Credentials
+  // are never hardcoded here - set REDIS_USERNAME/REDIS_PASSWORD/REDIS_TLS
+  // in the environment (or a git-ignored .env) when pointing at production.
+  // REDIS_URL, if set, overrides everything below for one-off/ad-hoc use.
   redis: {
-    url: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+    url: process.env.REDIS_URL,
+    connection: REDIS_CONNECTIONS[process.env.REDIS_ENV || 'local'] || REDIS_CONNECTIONS.local,
   },
 };

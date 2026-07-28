@@ -104,9 +104,11 @@ sudo systemctl enable --now boat-agent
 
 Set `SIMULATE=1` to run `boat` and `base` with no GPS or radio hardware
 attached. In this mode:
-- `src/simGps.js` generates fake GPS fixes for a boat sailing a closed
-  triangular racecourse loop (leeward/windward/wing) around a configurable
-  center point, in place of the real UBX-NAV-PVT parser.
+- `src/simGps.js` generates fake GPS fixes for a landsailer racing a
+  windward-leeward course around a configurable center point - beating
+  upwind on alternating tacks, running downwind on alternating gybes, with
+  randomized leg lengths so no two laps look the same - in place of the real
+  UBX-NAV-PVT parser.
 - `src/simRadioLink.js` replaces the serial radio link with a UDP socket
   carrying the exact same 21-byte frames (`src/protocol.js`), so the real
   encode/decode/checksum path is still exercised end to end — just without
@@ -131,8 +133,8 @@ output all work exactly as they would with real hardware.
 |---|---|---|
 | `SIM_HOST` / `SIM_PORT` | `127.0.0.1` / `41234` | Where boatAgent sends sim radio frames; baseStation listens here |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
-| `SIM_SPEED_KN` | 6 | Simulated boat speed |
-| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | Newport, RI | Center point of the simulated racecourse |
+| `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8744` / `-119.2024` | Center point of the simulated racecourse |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
 
 ## Connecting to your race committee software
@@ -173,17 +175,50 @@ If Redis is unreachable, `baseStation.js` logs the error and keeps running —
 console/CSV/UDP output are unaffected, matching this app's "SD/console never
 blocks on the network" philosophy elsewhere.
 
+### Switching between Redis servers
+
+`REDIS_ENV` picks a connection preset in `config.js` (default `local`,
+`127.0.0.1:6379`). `production` points at the Redis Cloud instance; its
+host/port are fine to keep in source, but credentials never are — set these
+in your environment (or a git-ignored `.env`), not in the repo:
+
+```
+REDIS_ENV=production REDIS_PASSWORD=<password> npm run base
+```
+
+- `REDIS_USERNAME` — defaults to `default` (Redis Cloud's default ACL user)
+- `REDIS_PASSWORD` — required for `production`, no default
+- `REDIS_TLS` — set to `1` if your database requires TLS (this one currently doesn't)
+
+For anything outside the two presets, `REDIS_URL` still works and overrides
+both `REDIS_ENV` presets entirely, e.g. `REDIS_URL=redis://host:port npm run base`.
+
+### Clearing boat data
+
+```
+npm run clear-boats
+```
+
+Deletes every boat-related key (`boat:<id>:track`, `all:track`,
+`boats:known`, and start-slot assignments) so a fresh fleet can race the
+same course without stale boats/tracks left over from earlier runs. The
+course marks are left untouched. Respects `REDIS_ENV`/`REDIS_URL` the same
+way `boat`/`base` do, so point it at whichever Redis you actually want
+cleared.
+
 ## Tuning knobs (env vars)
 
 | Var | Default | Purpose |
 |---|---|---|
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 38400 | GPS UART |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
-| `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely (e.g. bench-testing GPS with no radio attached) — fixes still log to SD |
+| `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
 | `TX_INTERVAL_MS` | 2000 | How often a frame is sent over radio (SD log is always full-rate). Actual TX timing is jittered +/-20% (and randomized on startup) so a fleet transmitting on a shared channel doesn't cluster/collide |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Base station only — where decoded fixes are recorded for track queries, see "Redis track storage" above |
+| `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Redis track storage" above |
+| `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment |
+| `REDIS_URL` | unset | Base station only — overrides `REDIS_ENV` entirely with a full connection string, for ad-hoc targets |
 
 ## What still needs real-hardware testing
 

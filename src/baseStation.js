@@ -1,6 +1,7 @@
 const config = require('./config');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
+const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
@@ -22,8 +23,10 @@ let radio;
 if (config.simulate) {
   const { SimRadioLink } = require('./simRadioLink');
   radio = new SimRadioLink({ mode: 'listen', port: config.sim.port });
-} else {
+} else if (config.radio.enabled) {
   radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+} else {
+  radio = new EventEmitter(); // NO_RADIO=1 - never emits 'frame', other outputs still testable
 }
 radio.on('error', (err) => console.error('[radio] error:', err.message));
 radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
@@ -40,7 +43,22 @@ const UDP_BROADCAST_ADDR = process.env.UDP_BROADCAST_ADDR || '255.255.255.255';
 const UDP_PORT = parseInt(process.env.UDP_PORT || '10110', 10); // 10110 is the conventional NMEA-over-UDP port
 udpSocket.bind(() => udpSocket.setBroadcast(true));
 
-const redisStore = new RedisStore({ url: config.redis.url });
+const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
+
+// Course marks - windward, leeward, and the pin/committee ends of the
+// start/finish line (same geometry the simulator uses, see course.js).
+// Reads them from Redis if already set (e.g. by a boat simulator that
+// started first) rather than overwriting; only computes+publishes them if
+// missing, so every process racing the same course agrees on identical
+// mark positions. Only meaningful while simulating - real-hardware mark
+// positions aren't sourced from SIM_CENTER_LAT/LON, so there's nothing to
+// resolve outside SIMULATE=1 yet.
+if (config.simulate) {
+  redisStore
+    .getOrCreateMarks(config.sim.centerLat, config.sim.centerLon)
+    .then((marks) => console.log(`[baseStation] course marks (Redis): ${Object.keys(marks).join(', ')}`))
+    .catch((err) => console.error('[redis] failed to resolve marks:', err.message));
+}
 
 radio.on('frame', (decoded) => {
   logToConsole(decoded);
@@ -116,9 +134,15 @@ function checksum(str) {
 
 if (config.simulate) {
   console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);
-} else {
+} else if (config.radio.enabled) {
   console.log(`[baseStation] listening on radio ${config.radio.port} @ ${config.radio.baud}`);
+} else {
+  console.log('[baseStation] Radio disabled (NO_RADIO=1) - no frames will arrive, other outputs still testable');
 }
 console.log(`[baseStation] logging to ${csvPath}`);
-console.log(`[baseStation] recording fixes to Redis at ${config.redis.url}`);
+console.log(
+  `[baseStation] recording fixes to Redis at ${
+    config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`
+  }`
+);
 console.log(`[baseStation] broadcasting NMEA GGA over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`);

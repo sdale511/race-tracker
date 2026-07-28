@@ -97,14 +97,58 @@ function openGps() {
 }
 
 if (config.simulate) {
-  const { SimGpsSource } = require('./simGps');
-  const gps = new SimGpsSource({
-    centerLat: config.sim.centerLat,
-    centerLon: config.sim.centerLon,
-    speedKn: config.sim.speedKn,
-    hz: config.sim.gpsHz,
-  });
-  gps.on('nav-pvt', handlePvt);
+  // Resolve the course from Redis before starting: if another
+  // simulator/base station already published marks, race that exact course
+  // instead of computing a fresh one from local SIM_CENTER_LAT/LON, so a
+  // whole fleet of simulators agrees on identical mark positions.
+  (async () => {
+    const { SimGpsSource } = require('./simGps');
+    const { RedisStore } = require('./redisStore');
+    const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
+    let marks;
+    try {
+      marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+    } catch (err) {
+      console.error('[redis] failed to resolve course marks, falling back to local SIM_CENTER_LAT/LON:', err.message);
+      marks = { leeward: { lat: config.sim.centerLat, lon: config.sim.centerLon } };
+    }
+    console.log(`[boatAgent] course marks (Redis): ${Object.keys(marks).join(', ')}`);
+
+    // Start-line slot is by registration order, not the boat's own ID/sail
+    // number (config.boatId could be anything, e.g. 51/52 - using it
+    // directly would place a boat however far off the line that number
+    // implies, which is exactly the bug this fixes).
+    let startSlot;
+    try {
+      startSlot = await redisStore.getOrAssignStartSlot(config.boatId);
+    } catch (err) {
+      console.error('[redis] failed to assign a start slot, defaulting to slot 0:', err.message);
+      startSlot = 0;
+    }
+    console.log(`[boatAgent] start slot (Redis): ${startSlot}`);
+
+    // The leeward mark *is* the course's center/reference point by
+    // construction (course.js), so it's exactly what SimGpsSource needs.
+    const gps = new SimGpsSource({
+      centerLat: marks.leeward.lat,
+      centerLon: marks.leeward.lon,
+      upwindSpeedKn: config.sim.upwindSpeedKn,
+      downwindSpeedKn: config.sim.downwindSpeedKn,
+      hz: config.sim.gpsHz,
+      startSlot,
+      lapCount: config.sim.lapCount,
+    });
+    gps.on('nav-pvt', handlePvt);
+    gps.on('lap', ({ lap, inGate, eastM }) =>
+      console.log(`[boatAgent] completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
+    );
+    gps.on('finished', ({ laps }) => {
+      console.log(`[boatAgent] finished simulated race after ${laps} lap(s)`);
+      // Brief delay so the final fix's async SD-log write has a chance to
+      // flush before the process actually exits.
+      setTimeout(() => process.exit(0), 200);
+    });
+  })();
 } else {
   openGps();
 }
