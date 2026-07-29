@@ -1,19 +1,20 @@
 const { EventEmitter } = require('events');
-const {
-  COURSE_LENGTH_M,
-  START_LINE_NORTH_M,
-  START_SIDE_LENGTH_M,
-  FINISH_SIDE_LENGTH_M,
-  WIND_FROM_DEG,
-  offsetToLatLon,
-  getStartPosition,
-} = require('./course');
+const { WIND_FROM_DEG, offsetToLatLon, getStartPosition } = require('./course');
 
+// Course geometry (courseLengthM, startLineNorthM, startSideLengthM,
+// finishSideLengthM - see the constructor) is passed in, derived by the
+// caller from the actual marks (course.js's deriveGeometry), not imported
+// as fixed module constants here - this process's own SIM_COURSE_LENGTH_NM
+// might not agree with whatever course was actually published to Redis
+// (published earlier, by a different process, possibly at a different
+// length), and every tacking/rounding/gate decision below needs to follow
+// whatever the marks actually say, not this process's own environment.
+//
 // Upwind crossings of the start/finish line must pass through the finish
 // gate (committee <-> finish, on the east side of the rhumb line - see
 // course.js) to count a lap. Aiming for the gate's center is what makes
 // that achievable.
-const FINISH_GATE_CENTER_M = FINISH_SIDE_LENGTH_M / 2;
+//
 // Downwind crossings can go anywhere EXCEPT through the start side (pin <->
 // committee) or finish side (committee <-> finish) - those two occupy the
 // whole strip from pin to finish with no gap between them, so "anywhere
@@ -42,6 +43,12 @@ const DOWNWIND_CLEAR_MARGIN_M = 15;
 // when heading the opposite direction).
 const MARK_CLEARANCE_M = 5;
 
+// Once the final lap's finish-line crossing is detected, the boat keeps
+// sailing straight on its current tack/heading for this much farther
+// before the simulation actually stops - a real boat eases across the
+// line and keeps some way on rather than stopping dead exactly at it.
+const FINISH_COAST_M = 20;
+
 // Fake GPS source for hardware-free testing: emits synthetic fixes in the
 // same shape UbxParser emits from real hardware (see ubxParser.js
 // _decodePvt), so boatAgent doesn't need to know the difference.
@@ -66,6 +73,11 @@ const MARK_CLEARANCE_M = 5;
 
 const CLOSE_HAULED_DEG = 40; // typical modern-raceboat beating angle off the wind
 const RUN_DEG = 15; // angle off dead downwind while gybing down
+// Wider angle off dead downwind used only to clear the start/finish strip
+// (see _tick()'s downwind crossing check) - a real "head up" maneuver for
+// more lateral speed while still making some forward progress, not a
+// frozen pure-reach. Bears away back to RUN_DEG the moment it's clear.
+const DOWNWIND_CLEAR_HEAD_UP_DEG = 60;
 const HEADING_JITTER_DEG = 4; // +/- per free-tack heading variation, so tacks/gybes aren't identical
 const LEG_JITTER_FRAC = 0.3; // +/-30% around the target leg length
 
@@ -87,11 +99,34 @@ function randRange(min, max) {
   return min + Math.random() * (max - min);
 }
 
+// Linear interpolation for the east position at the exact moment north
+// crossed targetNorth, given the positions before and after the tick that
+// crossed it - a single tick's travel distance can exceed the width of the
+// start/finish line itself at a short SIM_COURSE_LENGTH_NM, so checking the
+// post-tick position directly isn't precise enough to reliably tell whether
+// a crossing landed inside the gate/strip.
+function interpolateEastAt(prevNorth, prevEast, curNorth, curEast, targetNorth) {
+  const frac = (targetNorth - prevNorth) / (curNorth - prevNorth);
+  return prevEast + frac * (curEast - prevEast);
+}
+
 class SimGpsSource extends EventEmitter {
-  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount }) {
+  // geometry: { courseLengthM, startLineNorthM, startSideLengthM,
+  // finishSideLengthM, boatStartSpacingM } - see course.js's deriveGeometry.
+  // Measured from the actual marks by the caller, not assumed from this
+  // process's own SIM_COURSE_LENGTH_NM (see module comment above).
+  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount, geometry }) {
     super();
     this.centerLat = centerLat;
     this.centerLon = centerLon;
+    this.courseLengthM = geometry.courseLengthM;
+    this.startLineNorthM = geometry.startLineNorthM;
+    this.startSideLengthM = geometry.startSideLengthM;
+    this.finishSideLengthM = geometry.finishSideLengthM;
+    // Aiming for the gate's center is what makes the upwind finish-gate
+    // requirement (see module comment) achievable.
+    this.finishGateCenterM = geometry.finishSideLengthM / 2;
+
     // Each boat has its own fixed "speed personality" (+/-10%, drawn once,
     // not per-tick) applied to both upwind and downwind speed, so a fleet
     // of simulated boats doesn't all finish in lockstep.
@@ -105,13 +140,14 @@ class SimGpsSource extends EventEmitter {
     // start/finish line (see course.js), not at a mark. `startSlot` is a
     // 0-based registration-order slot (see redisStore.getOrAssignStartSlot),
     // not the boat's own ID/sail number.
-    const start = getStartPosition(startSlot);
+    const start = getStartPosition(startSlot, geometry);
     this.north = start.north;
     this.east = start.east;
     this.phase = 'upwind'; // 'upwind' (beating) | 'downwind' (running)
     this.side = Math.random() < 0.5 ? 1 : -1;
     this.timeSinceManeuverS = 999;
-    this.clearingHeadingDeg = null; // set to 90/270 mid-mark-rounding or mid-line-clear, see _tick()
+    this.clearingHeadingDeg = null; // set mid-mark-rounding (due east/west) or mid-line-clear (headed up), see _tick()
+    this.clearingDirection = null; // +1 (clearing east) or -1 (clearing west) - which way clearingTargetEastM is being approached from
     this.clearingIsLineCross = false; // true when clearingHeadingDeg is clearing the start/finish strip, not a mark
 
     // A lap completes when the boat crosses the start/finish line heading
@@ -123,6 +159,7 @@ class SimGpsSource extends EventEmitter {
     this.lapsCompleted = 0;
     this.lapTarget = lapCount;
     this.crossedLineThisLeg = true;
+    this.finishCoastRemainingM = null; // set once the final lap's crossing is detected, see _tick()
 
     this._setLegTarget();
     this._startNewLeg();
@@ -147,10 +184,10 @@ class SimGpsSource extends EventEmitter {
   // land inside it.
   _targetWaypoint() {
     if (!this.crossedLineThisLeg) {
-      const eastTarget = this.phase === 'upwind' ? FINISH_GATE_CENTER_M : 0;
-      return { targetNorth: START_LINE_NORTH_M, targetEastM: eastTarget };
+      const eastTarget = this.phase === 'upwind' ? this.finishGateCenterM : 0;
+      return { targetNorth: this.startLineNorthM, targetEastM: eastTarget };
     }
-    return { targetNorth: this.phase === 'upwind' ? COURSE_LENGTH_M : 0, targetEastM: 0 };
+    return { targetNorth: this.phase === 'upwind' ? this.courseLengthM : 0, targetEastM: 0 };
   }
 
   // Sets up a leg on a specific tack/gybe, always at the FULL close-hauled/
@@ -241,7 +278,12 @@ class SimGpsSource extends EventEmitter {
       const Diff = dEastCorrected / Math.sin(maxAngleRad);
       const Lplus = (S + Diff) / 2;
       const Lminus = (S - Diff) / 2;
-      const NEAR_ZERO_M = 20;
+      // A fraction of a normal tack length, not a fixed distance - a fixed
+      // meters value stops being "near zero" once the whole course (and so
+      // the gate/mark it's trying to precisely hit) shrinks enough that the
+      // fixed value is no longer small relative to it (see course.js's
+      // similar reasoning for the start/finish line's own width).
+      const NEAR_ZERO_M = this.targetLegM * 0.05;
 
       if (Lplus >= -NEAR_ZERO_M && Lminus >= -NEAR_ZERO_M) {
         if (Lminus <= NEAR_ZERO_M) {
@@ -262,8 +304,12 @@ class SimGpsSource extends EventEmitter {
       // "wrong" side for variety), so this reliably shrinks the error leg
       // over leg until the exact solve above becomes reachable.
       const correctingSide = dEastCorrected >= 0 ? 1 : -1;
+      // Already guaranteed positive and proportional to targetLegM (which
+      // itself scales with the course length) - no separate floor needed;
+      // a fixed one (e.g. 50m) would force tacks longer than intended once
+      // targetLegM itself gets small (a short SIM_COURSE_LENGTH_NM course).
       const lengthM = randRange(this.targetLegM * (1 - LEG_JITTER_FRAC), this.targetLegM * (1 + LEG_JITTER_FRAC));
-      this._setLeg(correctingSide, Math.max(50, lengthM));
+      this._setLeg(correctingSide, lengthM);
       return;
     }
 
@@ -277,20 +323,71 @@ class SimGpsSource extends EventEmitter {
     // line: once a tack overshoots past the target's east value, the
     // correcting side flips on its own on the next leg. Once close enough
     // to the target, the branches above take over for the final tack(s).
-    const correctingSide = dEastCorrected >= 0 ? 1 : -1;
+    let side = dEastCorrected >= 0 ? 1 : -1;
+
+    // Downwind, before crossing the line: check *before* committing to this
+    // tack whether sailing it all the way to the start line's latitude
+    // would carry the boat through the forbidden strip, and take the other
+    // tack instead if so - the course correction needs to happen here,
+    // while still on the windward side of the line with room to change
+    // course, not reactively after already crossing into it (the crossing
+    // check in _tick() still exists as a last-resort safety net, but
+    // shouldn't normally need to fire once this is in place).
+    if (this.phase === 'downwind' && !this.crossedLineThisLeg) {
+      const projected = this._projectedCrossingEast(side);
+      const wouldViolate = projected >= -this.startSideLengthM && projected <= this.finishSideLengthM;
+      if (wouldViolate) {
+        const otherProjected = this._projectedCrossingEast(-side);
+        const otherViolates = otherProjected >= -this.startSideLengthM && otherProjected <= this.finishSideLengthM;
+        if (!otherViolates) side = -side;
+        // If both tacks project into the strip (only possible very close
+        // to the line with little room left to redirect), leave side as
+        // chosen above - the reactive check in _tick() is the fallback.
+      }
+    }
+
+    // See the comment on the equivalent line above - already positive and
+    // proportional to targetLegM, no separate fixed floor needed.
     const legM = randRange(this.targetLegM * (1 - LEG_JITTER_FRAC), this.targetLegM * (1 + LEG_JITTER_FRAC));
-    this._setLeg(correctingSide, Math.max(50, legM), randRange(-HEADING_JITTER_DEG, HEADING_JITTER_DEG));
+    this._setLeg(side, legM, randRange(-HEADING_JITTER_DEG, HEADING_JITTER_DEG));
+  }
+
+  // Where the boat would cross the start/finish line's latitude if it kept
+  // sailing the given side/tack (at the phase's full fixed angle, no
+  // heading jitter) all the way there from its current position - used to
+  // decide, before actually committing to a tack, whether it needs to be
+  // avoided because it would carry the boat through the forbidden strip
+  // (see the downwind pre-crossing check in _startNewLeg()).
+  _projectedCrossingEast(side) {
+    const maxAngleDeg = this.phase === 'upwind' ? CLOSE_HAULED_DEG : RUN_DEG;
+    const baseDeg = this.phase === 'upwind' ? WIND_FROM_DEG : (WIND_FROM_DEG + 180) % 360;
+    const headingRad = (((baseDeg + side * maxAngleDeg) % 360) * Math.PI) / 180;
+    const dNorth = this.startLineNorthM - this.north;
+    const distance = dNorth / Math.cos(headingRad);
+    return this.east + distance * Math.sin(headingRad);
   }
 
   // Called once per beat/run, right as a mark is rounded (and once up front
   // for the very first beat), to pick how many tacks/gybes it should have -
-  // 3-4 upwind, 2-3 downwind - and derive a target leg length from that.
+  // normally 3-4 upwind, 2-3 downwind - and derive a target leg length from
+  // that.
   _setLegTarget() {
     const angleDeg = this.phase === 'upwind' ? CLOSE_HAULED_DEG : RUN_DEG;
-    const legDistM = COURSE_LENGTH_M / Math.cos((angleDeg * Math.PI) / 180);
+    const legDistM = this.courseLengthM / Math.cos((angleDeg * Math.PI) / 180);
     const [minCount, maxCount] =
       this.phase === 'upwind' ? [UPWIND_MIN_TACKS, UPWIND_MAX_TACKS] : [DOWNWIND_MIN_GYBES, DOWNWIND_MAX_GYBES];
-    const maneuverCount = Math.random() < 0.5 ? minCount : maxCount;
+
+    // A short SIM_COURSE_LENGTH_NM can shrink even the minimum tack count's
+    // own leg length down to only a few multiples of MARK_CLEARANCE_M (a
+    // small, fixed distance) - once a "normal" tack is no longer
+    // comfortably larger than that, the precision-targeting math (the
+    // two-tack solve, mark clearing) is trying to resolve positions finer
+    // than the course's own scale can reliably support. Rather than chase
+    // that with ever-finer tuning, just sail the beat/run as a single tack/
+    // gybe instead of the usual multiple - one tack needs far less
+    // precision to land correctly than several.
+    const normalMinLegM = legDistM / (minCount + 1);
+    const maneuverCount = normalMinLegM < MARK_CLEARANCE_M * 10 ? 1 : Math.random() < 0.5 ? minCount : maxCount;
     this.targetLegM = legDistM / (maneuverCount + 1);
   }
 
@@ -314,20 +411,27 @@ class SimGpsSource extends EventEmitter {
     const headingDeg = this.clearingHeadingDeg ?? this._heading();
     const distM = speedMS * dt;
     const headingRad = (headingDeg * Math.PI) / 180;
+    const prevNorth = this.north;
+    const prevEast = this.east;
     this.north += distM * Math.cos(headingRad);
     this.east += distM * Math.sin(headingRad);
     this.legRemainingM -= distM;
 
-    if (this.clearingHeadingDeg != null) {
-      // Mid horizontal-clearing leg (due east/west, heading frozen - see
-      // where this gets set below): north doesn't move at all on this
-      // heading (cos(90)=0), so this is a perfectly flat line until east
-      // reaches the far side, then whatever this clearing leg was for
-      // completes - a mark rounding, or (see clearingIsLineCross) a
-      // downwind crossing that would otherwise have gone through the
-      // forbidden start/finish strip.
+    if (this.finishCoastRemainingM != null) {
+      // Race is over (see the crossing check below) - coast straight ahead
+      // on whatever heading/tack it was already on for a bit rather than
+      // stopping dead exactly at the line, more like a real boat easing up
+      // after finishing than an instant stop. No mark/leg/clearing logic
+      // applies anymore, just this countdown.
+      this.finishCoastRemainingM -= distM;
+    } else if (this.clearingHeadingDeg != null) {
+      // Mid clearing leg - a mark rounding (heading frozen due east/west,
+      // clearingDirection +1/-1) or (see clearingIsLineCross) heading up to
+      // clear the start/finish strip (a real, wider-than-normal angle, not
+      // frozen - see where this gets set below). Either way, "cleared"
+      // means east has reached the target in clearingDirection.
       const cleared =
-        this.clearingHeadingDeg === 90 ? this.east >= this.clearingTargetEastM : this.east <= this.clearingTargetEastM;
+        this.clearingDirection === 1 ? this.east >= this.clearingTargetEastM : this.east <= this.clearingTargetEastM;
       if (cleared) {
         this.clearingHeadingDeg = null;
         if (this.clearingIsLineCross) {
@@ -342,15 +446,17 @@ class SimGpsSource extends EventEmitter {
           this._startNewLeg();
         }
       }
-    } else if (this.phase === 'upwind' && this.north >= COURSE_LENGTH_M) {
+    } else if (this.phase === 'upwind' && this.north >= this.courseLengthM) {
       // Reached the windward mark's latitude - clear it heading due east
       // (see MARK_CLEARANCE_M above) before actually rounding.
       this.clearingHeadingDeg = 90;
+      this.clearingDirection = 1;
       this.clearingTargetEastM = MARK_CLEARANCE_M;
       this.timeSinceManeuverS = 0;
     } else if (this.phase === 'downwind' && this.north <= 0) {
       // Reached the leeward mark's latitude - clear it heading due west.
       this.clearingHeadingDeg = 270;
+      this.clearingDirection = -1;
       this.clearingTargetEastM = -MARK_CLEARANCE_M;
       this.timeSinceManeuverS = 0;
     } else if (this.legRemainingM <= 0) {
@@ -364,33 +470,86 @@ class SimGpsSource extends EventEmitter {
     // aims the upwind approach at the gate, so that lands correctly most of
     // the time, but isn't hard-enforced - `inGate` on the emitted event says
     // whether it did.
-    if (this.phase === 'upwind' && !this.crossedLineThisLeg && this.north > START_LINE_NORTH_M) {
+    //
+    // Skipped entirely while mid-clearing-leg (north frozen, see above) or
+    // already coasting to a stop past the finish - the crossing that
+    // triggered a clearing leg (mark rounding, or a downwind crossing
+    // already being corrected below) was already handled when it happened;
+    // re-checking a frozen north against the same threshold every
+    // subsequent tick is not just redundant but, since north hasn't moved,
+    // would divide by zero in interpolateEastAt.
+    if (
+      this.finishCoastRemainingM == null &&
+      this.clearingHeadingDeg == null &&
+      this.phase === 'upwind' &&
+      !this.crossedLineThisLeg &&
+      this.north > this.startLineNorthM
+    ) {
       this.crossedLineThisLeg = true;
       this.lapsCompleted++;
-      const inGate = this.east >= 0 && this.east <= FINISH_SIDE_LENGTH_M;
-      this.emit('lap', { lap: this.lapsCompleted, inGate, eastM: this.east });
-      // The target just changed (start/finish line -> the mark) - recompute
-      // this leg now instead of continuing on a heading aimed at the old
-      // target for however much of it happens to remain.
-      this._startNewLeg();
-    } else if (this.phase === 'downwind' && !this.crossedLineThisLeg && this.north < START_LINE_NORTH_M) {
-      const inStrip = this.east >= -START_SIDE_LENGTH_M && this.east <= FINISH_SIDE_LENGTH_M;
+      // Interpolated east position at the exact moment north crossed the
+      // line, not just wherever this tick's discrete step happened to land
+      // - at a short SIM_COURSE_LENGTH_NM the finish gate can be narrower
+      // than a single tick's own travel distance, so checking the
+      // post-step position directly would report "missed the gate" even
+      // when the true crossing point was well inside it.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.startLineNorthM);
+      const inGate = crossingEast >= 0 && crossingEast <= this.finishSideLengthM;
+      this.emit('lap', { lap: this.lapsCompleted, inGate, eastM: crossingEast });
+      if (this.lapsCompleted >= this.lapTarget) {
+        // Race is over - start coasting (see above) instead of planning
+        // another leg toward the windward mark.
+        this.finishCoastRemainingM = FINISH_COAST_M;
+      } else {
+        // The target just changed (start/finish line -> the mark) -
+        // recompute this leg now instead of continuing on a heading aimed
+        // at the old target for however much of it happens to remain.
+        this._startNewLeg();
+      }
+    } else if (
+      this.finishCoastRemainingM == null &&
+      this.clearingHeadingDeg == null &&
+      this.phase === 'downwind' &&
+      !this.crossedLineThisLeg &&
+      this.north < this.startLineNorthM
+    ) {
+      // Same interpolation as the upwind gate check above - but here it
+      // isn't just a diagnostic: avoiding the strip is a hard requirement,
+      // so the boat's own reported position is snapped back to this exact
+      // crossing point (see below) rather than left at wherever this
+      // tick's discrete step happened to land. Without that, a large
+      // enough per-tick step (relative to the strip's own width) could
+      // interpolate as "just outside, no clearing needed" while the raw
+      // tick-end position had already carried a little further into the
+      // strip than the interpolated point - reporting a violating fix even
+      // though the crossing itself looked clean.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.startLineNorthM);
+      this.north = this.startLineNorthM;
+      this.east = crossingEast;
+      const inStrip = crossingEast >= -this.startSideLengthM && crossingEast <= this.finishSideLengthM;
       if (inStrip) {
         // Free-tacking wasn't aiming for a particular spot here (there's no
         // reason to be near either mark downwind), so it can occasionally
-        // land inside the forbidden strip by chance - clear it the same way
-        // a mark gets cleared: freeze north and slide toward whichever edge
-        // is nearer, then resume. This is the only thing actually
-        // preventing a downwind crossing from going through the strip.
-        const distToFinishSide = FINISH_SIDE_LENGTH_M - this.east;
-        const distToStartSide = this.east - -START_SIDE_LENGTH_M;
-        if (distToFinishSide <= distToStartSide) {
-          this.clearingHeadingDeg = 90;
-          this.clearingTargetEastM = FINISH_SIDE_LENGTH_M + DOWNWIND_CLEAR_MARGIN_M;
-        } else {
-          this.clearingHeadingDeg = 270;
-          this.clearingTargetEastM = -START_SIDE_LENGTH_M - DOWNWIND_CLEAR_MARGIN_M;
-        }
+        // land inside the forbidden strip by chance - clear it by heading
+        // up toward whichever edge is nearer: a real, wider-than-normal
+        // angle off dead downwind (more lateral speed, but still making
+        // some forward progress, not frozen sideways like a mark rounding)
+        // that bears away back to the normal run angle the instant it's
+        // clear (handled above, same as any other tack/gybe transition).
+        const distToFinishSide = this.finishSideLengthM - this.east;
+        const distToStartSide = this.east - -this.startSideLengthM;
+        this.clearingDirection = distToFinishSide <= distToStartSide ? 1 : -1;
+        // sin(180+x) = -sin(x) - a lean off the downwind base heading (180)
+        // moves east/west opposite of the same lean off the upwind base
+        // (0), so clearingDirection needs a flipped sign here to still mean
+        // "+1 -> increasing east" (see _startNewLeg's signCorrection for
+        // the same issue elsewhere in this file).
+        const downwindBaseDeg = (WIND_FROM_DEG + 180) % 360;
+        this.clearingHeadingDeg = (downwindBaseDeg - this.clearingDirection * DOWNWIND_CLEAR_HEAD_UP_DEG + 360) % 360;
+        this.clearingTargetEastM =
+          this.clearingDirection === 1
+            ? this.finishSideLengthM + DOWNWIND_CLEAR_MARGIN_M
+            : -this.startSideLengthM - DOWNWIND_CLEAR_MARGIN_M;
         this.clearingIsLineCross = true;
         this.timeSinceManeuverS = 0;
       } else {
@@ -416,7 +575,7 @@ class SimGpsSource extends EventEmitter {
       timestamp: Date.now(),
     });
 
-    if (this.lapsCompleted >= this.lapTarget) {
+    if (this.finishCoastRemainingM != null && this.finishCoastRemainingM <= 0) {
       this.finished = true;
       this.stop();
       this.emit('finished', { laps: this.lapsCompleted });

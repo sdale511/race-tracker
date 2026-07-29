@@ -7,11 +7,13 @@
   "scripts": {
     "boat": "node src/boatAgent.js",
     "base": "node src/baseStation.js",
-    "clear-boats": "node src/clearBoats.js"
+    "clear-boats": "node src/clearBoats.js",
+    "clear-course": "node src/clearCourse.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "ioredis": "^5.11.1",
-    "serialport": "^12.0.0"
+    "serialport": "^12.0.0",
+    "sql.js": "^1.14.1"
   }
 }

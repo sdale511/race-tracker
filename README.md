@@ -136,6 +136,8 @@ output all work exactly as they would with real hardware.
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
 | `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8744` / `-119.2024` | Center point of the simulated racecourse |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
+| `SIM_COURSE_LENGTH_NM` | 1 | Leeward-to-windward distance in nautical miles - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect (see "Changing the course" below) |
+| `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 
 ## Connecting to your race committee software
 
@@ -152,6 +154,77 @@ Wind, or in-house), the `outputFrame()` function is the one place to change
 cloud ingestion API is common for the commercial platforms; check their
 integration docs since most of them expect a per-boat auth token). Happy to
 build that adapter once you know the target.
+
+## Lap events -> RegattaUp
+
+Lap detection lives entirely on the base station, not the boat: a real
+rover has no Redis access to resolve course marks itself, so it only ever
+sends its raw position (the regular 21-byte position frame, unchanged) -
+`src/finishLineWatcher.js`, running inside `baseStation.js`, watches every
+incoming fix - real hardware or simulated, it makes no difference - against
+the committee/finish marks published in Redis, and detects a lap the same
+way a real race committee would: the boat's path actually crossing the
+committee<->finish segment (not just anywhere on the line) while heading
+upwind (committee to port, finish to starboard - see the module for the
+geometry). One `FinishLineWatcher` is kept per boat ID, since each needs its
+own independent crossing-state and lap counter. This works "as long as the
+finish line is set" - if the base station can't find committee/finish marks
+in Redis at startup, lap detection is just unavailable for that run, logged
+once, not retried.
+
+Whenever a crossing is detected, the base station queues it (see below) and
+POSTs to RegattaUp's lap webhook so the crossing counts as a lap there:
+
+```json
+{
+  "decoded": {
+    "tranCode": "51",
+    "rtcTime": 1785337740000000,
+    "strength": 2
+  },
+  "receivedAt": "2026-07-29T15:09:00.604Z"
+}
+```
+
+- `tranCode` — the boat's ID (as a string), matched against that boat's
+  transponder code configured in RegattaUp
+- `rtcTime` — the lap's own timestamp, converted from milliseconds to
+  microseconds (the unit RegattaUp's webhook expects)
+- `strength` — the fix's `carrSoln` (RTK solution quality) at the moment of
+  crossing, standing in for signal strength
+- `receivedAt` — the base station's wall-clock time, sent as the fallback
+  timestamp
+
+### Durable retry queue
+
+A failed webhook POST doesn't just get logged and dropped - `src/lapWebhookQueue.js`
+durably records every lap (in a small sqlite file, via `sql.js` - a WASM
+build, so it needs no native compilation on whatever machine or Raspberry Pi
+this runs on) *before* the first send attempt, and only removes it once
+RegattaUp actually accepts it. A background loop retries whatever's still
+queued with capped exponential backoff (2s, 4s, 8s, ... up to
+`REGATTAUP_MAX_BACKOFF_MS`), indefinitely - this also means a lap survives a
+base station restart mid-retry, since the queue is a file on disk, not just
+in-memory state.
+
+| Var | Default | Purpose |
+|---|---|---|
+| `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override to point at a mock endpoint for testing |
+| `REGATTAUP_WEBHOOK_DISABLED` | unset | Set to `1` to skip sending entirely (crossings are still detected and logged) |
+| `REGATTAUP_QUEUE_DB` | `<LOG_DIR>/lap_webhook_queue.sqlite` | Where the retry queue's sqlite file lives |
+| `REGATTAUP_RETRY_INTERVAL_MS` | 15000 | How often the retry loop checks for due-for-retry laps |
+| `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Cap on the exponential backoff between retries for a single lap |
+
+### Testing the lap -> webhook path
+
+```
+TEST_LAP=1 npm run base
+```
+
+Sends one synthetic lap straight into the webhook queue and exits - no
+radio, no GPS, no finish-line detection involved, just checking the queue ->
+RegattaUp path in isolation. `TEST_LAP_BOAT_ID`/`TEST_LAP_NUMBER` (default 1
+and 1) pick which boat/lap number it's sent as.
 
 ## Redis track storage
 
@@ -206,6 +279,22 @@ course marks are left untouched. Respects `REDIS_ENV`/`REDIS_URL` the same
 way `boat`/`base` do, so point it at whichever Redis you actually want
 cleared.
 
+### Changing the course
+
+```
+npm run clear-course
+```
+
+Deletes the five `mark:*` keys so the next `boat`/`base` run recomputes and
+republishes the course from scratch (e.g. after changing
+`SIM_COURSE_LENGTH_NM` or `SIM_CENTER_LAT`/`SIM_CENTER_LON`) instead of
+reusing whatever's already there. Boat tracks are left untouched — pair with
+`npm run clear-boats` if you want those cleared too. You normally don't need
+to run this yourself for `SIM_COURSE_LENGTH_NM` specifically: setting that
+env var makes `boat`/`base` clear the old marks automatically on startup, so
+the course actually changes length instead of silently reusing whatever
+course was already published.
+
 ## Tuning knobs (env vars)
 
 | Var | Default | Purpose |
@@ -214,11 +303,16 @@ cleared.
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
-| `TX_INTERVAL_MS` | 2000 | How often a frame is sent over radio (SD log is always full-rate). Actual TX timing is jittered +/-20% (and randomized on startup) so a fleet transmitting on a shared channel doesn't cluster/collide |
+| `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio (SD log is always full-rate) — distance-based, not time-based, so a stopped boat doesn't keep re-sending the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 | `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Redis track storage" above |
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment |
 | `REDIS_URL` | unset | Base station only — overrides `REDIS_ENV` entirely with a full connection string, for ad-hoc targets |
+| `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
+| `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above |
+| `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
+| `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue |
+| `TEST_LAP` / `TEST_LAP_BOAT_ID` / `TEST_LAP_NUMBER` | unset / 1 / 1 | `npm run base` only — send a single test lap straight into the webhook queue and exit, see "Testing the lap -> webhook path" above |
 
 ## What still needs real-hardware testing
 

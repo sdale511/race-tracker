@@ -4,6 +4,7 @@ const { UbxParser } = require('./ubxParser');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
 const protocol = require('./protocol');
+const { distanceMeters } = require('./course');
 
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
 if (config.simulate) {
@@ -39,17 +40,7 @@ if (config.simulate) {
   radio = { send: () => false };
 }
 
-// Jitter TX timing (+/-20%) so a fleet of boats powering on together (e.g.
-// at a race start) doesn't transmit in lockstep and collide on the shared
-// radio channel. The first interval is a full random draw so boats don't
-// even start out synchronized.
-function jitteredTxIntervalMs() {
-  const jitter = config.txIntervalMs * 0.2;
-  return config.txIntervalMs + (Math.random() * 2 - 1) * jitter;
-}
-
-let lastTx = Date.now();
-let nextTxIntervalMs = Math.random() * config.txIntervalMs;
+let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastPvt = null;
 
 function handlePvt(pvt) {
@@ -61,10 +52,14 @@ function handlePvt(pvt) {
       `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
   );
 
-  const now = Date.now();
-  if (now - lastTx >= nextTxIntervalMs) {
-    lastTx = now;
-    nextTxIntervalMs = jitteredTxIntervalMs();
+  // Distance-based, not time-based: send whenever the boat has actually
+  // moved TX_DISTANCE_M since the last transmitted fix, regardless of how
+  // long that took - a stopped or barely-drifting boat doesn't need to
+  // keep re-transmitting the same position on a timer, and a fast-moving
+  // one gets updates as often as its own movement actually warrants.
+  const movedM = lastTxPosition ? distanceMeters(lastTxPosition, pvt) : Infinity;
+  if (movedM >= config.txDistanceM) {
+    lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
     const frame = protocol.encode(config.boatId, pvt);
     const sent = radio.send(frame);
     if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
@@ -104,15 +99,38 @@ if (config.simulate) {
   (async () => {
     const { SimGpsSource } = require('./simGps');
     const { RedisStore } = require('./redisStore');
+    const { getMarks, deriveGeometry } = require('./course');
     const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
+
+    // getOrCreateMarks otherwise has no way to tell "marks exist" from
+    // "marks exist but are for a different course length" - if you've
+    // explicitly set SIM_COURSE_LENGTH_NM, clear whatever's already
+    // published so the course actually gets recomputed at the new length
+    // instead of silently reusing the old one.
+    if (process.env.SIM_COURSE_LENGTH_NM !== undefined) {
+      try {
+        await redisStore.clearCourseMarks();
+        console.log('[boatAgent] SIM_COURSE_LENGTH_NM set - cleared old course marks so they get recomputed');
+      } catch (err) {
+        console.error('[redis] failed to clear old course marks:', err.message);
+      }
+    }
+
     let marks;
     try {
       marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
     } catch (err) {
       console.error('[redis] failed to resolve course marks, falling back to local SIM_CENTER_LAT/LON:', err.message);
-      marks = { leeward: { lat: config.sim.centerLat, lon: config.sim.centerLon } };
+      marks = getMarks(config.sim.centerLat, config.sim.centerLon);
     }
     console.log(`[boatAgent] course marks (Redis): ${Object.keys(marks).join(', ')}`);
+
+    // Measured from the marks themselves - not assumed from this process's
+    // own SIM_COURSE_LENGTH_NM, which might not agree with whatever course
+    // was actually published (by a different process, possibly at a
+    // different length). Every tacking/rounding/gate decision in
+    // SimGpsSource follows this, not the environment.
+    const geometry = deriveGeometry(marks);
 
     // Start-line slot is by registration order, not the boat's own ID/sail
     // number (config.boatId could be anything, e.g. 51/52 - using it
@@ -137,10 +155,18 @@ if (config.simulate) {
       hz: config.sim.gpsHz,
       startSlot,
       lapCount: config.sim.lapCount,
+      geometry,
     });
     gps.on('nav-pvt', handlePvt);
+    // Diagnostic only - the sim's own internal lap counting, used to decide
+    // when the simulated race ends and to report whether it stayed inside
+    // the gate for tuning purposes. Actual lap *reporting* (to the base
+    // station, and from there to RegattaUp) happens on the base station
+    // side now (see finishLineWatcher.js there) - a real rover has no Redis
+    // access to resolve marks itself, so it can only ever send its raw
+    // position, the same as this sim GPS source does via handlePvt above.
     gps.on('lap', ({ lap, inGate, eastM }) =>
-      console.log(`[boatAgent] completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
+      console.log(`[boatAgent] (sim) completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
     );
     gps.on('finished', ({ laps }) => {
       console.log(`[boatAgent] finished simulated race after ${laps} lap(s)`);

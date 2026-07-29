@@ -1,7 +1,16 @@
 const Redis = require('ioredis');
-const { getMarks: computeMarks } = require('./course');
+const { getMarks: computeMarks, METERS_PER_DEG_LAT } = require('./course');
 
 const MARK_NAMES = ['windward', 'leeward', 'pin', 'committee', 'finish'];
+
+// Flat-earth approximation (same style as course.js's offsetToLatLon) - fine
+// at the meter-scale distances this is used for (deciding whether a fix
+// moved far enough to be worth recording), not meant for long distances.
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const dNorth = (lat2 - lat1) * METERS_PER_DEG_LAT;
+  const dEast = (lon2 - lon1) * METERS_PER_DEG_LAT * Math.cos((lat1 * Math.PI) / 180);
+  return Math.sqrt(dNorth * dNorth + dEast * dEast);
+}
 
 // Records every decoded boat fix into Redis, indexed two ways so both
 // query patterns the race committee needs are a single range read rather
@@ -18,12 +27,59 @@ const MARK_NAMES = ['windward', 'leeward', 'pin', 'committee', 'finish'];
 // than when the base station happened to receive it, so a track reflects
 // when the boat was actually there even if frames arrive slightly late or
 // out of order over the radio.
+//
+// Stored members use short keys (see packFix/unpackFix) rather than the
+// full field names - with a fleet reporting every couple seconds over a
+// multi-hour race, the field names alone (`boatId`, `speedKnots`,
+// `headingDeg`, `gnssFixOk`, `receivedAt`, ...) would otherwise account for
+// close to half of every stored record. `timestamp` isn't stored at all -
+// it's already the sorted-set score, so it's recovered via WITHSCORES on
+// read instead of being duplicated in the payload. Callers still get back
+// full, friendly field names from getBoatTrack/getAllTrack - the shortening
+// is purely a storage-format detail.
+const FIX_KEYS = { b: 'boatId', la: 'lat', lo: 'lon', s: 'speedKnots', h: 'headingDeg', f: 'gnssFixOk', c: 'carrSoln', n: 'numSV', r: 'receivedAt' };
+
+function packFix(decoded, receivedAt) {
+  return JSON.stringify({
+    b: decoded.boatId,
+    la: decoded.lat,
+    lo: decoded.lon,
+    s: decoded.speedKnots,
+    h: decoded.headingDeg,
+    f: decoded.gnssFixOk,
+    c: decoded.carrSoln,
+    n: decoded.numSV,
+    r: receivedAt.getTime(),
+  });
+}
+
+function unpackFix(member, timestamp) {
+  const packed = JSON.parse(member);
+  const fix = { timestamp };
+  for (const [short, full] of Object.entries(FIX_KEYS)) fix[full] = packed[short];
+  fix.receivedAt = new Date(fix.receivedAt).toISOString();
+  return fix;
+}
+
+// ioredis's WITHSCORES reply is a flat [member, score, member, score, ...]
+// array - pair them up and unpack each, recovering the timestamp from its
+// score instead of a stored field (see module comment above).
+function unpackWithScores(withScores) {
+  const fixes = [];
+  for (let i = 0; i < withScores.length; i += 2) {
+    fixes.push(unpackFix(withScores[i], Number(withScores[i + 1])));
+  }
+  return fixes;
+}
+
 class RedisStore {
   // Accepts either a connection URL string (`url`) or an ioredis connection
   // options object (`connection`, e.g. {host, port, username, password,
   // tls}); `url` wins if both are given. See config.js for how these map to
-  // REDIS_URL / REDIS_ENV.
-  constructor({ url, connection }) {
+  // REDIS_URL / REDIS_ENV. `minMovementM` (default 5) is the threshold
+  // recordFix uses to skip writes from a boat that hasn't moved far enough
+  // to be worth recording - see recordFix.
+  constructor({ url, connection, minMovementM = 5 }) {
     // Fixed 3s retry backoff, matching the reconnect cadence used elsewhere
     // in this app (radioLink.js, boatAgent.js's GPS reopen) instead of
     // ioredis's default rapid-fire retry.
@@ -33,34 +89,50 @@ class RedisStore {
     this.ready = this.client.connect().catch((err) => {
       console.error('[redis] connect failed:', err.message);
     });
+    this.minMovementM = minMovementM;
+    // In-memory only (per boatId) - not persisted, so a restarted base
+    // station just records the next fix from each boat unconditionally
+    // (nothing to compare against yet), which is harmless.
+    this.lastRecordedPosition = new Map();
   }
 
+  // Skips the write (SD/console/UDP logging elsewhere are unaffected,
+  // this only governs what lands in Redis) unless this is the first fix
+  // seen for the boat, or it's moved at least minMovementM since the last
+  // fix that WAS recorded - a stopped or barely-drifting boat reporting
+  // every couple seconds would otherwise write a nearly-identical fix over
+  // and over for no benefit.
   async recordFix(decoded, receivedAt) {
     await this.ready;
-    const member = JSON.stringify({ ...decoded, receivedAt: receivedAt.toISOString() });
+    const last = this.lastRecordedPosition.get(decoded.boatId);
+    if (last && distanceMeters(last.lat, last.lon, decoded.lat, decoded.lon) < this.minMovementM) return;
+
+    const member = packFix(decoded, receivedAt);
     const score = decoded.timestamp;
     await Promise.all([
       this.client.zadd(`boat:${decoded.boatId}:track`, score, member),
       this.client.zadd('all:track', score, member),
       this.client.sadd('boats:known', String(decoded.boatId)),
     ]);
+    this.lastRecordedPosition.set(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
   }
 
   // fromMs/toMs are inclusive; omit either for an open-ended range.
   async getBoatTrack(boatId, fromMs, toMs) {
     await this.ready;
-    const members = await this.client.zrangebyscore(
+    const withScores = await this.client.zrangebyscore(
       `boat:${boatId}:track`,
       fromMs ?? '-inf',
-      toMs ?? '+inf'
+      toMs ?? '+inf',
+      'WITHSCORES'
     );
-    return members.map((m) => JSON.parse(m));
+    return unpackWithScores(withScores);
   }
 
   async getAllTrack(fromMs, toMs) {
     await this.ready;
-    const members = await this.client.zrangebyscore('all:track', fromMs ?? '-inf', toMs ?? '+inf');
-    return members.map((m) => JSON.parse(m));
+    const withScores = await this.client.zrangebyscore('all:track', fromMs ?? '-inf', toMs ?? '+inf', 'WITHSCORES');
+    return unpackWithScores(withScores);
   }
 
   async knownBoatIds() {
@@ -108,6 +180,23 @@ class RedisStore {
     const computed = computeMarks(centerLat, centerLon);
     await this.setMarks(computed);
     return computed;
+  }
+
+  // Deletes the five `mark:*` keys, so the next getOrCreateMarks call
+  // recomputes and republishes the course from scratch instead of reusing
+  // whatever's already there - needed any time the course geometry itself
+  // changes (e.g. SIM_COURSE_LENGTH_NM), since getOrCreateMarks otherwise
+  // has no way to tell "marks exist" from "marks exist but are stale".
+  // Leaves boat tracks/start slots untouched (see clearBoatData for those).
+  async clearCourseMarks() {
+    await this.ready;
+    const keys = MARK_NAMES.map((name) => `mark:${name}`);
+    const existingKeys = [];
+    for (const key of keys) {
+      if (await this.client.exists(key)) existingKeys.push(key);
+    }
+    if (existingKeys.length > 0) await this.client.del(...existingKeys);
+    return existingKeys;
   }
 
   // Assigns each boat a 0-based start-line slot by registration order (the
