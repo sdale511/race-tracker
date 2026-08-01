@@ -25,18 +25,16 @@ full-rate logging to microSD as a durable backup.
 
 ## Wiring notes
 
-**Pi Zero 2 W only has one dedicated hardware UART** (the mini-UART is
-generally best avoided since its clock is tied to the core clock and can
-glitch). You have two serial devices to connect (GPS + radio). Realistic
-options:
+The simpleRTK2B LR has its own USB port, which is what the default config
+assumes: GPS over the module's own USB (shows up as `/dev/ttyACM0`), radio
+over a separate USB-to-serial adapter (`/dev/ttyUSB0`) - both off a hub,
+since Pi Zero 2 W only has one USB/OTG port natively.
 
-1. Hardware UART (`/dev/ttyAMA0`, GPIO 14/15) → GPS. Radio → USB-to-serial
-   adapter (shows up as `/dev/ttyUSB0`). **This is what the default config
-   assumes.**
-2. Both via USB-to-serial adapters (uses two USB ports off a hub, since Pi
-   Zero 2 W only has one USB/OTG port natively).
+If you'd rather free up a USB port, GPS can instead go over the Pi's
+dedicated hardware UART (`/dev/ttyAMA0`, GPIO 14/15 - avoid the mini-UART,
+its clock is tied to the core clock and can glitch) with `GPS_PORT=/dev/ttyAMA0`,
+leaving the radio as the only USB-to-serial adapter needed:
 
-Either way:
 ```
 sudo raspi-config   # Interface Options -> Serial Port
                      # "login shell over serial" = No
@@ -113,7 +111,7 @@ Boat (Pi Zero 2 W):
 ```
 cd race-tracker
 npm install
-GPS_PORT=/dev/ttyAMA0 RADIO_PORT=/dev/ttyUSB0 BOAT_ID=1 npm run boat
+GPS_PORT=/dev/ttyACM0 RADIO_PORT=/dev/ttyUSB0 BOAT_ID=1 npm run boat
 ```
 
 Base station (another Pi, or a laptop with a USB radio):
@@ -324,9 +322,15 @@ course was already published.
 
 ## Tuning knobs (env vars)
 
+With this many knobs, `npm run print-config` prints the fully-resolved
+config - every default plus whatever you've actually overridden via
+environment variables or `.env` - so there's one place to check what a
+given `boat`/`base` run will actually use, instead of reading through
+`config.js`'s fallbacks by hand. The Redis password is redacted even here.
+
 | Var | Default | Purpose |
 |---|---|---|
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 38400 | GPS UART |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyACM0` / 38400 | GPS UART (simpleRTK2B LR's own USB port by default — override to `/dev/ttyAMA0` if wired to the Pi's hardware UART instead, see "Wiring notes" above) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
@@ -345,8 +349,9 @@ course was already published.
 ## What still needs real-hardware testing
 
 - Actual achievable baud/range tradeoff for your specific radio model
-- Whether `/dev/ttyAMA0` vs a USB-serial adapter is more reliable for your
-  GPS wiring in practice
+- Whether the Pi's hardware UART (`/dev/ttyAMA0`) is more reliable than the
+  simpleRTK2B LR's own USB port (`/dev/ttyACM0`, the default) for your GPS
+  wiring in practice
 - UBX checksum/frame-sync robustness over a long noisy USB-serial run (the
   parser resyncs on bad frames, but hasn't been stress-tested on real RF
   noise)

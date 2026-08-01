@@ -9,7 +9,8 @@
     "base": "node src/baseStation.js",
     "clear-boats": "node src/clearBoats.js",
     "clear-course": "node src/clearCourse.js",
-    "radio-test": "node src/radioTest.js"
+    "radio-test": "node src/radioTest.js",
+    "print-config": "node src/printConfig.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

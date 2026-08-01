@@ -2,7 +2,7 @@ const path = require('path');
 require('dotenv').config();
 
 // Central configuration. Override any of these with environment variables,
-// e.g. GPS_PORT=/dev/ttyAMA0 BOAT_ID=7 npm run boat
+// e.g. GPS_PORT=/dev/ttyACM0 BOAT_ID=7 npm run boat
 // A git-ignored .env file in the project root is loaded automatically (see
 // dotenv above), so secrets like REDIS_PASSWORD can live there instead of
 // being typed on the command line or hardcoded in this file.
@@ -72,12 +72,15 @@ module.exports = {
   },
 
   // --- GPS (simpleRTK2B LR, ZED-F9P) ---
-  // Wire this UART directly to the Pi. This link is Pi<->GPS only, so
-  // baud/bandwidth here is NOT the constraint (the radio link is) - default
-  // matches the ZED-F9P's factory-default UART1 baud so no baud reconfig
-  // step is needed on the module, just enabling NAV-PVT/disabling NMEA.
+  // Default port is the Pi's USB CDC-ACM device, since the simpleRTK2B LR's
+  // own USB port is what's actually used - not the Pi's hardware UART pins
+  // (override GPS_PORT if you do wire it to GPIO 14/15 instead). This link
+  // is Pi<->GPS only, so baud/bandwidth here is NOT the constraint (the
+  // radio link is) - default matches the ZED-F9P's factory-default UART1
+  // baud so no baud reconfig step is needed on the module, just enabling
+  // NAV-PVT/disabling NMEA.
   gps: {
-    port: process.env.GPS_PORT || '/dev/ttyAMA0',
+    port: process.env.GPS_PORT || '/dev/ttyACM0',
     baud: parseInt(process.env.GPS_BAUD || '38400', 10),
   },
 
@@ -127,12 +130,12 @@ module.exports = {
   },
 
   // --- RegattaUp lap webhook (base station only) ---
-  // Every lap-crossing frame (see protocol.js's lap frame, sent by
-  // boatAgent.js whenever finishLineWatcher.js detects an actual finish
-  // line crossing - real hardware or simulated, doesn't matter) triggers a
-  // POST here so RegattaUp counts the lap. Override the URL to point at a
-  // mock endpoint for testing; set REGATTAUP_WEBHOOK_DISABLED=1 to skip
-  // sending entirely (lap frames are still logged).
+  // Whenever finishLineWatcher.js (running inside baseStation.js) detects
+  // an actual finish line crossing from a boat's position frames - real
+  // hardware or simulated, doesn't matter - this triggers a POST so
+  // RegattaUp counts the lap. Override the URL to point at a mock endpoint
+  // for testing; set REGATTAUP_WEBHOOK_DISABLED=1 to skip sending entirely
+  // (crossings are still detected and logged).
   //
   // Every lap is durably queued (see lapWebhookQueue.js) before the first
   // send attempt and only removed once RegattaUp actually accepts it - a
