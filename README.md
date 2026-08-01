@@ -80,6 +80,33 @@ given power — this is a real-world tuning step you'll need to do on the
 water. **Antenna height matters a lot for going over water at >2mi; get
 both ends as high as practical.**
 
+### Bench-testing the radios
+
+```
+RADIO_TEST_MODE=send   RADIO_PORT=/dev/cu.usbserial-A npm run radio-test
+RADIO_TEST_MODE=listen RADIO_PORT=/dev/cu.usbserial-B npm run radio-test
+```
+
+`src/radioTest.js` exercises the real radio link directly - no GPS, no
+Redis, no simulated anything - using the exact same `RadioLink`/`protocol.js`
+code `boatAgent.js`/`baseStation.js` use in production, so a clean result
+here is a real signal about the actual RF link (framing, checksum
+integrity, range), not just "can bytes get through at all." Run one
+instance per radio: `ls /dev/cu.*` before/after plugging in each one to
+find its device path (on macOS; use whatever your OS calls serial devices).
+`RADIO_BAUD` must match what's actually configured on both radios (see
+"Radio configuration" above) - and for XBee, confirm both share the same
+Network ID (`ATID`) via XCTU first, or the listener will just see nothing.
+
+The sender transmits one frame every `RADIO_TEST_INTERVAL_MS` (default
+500ms) with a sequence number piggybacked on the frame's timestamp field
+(a test-only convention, not a real GPS time). The listener logs each
+received frame and prints a running summary every 10s - received count,
+estimated missed count, and loss %. Start with both radios close together
+to confirm basic connectivity, then physically separate them to find where
+the link actually starts to degrade - that's the number that matters for
+real racing distance.
+
 ## Running
 
 Boat (Pi Zero 2 W):
@@ -301,6 +328,7 @@ course was already published.
 |---|---|---|
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 38400 | GPS UART |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
+| `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio (SD log is always full-rate) — distance-based, not time-based, so a stopped boat doesn't keep re-sending the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |

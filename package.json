@@ -8,7 +8,8 @@
     "boat": "node src/boatAgent.js",
     "base": "node src/baseStation.js",
     "clear-boats": "node src/clearBoats.js",
-    "clear-course": "node src/clearCourse.js"
+    "clear-course": "node src/clearCourse.js",
+    "radio-test": "node src/radioTest.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
