@@ -22,7 +22,13 @@ class SimRadioLink extends EventEmitter {
     if (mode === 'listen') {
       this.socket.on('message', (msg) => {
         const decoded = protocol.decode(msg);
+        // Same 'sync-error' event as RadioLink, for interface consistency -
+        // in practice a whole UDP datagram either arrives intact or not at
+        // all over local/LAN UDP, so this essentially never fires here
+        // (unlike the real radio's byte-stream framing, which can pick up
+        // partial/corrupted frames).
         if (decoded) this.emit('frame', decoded);
+        else this.emit('sync-error');
       });
       this.socket.bind(this.port);
     }

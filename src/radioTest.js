@@ -58,6 +58,7 @@ if (mode === 'send') {
 } else {
   let received = 0;
   let missed = 0;
+  let syncErrors = 0; // bytes that looked like a frame but failed checksum - see radioLink.js
   let lastSeq = null;
   const startedAt = Date.now();
 
@@ -74,11 +75,20 @@ if (mode === 'send') {
     console.log(`[radioTest] received seq=${seq} from boatId=${decoded.boatId} carrSoln=${decoded.carrSoln}${note}`);
   });
 
+  // Distinct from `missed` above: a missed seq means a frame never arrived
+  // at all (dropped over the air), while a sync error means bytes arrived
+  // but got corrupted in transit (bad checksum) - both matter for judging
+  // link quality, but they point at different failure modes.
+  radio.on('sync-error', () => syncErrors++);
+
   setInterval(() => {
     const elapsedS = (Date.now() - startedAt) / 1000;
     const total = received + missed;
     const lossPct = total > 0 ? ((missed / total) * 100).toFixed(1) : '0.0';
-    console.log(`[radioTest] --- ${received} received, ${missed} missed (${lossPct}% loss), ${elapsedS.toFixed(0)}s elapsed ---`);
+    console.log(
+      `[radioTest] --- ${received} received, ${missed} missed (${lossPct}% loss), ` +
+        `${syncErrors} sync errors, ${elapsedS.toFixed(0)}s elapsed ---`
+    );
   }, 10000);
 }
 

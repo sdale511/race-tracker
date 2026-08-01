@@ -66,6 +66,27 @@ function main() {
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 
+  // Passive signal-quality feel, without interrupting the data stream to
+  // query the radio for RSSI: a rising 'sync-error' rate (bytes that arrive
+  // shaped like a frame but fail the checksum, usually mid-frame bit
+  // errors) is a real, standard proxy for a degrading RF link, same idea as
+  // frame-error-rate on WiFi/cellular when true signal strength isn't
+  // available. Logged as a periodic summary rather than per-error, since a
+  // few isolated failures are normal noise - the *rate* over time is what's
+  // actually informative.
+  let framesOk = 0;
+  let syncErrors = 0;
+  radio.on('frame', () => framesOk++);
+  radio.on('sync-error', () => syncErrors++);
+  setInterval(() => {
+    const total = framesOk + syncErrors;
+    if (total === 0) return; // nothing heard at all this interval - not a quality signal, just silence
+    const errorPct = ((syncErrors / total) * 100).toFixed(1);
+    console.log(`[radio] link quality: ${framesOk} ok, ${syncErrors} sync errors (${errorPct}%) in the last 30s`);
+    framesOk = 0;
+    syncErrors = 0;
+  }, 30000);
+
   const logDir = config.logDir;
   fs.mkdirSync(logDir, { recursive: true });
   const csvPath = path.join(logDir, 'base_station_received.csv');

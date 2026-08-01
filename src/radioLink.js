@@ -65,7 +65,13 @@ class RadioLink extends EventEmitter {
         this.emit('frame', decoded);
         this._buf = this._buf.slice(protocol.FRAME_LEN);
       } else {
-        // Bad checksum/false sync match - drop one byte and resync.
+        // Bad checksum/false sync match - drop one byte and resync. Emitted
+        // as its own event (not just silently dropped) since a rising rate
+        // of these is a real, passive signal-quality indicator: a
+        // corrupted-but-still-sync-byte-shaped frame here usually means bit
+        // errors from a degrading RF link, without needing to interrupt the
+        // data stream to query the radio directly for RSSI.
+        this.emit('sync-error');
         this._buf = this._buf.slice(1);
       }
     }
