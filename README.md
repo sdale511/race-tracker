@@ -150,6 +150,25 @@ SIMULATE=1 BOAT_ID=1 npm run boat
 For multiple simulated boats, run more `npm run boat` instances with
 different `BOAT_ID` values pointed at the same base station.
 
+### Simulated GPS with real radio hardware
+
+`SIMULATE_GPS=1` fakes just the GPS track, while using the real radio on
+both ends - useful for bench-testing actual radios (range, packet loss,
+antenna placement) without needing a real GPS fix or being outdoors.
+`SIMULATE=1` implies this too; use `SIMULATE_GPS=1` on its own when you
+specifically want simulated positions over real hardware radios:
+
+```
+# terminal 1 - base station, real radio
+RADIO_PORT=/dev/cu.usbserial-A npm run base
+
+# terminal 2 - boat agent, fake GPS + real radio
+SIMULATE_GPS=1 RADIO_PORT=/dev/cu.usbserial-B BOAT_ID=1 npm run boat
+```
+
+(See "Bench-testing the radios" above for a more focused radio-only test
+that doesn't involve GPS, Redis, or course logic at all.)
+
 CSV logs land in `./race-logs` (relative to the package, regardless of mode)
 unless you override `LOG_DIR`, and the base station's console/CSV/UDP GGA
 output all work exactly as they would with real hardware.

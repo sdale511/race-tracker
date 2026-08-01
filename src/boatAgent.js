@@ -7,16 +7,21 @@ const protocol = require('./protocol');
 const { distanceMeters } = require('./course');
 
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
-if (config.simulate) {
-  console.log('[boatAgent] SIMULATE=1 - using a fake GPS track + UDP-simulated radio (no hardware)');
-  console.log(`[boatAgent] sim radio -> ${config.sim.host}:${config.sim.port}`);
+if (config.simulateGps) {
+  console.log(
+    config.simulate
+      ? '[boatAgent] SIMULATE=1 - using a fake GPS track (no GPS hardware)'
+      : '[boatAgent] SIMULATE_GPS=1 - using a fake GPS track, real radio hardware'
+  );
 } else {
   console.log(`[boatAgent] GPS  ${config.gps.port} @ ${config.gps.baud}`);
-  if (config.radio.enabled) {
-    console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
-  } else {
-    console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
-  }
+}
+if (config.simulate) {
+  console.log(`[boatAgent] sim radio -> ${config.sim.host}:${config.sim.port}`);
+} else if (config.radio.enabled) {
+  console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
+} else {
+  console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
 }
 
 const sdLogger = new SdLogger({ logDir: config.logDir, boatId: config.boatId });
@@ -91,11 +96,14 @@ function openGps() {
   parser.on('nav-pvt', handlePvt);
 }
 
-if (config.simulate) {
+if (config.simulateGps) {
   // Resolve the course from Redis before starting: if another
   // simulator/base station already published marks, race that exact course
   // instead of computing a fresh one from local SIM_CENTER_LAT/LON, so a
-  // whole fleet of simulators agrees on identical mark positions.
+  // whole fleet of simulators agrees on identical mark positions. This runs
+  // for SIMULATE_GPS=1 too, not just full SIMULATE=1 - the GPS source is
+  // fake either way, so it needs the exact same course-resolving setup;
+  // only the radio choice above differs between the two.
   (async () => {
     const { SimGpsSource } = require('./simGps');
     const { RedisStore } = require('./redisStore');

@@ -12,6 +12,14 @@ require('dotenv').config();
 // be run and tested with no hardware attached (see simGps.js, simRadioLink.js).
 const simulate = process.env.SIMULATE === '1' || process.env.SIMULATE === 'true';
 
+// SIMULATE_GPS=1 fakes just the GPS (a simulated race track), while still
+// using the real radio hardware on both ends - useful for bench-testing
+// actual radios (range, packet loss) without needing a real GPS fix or
+// being outdoors. SIMULATE=1 implies this too (full simulation, no
+// hardware at all); this only matters as its own flag when you want
+// simulated GPS with real radio specifically.
+const simulateGps = simulate || process.env.SIMULATE_GPS === '1' || process.env.SIMULATE_GPS === 'true';
+
 // TEST_LAP=1 (npm run base) sends one synthetic lap straight into the lap
 // webhook queue and exits, to check the queue -> RegattaUp path end to end
 // without a real or simulated race in progress. TEST_LAP_BOAT_ID/
@@ -47,6 +55,7 @@ const REDIS_CONNECTIONS = {
 
 module.exports = {
   simulate,
+  simulateGps,
   testLap,
   testLapBoatId,
   testLapNumber,
