@@ -110,12 +110,13 @@ console.log('race-tracker resolved configuration\n');
 for (const section of sections) {
   console.log(section.title);
   const labelWidth = Math.max(...section.rows.map(([label]) => label.length));
-  const valueWidth = Math.max(...section.rows.map(([, value]) => formatValue(value).length));
   for (const [label, value, envVar, inverted] of section.rows) {
     const paddedLabel = label.padEnd(labelWidth);
-    const paddedValue = formatValue(value).padEnd(valueWidth);
     const tag = overrideTag(envVar, inverted);
-    console.log(`  ${paddedLabel}  ${paddedValue}  ${tag}`.trimEnd());
+    // Value is left as-is (not padded to the widest in the section) so a
+    // single long value - a URL, a full path - doesn't force every other
+    // row's tag out to that same column.
+    console.log(`  ${paddedLabel}  ${formatValue(value)}${tag ? '  ' + tag : ''}`);
   }
   console.log('');
 }
