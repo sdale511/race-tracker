@@ -65,18 +65,25 @@ that link.
 
 ## Radio configuration
 
-Pair two radios (boat + base) on the same netid/frequency/baud, in
-transparent-serial mode. `RADIO_BAUD` defaults to 9600 to match the Digi
-XBee SX's factory default, so two out-of-box XBee SX modules need no
-baud reconfiguration - just confirm both share the same Network ID
-(`ATID`, via XCTU), which fresh-from-factory modules already do. If you
-raise the radio's baud for faster frame delivery, or use a different radio
-(e.g. RFD900x/SiK, whose factory default is typically 57600), override
-`RADIO_BAUD` to match whatever you configure on the radios themselves.
-Higher baud = faster frame delivery but shorter range/reliability at a
-given power — this is a real-world tuning step you'll need to do on the
-water. **Antenna height matters a lot for going over water at >2mi; get
-both ends as high as practical.**
+Pair every radio (boat + base) on the same netid/frequency/baud, in
+transparent-serial mode. `RADIO_BAUD` defaults to **115200**, not the
+radio's factory default (9600 for XBee, 57600 for RFD900x/SiK) - at fleet
+sizes beyond a couple boats, the serial link between the base station and
+its own radio becomes the bottleneck (every boat's frames funnel through
+that one port), well below the radio's actual RF capacity. Before running
+with this default, reconfigure **every** radio's serial baud to 115200 via
+XCTU (XBee) or RFD Modem Tools/Mission Planner (RFD900x) - a mismatch
+between this setting and what the radio's actually set to just means the
+port opens but nothing decodes. Also confirm all radios share the same
+Network ID (XBee `ID`, via XCTU).
+
+If you're running only 1-2 boats, the extra baud doesn't buy you much and
+you can leave everything at factory defaults - just set `RADIO_BAUD` to
+match (9600 for XBee, 57600 for RFD900x). Higher baud = faster frame
+delivery but shorter range/reliability at a given power — this is a
+real-world tuning step you'll need to do on the water. **Antenna height
+matters a lot for going over water at >2mi; get both ends as high as
+practical.**
 
 ### Bench-testing the radios
 
@@ -350,7 +357,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | Var | Default | Purpose |
 |---|---|---|
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyACM0` / 38400 | GPS UART (simpleRTK2B LR's own USB port by default — override to `/dev/ttyAMA0` if wired to the Pi's hardware UART instead, see "Wiring notes" above) |
-| `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 9600 | Telemetry radio UART |
+| `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |

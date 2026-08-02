@@ -9,7 +9,7 @@ WorkingDirectory=/home/pi/race-tracker
 Environment=GPS_PORT=/dev/ttyACM0
 Environment=GPS_BAUD=38400
 Environment=RADIO_PORT=/dev/ttyUSB0
-Environment=RADIO_BAUD=9600
+Environment=RADIO_BAUD=115200
 Environment=BOAT_ID=1
 Environment=TX_DISTANCE_M=1
 Environment=LOG_DIR=/home/pi/race-logs

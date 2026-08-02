@@ -93,18 +93,22 @@ module.exports = {
     baud: parseInt(process.env.GPS_BAUD || '38400', 10),
   },
 
-  // --- Telemetry radio (transparent-serial style, e.g. Digi XBee SX) ---
+  // --- Telemetry radio (transparent-serial style, e.g. Digi XBee-PRO S3B) ---
   // Whatever bytes you write to this port are transmitted over the air and
   // appear byte-for-byte on the matching radio at the base station. Default
-  // matches the XBee SX's factory-default baud (9600), so no radio-side
-  // reconfig is needed out of the box. If you use an RFD900x/SiK radio
-  // instead, override RADIO_BAUD - their factory default is typically 57600.
+  // is 115200, NOT the radio's factory default (9600 for XBee, 57600 for
+  // RFD900x/SiK) - at fleet sizes beyond a couple boats, the serial link to
+  // the base station's own radio is the actual bottleneck (all boats' frames
+  // funnel through that one port), well below the radio's real RF capacity.
+  // Every radio (base + every boat) must be reconfigured via XCTU/RFD Modem
+  // Tools to actually run at this baud before you change this value to
+  // match - a mismatch here just means the port opens but nothing decodes.
   radio: {
     // NO_RADIO=1 skips opening the radio port entirely (e.g. bench-testing
     // GPS alone, no radio hardware attached) - fixes still log to SD.
     enabled: process.env.NO_RADIO !== '1' && process.env.NO_RADIO !== 'true',
     port: process.env.RADIO_PORT || '/dev/ttyUSB0',
-    baud: parseInt(process.env.RADIO_BAUD || '9600', 10),
+    baud: parseInt(process.env.RADIO_BAUD || '115200', 10),
   },
 
   // --- Identity & timing ---
