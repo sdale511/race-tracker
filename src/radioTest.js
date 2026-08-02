@@ -20,9 +20,10 @@ const protocol = require('./protocol');
 // first - this test can't get through if they're not paired.
 //
 // The sequence number is piggybacked on the frame's own timestamp field
-// (seq*1000 encodes/decodes cleanly through protocol.js's existing
-// ms->seconds conversion) rather than needing any protocol.js changes -
-// this is a test-only convention, not a real GPS timestamp.
+// (seq*1000 always lands on a whole second with zero ms remainder, so it
+// round-trips cleanly through protocol.js's seconds+ms split) rather than
+// needing any protocol.js changes - this is a test-only convention, not a
+// real GPS timestamp.
 
 const mode = process.env.RADIO_TEST_MODE;
 if (mode !== 'send' && mode !== 'listen') {

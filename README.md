@@ -18,7 +18,7 @@ full-rate logging to microSD as a durable backup.
   no NMEA needed.
 - **Radio**: assumed to be a transparent-serial telemetry radio (RFD900x,
   SiK, etc). Bytes written to the boat-side UART come out the base-side UART.
-  A compact 21-byte binary frame (`src/protocol.js`) is used to minimize
+  A compact 23-byte binary frame (`src/protocol.js`) is used to minimize
   airtime.
 - **SD log**: every GPS fix is logged to CSV regardless of radio status, so a
   dropped radio link never loses data — only live tracking is affected.
@@ -142,7 +142,7 @@ attached. In this mode:
   randomized leg lengths so no two laps look the same - in place of the real
   UBX-NAV-PVT parser.
 - `src/simRadioLink.js` replaces the serial radio link with a UDP socket
-  carrying the exact same 21-byte frames (`src/protocol.js`), so the real
+  carrying the exact same 23-byte frames (`src/protocol.js`), so the real
   encode/decode/checksum path is still exercised end to end — just without
   serial ports.
 
@@ -210,7 +210,7 @@ build that adapter once you know the target.
 
 Lap detection lives entirely on the base station, not the boat: a real
 rover has no Redis access to resolve course marks itself, so it only ever
-sends its raw position (the regular 21-byte position frame, unchanged) -
+sends its raw position (the regular 23-byte position frame, unchanged) -
 `src/finishLineWatcher.js`, running inside `baseStation.js`, watches every
 incoming fix - real hardware or simulated, it makes no difference - against
 the committee/finish marks published in Redis, and detects a lap the same

@@ -193,14 +193,14 @@ function main() {
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
     const watcher = watcherFor(decoded.boatId);
-    const crossing = watcher && watcher.check(decoded.lat, decoded.lon);
+    const crossing = watcher && watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
     if (crossing) {
       console.log(`[baseStation] boat=${decoded.boatId} crossed the finish line - lap ${crossing.lap}`);
       if (config.regattaup.enabled) {
         const lap = {
           boatId: decoded.boatId,
           lap: crossing.lap,
-          rtcTime: decoded.timestamp * 1000, // ms -> microseconds
+          rtcTime: crossing.crossingTime * 1000, // ms -> microseconds
           strength: decoded.carrSoln,
           receivedAt: new Date().toISOString(),
         };

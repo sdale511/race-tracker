@@ -61,17 +61,19 @@ class FinishLineWatcher {
     this.upwindRef = { x: this.committee.x - v.y, y: this.committee.y + v.x };
 
     this.prevPos = null;
+    this.prevTimestamp = null;
     this.lapCount = 0;
   }
 
-  // Call with every new fix's lat/lon, in order. Returns { lap } if this
-  // fix completes a lap-counting crossing: through the gate specifically
-  // (not just anywhere on the infinite committee-finish line), and only
-  // when heading upwind (committee on the left/port side, finish on the
-  // right/starboard side, matching the standard convention) - a crossing
-  // the other way (or one outside the gate) doesn't count. The very first
-  // call never reports a lap (nothing to compare against yet).
-  check(lat, lon) {
+  // Call with every new fix's lat/lon/timestamp (ms), in order. Returns
+  // { lap, crossingTime } if this fix completes a lap-counting crossing:
+  // through the gate specifically (not just anywhere on the infinite
+  // committee-finish line), and only when heading upwind (committee on the
+  // left/port side, finish on the right/starboard side, matching the
+  // standard convention) - a crossing the other way (or one outside the
+  // gate) doesn't count. The very first call never reports a lap (nothing
+  // to compare against yet).
+  check(lat, lon, timestamp) {
     const curPos = this._toXY(lat, lon);
     let result = null;
     if (
@@ -80,9 +82,20 @@ class FinishLineWatcher {
       sideOf(this.committee, this.finish, curPos) === sideOf(this.committee, this.finish, this.upwindRef)
     ) {
       this.lapCount++;
-      result = { lap: this.lapCount };
+      // Interpolate the actual crossing instant between the two bracketing
+      // fixes, instead of reporting the later fix's own timestamp (which is
+      // always somewhat late - the boat was already across the line by the
+      // time that fix was taken). d1/d2 are the same signed cross-products
+      // segmentsIntersect used to detect the crossing (opposite signs is
+      // exactly what "crossed" means), so t is guaranteed to land in (0,1).
+      const d1 = cross(this.committee, this.finish, this.prevPos);
+      const d2 = cross(this.committee, this.finish, curPos);
+      const t = d1 / (d1 - d2);
+      const crossingTime = this.prevTimestamp + t * (timestamp - this.prevTimestamp);
+      result = { lap: this.lapCount, crossingTime };
     }
     this.prevPos = curPos;
+    this.prevTimestamp = timestamp;
     return result;
   }
 }
