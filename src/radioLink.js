@@ -47,23 +47,42 @@ class RadioLink extends EventEmitter {
     return true;
   }
 
-  // Used on the base station side: scans incoming bytes for valid frames.
+  // Two frame types share this one byte stream (position frames, boat->base;
+  // mark broadcasts, base->boats) - each with its own sync byte and length,
+  // since a single radio link hears everything broadcast on the network,
+  // not just frames addressed to "me".
+  static FRAME_TYPES = [
+    { sync: protocol.SYNC, len: protocol.FRAME_LEN, decode: protocol.decode, event: 'frame' },
+    { sync: protocol.MARKS_SYNC, len: protocol.MARKS_FRAME_LEN, decode: protocol.decodeMarks, event: 'marks' },
+  ];
+
+  // Used on both ends: scans incoming bytes for valid frames of either type.
   _onData(chunk) {
     this._buf = Buffer.concat([this._buf, chunk]);
-    while (this._buf.length >= protocol.FRAME_LEN) {
-      const syncIdx = this._buf.indexOf(protocol.SYNC);
+    while (this._buf.length > 0) {
+      // Whichever known sync byte appears earliest decides which frame type
+      // we're expecting next.
+      let syncIdx = -1;
+      let frameType = null;
+      for (const type of RadioLink.FRAME_TYPES) {
+        const idx = this._buf.indexOf(type.sync);
+        if (idx !== -1 && (syncIdx === -1 || idx < syncIdx)) {
+          syncIdx = idx;
+          frameType = type;
+        }
+      }
       if (syncIdx === -1) {
         this._buf = Buffer.alloc(0);
         break;
       }
       if (syncIdx > 0) this._buf = this._buf.slice(syncIdx);
-      if (this._buf.length < protocol.FRAME_LEN) break;
+      if (this._buf.length < frameType.len) break; // wait for the rest of this frame
 
-      const candidate = this._buf.slice(0, protocol.FRAME_LEN);
-      const decoded = protocol.decode(candidate);
+      const candidate = this._buf.slice(0, frameType.len);
+      const decoded = frameType.decode(candidate);
       if (decoded) {
-        this.emit('frame', decoded);
-        this._buf = this._buf.slice(protocol.FRAME_LEN);
+        this.emit(frameType.event, decoded);
+        this._buf = this._buf.slice(frameType.len);
       } else {
         // Bad checksum/false sync match - drop one byte and resync. Emitted
         // as its own event (not just silently dropped) since a rising rate

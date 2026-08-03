@@ -1,4 +1,7 @@
 const { SerialPort } = require('serialport');
+const { EventEmitter } = require('events');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
 const { UbxParser } = require('./ubxParser');
 const { RadioLink } = require('./radioLink');
@@ -42,8 +45,34 @@ if (config.simulate) {
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 } else {
-  radio = { send: () => false };
+  radio = new EventEmitter(); // NO_RADIO=1 - never emits 'frame'/'marks', other outputs still testable
+  radio.send = () => false;
 }
+
+// Course marks (windward/leeward/pin/committee/finish), as last broadcast by
+// the base station - a real rover has no Redis access of its own (see
+// baseStation.js's mark-broadcast comment), so this is the only way it ever
+// learns the course. Kept in memory for anything on the boat that wants it
+// this run, and persisted to disk so a reboot/restart still has a last-known
+// course immediately, without waiting for the next broadcast.
+const marksFilePath = path.join(config.logDir, 'course_marks.json');
+let currentMarks = null;
+try {
+  currentMarks = JSON.parse(fs.readFileSync(marksFilePath, 'utf8'));
+  console.log(`[boatAgent] loaded last-known course marks from disk: ${Object.keys(currentMarks).join(', ')}`);
+} catch (err) {
+  if (err.code !== 'ENOENT') console.error('[boatAgent] failed to read persisted course marks:', err.message);
+}
+
+radio.on('marks', (marks) => {
+  currentMarks = marks;
+  try {
+    fs.writeFileSync(marksFilePath, JSON.stringify(marks));
+  } catch (err) {
+    console.error('[boatAgent] failed to persist course marks to disk:', err.message);
+  }
+  console.log(`[boatAgent] received course marks from base station: ${Object.keys(marks).join(', ')}`);
+});
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastPvt = null;

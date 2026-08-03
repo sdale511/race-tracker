@@ -121,6 +121,14 @@ module.exports = {
   // airtime/bandwidth over long range.
   txDistanceM: parseFloat(process.env.TX_DISTANCE_M || '1'),
 
+  // How often the base station re-broadcasts the course marks to every boat
+  // (base station only) - marks essentially never change mid-race, so this
+  // is just a slow heartbeat for boats that missed an earlier broadcast or
+  // powered on late, not a tight sync loop. Broadcast is best-effort (no
+  // ACK/retry - see "Radio configuration" in the README), so a boat that
+  // misses one still gets the next one a minute later.
+  marksBroadcastIntervalMs: parseInt(process.env.MARKS_BROADCAST_INTERVAL_MS || '60000', 10),
+
   // --- Local logging (microSD) ---
   logDir,
 

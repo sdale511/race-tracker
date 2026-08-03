@@ -346,6 +346,27 @@ env var makes `boat`/`base` clear the old marks automatically on startup, so
 the course actually changes length instead of silently reusing whatever
 course was already published.
 
+### Broadcasting marks to the rovers
+
+A real rover has no Redis access of its own (see `finishLineWatcher.js`'s
+module comment), so the base station periodically radios the current course
+marks out to every boat, using a second frame type alongside the regular
+position frame (`protocol.js`'s `encodeMarks`/`decodeMarks`, its own sync
+byte since it isn't the same length). Every boat's `radioLink.js` byte
+stream already recognizes both frame types, so nothing else needs wiring up.
+
+Each boat keeps the latest marks in memory and also writes them to
+`<LOG_DIR>/course_marks.json`, so a reboot or restart has a last-known
+course immediately on the next boot, without waiting for the next
+broadcast. This is best-effort, not a guaranteed sync - if a boat misses one
+broadcast (radio dropout, powered on late), it just gets the next one at the
+next interval; there's no ack/retry for it, since marks essentially never
+change mid-race and the persisted copy already covers the "just missed it"
+case.
+
+`MARKS_BROADCAST_INTERVAL_MS` (default 60000) controls how often the base
+re-sends it - see "Tuning knobs" below.
+
 ## Tuning knobs (env vars)
 
 With this many knobs, `npm run print-config` prints the fully-resolved
@@ -362,6 +383,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio (SD log is always full-rate) — distance-based, not time-based, so a stopped boat doesn't keep re-sending the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
+| `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 | `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Redis track storage" above |
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment |

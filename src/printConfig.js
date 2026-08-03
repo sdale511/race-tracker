@@ -55,6 +55,7 @@ const sections = [
     rows: [
       ['boatId', config.boatId, 'BOAT_ID'],
       ['txDistanceM', config.txDistanceM, 'TX_DISTANCE_M'],
+      ['marksBroadcastIntervalMs', config.marksBroadcastIntervalMs, 'MARKS_BROADCAST_INTERVAL_MS'],
     ],
   },
   {

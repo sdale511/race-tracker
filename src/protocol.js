@@ -17,6 +17,8 @@
 //   [21]    reserved         uint8  (e.g. battery %, spare)
 //   [22]    checksum         uint8  (sum of bytes 1..21 mod 256)
 
+const { MARK_NAMES } = require('./course');
+
 const SYNC = 0xaa;
 const FRAME_LEN = 23;
 
@@ -72,4 +74,54 @@ function decode(buf) {
   };
 }
 
-module.exports = { encode, decode, FRAME_LEN, SYNC };
+// Second frame type: base station -> all boats, broadcasting the current
+// course marks (see redisStore.js's mark:* keys) so a rover can know the
+// course without ever needing its own Redis access - it just remembers
+// whatever the base last broadcast (see boatAgent.js's on-disk persistence).
+// Given its own sync byte since it isn't the same length as the position
+// frame, so a byte-stream scanner (radioLink.js) can tell them apart before
+// it knows how many bytes to consume.
+//
+// Layout (all little-endian), marks in MARK_NAMES order:
+//   [0]  sync byte   0xBB
+//   ...  5x { lat*1e7 int32, lon*1e7 int32 }  (40 bytes total)
+//   [41] checksum    uint8  (sum of bytes 1..40 mod 256)
+
+const MARKS_SYNC = 0xbb;
+const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 1;
+
+function encodeMarks(marks) {
+  const buf = Buffer.alloc(MARKS_FRAME_LEN);
+  buf.writeUInt8(MARKS_SYNC, 0);
+  let offset = 1;
+  for (const name of MARK_NAMES) {
+    buf.writeInt32LE(Math.round(marks[name].lat * 1e7), offset);
+    buf.writeInt32LE(Math.round(marks[name].lon * 1e7), offset + 4);
+    offset += 8;
+  }
+
+  let sum = 0;
+  for (let i = 1; i < MARKS_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, MARKS_FRAME_LEN - 1);
+
+  return buf;
+}
+
+// Returns { windward: {lat,lon}, ... }, or null if the buffer isn't a valid marks frame.
+function decodeMarks(buf) {
+  if (buf.length !== MARKS_FRAME_LEN || buf[0] !== MARKS_SYNC) return null;
+
+  let sum = 0;
+  for (let i = 1; i < MARKS_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[MARKS_FRAME_LEN - 1]) return null;
+
+  const marks = {};
+  let offset = 1;
+  for (const name of MARK_NAMES) {
+    marks[name] = { lat: buf.readInt32LE(offset) / 1e7, lon: buf.readInt32LE(offset + 4) / 1e7 };
+    offset += 8;
+  }
+  return marks;
+}
+
+module.exports = { encode, decode, FRAME_LEN, SYNC, encodeMarks, decodeMarks, MARKS_FRAME_LEN, MARKS_SYNC };

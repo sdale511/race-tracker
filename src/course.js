@@ -20,6 +20,11 @@ const WIND_FROM_DEG = 0; // wind blows from true north, down the course axis
 
 const FEET_TO_M = 0.3048;
 
+// Canonical mark list/order - shared by redisStore.js (Redis key names),
+// protocol.js (the base's mark-broadcast radio frame), and getMarks() below,
+// so there's exactly one place that says what marks exist and in what order.
+const MARK_NAMES = ['windward', 'leeward', 'pin', 'committee', 'finish'];
+
 // The start/finish complex sits halfway between the windward/leeward marks,
 // with the committee boat in the middle of two separate sides (perpendicular
 // to the course axis, east-west) - the usual reason a committee runs two
@@ -130,6 +135,7 @@ module.exports = {
   START_SIDE_LENGTH_M,
   FINISH_SIDE_LENGTH_M,
   BOAT_START_SPACING_M,
+  MARK_NAMES,
   offsetToLatLon,
   distanceMeters,
   getMarks,

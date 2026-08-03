@@ -1,7 +1,5 @@
 const Redis = require('ioredis');
-const { getMarks: computeMarks, METERS_PER_DEG_LAT } = require('./course');
-
-const MARK_NAMES = ['windward', 'leeward', 'pin', 'committee', 'finish'];
+const { getMarks: computeMarks, METERS_PER_DEG_LAT, MARK_NAMES } = require('./course');
 
 // Flat-earth approximation (same style as course.js's offsetToLatLon) - fine
 // at the meter-scale distances this is used for (deciding whether a fix

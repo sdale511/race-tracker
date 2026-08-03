@@ -1,4 +1,5 @@
 const config = require('./config');
+const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { FinishLineWatcher } = require('./finishLineWatcher');
@@ -150,6 +151,17 @@ function main() {
       }
     }
   })();
+
+  // Periodically re-broadcasts the current marks to every boat, so a rover
+  // (no Redis access of its own - see boatAgent.js) always has a recent copy
+  // without needing to poll for it. A no-op (radio.send just returns false)
+  // until raceMarks actually resolves above, and harmless in SIMULATE mode
+  // (SimRadioLink's 'listen'-mode send() also just returns false).
+  setInterval(() => {
+    if (!raceMarks) return;
+    radio.send(protocol.encodeMarks(raceMarks));
+    console.log(`[baseStation] broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`);
+  }, config.marksBroadcastIntervalMs);
 
   // One FinishLineWatcher per boat (each needs its own independent
   // crossing-state and lap counter), built lazily the first time a given
