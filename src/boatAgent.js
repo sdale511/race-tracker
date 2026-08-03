@@ -27,7 +27,7 @@ if (config.simulate) {
   console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
 }
 
-const sdLogger = new SdLogger({ logDir: config.logDir, boatId: config.boatId });
+const sdLogger = new SdLogger({ logDir: config.logDir, boatId: config.boatId, retentionDays: config.logRetentionDays });
 
 let radio;
 if (config.simulate) {
@@ -71,7 +71,8 @@ radio.on('marks', (marks) => {
   } catch (err) {
     console.error('[boatAgent] failed to persist course marks to disk:', err.message);
   }
-  console.log(`[boatAgent] received course marks from base station: ${Object.keys(marks).join(', ')}`);
+  console.log(`[boatAgent] ${new Date().toISOString()} received course marks from base station: ${Object.keys(marks).join(', ')}`);
+  startGpsSimIfReady();
 });
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
@@ -125,93 +126,83 @@ function openGps() {
   parser.on('nav-pvt', handlePvt);
 }
 
+// True once the simulated GPS has actually started, so a mark broadcast
+// arriving mid-race (the periodic re-broadcast, not just the first one)
+// doesn't try to start a second one.
+let gpsSimStarted = false;
+
+// Starts the simulated GPS as soon as marks are actually known - either
+// immediately (a persisted copy was already on disk from a previous run) or
+// whenever the first broadcast arrives (see radio.on('marks', ...) above).
+// No Redis access here at all: a real rover can't reach Redis, so the sim
+// GPS source has to wait on exactly the same information a real rover would
+// have to wait on - whatever the base station has actually radioed out.
+function startGpsSimIfReady() {
+  if (!config.simulateGps || gpsSimStarted || !currentMarks) return;
+  gpsSimStarted = true;
+
+  const { SimGpsSource } = require('./simGps');
+  const { deriveGeometry } = require('./course');
+
+  // Measured from the marks themselves, not assumed from this process's own
+  // SIM_COURSE_LENGTH_NM - the base station is the one authority on course
+  // length now (it owns Redis and does the actual clear-and-recompute when
+  // that env var changes); this boat just races whatever geometry the marks
+  // it received actually describe.
+  const geometry = deriveGeometry(currentMarks);
+
+  // No Redis-assigned sequential start slot anymore (a real rover has no
+  // Redis access, and registration-order slot assignment lived there) -
+  // fall back to the boat's own ID. getStartPosition's existing modulo
+  // wraparound still keeps every boat on the real line rather than
+  // overflowing past it, but boats no longer get spread out in the
+  // registration order they actually joined in - a real per-boat start
+  // slot would need the base to assign and broadcast one, which isn't
+  // implemented.
+  const startSlot = config.boatId;
+
+  console.log(`[boatAgent] starting simulated GPS, course marks: ${Object.keys(currentMarks).join(', ')}, start slot: ${startSlot}`);
+
+  // The leeward mark *is* the course's center/reference point by
+  // construction (course.js), so it's exactly what SimGpsSource needs.
+  const gps = new SimGpsSource({
+    centerLat: currentMarks.leeward.lat,
+    centerLon: currentMarks.leeward.lon,
+    upwindSpeedKn: config.sim.upwindSpeedKn,
+    downwindSpeedKn: config.sim.downwindSpeedKn,
+    hz: config.sim.gpsHz,
+    startSlot,
+    lapCount: config.sim.lapCount,
+    geometry,
+  });
+  gps.on('nav-pvt', handlePvt);
+  // Diagnostic only - the sim's own internal lap counting, used to decide
+  // when the simulated race ends and to report whether it stayed inside
+  // the gate for tuning purposes. Actual lap *reporting* (to the base
+  // station, and from there to RegattaUp) happens on the base station
+  // side now (see finishLineWatcher.js there) - a real rover has no Redis
+  // access to resolve marks itself, so it can only ever send its raw
+  // position, the same as this sim GPS source does via handlePvt above.
+  gps.on('lap', ({ lap, inGate, eastM }) =>
+    console.log(`[boatAgent] (sim) completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
+  );
+  gps.on('finished', ({ laps }) => {
+    console.log(`[boatAgent] finished simulated race after ${laps} lap(s)`);
+    // Brief delay so the final fix's async SD-log write has a chance to
+    // flush before the process actually exits.
+    setTimeout(() => process.exit(0), 200);
+  });
+}
+
 if (config.simulateGps) {
-  // Resolve the course from Redis before starting: if another
-  // simulator/base station already published marks, race that exact course
-  // instead of computing a fresh one from local SIM_CENTER_LAT/LON, so a
-  // whole fleet of simulators agrees on identical mark positions. This runs
-  // for SIMULATE_GPS=1 too, not just full SIMULATE=1 - the GPS source is
-  // fake either way, so it needs the exact same course-resolving setup;
-  // only the radio choice above differs between the two.
-  (async () => {
-    const { SimGpsSource } = require('./simGps');
-    const { RedisStore } = require('./redisStore');
-    const { getMarks, deriveGeometry } = require('./course');
-    const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
-
-    // getOrCreateMarks otherwise has no way to tell "marks exist" from
-    // "marks exist but are for a different course length" - if you've
-    // explicitly set SIM_COURSE_LENGTH_NM, clear whatever's already
-    // published so the course actually gets recomputed at the new length
-    // instead of silently reusing the old one.
-    if (process.env.SIM_COURSE_LENGTH_NM !== undefined) {
-      try {
-        await redisStore.clearCourseMarks();
-        console.log('[boatAgent] SIM_COURSE_LENGTH_NM set - cleared old course marks so they get recomputed');
-      } catch (err) {
-        console.error('[redis] failed to clear old course marks:', err.message);
-      }
-    }
-
-    let marks;
-    try {
-      marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
-    } catch (err) {
-      console.error('[redis] failed to resolve course marks, falling back to local SIM_CENTER_LAT/LON:', err.message);
-      marks = getMarks(config.sim.centerLat, config.sim.centerLon);
-    }
-    console.log(`[boatAgent] course marks (Redis): ${Object.keys(marks).join(', ')}`);
-
-    // Measured from the marks themselves - not assumed from this process's
-    // own SIM_COURSE_LENGTH_NM, which might not agree with whatever course
-    // was actually published (by a different process, possibly at a
-    // different length). Every tacking/rounding/gate decision in
-    // SimGpsSource follows this, not the environment.
-    const geometry = deriveGeometry(marks);
-
-    // Start-line slot is by registration order, not the boat's own ID/sail
-    // number (config.boatId could be anything, e.g. 51/52 - using it
-    // directly would place a boat however far off the line that number
-    // implies, which is exactly the bug this fixes).
-    let startSlot;
-    try {
-      startSlot = await redisStore.getOrAssignStartSlot(config.boatId);
-    } catch (err) {
-      console.error('[redis] failed to assign a start slot, defaulting to slot 0:', err.message);
-      startSlot = 0;
-    }
-    console.log(`[boatAgent] start slot (Redis): ${startSlot}`);
-
-    // The leeward mark *is* the course's center/reference point by
-    // construction (course.js), so it's exactly what SimGpsSource needs.
-    const gps = new SimGpsSource({
-      centerLat: marks.leeward.lat,
-      centerLon: marks.leeward.lon,
-      upwindSpeedKn: config.sim.upwindSpeedKn,
-      downwindSpeedKn: config.sim.downwindSpeedKn,
-      hz: config.sim.gpsHz,
-      startSlot,
-      lapCount: config.sim.lapCount,
-      geometry,
-    });
-    gps.on('nav-pvt', handlePvt);
-    // Diagnostic only - the sim's own internal lap counting, used to decide
-    // when the simulated race ends and to report whether it stayed inside
-    // the gate for tuning purposes. Actual lap *reporting* (to the base
-    // station, and from there to RegattaUp) happens on the base station
-    // side now (see finishLineWatcher.js there) - a real rover has no Redis
-    // access to resolve marks itself, so it can only ever send its raw
-    // position, the same as this sim GPS source does via handlePvt above.
-    gps.on('lap', ({ lap, inGate, eastM }) =>
-      console.log(`[boatAgent] (sim) completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
+  if (currentMarks) {
+    startGpsSimIfReady();
+  } else {
+    console.log(
+      '[boatAgent] SIMULATE_GPS - no course marks yet, waiting for a broadcast from the base station ' +
+        '(NO_RADIO=1 has no radio to receive one on, so this would wait forever)'
     );
-    gps.on('finished', ({ laps }) => {
-      console.log(`[boatAgent] finished simulated race after ${laps} lap(s)`);
-      // Brief delay so the final fix's async SD-log write has a chance to
-      // flush before the process actually exits.
-      setTimeout(() => process.exit(0), 200);
-    });
-  })();
+  }
 } else {
   openGps();
 }

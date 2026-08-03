@@ -60,7 +60,10 @@ const sections = [
   },
   {
     title: 'Local logging',
-    rows: [['logDir', config.logDir, 'LOG_DIR']],
+    rows: [
+      ['logDir', config.logDir, 'LOG_DIR'],
+      ['logRetentionDays', config.logRetentionDays, 'LOG_RETENTION_DAYS'],
+    ],
   },
   {
     title: 'Redis (base station only)',

@@ -176,6 +176,15 @@ SIMULATE_GPS=1 RADIO_PORT=/dev/cu.usbserial-B BOAT_ID=1 npm run boat
 (See "Bench-testing the radios" above for a more focused radio-only test
 that doesn't involve GPS, Redis, or course logic at all.)
 
+The boat has no Redis access at all (see "Broadcasting marks to the
+rovers" above) - its simulated GPS won't start until the base actually
+broadcasts marks to it, which means the base needs marks to broadcast in
+the first place. With real radio hardware and no `SIMULATE=1` on the base,
+that means Redis needs marks already published (by a real race operator,
+or an earlier `SIMULATE=1` session) before this will do anything; the base
+station's own real-hardware path only reads marks, it won't invent a
+course (see "Connecting to your race committee software" below).
+
 CSV logs land in `./race-logs` (relative to the package, regardless of mode)
 unless you override `LOG_DIR`, and the base station's console/CSV/UDP GGA
 output all work exactly as they would with real hardware.
@@ -327,8 +336,9 @@ Deletes every boat-related key (`boat:<id>:track`, `all:track`,
 `boats:known`, and start-slot assignments) so a fresh fleet can race the
 same course without stale boats/tracks left over from earlier runs. The
 course marks are left untouched. Respects `REDIS_ENV`/`REDIS_URL` the same
-way `boat`/`base` do, so point it at whichever Redis you actually want
-cleared.
+way `base` does (`boat` doesn't touch Redis at all - see "Broadcasting
+marks to the rovers" above), so point it at whichever Redis you actually
+want cleared.
 
 ### Changing the course
 
@@ -367,6 +377,34 @@ case.
 `MARKS_BROADCAST_INTERVAL_MS` (default 60000) controls how often the base
 re-sends it - see "Tuning knobs" below.
 
+This also works in `SIMULATE=1` mode, no real radios needed to test it:
+`simRadioLink.js`'s base-side radio remembers every boat address it's heard
+a position frame from, and broadcasts to all of them - the UDP stand-in for
+a real radio's broadcast reaching every other radio on the network. A boat
+needs to have sent at least one position frame before it's a known
+broadcast target; set `MARKS_BROADCAST_INTERVAL_MS` low (e.g. `2000`) when
+testing so you don't need to wait a full minute to see it happen.
+
+### Log rotation
+
+CSV logs (the boat's per-session SD card log, and the base station's
+received-fix log) are pruned automatically: anything in `LOG_DIR` older
+than `LOG_RETENTION_DAYS` (default 7) gets deleted, checked at startup and,
+for the base station, again on every write (so a laptop left running for a
+multi-day regatta still rotates at midnight instead of growing one file
+forever). See `src/logRotation.js`.
+
+The boat already gets a new file per session (`boat<id>_<timestamp>.csv`),
+so pruning just deletes whole old-session files. The base station's file is
+named per day (`base_station_received_<date>.csv`) specifically so the same
+by-age pruning applies to it too, instead of one file growing without bound
+across an entire season. Neither ever prunes rows *within* a file that's
+still being actively written, only whole files once they age out.
+
+The lap webhook retry queue (`lapWebhookQueue.js`'s sqlite file) isn't
+touched by this - it already self-cleans on successful delivery, and isn't
+a rotating log in the same sense.
+
 ## Tuning knobs (env vars)
 
 With this many knobs, `npm run print-config` prints the fully-resolved
@@ -385,6 +423,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio (SD log is always full-rate) — distance-based, not time-based, so a stopped boat doesn't keep re-sending the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
+| `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
 | `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Redis track storage" above |
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment |
 | `REDIS_URL` | unset | Base station only — overrides `REDIS_ENV` entirely with a full connection string, for ad-hoc targets |

@@ -131,6 +131,11 @@ module.exports = {
 
   // --- Local logging (microSD) ---
   logDir,
+  // CSV logs (boat SD card, base station's received-fix log) older than
+  // this many days are deleted automatically - see logRotation.js. Keeps
+  // an always-running base station laptop or a boat's microSD card from
+  // filling up over a season of races instead of just one.
+  logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
 
   // --- Redis (base station only) ---
   // Where baseStation.js records every decoded fix, so tracks can be queried

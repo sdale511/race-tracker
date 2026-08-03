@@ -47,6 +47,16 @@ class RadioLink extends EventEmitter {
     return true;
   }
 
+  // A real radio's transmission already reaches every other radio on the
+  // network - that's what "broadcast" means at this layer (see the class
+  // comment) - so this is just send() under another name. It exists so
+  // call sites (e.g. baseStation.js's mark broadcast) can use the same
+  // method name on either a real RadioLink or a SimRadioLink, where send()
+  // and broadcast() are genuinely different operations (see simRadioLink.js).
+  broadcast(buf) {
+    return this.send(buf);
+  }
+
   // Two frame types share this one byte stream (position frames, boat->base;
   // mark broadcasts, base->boats) - each with its own sync byte and length,
   // since a single radio link hears everything broadcast on the network,

@@ -4,6 +4,7 @@ const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
+const { pruneOldLogs } = require('./logRotation');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -62,7 +63,9 @@ function main() {
   } else if (config.radio.enabled) {
     radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
   } else {
-    radio = new EventEmitter(); // NO_RADIO=1 - never emits 'frame', other outputs still testable
+    radio = new EventEmitter(); // NO_RADIO=1 - never emits 'frame'/'marks', other outputs still testable
+    radio.send = () => false;
+    radio.broadcast = () => false;
   }
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
@@ -90,10 +93,27 @@ function main() {
 
   const logDir = config.logDir;
   fs.mkdirSync(logDir, { recursive: true });
-  const csvPath = path.join(logDir, 'base_station_received.csv');
-  if (!fs.existsSync(csvPath)) {
-    fs.writeFileSync(csvPath, 'received_iso,boat_id,fix_time_iso,lat,lon,speed_kn,heading_deg,fix_ok,carr_soln,num_sv\n');
+
+  // Unlike the boat (a new file per session, see sdLogger.js), a base
+  // station can run for days straight at a single regatta without
+  // restarting - so this rotates to a new dated file itself whenever the
+  // date changes, rather than growing one file forever. ensureCsvFile()
+  // (called once at startup, then again from logToCsv on every write - a
+  // cheap date-string check, only reopens/prunes on an actual date change)
+  // is what makes that happen without a separate timer.
+  const CSV_HEADER = 'received_iso,boat_id,fix_time_iso,lat,lon,speed_kn,heading_deg,fix_ok,carr_soln,num_sv\n';
+  let csvPath = null;
+  let csvDate = null;
+  function ensureCsvFile() {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    if (today === csvDate) return csvPath;
+    csvDate = today;
+    csvPath = path.join(logDir, `base_station_received_${today}.csv`);
+    if (!fs.existsSync(csvPath)) fs.writeFileSync(csvPath, CSV_HEADER);
+    pruneOldLogs(logDir, /^base_station_received_.*\.csv$/, config.logRetentionDays);
+    return csvPath;
   }
+  ensureCsvFile();
 
   const udpSocket = dgram.createSocket('udp4');
   const UDP_BROADCAST_ADDR = process.env.UDP_BROADCAST_ADDR || '255.255.255.255';
@@ -154,13 +174,18 @@ function main() {
 
   // Periodically re-broadcasts the current marks to every boat, so a rover
   // (no Redis access of its own - see boatAgent.js) always has a recent copy
-  // without needing to poll for it. A no-op (radio.send just returns false)
-  // until raceMarks actually resolves above, and harmless in SIMULATE mode
-  // (SimRadioLink's 'listen'-mode send() also just returns false).
+  // without needing to poll for it. Works over both a real radio (broadcast
+  // reaches every radio on the network inherently) and SimRadioLink in
+  // SIMULATE mode (broadcasts to every boat address it's heard a position
+  // frame from - see simRadioLink.js) - just a no-op until raceMarks
+  // actually resolves above, or until at least one boat has said hello in
+  // SIMULATE mode.
   setInterval(() => {
     if (!raceMarks) return;
-    radio.send(protocol.encodeMarks(raceMarks));
-    console.log(`[baseStation] broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`);
+    radio.broadcast(protocol.encodeMarks(raceMarks));
+    console.log(
+      `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
+    );
   }, config.marksBroadcastIntervalMs);
 
   // One FinishLineWatcher per boat (each needs its own independent
@@ -260,7 +285,7 @@ function main() {
       d.carrSoln,
       d.numSV,
     ].join(',');
-    fs.appendFile(csvPath, line + '\n', (err) => {
+    fs.appendFile(ensureCsvFile(), line + '\n', (err) => {
       if (err) console.error('[base] csv write failed:', err.message);
     });
   }
