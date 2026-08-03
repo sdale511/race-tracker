@@ -41,7 +41,19 @@ class SimRadioLink extends EventEmitter {
     this.socket.on('error', (err) => this.emit('error', err));
 
     this.socket.on('message', (msg, rinfo) => {
-      if (mode === 'listen') this.peers.set(`${rinfo.address}:${rinfo.port}`, { host: rinfo.address, port: rinfo.port });
+      if (mode === 'listen') {
+        const key = `${rinfo.address}:${rinfo.port}`;
+        if (!this.peers.has(key)) {
+          this.peers.set(key, { host: rinfo.address, port: rinfo.port });
+          // A boat's hello ping (see 'send' mode below) registers it as a
+          // broadcast target before it's sent anything decodable - this is
+          // what lets baseStation.js re-broadcast marks the instant a new
+          // boat shows up instead of only on the next heartbeat, even
+          // though a simulated rover now waits for marks before it can send
+          // a real (decodable) position frame at all.
+          this.emit('peer', { host: rinfo.address, port: rinfo.port });
+        }
+      }
       const result = decodeDatagram(msg);
       if (result) this.emit(result.event, result.decoded);
       // Same 'sync-error' event as RadioLink, for interface consistency -

@@ -369,21 +369,32 @@ Each boat keeps the latest marks in memory and also writes them to
 `<LOG_DIR>/course_marks.json`, so a reboot or restart has a last-known
 course immediately on the next boot, without waiting for the next
 broadcast. This is best-effort, not a guaranteed sync - if a boat misses one
-broadcast (radio dropout, powered on late), it just gets the next one at the
-next interval; there's no ack/retry for it, since marks essentially never
-change mid-race and the persisted copy already covers the "just missed it"
-case.
+broadcast (radio dropout, powered on late), it just gets the next one; no
+ack/retry, since marks essentially never change mid-race and the persisted
+copy already covers the "just missed it" case.
 
-`MARKS_BROADCAST_INTERVAL_MS` (default 60000) controls how often the base
-re-sends it - see "Tuning knobs" below.
+The base doesn't wait for a fixed interval to send the *first* one: it
+broadcasts the moment marks actually resolve (real hardware polls Redis
+every 5s until an operator publishes them, rather than giving up after one
+look - an operator setting up the course after the base is already running
+is a normal sequence, not an error), and again immediately whenever a
+previously-unseen boatId is heard from, so a boat joining after the base
+already knows the course doesn't have to wait either.
+`MARKS_BROADCAST_INTERVAL_MS` (default 60000) governs the ongoing
+heartbeat re-send after that, purely as a safety net for a boat that missed
+both of the above - see "Tuning knobs" below.
 
 This also works in `SIMULATE=1` mode, no real radios needed to test it:
-`simRadioLink.js`'s base-side radio remembers every boat address it's heard
-a position frame from, and broadcasts to all of them - the UDP stand-in for
-a real radio's broadcast reaching every other radio on the network. A boat
-needs to have sent at least one position frame before it's a known
-broadcast target; set `MARKS_BROADCAST_INTERVAL_MS` low (e.g. `2000`) when
-testing so you don't need to wait a full minute to see it happen.
+`simRadioLink.js`'s base-side radio remembers every peer address it's heard
+from - including a boat's small "hello" ping sent before it has any real
+data to send, since a simulated rover now waits for marks before it starts
+producing (and can therefore send) simulated GPS fixes at all - and
+broadcasts to all of them, the UDP stand-in for a real radio's broadcast
+reaching every other radio on the network. A newly-registered peer
+triggers an immediate broadcast the same as a newly-heard boatId does on
+real hardware, so you shouldn't need to wait on `MARKS_BROADCAST_INTERVAL_MS`
+at all to see a simulated boat get the course - if you do, something's
+stuck (see the base's console log for what it's currently waiting on).
 
 ### Log rotation
 

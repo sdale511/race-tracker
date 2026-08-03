@@ -126,6 +126,23 @@ function main() {
     minMovementM: config.redis.minMovementM,
   });
 
+  // Sends whatever raceMarks currently holds to every boat right now (as
+  // opposed to the periodic heartbeat below, which is just "in case a
+  // broadcast got missed") - called the instant marks first resolve, so a
+  // boat isn't left waiting out a full MARKS_BROADCAST_INTERVAL_MS before
+  // hearing about a course that's already known. Works over both a real
+  // radio (broadcast reaches every radio on the network inherently) and
+  // SimRadioLink in SIMULATE mode (broadcasts to every boat address it's
+  // heard a position frame from - see simRadioLink.js) - a no-op in
+  // SIMULATE mode until at least one boat has said hello.
+  function broadcastMarksNow() {
+    if (!raceMarks) return;
+    radio.broadcast(protocol.encodeMarks(raceMarks));
+    console.log(
+      `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
+    );
+  }
+
   // Course marks - windward, leeward, and the pin/committee ends of the
   // start/finish line (same geometry the simulator uses, see course.js). In
   // SIMULATE mode, computes+publishes them if missing (whichever process -
@@ -136,7 +153,8 @@ function main() {
   // committee+finish are known, raceMarks below is what builds a
   // FinishLineWatcher per boat.
   let raceMarks = null;
-  (async () => {
+
+  async function resolveMarks() {
     if (config.simulate) {
       // getOrCreateMarks otherwise has no way to tell "marks exist" from
       // "marks exist but are for a different course length" - if you've
@@ -152,41 +170,65 @@ function main() {
         }
       }
       try {
-        raceMarks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
-        console.log(`[baseStation] course marks (Redis): ${Object.keys(raceMarks).join(', ')}`);
+        const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+        console.log(`[baseStation] course marks (Redis): ${Object.keys(marks).join(', ')}`);
+        return marks;
       } catch (err) {
         console.error('[redis] failed to resolve marks:', err.message);
+        return null;
       }
     } else {
       try {
         const marks = await redisStore.getMarks();
         if (marks.committee && marks.finish) {
-          raceMarks = marks;
           console.log('[baseStation] finish line resolved (Redis) - lap crossings will be reported');
-        } else {
-          console.log('[baseStation] no course marks in Redis yet - lap detection disabled until they are set');
+          return marks;
         }
+        return null;
       } catch (err) {
         console.error('[redis] failed to resolve course marks for lap detection:', err.message);
+        return null;
+      }
+    }
+  }
+
+  // Real-hardware marks might not be in Redis yet at startup (an operator
+  // setting up the course after the base is already running is a normal
+  // sequence, not an error) - keeps trying every few seconds instead of
+  // giving up after one look, so the moment they do show up, this picks
+  // them up and broadcasts immediately rather than waiting for the base to
+  // be restarted.
+  (async () => {
+    while (!raceMarks) {
+      raceMarks = await resolveMarks();
+      if (raceMarks) {
+        broadcastMarksNow();
+      } else {
+        // Either a real Redis error (both branches) or, real-hardware mode
+        // only, marks just aren't published yet - either way, wait before
+        // retrying rather than hammering Redis in a tight loop.
+        console.log(
+          config.simulate
+            ? '[baseStation] failed to resolve/create course marks - will retry in 5s'
+            : '[baseStation] no course marks in Redis yet - will keep checking every 5s'
+        );
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     }
   })();
 
-  // Periodically re-broadcasts the current marks to every boat, so a rover
-  // (no Redis access of its own - see boatAgent.js) always has a recent copy
-  // without needing to poll for it. Works over both a real radio (broadcast
-  // reaches every radio on the network inherently) and SimRadioLink in
-  // SIMULATE mode (broadcasts to every boat address it's heard a position
-  // frame from - see simRadioLink.js) - just a no-op until raceMarks
-  // actually resolves above, or until at least one boat has said hello in
-  // SIMULATE mode.
-  setInterval(() => {
-    if (!raceMarks) return;
-    radio.broadcast(protocol.encodeMarks(raceMarks));
-    console.log(
-      `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
-    );
-  }, config.marksBroadcastIntervalMs);
+  // Periodic heartbeat re-broadcast, for a boat that missed the immediate
+  // one above (powered on late, brief radio dropout) - see
+  // broadcastMarksNow()'s comment.
+  setInterval(broadcastMarksNow, config.marksBroadcastIntervalMs);
+
+  // SIMULATE mode only - a real RadioLink never emits 'peer' (broadcast
+  // there doesn't need per-peer discovery at all, see simRadioLink.js), so
+  // this is harmless/never fires there. Closes the gap where a simulated
+  // boat registers as a broadcast target (its hello ping) before it's
+  // capable of sending anything decodable as a real frame - without this,
+  // that boat wouldn't hear about the course until the next heartbeat.
+  radio.on('peer', () => broadcastMarksNow());
 
   // One FinishLineWatcher per boat (each needs its own independent
   // crossing-state and lap counter), built lazily the first time a given
@@ -223,11 +265,24 @@ function main() {
     }
   })();
 
+  // A boat that starts up (or reconnects) after marks already resolved
+  // would otherwise wait out a full MARKS_BROADCAST_INTERVAL_MS before ever
+  // hearing about the course - broadcasting again the instant a new boatId
+  // is heard from closes that gap, on both real radio and SIMULATE mode
+  // (where a boat literally can't be a broadcast target at all until it's
+  // sent something - see simRadioLink.js).
+  const knownBoatIds = new Set();
+
   radio.on('frame', (decoded) => {
     logToConsole(decoded);
     logToCsv(decoded);
     redisStore.recordFix(decoded, new Date()).catch((err) => console.error('[redis] write failed:', err.message));
     outputFrame(decoded); // <- swap/extend this for your actual race software
+
+    if (!knownBoatIds.has(decoded.boatId)) {
+      knownBoatIds.add(decoded.boatId);
+      broadcastMarksNow();
+    }
 
     const watcher = watcherFor(decoded.boatId);
     const crossing = watcher && watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
