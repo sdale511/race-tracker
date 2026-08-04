@@ -141,10 +141,13 @@ attached. In this mode:
   upwind on alternating tacks, running downwind on alternating gybes, with
   randomized leg lengths so no two laps look the same - in place of the real
   UBX-NAV-PVT parser.
-- `src/simRadioLink.js` replaces the serial radio link with a UDP socket
-  carrying the exact same 23-byte frames (`src/protocol.js`), so the real
-  encode/decode/checksum path is still exercised end to end — just without
-  serial ports.
+- `src/simRadioLink.js` replaces the serial radio link with a shared UDP
+  broadcast socket carrying the exact same frames (`src/protocol.js`), so
+  the real encode/decode/checksum path is still exercised end to end — just
+  without serial ports. Every simulated boat and the base broadcast on and
+  listen to the same port (`SIM_PORT`), mirroring how every radio shares
+  one RF channel on real hardware — no per-boat address to configure, and
+  it works the same way across a real LAN as it does on localhost.
 
 Run both in separate terminals, on the same machine or over a LAN:
 ```
@@ -191,7 +194,7 @@ output all work exactly as they would with real hardware.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `SIM_HOST` / `SIM_PORT` | `127.0.0.1` / `41234` | Where boatAgent sends sim radio frames; baseStation listens here |
+| `SIM_PORT` | `41234` | Shared port every simulated boat and the base broadcast on and listen to - see "Broadcasting marks to the rovers" above |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
 | `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8744` / `-119.2024` | Center point of the simulated racecourse |
@@ -384,17 +387,20 @@ already knows the course doesn't have to wait either.
 heartbeat re-send after that, purely as a safety net for a boat that missed
 both of the above - see "Tuning knobs" below.
 
-This also works in `SIMULATE=1` mode, no real radios needed to test it:
-`simRadioLink.js`'s base-side radio remembers every peer address it's heard
-from - including a boat's small "hello" ping sent before it has any real
-data to send, since a simulated rover now waits for marks before it starts
-producing (and can therefore send) simulated GPS fixes at all - and
-broadcasts to all of them, the UDP stand-in for a real radio's broadcast
-reaching every other radio on the network. A newly-registered peer
-triggers an immediate broadcast the same as a newly-heard boatId does on
-real hardware, so you shouldn't need to wait on `MARKS_BROADCAST_INTERVAL_MS`
-at all to see a simulated boat get the course - if you do, something's
-stuck (see the base's console log for what it's currently waiting on).
+This also works in `SIMULATE=1` mode, no real radios needed to test it, and
+mirrors the real radio model exactly rather than approximating it:
+`simRadioLink.js` has every simulated boat and the base bind the *same*
+shared UDP port (`SIM_PORT`) and broadcast to it, the same way every real
+radio shares one RF channel - there's no per-boat host/address tracking at
+this layer at all, on either side, the same as real hardware (a boat's
+`boatId` lives in the frame payload, not the radio addressing - see
+`protocol.js`). That also means this works unchanged across a real LAN,
+not just localhost: put the boat on a different machine on the same
+subnet and it just works, no host/IP to configure - broadcast reaches it
+either way. You shouldn't need to wait on `MARKS_BROADCAST_INTERVAL_MS` at
+all to see a simulated boat get the course (the immediate-broadcast paths
+above cover it) - if you do, something's stuck (see the base's console log
+for what it's currently waiting on).
 
 ### Log rotation
 

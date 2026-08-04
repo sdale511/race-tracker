@@ -59,7 +59,7 @@ function main() {
   let radio;
   if (config.simulate) {
     const { SimRadioLink } = require('./simRadioLink');
-    radio = new SimRadioLink({ mode: 'listen', port: config.sim.port });
+    radio = new SimRadioLink({ port: config.sim.port });
   } else if (config.radio.enabled) {
     radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
   } else {
@@ -130,11 +130,9 @@ function main() {
   // opposed to the periodic heartbeat below, which is just "in case a
   // broadcast got missed") - called the instant marks first resolve, so a
   // boat isn't left waiting out a full MARKS_BROADCAST_INTERVAL_MS before
-  // hearing about a course that's already known. Works over both a real
-  // radio (broadcast reaches every radio on the network inherently) and
-  // SimRadioLink in SIMULATE mode (broadcasts to every boat address it's
-  // heard a position frame from - see simRadioLink.js) - a no-op in
-  // SIMULATE mode until at least one boat has said hello.
+  // hearing about a course that's already known. Works the same way over a
+  // real radio or SimRadioLink in SIMULATE mode - both just broadcast, no
+  // per-boat addressing at this layer at all (see simRadioLink.js).
   function broadcastMarksNow() {
     if (!raceMarks) return;
     radio.broadcast(protocol.encodeMarks(raceMarks));
@@ -222,14 +220,6 @@ function main() {
   // broadcastMarksNow()'s comment.
   setInterval(broadcastMarksNow, config.marksBroadcastIntervalMs);
 
-  // SIMULATE mode only - a real RadioLink never emits 'peer' (broadcast
-  // there doesn't need per-peer discovery at all, see simRadioLink.js), so
-  // this is harmless/never fires there. Closes the gap where a simulated
-  // boat registers as a broadcast target (its hello ping) before it's
-  // capable of sending anything decodable as a real frame - without this,
-  // that boat wouldn't hear about the course until the next heartbeat.
-  radio.on('peer', () => broadcastMarksNow());
-
   // One FinishLineWatcher per boat (each needs its own independent
   // crossing-state and lap counter), built lazily the first time a given
   // boat's fixes are seen and raceMarks is available.
@@ -265,12 +255,14 @@ function main() {
     }
   })();
 
-  // A boat that starts up (or reconnects) after marks already resolved
-  // would otherwise wait out a full MARKS_BROADCAST_INTERVAL_MS before ever
-  // hearing about the course - broadcasting again the instant a new boatId
-  // is heard from closes that gap, on both real radio and SIMULATE mode
-  // (where a boat literally can't be a broadcast target at all until it's
-  // sent something - see simRadioLink.js).
+  // A boat that starts up (or reconnects) after marks already resolved and
+  // already broadcast would otherwise wait out a full
+  // MARKS_BROADCAST_INTERVAL_MS before ever hearing about the course -
+  // broadcasting again the instant a new boatId is heard from closes that
+  // gap. Broadcast itself doesn't need this (every boat is always a valid
+  // target, real radio or SimRadioLink alike - see simRadioLink.js); this
+  // is purely about not making a newly-joined boat wait on a timer for
+  // something the base already knows.
   const knownBoatIds = new Set();
 
   radio.on('frame', (decoded) => {

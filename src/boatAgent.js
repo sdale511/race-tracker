@@ -20,7 +20,7 @@ if (config.simulateGps) {
   console.log(`[boatAgent] GPS  ${config.gps.port} @ ${config.gps.baud}`);
 }
 if (config.simulate) {
-  console.log(`[boatAgent] sim radio -> ${config.sim.host}:${config.sim.port}`);
+  console.log(`[boatAgent] sim radio - UDP broadcast on :${config.sim.port}`);
 } else if (config.radio.enabled) {
   console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
 } else {
@@ -33,8 +33,6 @@ let radio;
 if (config.simulate) {
   const { SimRadioLink } = require('./simRadioLink');
   radio = new SimRadioLink({
-    mode: 'send',
-    host: config.sim.host,
     port: config.sim.port,
     packetLossPct: config.sim.packetLossPct,
   });

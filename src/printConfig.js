@@ -24,7 +24,6 @@ const sections = [
   {
     title: 'Simulation (sim.*, only used when simulate=true)',
     rows: [
-      ['host', config.sim.host, 'SIM_HOST'],
       ['port', config.sim.port, 'SIM_PORT'],
       ['gpsHz', config.sim.gpsHz, 'SIM_GPS_HZ'],
       ['upwindSpeedKn', config.sim.upwindSpeedKn, 'SIM_UPWIND_SPEED_KN'],

@@ -62,8 +62,9 @@ module.exports = {
 
   // --- Simulation mode settings (only used when simulate=true) ---
   sim: {
-    // boatAgent sends UDP frames to host:port; baseStation listens on port.
-    host: process.env.SIM_HOST || '127.0.0.1',
+    // Every simulated boat and the base share this port, broadcasting to
+    // it (see simRadioLink.js) the same way a real radio broadcasts on its
+    // shared RF channel - no per-boat host/address to configure.
     port: parseInt(process.env.SIM_PORT || '41234', 10),
     gpsHz: parseFloat(process.env.SIM_GPS_HZ || '2'),
     // Landsailers, unlike water boats, go much faster downwind than up -
