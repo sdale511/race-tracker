@@ -398,19 +398,23 @@ stuck (see the base's console log for what it's currently waiting on).
 
 ### Log rotation
 
-CSV logs (the boat's per-session SD card log, and the base station's
-received-fix log) are pruned automatically: anything in `LOG_DIR` older
-than `LOG_RETENTION_DAYS` (default 7) gets deleted, checked at startup and,
-for the base station, again on every write (so a laptop left running for a
+CSV logs (the boat's SD card log, and the base station's received-fix log)
+are pruned automatically: anything in `LOG_DIR` older than
+`LOG_RETENTION_DAYS` (default 7) gets deleted, checked at startup and, for
+the base station, again on every write (so a laptop left running for a
 multi-day regatta still rotates at midnight instead of growing one file
 forever). See `src/logRotation.js`.
 
-The boat already gets a new file per session (`boat<id>_<timestamp>.csv`),
-so pruning just deletes whole old-session files. The base station's file is
-named per day (`base_station_received_<date>.csv`) specifically so the same
-by-age pruning applies to it too, instead of one file growing without bound
-across an entire season. Neither ever prunes rows *within* a file that's
-still being actively written, only whole files once they age out.
+The boat's log is segmented per boat *and* per hour
+(`boat<id>_<YYYY-MM-DDTHH>.csv`, see `src/sdLogger.js`) - every fix is
+appended to whichever hour's file its own GPS timestamp falls into, not
+wall-clock write time, and a restarted process resumes appending to the
+current hour's file rather than starting a new one (the file is keyed by
+hour, not by session). The base station's file is named per day
+(`base_station_received_<date>.csv`) for the same by-age pruning to apply
+to it too, instead of one file growing without bound across an entire
+season. Neither ever prunes rows *within* a file that's still being
+actively written, only whole files once they age out.
 
 The lap webhook retry queue (`lapWebhookQueue.js`'s sqlite file) isn't
 touched by this - it already self-cleans on successful delivery, and isn't
