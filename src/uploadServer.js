@@ -70,7 +70,13 @@ function startUploadServer({ port, uploadDir }) {
     const boatDir = path.join(uploadDir, filenameMatch[1]);
     fs.mkdirSync(boatDir, { recursive: true });
 
-    const finalPath = path.join(boatDir, filename);
+    // uploadClient.js sends gzip-compressed (see its own comment on why) -
+    // stored as-is under a .gz suffix, not decompressed on receipt. This
+    // server doesn't need to care what's inside the bytes, just store them
+    // reliably; decompression is a read-time concern for whoever later
+    // wants to actually open one of these files, not this server's job.
+    const storedFilename = req.headers['content-encoding'] === 'gzip' ? `${filename}.gz` : filename;
+    const finalPath = path.join(boatDir, storedFilename);
     const partPath = `${finalPath}.part`;
     const out = fs.createWriteStream(partPath);
 
@@ -105,7 +111,7 @@ function startUploadServer({ port, uploadDir }) {
             }
             return;
           }
-          console.log(`[uploadServer] received ${filename} (${fs.statSync(finalPath).size} bytes)`);
+          console.log(`[uploadServer] received ${storedFilename} (${fs.statSync(finalPath).size} bytes)`);
           res.writeHead(200);
           res.end('ok');
         });

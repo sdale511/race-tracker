@@ -2,6 +2,7 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
+const { distanceMeters, COURSE_LENGTH_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
@@ -168,17 +169,33 @@ function main() {
   async function resolveMarks() {
     if (config.simulate) {
       // getOrCreateMarks otherwise has no way to tell "marks exist" from
-      // "marks exist but are for a different course length" - if you've
-      // explicitly set SIM_COURSE_LENGTH_NM, clear whatever's already
-      // published so the course actually gets recomputed at the new length
-      // instead of silently reusing the old one.
-      if (process.env.SIM_COURSE_LENGTH_NM !== undefined) {
-        try {
+      // "marks exist but are for a different course length/center" - if
+      // SIM_COURSE_LENGTH_NM/SIM_CENTER_LAT/SIM_CENTER_LON is set AND the
+      // course actually published in Redis doesn't match it, clear so it
+      // gets recomputed. Deliberately NOT just "is the env var set" - those
+      // vars normally stay set for a whole shell/testing session (or live
+      // in .env), so that check alone would re-clear+rebroadcast on every
+      // single restart even when nothing was actually asked to change,
+      // including a stale/duplicate base process starting up later with
+      // the same environment - exactly what looks like "something cleared
+      // the course out from under me" from the outside. Comparing against
+      // what's actually there makes this idempotent: same request, same
+      // result, no matter how many times or which process asks.
+      try {
+        const existing = await redisStore.getMarks();
+        const hasExisting = MARK_NAMES.every((name) => existing[name]);
+        const centerMatches =
+          hasExisting && distanceMeters(existing.leeward, { lat: config.sim.centerLat, lon: config.sim.centerLon }) < 0.1;
+        const lengthMatches = hasExisting && Math.abs(distanceMeters(existing.leeward, existing.windward) - COURSE_LENGTH_M) < 0.1;
+        const requestedChange = ['SIM_COURSE_LENGTH_NM', 'SIM_CENTER_LAT', 'SIM_CENTER_LON'].some(
+          (name) => process.env[name] !== undefined
+        );
+        if (requestedChange && !(centerMatches && lengthMatches)) {
           await redisStore.clearCourseMarks();
-          console.log('[baseStation] SIM_COURSE_LENGTH_NM set - cleared old course marks so they get recomputed');
-        } catch (err) {
-          console.error('[redis] failed to clear old course marks:', err.message);
+          console.log('[baseStation] requested course differs from what\'s published - cleared old marks so they get recomputed');
         }
+      } catch (err) {
+        console.error('[redis] failed to check/clear old course marks:', err.message);
       }
       try {
         const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);

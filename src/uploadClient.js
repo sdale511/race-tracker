@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const zlib = require('zlib');
 const { chunkFilename } = require('./sdLogger');
 
 // Uploads a boat's chunked CSV logs (see sdLogger.js) to the base station
@@ -62,10 +63,17 @@ function httpGet(url, timeoutMs) {
 
 function uploadFile(url, filePath, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const size = fs.statSync(filePath).size;
+    // Gzipped, not sent raw: CSV text compresses well (repeated
+    // timestamp/numeric structure), and a smaller transfer has a better
+    // chance of finishing inside a short/marginal WiFi window before the
+    // rover drives back out of range - the actual reason this matters here,
+    // more than the bandwidth saved (these files are tiny either way). No
+    // Content-Length up front since gzip's compressed size isn't known
+    // until after compressing - Node sends this chunked-encoded instead,
+    // which uploadServer.js's req.complete check already handles fine.
     const req = http.request(
       url,
-      { method: 'POST', timeout: timeoutMs, headers: { 'Content-Length': size, 'Content-Type': 'text/csv' } },
+      { method: 'POST', timeout: timeoutMs, headers: { 'Content-Encoding': 'gzip', 'Content-Type': 'text/csv' } },
       (res) => {
         res.resume();
         res.on('end', () => resolve(res.statusCode));
@@ -73,7 +81,7 @@ function uploadFile(url, filePath, timeoutMs) {
     );
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
-    fs.createReadStream(filePath).pipe(req);
+    fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(req);
   });
 }
 

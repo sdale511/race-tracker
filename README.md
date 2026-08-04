@@ -197,7 +197,7 @@ output all work exactly as they would with real hardware.
 | `SIM_PORT` | `41234` | Shared port every simulated boat and the base broadcast on and listen to - see "Broadcasting marks to the rovers" above |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
-| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8744` / `-119.2024` | Center point of the simulated racecourse |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8744` / `-119.2024` | Center point of the simulated racecourse - setting either clears any already-published course marks on startup so the new center actually takes effect (see "Changing the course" below), same as `SIM_COURSE_LENGTH_NM` below |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
 | `SIM_COURSE_LENGTH_NM` | 1 | Leeward-to-windward distance in nautical miles - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect (see "Changing the course" below) |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
@@ -356,15 +356,17 @@ want cleared.
 npm run clear-course
 ```
 
-Deletes the five `mark:*` keys so the next `boat`/`base` run recomputes and
-republishes the course from scratch (e.g. after changing
-`SIM_COURSE_LENGTH_NM` or `SIM_CENTER_LAT`/`SIM_CENTER_LON`) instead of
-reusing whatever's already there. Boat tracks are left untouched — pair with
-`npm run clear-boats` if you want those cleared too. You normally don't need
-to run this yourself for `SIM_COURSE_LENGTH_NM` specifically: setting that
-env var makes `boat`/`base` clear the old marks automatically on startup, so
-the course actually changes length instead of silently reusing whatever
-course was already published.
+Deletes the five `mark:*` keys so the next `base` run recomputes and
+republishes the course from scratch instead of reusing whatever's already
+there. Boat tracks are left untouched — pair with `npm run clear-boats` if
+you want those cleared too. You normally don't need to run this yourself
+when changing `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, or
+`SIM_CENTER_LON`: `base` checks the *actual* published course against what
+you've requested on startup, and only clears/recomputes if they genuinely
+differ - not just because one of those env vars happens to be set. That
+makes it safe to restart `base` repeatedly with the same settings (a
+normal thing to do) without it re-clearing and re-broadcasting the course
+every time; it only touches Redis when something has actually changed.
 
 ### Broadcasting marks to the rovers
 
@@ -487,6 +489,14 @@ be the durable, centrally-collected copy that outlives whatever retention
 policy applies to each boat's own rotating SD card log, so nothing removes
 it automatically. Set `UPLOAD_DISABLED=1` on a boat to skip attempting
 uploads entirely.
+
+The boat gzips each file before sending (CSV text compresses well, and a
+smaller transfer has a better chance of finishing inside a short/marginal
+WiFi window than saving bandwidth as such - these files are small either
+way). The base stores it exactly as received, appending `.gz` to the
+filename rather than decompressing on receipt - decompression (a plain
+`gunzip`) is only something you need at read time, when you actually want
+to open one.
 
 ## Tuning knobs (env vars)
 
