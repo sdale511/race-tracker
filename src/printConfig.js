@@ -16,6 +16,7 @@ const sections = [
     rows: [
       ['simulate', config.simulate, 'SIMULATE'],
       ['simulateGps', config.simulateGps, 'SIMULATE_GPS'],
+      ['noGps', config.noGps, 'NO_GPS'],
       ['testLap', config.testLap, 'TEST_LAP'],
       ['testLapBoatId', config.testLapBoatId, 'TEST_LAP_BOAT_ID'],
       ['testLapNumber', config.testLapNumber, 'TEST_LAP_NUMBER'],

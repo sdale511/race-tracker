@@ -2,6 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const zlib = require('zlib');
 
 // Only accepts filenames matching sdLogger.js's own naming convention
 // (boat<id>_<YYYY-MM-DDTHH-MM>.csv) - rejects anything else so this can't
@@ -38,6 +39,13 @@ function detectLocalIp() {
 // out of WiFi range, leaves a stray .part file behind, never a truncated
 // file masquerading as complete under the real filename. A retried upload
 // of the same file just overwrites the stale .part and tries again.
+//
+// uploadClient.js sends each file gzip-compressed (smaller transfer, better
+// odds of finishing inside a short WiFi window - see its own comment) but
+// that's wire-transfer plumbing only: decompressed here on the way in, so
+// what actually lands in race-uploads is a plain, immediately-readable
+// .csv, identical to what the boat originally wrote - not something you
+// need to gunzip yourself before opening it.
 function startUploadServer({ port, uploadDir }) {
   fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -70,25 +78,52 @@ function startUploadServer({ port, uploadDir }) {
     const boatDir = path.join(uploadDir, filenameMatch[1]);
     fs.mkdirSync(boatDir, { recursive: true });
 
-    // uploadClient.js sends gzip-compressed (see its own comment on why) -
-    // stored as-is under a .gz suffix, not decompressed on receipt. This
-    // server doesn't need to care what's inside the bytes, just store them
-    // reliably; decompression is a read-time concern for whoever later
-    // wants to actually open one of these files, not this server's job.
-    const storedFilename = req.headers['content-encoding'] === 'gzip' ? `${filename}.gz` : filename;
-    const finalPath = path.join(boatDir, storedFilename);
+    const finalPath = path.join(boatDir, filename);
     const partPath = `${finalPath}.part`;
     const out = fs.createWriteStream(partPath);
+    const gunzip = req.headers['content-encoding'] === 'gzip' ? zlib.createGunzip() : null;
 
-    req.pipe(out);
-
-    out.on('error', (err) => {
-      console.error(`[uploadServer] write failed for ${filename}:`, err.message);
+    const onError = (stage) => (err) => {
+      console.error(`[uploadServer] ${stage} failed for ${filename}:`, err.message);
       if (!res.headersSent) {
         res.writeHead(500);
         res.end();
       }
+      out.destroy();
+      if (gunzip) gunzip.destroy();
       fs.unlink(partPath, () => {});
+    };
+
+    out.on('error', onError('write'));
+    if (gunzip) {
+      gunzip.on('error', onError('decompress'));
+      req.pipe(gunzip).pipe(out);
+    } else {
+      req.pipe(out);
+    }
+
+    // Finalizes once `out` has actually flushed everything - not driven off
+    // req's own 'close' timing, since with gunzip in the pipe chain there
+    // can still be buffered decompressed data working its way through to
+    // disk after req itself has finished receiving bytes off the wire.
+    // pipe() already calls out.end() automatically once its source (gunzip,
+    // or req directly when uncompressed) reaches its own 'end' - calling
+    // out.end() a second time here would race that, which is exactly what
+    // was truncating uploads to 0 bytes before this fix.
+    out.on('finish', () => {
+      fs.rename(partPath, finalPath, (err) => {
+        if (err) {
+          console.error(`[uploadServer] failed to finalize ${filename}:`, err.message);
+          if (!res.headersSent) {
+            res.writeHead(500);
+            res.end();
+          }
+          return;
+        }
+        console.log(`[uploadServer] received ${filename} (${fs.statSync(finalPath).size} bytes)`);
+        res.writeHead(200);
+        res.end('ok');
+      });
     });
 
     req.on('close', () => {
@@ -96,26 +131,14 @@ function startUploadServer({ port, uploadDir }) {
         // Connection dropped before the full body arrived - a rover going
         // out of WiFi range mid-upload is exactly this case. Don't
         // respond; the rover's own request already failed from the same
-        // dropped connection and will retry this file later.
+        // dropped connection and will retry this file later. Destroying
+        // `out` here means it never reaches 'finish' above, so no rename
+        // happens - the stale .part file just gets overwritten by the
+        // next retry.
         out.destroy();
+        if (gunzip) gunzip.destroy();
         fs.unlink(partPath, () => {});
-        return;
       }
-      out.end(() => {
-        fs.rename(partPath, finalPath, (err) => {
-          if (err) {
-            console.error(`[uploadServer] failed to finalize ${filename}:`, err.message);
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end();
-            }
-            return;
-          }
-          console.log(`[uploadServer] received ${storedFilename} (${fs.statSync(finalPath).size} bytes)`);
-          res.writeHead(200);
-          res.end('ok');
-        });
-      });
     });
   });
 

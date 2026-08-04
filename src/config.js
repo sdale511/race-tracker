@@ -20,6 +20,14 @@ const simulate = process.env.SIMULATE === '1' || process.env.SIMULATE === 'true'
 // simulated GPS with real radio specifically.
 const simulateGps = simulate || process.env.SIMULATE_GPS === '1' || process.env.SIMULATE_GPS === 'true';
 
+// NO_GPS=1 skips starting any GPS source at all - real or simulated. Useful
+// with SIMULATE=1 when you want a working sim radio link (course marks,
+// the log upload client, radio bench-testing) without a simulated race
+// actually running and generating position frames. Independent of
+// simulateGps above: this overrides it, not the other way around (see
+// boatAgent.js's GPS startup branch).
+const noGps = process.env.NO_GPS === '1' || process.env.NO_GPS === 'true';
+
 // TEST_LAP=1 (npm run base) sends one synthetic lap straight into the lap
 // webhook queue and exits, to check the queue -> RegattaUp path end to end
 // without a real or simulated race in progress. TEST_LAP_BOAT_ID/
@@ -56,6 +64,7 @@ const REDIS_CONNECTIONS = {
 module.exports = {
   simulate,
   simulateGps,
+  noGps,
   testLap,
   testLapBoatId,
   testLapNumber,

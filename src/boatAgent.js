@@ -11,7 +11,9 @@ const { distanceMeters } = require('./course');
 const { startUploadClient } = require('./uploadClient');
 
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
-if (config.simulateGps) {
+if (config.noGps) {
+  console.log('[boatAgent] NO_GPS=1 - not starting any GPS source (real or simulated)');
+} else if (config.simulateGps) {
   console.log(
     config.simulate
       ? '[boatAgent] SIMULATE=1 - using a fake GPS track (no GPS hardware)'
@@ -171,7 +173,7 @@ let gpsSimStarted = false;
 // GPS source has to wait on exactly the same information a real rover would
 // have to wait on - whatever the base station has actually radioed out.
 function startGpsSimIfReady() {
-  if (!config.simulateGps || gpsSimStarted || !currentMarks) return;
+  if (config.noGps || !config.simulateGps || gpsSimStarted || !currentMarks) return;
   gpsSimStarted = true;
 
   const { SimGpsSource } = require('./simGps');
@@ -232,7 +234,11 @@ function startGpsSimIfReady() {
   });
 }
 
-if (config.simulateGps) {
+if (config.noGps) {
+  // Radio (real or simulated), marks reception, and the upload client are
+  // all still fully running above - this just skips ever starting a GPS
+  // source, real or simulated, so no position fixes/frames are produced.
+} else if (config.simulateGps) {
   if (currentMarks) {
     startGpsSimIfReady();
   } else {
