@@ -62,6 +62,18 @@ const sections = [
     rows: [
       ['logDir', config.logDir, 'LOG_DIR'],
       ['logRetentionDays', config.logRetentionDays, 'LOG_RETENTION_DAYS'],
+      ['logChunkMinutes', config.logChunkMinutes, 'LOG_CHUNK_MINUTES'],
+    ],
+  },
+  {
+    title: 'Log upload over WiFi',
+    rows: [
+      ['enabled', config.upload.enabled, 'UPLOAD_DISABLED', true],
+      ['port', config.upload.port, 'UPLOAD_PORT'],
+      ['dir', config.upload.dir, 'UPLOAD_DIR'],
+      ['baseIp', config.upload.baseIp || '(auto-detect)', 'BASE_IP'],
+      ['checkIntervalMs', config.upload.checkIntervalMs, 'UPLOAD_CHECK_INTERVAL_MS'],
+      ['timeoutMs', config.upload.timeoutMs, 'UPLOAD_TIMEOUT_MS'],
     ],
   },
   {

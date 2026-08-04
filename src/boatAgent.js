@@ -8,6 +8,7 @@ const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
 const protocol = require('./protocol');
 const { distanceMeters } = require('./course');
+const { startUploadClient } = require('./uploadClient');
 
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
 if (config.simulateGps) {
@@ -27,7 +28,12 @@ if (config.simulate) {
   console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
 }
 
-const sdLogger = new SdLogger({ logDir: config.logDir, boatId: config.boatId, retentionDays: config.logRetentionDays });
+const sdLogger = new SdLogger({
+  logDir: config.logDir,
+  boatId: config.boatId,
+  retentionDays: config.logRetentionDays,
+  chunkMinutes: config.logChunkMinutes,
+});
 
 let radio;
 if (config.simulate) {
@@ -62,16 +68,45 @@ try {
   if (err.code !== 'ENOENT') console.error('[boatAgent] failed to read persisted course marks:', err.message);
 }
 
-radio.on('marks', (marks) => {
+// The base's address for log uploads (see uploadClient.js), as last
+// broadcast alongside the marks - not persisted to disk like currentMarks
+// below, since it's much more likely to go stale across a restart (a
+// reassigned DHCP lease, the base itself restarting) and a wrong cached
+// address is worse than just waiting for the next broadcast to learn the
+// current one.
+let baseAddress = null;
+
+radio.on('marks', ({ marks, baseIp, basePort }) => {
   currentMarks = marks;
+  baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort } : null;
   try {
     fs.writeFileSync(marksFilePath, JSON.stringify(marks));
   } catch (err) {
     console.error('[boatAgent] failed to persist course marks to disk:', err.message);
   }
-  console.log(`[boatAgent] ${new Date().toISOString()} received course marks from base station: ${Object.keys(marks).join(', ')}`);
+  console.log(
+    `[boatAgent] ${new Date().toISOString()} received course marks from base station: ${Object.keys(marks).join(', ')}` +
+      (baseAddress ? `, upload address: ${baseAddress.ip}:${baseAddress.port}` : '')
+  );
   startGpsSimIfReady();
 });
+
+// Pushes completed chunked SD-card logs to the base whenever it's actually
+// reachable over WiFi (see uploadClient.js) - independent of GPS
+// source/simulate mode, since this is really about the boat's own
+// microSD-backed log files, not position data.
+if (config.upload.enabled) {
+  startUploadClient({
+    logDir: config.logDir,
+    boatId: config.boatId,
+    chunkMinutes: config.logChunkMinutes,
+    getBaseAddress: () => baseAddress,
+    checkIntervalMs: config.upload.checkIntervalMs,
+    timeoutMs: config.upload.timeoutMs,
+  });
+} else {
+  console.log('[boatAgent] log upload disabled (UPLOAD_DISABLED=1)');
+}
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastPvt = null;
@@ -185,10 +220,15 @@ function startGpsSimIfReady() {
     console.log(`[boatAgent] (sim) completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
   );
   gps.on('finished', ({ laps }) => {
-    console.log(`[boatAgent] finished simulated race after ${laps} lap(s)`);
-    // Brief delay so the final fix's async SD-log write has a chance to
-    // flush before the process actually exits.
-    setTimeout(() => process.exit(0), 200);
+    console.log(
+      `[boatAgent] finished simulated race after ${laps} lap(s) - ` +
+        'staying alive so any pending log upload still gets a chance to go out (see uploadClient.js)'
+    );
+    // SimGpsSource already stopped its own tick timer before emitting this
+    // (see simGps.js), so nothing keeps producing fixes/position frames -
+    // the process just idles here, with the upload client's own periodic
+    // check (UPLOAD_CHECK_INTERVAL_MS) still running in the background
+    // until this process is stopped (Ctrl+C, or a systemd restart).
   });
 }
 

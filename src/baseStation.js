@@ -5,6 +5,7 @@ const { RedisStore } = require('./redisStore');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
+const { startUploadServer, detectLocalIp } = require('./uploadServer');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -69,6 +70,18 @@ function main() {
   }
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+
+  // Receives boat log uploads over WiFi whenever a boat happens to be in
+  // range (see uploadServer.js/uploadClient.js) - its address is what gets
+  // published in the marks broadcast below (broadcastMarksNow), so this
+  // needs to be resolved before that's ever called.
+  const baseIp = config.upload.baseIp || detectLocalIp();
+  if (!baseIp) {
+    console.warn('[baseStation] could not detect a LAN IP - log uploads from boats will be unavailable (set BASE_IP to override)');
+  } else {
+    console.log(`[baseStation] log upload address: ${baseIp}:${config.upload.port}`);
+  }
+  startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir });
 
   // Passive signal-quality feel, without interrupting the data stream to
   // query the radio for RSSI: a rising 'sync-error' rate (bytes that arrive
@@ -135,7 +148,7 @@ function main() {
   // per-boat addressing at this layer at all (see simRadioLink.js).
   function broadcastMarksNow() {
     if (!raceMarks) return;
-    radio.broadcast(protocol.encodeMarks(raceMarks));
+    radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port }));
     console.log(
       `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
     );

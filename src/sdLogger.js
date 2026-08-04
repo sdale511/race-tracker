@@ -2,36 +2,63 @@ const fs = require('fs');
 const path = require('path');
 const { pruneOldLogs } = require('./logRotation');
 
-// Appends every GPS fix to an hourly CSV on the microSD card, independent
+// Rounds `timestamp` down to the start of its chunkMinutes-wide bucket and
+// formats that as a filename-safe string ("YYYY-MM-DDTHH-MM") - shared with
+// uploadClient.js so both always agree on exactly where a chunk boundary
+// falls.
+//
+// Anchored to the top of each hour (:00, not epoch), so chunk boundaries
+// land on the expected round numbers (10 -> :00/:10/:20.../:50) rather than
+// wherever a chunk happens to fall relative to 1970. For a chunk size that
+// doesn't evenly divide 60 (e.g. 7), this deliberately makes the last chunk
+// of each hour shorter than the rest rather than letting a chunk span
+// across the hour boundary - every hour restarts the count at :00.
+function chunkBucket(timestamp, chunkMinutes) {
+  const date = new Date(timestamp);
+  const bucketMinute = Math.floor(date.getUTCMinutes() / chunkMinutes) * chunkMinutes;
+  const bucketStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), date.getUTCHours(), bucketMinute);
+  return new Date(bucketStart).toISOString().slice(0, 16).replace(':', '-');
+}
+
+function chunkFilename(boatId, timestamp, chunkMinutes) {
+  return `boat${boatId}_${chunkBucket(timestamp, chunkMinutes)}.csv`;
+}
+
+// Appends every GPS fix to a chunked CSV on the microSD card, independent
 // of what gets transmitted over radio - this is the durable record: if the
 // radio link drops for a while, you still have the full track on the Pi.
+// Chunked (not one huge session file) specifically so uploadClient.js can
+// push complete, upload-sized pieces to the base over WiFi as they finish,
+// rather than one large file that's only ever "done" when the boat is.
 //
-// One file per boat per hour (boat<id>_<YYYY-MM-DDTHH>.csv), grouped by
-// each fix's own GPS timestamp, not wall-clock write time - a fix taken a
-// moment before an hour boundary still lands in that earlier hour's file
-// even if it's logged a moment after. A restarted process resumes
-// appending to the current hour's file instead of starting a new one,
-// since the file is keyed by hour, not by session.
+// One file per boat per chunk (boat<id>_<YYYY-MM-DDTHH-MM>.csv, chunk
+// boundary set by LOG_CHUNK_MINUTES), grouped by each fix's own GPS
+// timestamp, not wall-clock write time - a fix taken a moment before a
+// chunk boundary still lands in that earlier chunk's file even if it's
+// logged a moment after. A restarted process resumes appending to the
+// current chunk's file instead of starting a new one, since the file is
+// keyed by chunk, not by session.
 class SdLogger {
-  constructor({ logDir, boatId, retentionDays = 7 }) {
+  constructor({ logDir, boatId, retentionDays = 7, chunkMinutes = 60 }) {
     this.logDir = logDir;
     this.boatId = boatId;
-    this.currentHour = null;
+    this.chunkMinutes = chunkMinutes;
+    this.currentChunk = null;
     this.filePath = null;
     fs.mkdirSync(logDir, { recursive: true });
     pruneOldLogs(logDir, /^boat\d+_.*\.csv$/, retentionDays);
   }
 
-  // Only touches the filesystem (existsSync/writeFileSync) when the hour
+  // Only touches the filesystem (existsSync/writeFileSync) when the chunk
   // bucket actually changes, not on every fix - GPS fixes can arrive at up
   // to 10Hz, and re-stat-ing the same file on every single one would be
   // wasteful SD card I/O for no benefit.
   _fileFor(timestamp) {
-    const hour = new Date(timestamp).toISOString().slice(0, 13); // "YYYY-MM-DDTHH"
-    if (hour === this.currentHour) return this.filePath;
+    const chunk = chunkBucket(timestamp, this.chunkMinutes);
+    if (chunk === this.currentChunk) return this.filePath;
 
-    this.currentHour = hour;
-    this.filePath = path.join(this.logDir, `boat${this.boatId}_${hour}.csv`);
+    this.currentChunk = chunk;
+    this.filePath = path.join(this.logDir, chunkFilename(this.boatId, timestamp, this.chunkMinutes));
     if (!fs.existsSync(this.filePath)) {
       fs.writeFileSync(
         this.filePath,
@@ -63,4 +90,4 @@ class SdLogger {
   }
 }
 
-module.exports = { SdLogger };
+module.exports = { SdLogger, chunkBucket, chunkFilename };

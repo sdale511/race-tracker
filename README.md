@@ -202,6 +202,13 @@ output all work exactly as they would with real hardware.
 | `SIM_COURSE_LENGTH_NM` | 1 | Leeward-to-windward distance in nautical miles - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect (see "Changing the course" below) |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 
+Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
+but the `boat` process itself keeps running rather than exiting - so its
+upload client (see "Uploading boat logs to the base over WiFi" above)
+still gets a chance to send off any pending log chunk instead of the
+process disappearing the instant the simulated race ends. Stop it with
+Ctrl+C once you're done, same as any other run.
+
 ## Connecting to your race committee software
 
 `src/baseStation.js` currently:
@@ -411,12 +418,15 @@ the base station, again on every write (so a laptop left running for a
 multi-day regatta still rotates at midnight instead of growing one file
 forever). See `src/logRotation.js`.
 
-The boat's log is segmented per boat *and* per hour
-(`boat<id>_<YYYY-MM-DDTHH>.csv`, see `src/sdLogger.js`) - every fix is
-appended to whichever hour's file its own GPS timestamp falls into, not
-wall-clock write time, and a restarted process resumes appending to the
-current hour's file rather than starting a new one (the file is keyed by
-hour, not by session). The base station's file is named per day
+The boat's log is segmented per boat *and* per time chunk
+(`boat<id>_<YYYY-MM-DDTHH-MM>.csv`, chunk width set by `LOG_CHUNK_MINUTES`
+- default 10 minutes, see `src/sdLogger.js`) - every fix is appended to
+whichever chunk's file its own GPS timestamp falls into, not wall-clock
+write time, and a restarted process resumes appending to the current
+chunk's file rather than starting a new one (the file is keyed by chunk,
+not by session). Smaller chunks mean each one becomes upload-eligible
+sooner (see "Uploading boat logs to the base over WiFi" below) at the cost
+of more, smaller files. The base station's file is named per day
 (`base_station_received_<date>.csv`) for the same by-age pruning to apply
 to it too, instead of one file growing without bound across an entire
 season. Neither ever prunes rows *within* a file that's still being
@@ -425,6 +435,58 @@ actively written, only whole files once they age out.
 The lap webhook retry queue (`lapWebhookQueue.js`'s sqlite file) isn't
 touched by this - it already self-cleans on successful delivery, and isn't
 a rotating log in the same sense.
+
+### Uploading boat logs to the base over WiFi
+
+A boat's SD card log (`src/sdLogger.js`) is the durable backup if the
+telemetry radio drops out, but it only exists on that one boat's SD card.
+If the boat's own WiFi happens to reach the base station at some point
+(dockside, back at the trailer, wherever), it pushes its completed chunked
+log files there too, as a second, off-boat copy - `src/uploadServer.js`
+(base) and `src/uploadClient.js` (boat).
+
+**How the boat finds the base**: the base doesn't need to be configured
+into the boat at all - it publishes its own LAN IP and upload port
+alongside the course marks broadcast (`protocol.js`'s `encodeMarks`,
+auto-detected via the first non-internal IPv4 interface it finds, override
+with `BASE_IP` if that picks the wrong one). A boat that's never received
+a broadcast, or received one with no IP in it (`0.0.0.0` - the base
+couldn't detect one), just doesn't attempt uploads until it does.
+
+**Fault tolerance** (a boat is expected to drift in and out of WiFi range
+constantly, so every part of this is built to fail safely and just retry,
+never to assume the connection will hold):
+- The boat polls (`UPLOAD_CHECK_INTERVAL_MS`, default 15s) rather than
+  holding a persistent connection - "try, fail, try again shortly" instead
+  of needing to detect a disconnect.
+- Each attempt has its own timeout (`UPLOAD_TIMEOUT_MS`, default 5s) so a
+  boat that's just driven out of range doesn't hang on a dead connection.
+- The base writes incoming uploads to a `.part` file and only renames it
+  into place once the full body has actually arrived - a connection
+  dropping mid-upload leaves a stray `.part` file, never a truncated file
+  under the real name that could be mistaken for a complete one.
+- The boat only marks a file as uploaded (a companion `<file>.csv.uploaded`
+  marker, checked before ever attempting that file again) after the base
+  has actually acknowledged it with a 200 - a lost acknowledgment just
+  means a harmless, idempotent re-upload next time, not a lost file.
+- The file currently being written (the current chunk) is never an upload
+  candidate - only completed, fixed chunk files are.
+- One file at a time, oldest first - a boat that's been out of range for a
+  while catches up in order on subsequent connections rather than skipping
+  straight to the newest.
+
+Uploaded files land in `UPLOAD_DIR` (default a `race-uploads` directory
+next to `LOG_DIR`, deliberately separate from the base's own
+`race-logs` - that's this machine's own received-fix log, not a dumping
+ground for every boat's SD card backup), organized into one subdirectory
+per boat by numeric ID (`race-uploads/<boatId>/boat<boatId>_<chunk>.csv`)
+so a multi-boat fleet's files don't all land in one flat directory
+together. Unlike `race-logs`,
+`race-uploads` is **not** pruned by `LOG_RETENTION_DAYS` - it's meant to
+be the durable, centrally-collected copy that outlives whatever retention
+policy applies to each boat's own rotating SD card log, so nothing removes
+it automatically. Set `UPLOAD_DISABLED=1` on a boat to skip attempting
+uploads entirely.
 
 ## Tuning knobs (env vars)
 
@@ -445,6 +507,12 @@ given `boat`/`base` run will actually use, instead of reading through
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 | `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
+| `LOG_CHUNK_MINUTES` | 10 | Boat only — how wide a slice of time each SD-card CSV covers before starting a new one, see "Log rotation" above. Smaller chunks upload sooner (see below) but produce more files |
+| `UPLOAD_DISABLED` | unset | Boat only — set to `1` to skip attempting log uploads to the base entirely |
+| `UPLOAD_PORT` | 8090 | Base station only — port its log-upload HTTP server listens on, also published in the marks broadcast |
+| `UPLOAD_DIR` | `race-uploads` (next to `LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
+| `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |
+| `UPLOAD_CHECK_INTERVAL_MS` / `UPLOAD_TIMEOUT_MS` | 15000 / 5000 | Boat only — how often to check whether the base is reachable, and how long to wait for a response before giving up on that attempt |
 | `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Redis track storage" above |
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment |
 | `REDIS_URL` | unset | Base station only — overrides `REDIS_ENV` entirely with a full connection string, for ad-hoc targets |

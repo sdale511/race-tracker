@@ -137,6 +137,48 @@ module.exports = {
   // an always-running base station laptop or a boat's microSD card from
   // filling up over a season of races instead of just one.
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
+  // Boat only - how wide a slice of time each SD-card CSV covers (see
+  // sdLogger.js's chunkBucket) before starting a new one. Smaller chunks
+  // mean each one finishes (and becomes upload-eligible - see "upload"
+  // below) sooner, at the cost of more, smaller files.
+  logChunkMinutes: parseInt(process.env.LOG_CHUNK_MINUTES || '10', 10),
+
+  // --- Log upload over WiFi (base station serves, boat sends) ---
+  // Whenever a boat's own WiFi happens to reach the base station (no
+  // guarantee of when, or for how long - see uploadClient.js), it pushes
+  // its completed hourly SD-card logs there as a second, off-boat copy.
+  // The base's address for this is broadcast alongside the course marks
+  // (see protocol.js's encodeMarks) so a boat never needs to be told it
+  // directly.
+  upload: {
+    // Base station only - port its upload-receiving HTTP server listens
+    // on, and publishes in the marks broadcast.
+    port: parseInt(process.env.UPLOAD_PORT || '8090', 10),
+    // Base station only - where uploaded logs land, deliberately separate
+    // from LOG_DIR/race-logs (that's this machine's own received-fix log,
+    // not a dumping ground for every boat's SD card backup). Defaults to
+    // a `race-uploads` directory next to LOG_DIR.
+    dir: process.env.UPLOAD_DIR || path.join(path.dirname(logDir), 'race-uploads'),
+    // Base station only - override auto-detecting this machine's own LAN
+    // IP (see uploadServer.js's detectLocalIp) if it picks the wrong
+    // interface, or none at all.
+    baseIp: process.env.BASE_IP || null,
+    // Boat only - set UPLOAD_DISABLED=1 to skip attempting log uploads
+    // entirely (e.g. a boat with no WiFi radio at all, or one you'd rather
+    // not have phoning home) - the base's own upload server is unaffected,
+    // it just never hears from this boat.
+    enabled: process.env.UPLOAD_DISABLED !== '1' && process.env.UPLOAD_DISABLED !== 'true',
+    // Boat only - how often to check whether the base is currently
+    // reachable and, if so, try sending one pending log file. A boat is
+    // expected to drift in and out of WiFi range, so this is a cheap
+    // periodic retry, not a persistent connection to maintain.
+    checkIntervalMs: parseInt(process.env.UPLOAD_CHECK_INTERVAL_MS || '15000', 10),
+    // Boat only - how long to wait for the base to respond (health check
+    // or the upload itself) before giving up on this attempt and retrying
+    // next check - keeps a boat that's just driven out of range from
+    // hanging on a dead connection instead of just trying again shortly.
+    timeoutMs: parseInt(process.env.UPLOAD_TIMEOUT_MS || '5000', 10),
+  },
 
   // --- Redis (base station only) ---
   // Where baseStation.js records every decoded fix, so tracks can be queried

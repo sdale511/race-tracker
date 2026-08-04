@@ -78,19 +78,25 @@ function decode(buf) {
 // course marks (see redisStore.js's mark:* keys) so a rover can know the
 // course without ever needing its own Redis access - it just remembers
 // whatever the base last broadcast (see boatAgent.js's on-disk persistence).
+// Also carries the base's own IP/port for the log-upload HTTP server (see
+// uploadServer.js/uploadClient.js) - riding along on the same frame and the
+// same broadcast triggers (startup, new boat, periodic heartbeat) rather
+// than needing a separate frame type and its own broadcast-timing logic.
 // Given its own sync byte since it isn't the same length as the position
 // frame, so a byte-stream scanner (radioLink.js) can tell them apart before
 // it knows how many bytes to consume.
 //
 // Layout (all little-endian), marks in MARK_NAMES order:
-//   [0]  sync byte   0xBB
-//   ...  5x { lat*1e7 int32, lon*1e7 int32 }  (40 bytes total)
-//   [41] checksum    uint8  (sum of bytes 1..40 mod 256)
+//   [0]      sync byte     0xBB
+//   ...      5x { lat*1e7 int32, lon*1e7 int32 }  (40 bytes total)
+//   [41..44] base IP       4 bytes, one octet each (0.0.0.0 = unknown/none)
+//   [45..46] base upload port  uint16
+//   [47]     checksum      uint8  (sum of bytes 1..46 mod 256)
 
 const MARKS_SYNC = 0xbb;
-const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 1;
+const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 1;
 
-function encodeMarks(marks) {
+function encodeMarks(marks, baseInfo = {}) {
   const buf = Buffer.alloc(MARKS_FRAME_LEN);
   buf.writeUInt8(MARKS_SYNC, 0);
   let offset = 1;
@@ -100,6 +106,12 @@ function encodeMarks(marks) {
     offset += 8;
   }
 
+  const ipOctets = (baseInfo.ip || '0.0.0.0').split('.').map((n) => parseInt(n, 10) & 0xff);
+  for (let i = 0; i < 4; i++) buf.writeUInt8(ipOctets[i] || 0, offset + i);
+  offset += 4;
+  buf.writeUInt16LE(baseInfo.port || 0, offset);
+  offset += 2;
+
   let sum = 0;
   for (let i = 1; i < MARKS_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
   buf.writeUInt8(sum, MARKS_FRAME_LEN - 1);
@@ -107,7 +119,9 @@ function encodeMarks(marks) {
   return buf;
 }
 
-// Returns { windward: {lat,lon}, ... }, or null if the buffer isn't a valid marks frame.
+// Returns { marks: { windward: {lat,lon}, ... }, baseIp, basePort }, or null
+// if the buffer isn't a valid marks frame. baseIp is '0.0.0.0' if the base
+// doesn't have (or hasn't been told) an address to publish.
 function decodeMarks(buf) {
   if (buf.length !== MARKS_FRAME_LEN || buf[0] !== MARKS_SYNC) return null;
 
@@ -121,7 +135,12 @@ function decodeMarks(buf) {
     marks[name] = { lat: buf.readInt32LE(offset) / 1e7, lon: buf.readInt32LE(offset + 4) / 1e7 };
     offset += 8;
   }
-  return marks;
+
+  const baseIp = `${buf.readUInt8(offset)}.${buf.readUInt8(offset + 1)}.${buf.readUInt8(offset + 2)}.${buf.readUInt8(offset + 3)}`;
+  offset += 4;
+  const basePort = buf.readUInt16LE(offset);
+
+  return { marks, baseIp, basePort };
 }
 
 module.exports = { encode, decode, FRAME_LEN, SYNC, encodeMarks, decodeMarks, MARKS_FRAME_LEN, MARKS_SYNC };
