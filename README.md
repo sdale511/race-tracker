@@ -197,7 +197,7 @@ output all work exactly as they would with real hardware.
 | `SIM_PORT` | `41234` | Shared port every simulated boat and the base broadcast on and listen to - see "Broadcasting marks to the rovers" above |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
-| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8744` / `-119.2024` | Center point of the simulated racecourse - setting either clears any already-published course marks on startup so the new center actually takes effect (see "Changing the course" below), same as `SIM_COURSE_LENGTH_NM` below |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8898` / `-118.3821` | Center point of the simulated racecourse - setting either clears any already-published course marks on startup so the new center actually takes effect (see "Changing the course" below), same as `SIM_COURSE_LENGTH_NM` below |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
 | `SIM_COURSE_LENGTH_NM` | 1 | Leeward-to-windward distance in nautical miles - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect (see "Changing the course" below) |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
@@ -288,13 +288,20 @@ in-memory state.
 ### Testing the lap -> webhook path
 
 ```
-TEST_LAP=1 npm run base
+TEST_LAP_NUMBER=3 npm run base
 ```
 
-Sends one synthetic lap straight into the webhook queue and exits - no
-radio, no GPS, no finish-line detection involved, just checking the queue ->
-RegattaUp path in isolation. `TEST_LAP_BOAT_ID`/`TEST_LAP_NUMBER` (default 1
-and 1) pick which boat/lap number it's sent as.
+`TEST_LAP_NUMBER` doubles as both the on/off switch for this test mode
+and part of the payload: `0` (the default) means off - a normal run.
+Anything positive sends one synthetic lap straight into the webhook
+queue, reported as that lap number, and exits immediately - no radio, no
+GPS, no finish-line detection involved, just checking the queue ->
+RegattaUp path in isolation. It's not a count of how many laps to send
+(always exactly one, regardless of the number chosen) or how many laps a
+race has - just the "lap" field on that one synthetic event.
+`TEST_LAP_BOAT_ID` (default 1) is the other half of that payload - which
+boat the fake lap is attributed to - and only matters alongside a
+positive `TEST_LAP_NUMBER`.
 
 ## Redis track storage
 
@@ -320,6 +327,10 @@ blocks on the network" philosophy elsewhere.
 
 ### Switching between Redis servers
 
+Two ways to point this at a Redis server, and they don't combine — if
+`REDIS_URL` is set, it wins outright and `REDIS_ENV` (plus everything
+under it) is ignored entirely, not merged with it.
+
 `REDIS_ENV` picks a connection preset in `config.js` (default `local`,
 `127.0.0.1:6379`). `production` points at the Redis Cloud instance; its
 host/port are fine to keep in source, but credentials never are — set these
@@ -333,8 +344,19 @@ REDIS_ENV=production REDIS_PASSWORD=<password> npm run base
 - `REDIS_PASSWORD` — required for `production`, no default
 - `REDIS_TLS` — set to `1` if your database requires TLS (this one currently doesn't)
 
-For anything outside the two presets, `REDIS_URL` still works and overrides
-both `REDIS_ENV` presets entirely, e.g. `REDIS_URL=redis://host:port npm run base`.
+For anything outside the two presets, `REDIS_URL` still works — a full
+connection string (e.g. `REDIS_URL=redis://host:port npm run base`)
+passed straight to `ioredis` in place of a preset. Setting it overrides
+`REDIS_ENV` *and* makes `REDIS_USERNAME`/`REDIS_PASSWORD`/`REDIS_TLS`
+irrelevant even if they're also set — those three are only ever read as
+part of building the preset's own connection object
+(`redisStore.js`'s constructor branches on `url` vs `connection` and
+only one is ever actually used), so there's no scenario where `REDIS_URL`
+plus one of those three combine into anything.
+
+Every process that talks to Redis (`npm run base`, `npm run clear-course`,
+`npm run clear-boats`) resolves this identically via `config.redis`, so
+whichever you choose applies consistently across all of them.
 
 ### Clearing boat data
 
@@ -493,10 +515,110 @@ uploads entirely.
 The boat gzips each file before sending (CSV text compresses well, and a
 smaller transfer has a better chance of finishing inside a short/marginal
 WiFi window than saving bandwidth as such - these files are small either
-way). The base stores it exactly as received, appending `.gz` to the
-filename rather than decompressing on receipt - decompression (a plain
-`gunzip`) is only something you need at read time, when you actually want
-to open one.
+way). The base decompresses on the way in, so what actually lands in
+`race-uploads` is a plain, immediately-readable `.csv` - identical to what
+the boat originally wrote, not something you need to `gunzip` yourself
+before opening it.
+
+### Admin dashboard
+
+A small live-stats web page on the base station (`src/adminServer.js`,
+default port 8092 - open `http://<base-ip>:8092` in a browser) for a
+glanceable view of what's happening during a race: boats seen, total
+tracks recorded, tracks and lap counts per boat, radio link quality
+(frames received / sync errors), and upload activity (attempts,
+successes, failures, bytes sent, and each boat's self-reported pending
+count). It reloads itself every 5 seconds; there's also a `GET
+/api/stats` JSON endpoint if you want to pull the same data into something
+else.
+
+This is a live "what's happening right now" view, not a historical
+record - the counters (`src/stats.js`) are in-memory only and reset on
+restart. The durable records are Redis (tracks) and `race-uploads` (log
+files); the dashboard just reflects them plus some things Redis doesn't
+track at all, like radio link quality and upload success/failure counts.
+
+A boat's "pending uploads" figure is self-reported: it rides along on the
+same periodic health check the boat already does to test reachability
+(see "Uploading boat logs to the base over WiFi" above), since the base
+has no other way to see what's still sitting unsent on a boat's own SD
+card.
+
+Once the course marks are known, the dashboard also shows a compact
+lat/lon table for them, plus a "map ↗" link (`GET /map`) to a full-page
+map view - the five marks plotted over satellite imagery (not a street
+basemap - these courses are typically raced on a dry lake bed with no
+roads or buildings for a vector basemap to draw), with the start line
+(pin↔committee) and finish gate (committee↔finish) drawn in, auto-fit to
+the course's extent. It pulls map tiles from a public CDN (Esri World
+Imagery) at request time, so the browser viewing it needs internet
+access - the base station's own connectivity for publishing marks/tracks
+is unaffected either way.
+
+Any boat the base has actually heard a position frame from this session
+also gets a dot (green if heard within the last minute, gray otherwise) -
+deliberately sourced only from `stats.js`'s in-memory last-known
+position, never from `race-uploads`' on-disk history, so the map never
+shows a boat "live" somewhere it hasn't actually reported from this run.
+A boat whose only presence is old uploaded files (see the Fleet table's
+"Files on disk" column) just doesn't get a dot.
+
+An "auto-refresh boats (5s)" checkbox in the top bar (on by default,
+remembered per-browser via `localStorage`) polls `GET /api/positions`
+every 5 seconds and moves each boat's dot to its latest position - it
+does *not* reload the page, so panning/zooming in to watch a boat isn't
+undone every few seconds the way the main dashboard's full-page refresh
+would. `/api/positions` is a separate, leaner endpoint from `/api/stats`
+- it's synchronous and reads only `stats.js`'s in-memory boat positions,
+deliberately skipping the Redis track-count query `/api/stats` does for
+the Fleet table, since the map has no use for it and watching the map
+shouldn't cost a Redis round trip every 5 seconds. Course marks aren't
+re-fetched at all, since they don't move mid-race. The boat's own rover
+dashboard has the same toggle on its `GET /map` (see below), polling its
+own equally-lean `GET /api/position` to move just its own marker.
+
+Boats in the Fleet table are sorted most-recently-seen first, so an
+active fleet naturally floats to the top instead of being scattered
+through however boat IDs happen to be numbered - a boat this base hasn't
+heard from this session (`lastSeen` unset - e.g. known only via the
+on-disk upload-history scan) sinks to the bottom, ordered by boat ID
+among themselves.
+
+Both dashboards also have a "config" link (`GET /config`) showing the
+fully-resolved configuration that process is actually running with -
+every default plus whatever's been overridden via environment variables
+or `.env`, with overridden rows called out - the same data
+`npm run print-config` prints to the console (see below), just without
+needing to shell into the Pi to check it. `src/configReport.js` is the
+one shared source for both.
+
+Each boat also runs its own matching dashboard (`src/roverAdminServer.js`,
+default port 8092, same as the base - `http://<boat-ip>:8092`), scoped to
+that one boat: last fix and quality (RTK fixed/float/GPS/no fix, sat
+count, accuracy), whether the course has been received, frames sent,
+whether the base is currently reachable, and its own upload history. It
+has its own `GET /map` too - same course view as the base's, but since
+this one is scoped to a single boat, it also plots that boat's own last
+known position (a solid dot once a fix has come in within the last 10s,
+gray if it's gone stale) rather than leaving the map as a static course
+reference. When running with `SIMULATE=1`, a boat defaults to port 8093 instead, so
+`npm run base` and `npm run boat` can run on the same machine (as they do
+in "Simulation mode (no hardware)" above) without an `ADMIN_PORT`
+override to avoid an `EADDRINUSE` - a real base and boat are always
+separate machines, so this only matters for local testing. `ADMIN_PORT`
+always overrides both defaults explicitly if you set it.
+
+The dashboards link to each other automatically, and don't assume either
+side is on any particular port: each learns the other's actual IP and
+admin port at runtime and links to that - a boat reports its own admin
+port on the same periodic health check it already uses to report its
+pending-upload count (see above), and the base reports its own IP and
+admin port in the same course-marks broadcast it already uses for the
+log-upload address (see "Broadcasting marks to the rovers" above). A
+link only appears once that information has actually arrived - the
+base's Fleet table shows "—" for a boat it hasn't heard a health check
+from yet, and a boat's dashboard omits the base link until it's received
+at least one marks broadcast.
 
 ## Tuning knobs (env vars)
 
@@ -524,14 +646,16 @@ given `boat`/`base` run will actually use, instead of reading through
 | `UPLOAD_DIR` | `race-uploads` (next to `LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
 | `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |
 | `UPLOAD_CHECK_INTERVAL_MS` / `UPLOAD_TIMEOUT_MS` | 15000 / 5000 | Boat only — how often to check whether the base is reachable, and how long to wait for a response before giving up on that attempt |
-| `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Redis track storage" above |
-| `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment |
-| `REDIS_URL` | unset | Base station only — overrides `REDIS_ENV` entirely with a full connection string, for ad-hoc targets |
+| `ADMIN_PORT` | 8092 (boat: 8093 under `SIMULATE=1`) | Both roles — port the admin dashboard listens on (base's fleet view, or a boat's own rover view), see "Admin dashboard" above. The dashboards report their actual port to each other at runtime, so the cross-links work correctly regardless of what this is set to on either side |
+| `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Switching between Redis servers" above. Ignored entirely if `REDIS_URL` is set |
+| `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
+| `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
 | `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue |
-| `TEST_LAP` / `TEST_LAP_BOAT_ID` / `TEST_LAP_NUMBER` | unset / 1 / 1 | `npm run base` only — send a single test lap straight into the webhook queue and exit, see "Testing the lap -> webhook path" above |
+| `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
+| `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |
 
 ## What still needs real-hardware testing
 

@@ -6,7 +6,9 @@ const { distanceMeters, COURSE_LENGTH_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
-const { startUploadServer, detectLocalIp } = require('./uploadServer');
+const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
+const { startAdminServer } = require('./adminServer');
+const stats = require('./stats');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -31,9 +33,9 @@ const dgram = require('dgram');
 // has both the marks and every boat's fixes, so it's the only place that
 // can watch for a finish-line crossing.
 
-if (config.testLap) {
+if (config.testLapNumber > 0) {
   console.log(
-    `[baseStation] TEST_LAP=1 - sending a single test lap (${config.testLapNumber}) for boat ${config.testLapBoatId} and exiting`
+    `[baseStation] TEST_LAP_NUMBER=${config.testLapNumber} - sending a single test lap for boat ${config.testLapBoatId} and exiting`
   );
   runTestLap();
 } else {
@@ -84,6 +86,13 @@ function main() {
   }
   startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir });
 
+  // Scanned once at startup (see scanUploadDir's own comment on why this
+  // stays cheap regardless of how many files have piled up over a season)
+  // so the admin dashboard can show a boat's real uploaded history even
+  // before it's said anything this session - stats.js only knows about
+  // this session's activity, not what happened in prior ones.
+  const uploadDirBaseline = scanUploadDir(config.upload.dir);
+
   // Passive signal-quality feel, without interrupting the data stream to
   // query the radio for RSSI: a rising 'sync-error' rate (bytes that arrive
   // shaped like a frame but fail the checksum, usually mid-frame bit
@@ -95,7 +104,10 @@ function main() {
   let framesOk = 0;
   let syncErrors = 0;
   radio.on('frame', () => framesOk++);
-  radio.on('sync-error', () => syncErrors++);
+  radio.on('sync-error', () => {
+    syncErrors++;
+    stats.recordSyncError();
+  });
   setInterval(() => {
     const total = framesOk + syncErrors;
     if (total === 0) return; // nothing heard at all this interval - not a quality signal, just silence
@@ -149,7 +161,7 @@ function main() {
   // per-boat addressing at this layer at all (see simRadioLink.js).
   function broadcastMarksNow() {
     if (!raceMarks) return;
-    radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port }));
+    radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port }));
     console.log(
       `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
     );
@@ -296,6 +308,7 @@ function main() {
   const knownBoatIds = new Set();
 
   radio.on('frame', (decoded) => {
+    stats.recordFrame(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
     logToConsole(decoded);
     logToCsv(decoded);
     redisStore.recordFix(decoded, new Date()).catch((err) => console.error('[redis] write failed:', err.message));
@@ -375,6 +388,78 @@ function main() {
     const buf = Buffer.from(sentence + '\r\n');
     udpSocket.send(buf, UDP_PORT, UDP_BROADCAST_ADDR);
   }
+
+  // Everything the admin dashboard (adminServer.js) needs in one place -
+  // defined here rather than there since it's the only thing with closures
+  // over all this live state (raceMarks, finishLineWatchers, redisStore,
+  // ...). Redis is queried fresh on every call rather than cached, so the
+  // dashboard is never showing stale counts - these are cheap ZCARD reads
+  // (see redisStore.getStats), not full track fetches.
+  async function getFullStats() {
+    const redisStats = await redisStore.getStats().catch((err) => {
+      console.error('[adminServer] failed to query Redis stats:', err.message);
+      return null;
+    });
+
+    const lapCounts = {};
+    for (const [boatId, watcher] of finishLineWatchers) lapCounts[boatId] = watcher.lapCount;
+
+    // Merge in uploadDirBaseline (see its own comment above) - a boat with
+    // real uploaded history but no session activity yet still gets a row,
+    // with everything session-scoped (lastSeen, this-session upload
+    // counts, pending) left at its natural "nothing yet" default.
+    const snapshot = stats.snapshot();
+    const boats = { ...snapshot.boats };
+    for (const [boatId, diskInfo] of Object.entries(uploadDirBaseline)) {
+      if (!boats[boatId]) {
+        boats[boatId] = {
+          lastSeen: null,
+          upload: { attempts: 0, successes: 0, failures: 0, bytes: 0 },
+          pending: null,
+          pendingReportedAt: null,
+          ip: null,
+        };
+      }
+      boats[boatId].filesOnDisk = diskInfo.fileCount;
+      boats[boatId].lastUploadOnDisk = diskInfo.lastUploadAt;
+    }
+
+    return {
+      ...snapshot,
+      boats,
+      base: {
+        ip: baseIp,
+        uploadPort: config.upload.port,
+        adminPort: config.admin.port,
+        redisConnected: redisStore.isConnected(),
+      },
+      course: raceMarks ? { marks: raceMarks, boatsKnown: knownBoatIds.size } : null,
+      lapCounts,
+      redis: redisStats,
+      webhook: {
+        enabled: config.regattaup.enabled,
+        queueReady: !!lapWebhookQueue,
+      },
+    };
+  }
+
+  // Deliberately separate from getFullStats above - the map's live-refresh
+  // loop (see adminServer.js's renderMap) only ever needs each boat's
+  // last in-memory position, not the full dashboard snapshot, so this
+  // stays synchronous and never touches Redis. Polling this every 5s from
+  // however many browser tabs have the map open shouldn't cost a round
+  // trip to Redis Cloud each time just to throw away everything but
+  // lastPosition/lastSeen.
+  function getBoatPositions() {
+    const { boats } = stats.snapshot();
+    const positions = {};
+    for (const [boatId, b] of Object.entries(boats)) {
+      if (b.lastPosition) positions[boatId] = { lastPosition: b.lastPosition, lastSeen: b.lastSeen };
+    }
+    return positions;
+  }
+
+  startAdminServer({ port: config.admin.port, getStats: getFullStats, getPositions: getBoatPositions });
 
   if (config.simulate) {
     console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);

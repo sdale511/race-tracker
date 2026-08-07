@@ -8,7 +8,9 @@ const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
 const protocol = require('./protocol');
 const { distanceMeters } = require('./course');
-const { startUploadClient } = require('./uploadClient');
+const { startUploadClient, countPending } = require('./uploadClient');
+const { startRoverAdminServer } = require('./roverAdminServer');
+const roverStats = require('./roverStats');
 
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
 if (config.noGps) {
@@ -29,6 +31,19 @@ if (config.simulate) {
 } else {
   console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
 }
+
+// Short labels for the rover admin dashboard (see getRoverStats below) -
+// mirrors the startup log conditionals above without duplicating them.
+const gpsMode = config.noGps ? 'none' : config.simulateGps ? 'simulated' : 'real';
+const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
+
+// This boat's own admin dashboard port. In SIMULATE mode, defaults to a
+// different port than the base's own dashboard (config.admin.port, 8092)
+// so `npm run base` and `npm run boat` can run on the same machine without
+// an EADDRINUSE - a real deployment always has these on separate machines,
+// so config.admin.port's default is fine as-is there. An explicit
+// ADMIN_PORT env var always wins, on either side.
+const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate ? 8093 : config.admin.port;
 
 const sdLogger = new SdLogger({
   logDir: config.logDir,
@@ -78,9 +93,10 @@ try {
 // current one.
 let baseAddress = null;
 
-radio.on('marks', ({ marks, baseIp, basePort }) => {
+radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   currentMarks = marks;
-  baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort } : null;
+  baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort, adminPort: baseAdminPort } : null;
+  roverStats.recordMarksReceived();
   try {
     fs.writeFileSync(marksFilePath, JSON.stringify(marks));
   } catch (err) {
@@ -92,6 +108,8 @@ radio.on('marks', ({ marks, baseIp, basePort }) => {
   );
   startGpsSimIfReady();
 });
+
+radio.on('sync-error', () => roverStats.recordSyncError());
 
 // Pushes completed chunked SD-card logs to the base whenever it's actually
 // reachable over WiFi (see uploadClient.js) - independent of GPS
@@ -105,6 +123,7 @@ if (config.upload.enabled) {
     getBaseAddress: () => baseAddress,
     checkIntervalMs: config.upload.checkIntervalMs,
     timeoutMs: config.upload.timeoutMs,
+    adminPort: myAdminPort,
   });
 } else {
   console.log('[boatAgent] log upload disabled (UPLOAD_DISABLED=1)');
@@ -115,6 +134,7 @@ let lastPvt = null;
 
 function handlePvt(pvt) {
   lastPvt = pvt;
+  roverStats.recordFix(pvt);
   sdLogger.logPvt(pvt); // log every fix, full rate
   console.log(
     `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
@@ -132,6 +152,7 @@ function handlePvt(pvt) {
     lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
     const frame = protocol.encode(config.boatId, pvt);
     const sent = radio.send(frame);
+    if (sent) roverStats.recordFrameSent();
     if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
   }
 }
@@ -250,6 +271,37 @@ if (config.noGps) {
 } else {
   openGps();
 }
+
+// Assembles this boat's own dashboard snapshot (see roverAdminServer.js) -
+// merges the running counters in roverStats with whatever else the
+// dashboard needs that roverStats itself has no reason to track (course
+// marks, the base's address, how many chunks are still unsent).
+function getRoverStats() {
+  const snapshot = roverStats.snapshot();
+  return {
+    ...snapshot,
+    boatId: config.boatId,
+    gpsMode,
+    radioMode,
+    currentMarks,
+    marksReceivedCount: snapshot.marks.received,
+    lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
+    pendingCount: countPending(config.logDir, config.boatId, config.logChunkMinutes),
+    baseIp: baseAddress ? baseAddress.ip : null,
+    adminPort: baseAddress ? baseAddress.adminPort : null,
+  };
+}
+
+// Deliberately separate from getRoverStats above - the map's live-refresh
+// loop (see roverAdminServer.js's renderMap) only ever needs the current
+// fix, not the full dashboard snapshot, so this skips countPending's
+// fs.readdirSync entirely - no reason to re-scan the log directory every
+// 5s just to throw the result away.
+function getPosition() {
+  return lastPvt ? { lat: lastPvt.lat, lon: lastPvt.lon, timestamp: lastPvt.timestamp } : null;
+}
+
+startRoverAdminServer({ port: myAdminPort, getStats: getRoverStats, getPosition });
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
 setInterval(() => {

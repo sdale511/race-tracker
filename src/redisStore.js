@@ -242,6 +242,27 @@ class RedisStore {
     return existingKeys;
   }
 
+  // For the admin dashboard's connection indicator - ioredis's own
+  // connection state machine, exposed here rather than reaching into
+  // .client directly from outside this class.
+  isConnected() {
+    return this.client.status === 'ready';
+  }
+
+  // Cheap counts for the admin dashboard (adminServer.js) - ZCARD instead
+  // of fetching full tracks (getBoatTrack/getAllTrack), so this stays fast
+  // regardless of how much data has accumulated over a race day.
+  async getStats() {
+    await this.ready;
+    const boatIds = await this.client.smembers('boats:known');
+    const [totalTracks, perBoatCounts] = await Promise.all([
+      this.client.zcard('all:track'),
+      Promise.all(boatIds.map((id) => this.client.zcard(`boat:${id}:track`))),
+    ]);
+    const tracksByBoat = Object.fromEntries(boatIds.map((id, i) => [id, perBoatCounts[i]]));
+    return { totalTracks, boatsKnown: boatIds.length, tracksByBoat };
+  }
+
   async close() {
     await this.client.quit();
   }

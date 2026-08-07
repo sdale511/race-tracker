@@ -28,15 +28,16 @@ const simulateGps = simulate || process.env.SIMULATE_GPS === '1' || process.env.
 // boatAgent.js's GPS startup branch).
 const noGps = process.env.NO_GPS === '1' || process.env.NO_GPS === 'true';
 
-// TEST_LAP=1 (npm run base) sends one synthetic lap straight into the lap
-// webhook queue and exits, to check the queue -> RegattaUp path end to end
-// without a real or simulated race in progress. TEST_LAP_BOAT_ID/
-// TEST_LAP_NUMBER pick which boat/lap number it's sent as - a dedicated
-// pair rather than reusing BOAT_ID, since that otherwise means nothing to
-// the base station (it's a boatAgent-only concept everywhere else).
-const testLap = process.env.TEST_LAP === '1' || process.env.TEST_LAP === 'true';
+// TEST_LAP_NUMBER (npm run base) doubles as both the on/off switch and the
+// payload for this test mode - 0 (default) means off; any positive value
+// sends one synthetic lap straight into the lap webhook queue and exits,
+// reported as that lap number, to check the queue -> RegattaUp path end to
+// end without a real or simulated race in progress. TEST_LAP_BOAT_ID picks
+// which boat it's sent as - a dedicated var rather than reusing BOAT_ID,
+// since that otherwise means nothing to the base station (it's a
+// boatAgent-only concept everywhere else).
 const testLapBoatId = parseInt(process.env.TEST_LAP_BOAT_ID || '1', 10);
-const testLapNumber = parseInt(process.env.TEST_LAP_NUMBER || '1', 10);
+const testLapNumber = parseInt(process.env.TEST_LAP_NUMBER || '0', 10);
 
 // On the boat Pi, override LOG_DIR to point at the SD card mount. Default
 // is relative to this package (not the shell's cwd), so it works the same
@@ -65,7 +66,6 @@ module.exports = {
   simulate,
   simulateGps,
   noGps,
-  testLap,
   testLapBoatId,
   testLapNumber,
 
@@ -84,8 +84,8 @@ module.exports = {
     // How many laps (start/finish line crossings, finish direction) each
     // simulated boat sails before it stops.
     lapCount: parseInt(process.env.SIM_LAP_COUNT || '2', 10),
-    centerLat: parseFloat(process.env.SIM_CENTER_LAT || '40.8744'),
-    centerLon: parseFloat(process.env.SIM_CENTER_LON || '-119.2024'),
+    centerLat: parseFloat(process.env.SIM_CENTER_LAT || '40.8898'),
+    centerLon: parseFloat(process.env.SIM_CENTER_LON || '-118.3821'),
     // % chance (0-100) each frame is dropped, to simulate radio range dropouts.
     packetLossPct: parseFloat(process.env.SIM_PACKET_LOSS || '0'),
   },
@@ -187,6 +187,16 @@ module.exports = {
     // next check - keeps a boat that's just driven out of range from
     // hanging on a dead connection instead of just trying again shortly.
     timeoutMs: parseInt(process.env.UPLOAD_TIMEOUT_MS || '5000', 10),
+  },
+
+  // --- Admin dashboard (base station only) ---
+  // A small live-stats web UI (src/adminServer.js) - boats seen, tracks
+  // recorded, lap counts, upload activity, radio link quality. In-memory
+  // only (see stats.js), so it resets on restart; not a substitute for
+  // Redis/race-uploads as the durable record, just a "what's happening
+  // right now" view for whoever's running the base station.
+  admin: {
+    port: parseInt(process.env.ADMIN_PORT || '8092', 10),
   },
 
   // --- Redis (base station only) ---

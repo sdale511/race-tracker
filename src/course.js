@@ -25,6 +25,17 @@ const FEET_TO_M = 0.3048;
 // so there's exactly one place that says what marks exist and in what order.
 const MARK_NAMES = ['windward', 'leeward', 'pin', 'committee', 'finish'];
 
+// Fixed per-mark colors, shared between the base and rover admin
+// dashboards' map pages (adminServer.js, roverAdminServer.js) so markers
+// stay visually consistent between the two.
+const MARK_COLORS = {
+  windward: '#f85149',
+  leeward: '#58a6ff',
+  pin: '#e3b341',
+  committee: '#bc8cff',
+  finish: '#3fb950',
+};
+
 // The start/finish complex sits halfway between the windward/leeward marks,
 // with the committee boat in the middle of two separate sides (perpendicular
 // to the course axis, east-west) - the usual reason a committee runs two
@@ -136,6 +147,7 @@ module.exports = {
   FINISH_SIDE_LENGTH_M,
   BOAT_START_SPACING_M,
   MARK_NAMES,
+  MARK_COLORS,
   offsetToLatLon,
   distanceMeters,
   getMarks,

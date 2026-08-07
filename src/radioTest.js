@@ -43,8 +43,8 @@ if (mode === 'send') {
   setInterval(() => {
     const pvt = {
       timestamp: seq * 1000, // seq number, not a real time - see module comment
-      lat: 40.8744,
-      lon: -119.2024,
+      lat: 40.8898,
+      lon: -118.3821,
       gSpeedMmS: 5000,
       headMotDeg: 90,
       gnssFixOk: true,

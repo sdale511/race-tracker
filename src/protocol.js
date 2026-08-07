@@ -79,22 +79,26 @@ function decode(buf) {
 // course without ever needing its own Redis access - it just remembers
 // whatever the base last broadcast (see boatAgent.js's on-disk persistence).
 // Also carries the base's own IP/port for the log-upload HTTP server (see
-// uploadServer.js/uploadClient.js) - riding along on the same frame and the
-// same broadcast triggers (startup, new boat, periodic heartbeat) rather
-// than needing a separate frame type and its own broadcast-timing logic.
-// Given its own sync byte since it isn't the same length as the position
-// frame, so a byte-stream scanner (radioLink.js) can tell them apart before
-// it knows how many bytes to consume.
+// uploadServer.js/uploadClient.js), plus the port its admin dashboard
+// listens on (see adminServer.js) so a rover can link back to it (see
+// roverAdminServer.js) without assuming it matches the rover's own
+// ADMIN_PORT - riding along on the same frame and the same broadcast
+// triggers (startup, new boat, periodic heartbeat) rather than needing a
+// separate frame type and its own broadcast-timing logic. Given its own
+// sync byte since it isn't the same length as the position frame, so a
+// byte-stream scanner (radioLink.js) can tell them apart before it knows
+// how many bytes to consume.
 //
 // Layout (all little-endian), marks in MARK_NAMES order:
 //   [0]      sync byte     0xBB
 //   ...      5x { lat*1e7 int32, lon*1e7 int32 }  (40 bytes total)
 //   [41..44] base IP       4 bytes, one octet each (0.0.0.0 = unknown/none)
 //   [45..46] base upload port  uint16
-//   [47]     checksum      uint8  (sum of bytes 1..46 mod 256)
+//   [47..48] base admin port   uint16
+//   [49]     checksum      uint8  (sum of bytes 1..48 mod 256)
 
 const MARKS_SYNC = 0xbb;
-const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 1;
+const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 2 + 1;
 
 function encodeMarks(marks, baseInfo = {}) {
   const buf = Buffer.alloc(MARKS_FRAME_LEN);
@@ -111,6 +115,8 @@ function encodeMarks(marks, baseInfo = {}) {
   offset += 4;
   buf.writeUInt16LE(baseInfo.port || 0, offset);
   offset += 2;
+  buf.writeUInt16LE(baseInfo.adminPort || 0, offset);
+  offset += 2;
 
   let sum = 0;
   for (let i = 1; i < MARKS_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
@@ -119,9 +125,10 @@ function encodeMarks(marks, baseInfo = {}) {
   return buf;
 }
 
-// Returns { marks: { windward: {lat,lon}, ... }, baseIp, basePort }, or null
-// if the buffer isn't a valid marks frame. baseIp is '0.0.0.0' if the base
-// doesn't have (or hasn't been told) an address to publish.
+// Returns { marks: { windward: {lat,lon}, ... }, baseIp, basePort,
+// baseAdminPort }, or null if the buffer isn't a valid marks frame. baseIp
+// is '0.0.0.0' if the base doesn't have (or hasn't been told) an address to
+// publish.
 function decodeMarks(buf) {
   if (buf.length !== MARKS_FRAME_LEN || buf[0] !== MARKS_SYNC) return null;
 
@@ -139,8 +146,10 @@ function decodeMarks(buf) {
   const baseIp = `${buf.readUInt8(offset)}.${buf.readUInt8(offset + 1)}.${buf.readUInt8(offset + 2)}.${buf.readUInt8(offset + 3)}`;
   offset += 4;
   const basePort = buf.readUInt16LE(offset);
+  offset += 2;
+  const baseAdminPort = buf.readUInt16LE(offset);
 
-  return { marks, baseIp, basePort };
+  return { marks, baseIp, basePort, baseAdminPort };
 }
 
 module.exports = { encode, decode, FRAME_LEN, SYNC, encodeMarks, decodeMarks, MARKS_FRAME_LEN, MARKS_SYNC };

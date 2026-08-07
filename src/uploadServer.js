@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const zlib = require('zlib');
+const stats = require('./stats');
 
 // Only accepts filenames matching sdLogger.js's own naming convention
 // (boat<id>_<YYYY-MM-DDTHH-MM>.csv) - rejects anything else so this can't
@@ -25,6 +26,63 @@ function detectLocalIp() {
     }
   }
   return null;
+}
+
+// Node reports an IPv4 client connecting to a dual-stack socket as an
+// IPv4-mapped IPv6 address ("::ffff:192.168.1.42") - strip that prefix so
+// what ends up in stats.js (and any link built from it) is a plain,
+// clickable IPv4 address.
+function normalizeIp(addr) {
+  return addr && addr.startsWith('::ffff:') ? addr.slice(7) : addr;
+}
+
+// Recovers the moment a chunk filename represents
+// ("boat1_2026-08-04T17-10.csv" -> that timestamp, in ms) without a
+// filesystem call - the inverse of sdLogger.js's chunkBucket. Returns null
+// if the name doesn't match the expected shape.
+function chunkTimestampFromFilename(filename) {
+  const match = filename.match(/_(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})\.csv$/);
+  return match ? new Date(`${match[1]}:${match[2]}:00.000Z`).getTime() : null;
+}
+
+// One-time inventory of what's already sitting in race-uploads - so the
+// admin dashboard (adminServer.js) can show a boat's real uploaded history
+// (file count, most recent upload) even if the base has just restarted and
+// hasn't heard from that boat yet this session. stats.js is purely
+// in-memory and only knows about this session's activity; this is what
+// fills in everything before "now."
+//
+// Deliberately does no per-file fs.stat: race-uploads is never pruned (see
+// "Log rotation" in the README), so a long-running fleet could accumulate
+// thousands of files per boat, and statting every one synchronously at
+// startup would block the event loop for a meaningfully long time - with
+// 50 boats and a season's worth of chunks each, that's not hypothetical.
+// The chunk bucket in each filename already sorts chronologically as a
+// plain string (the same trick uploadClient.js relies on for
+// findPendingUpload), so both the file count and the most recent upload's
+// timestamp come from two readdir calls and a sort, not the filesystem -
+// cost scales with boat count, not with however many files have piled up.
+function scanUploadDir(uploadDir) {
+  const boats = {};
+  let boatDirs;
+  try {
+    boatDirs = fs.readdirSync(uploadDir, { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch (err) {
+    return boats; // doesn't exist yet - nothing's ever been uploaded
+  }
+  for (const dirEnt of boatDirs) {
+    const boatId = dirEnt.name;
+    let files;
+    try {
+      files = fs.readdirSync(path.join(uploadDir, boatId)).filter((f) => f.endsWith('.csv')); // skip stray .part leftovers
+    } catch (err) {
+      continue;
+    }
+    if (files.length === 0) continue;
+    files.sort();
+    boats[boatId] = { fileCount: files.length, lastUploadAt: chunkTimestampFromFilename(files[files.length - 1]) };
+  }
+  return boats;
 }
 
 // Receives boat log uploads over HTTP - a rover pushes one of its chunked
@@ -50,7 +108,21 @@ function startUploadServer({ port, uploadDir }) {
   fs.mkdirSync(uploadDir, { recursive: true });
 
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/health') {
+    if (req.method === 'GET' && req.url.startsWith('/health')) {
+      // Doubles as a lightweight status ping from the rover (see
+      // uploadClient.js's health check) - it piggybacks its own boatId and
+      // current pending-upload count as query params, which is the only
+      // way the base ever learns that number, since it has no visibility
+      // into what's still sitting unsent on a boat's own SD card otherwise.
+      const query = new URL(req.url, 'http://localhost').searchParams;
+      const boatId = query.get('boatId');
+      const pending = query.get('pending');
+      const adminPort = query.get('adminPort');
+      if (boatId !== null && pending !== null) {
+        stats.recordPending(boatId, parseInt(pending, 10));
+        stats.recordBoatIp(boatId, normalizeIp(req.socket.remoteAddress));
+        if (adminPort !== null) stats.recordBoatAdminPort(boatId, parseInt(adminPort, 10));
+      }
       res.writeHead(200);
       res.end('ok');
       return;
@@ -70,6 +142,9 @@ function startUploadServer({ port, uploadDir }) {
       res.end('invalid filename');
       return;
     }
+    const boatId = filenameMatch[1];
+    stats.recordUploadAttempt(boatId);
+    stats.recordBoatIp(boatId, normalizeIp(req.socket.remoteAddress));
 
     // One subdirectory per boat, named after its numeric ID (e.g.
     // race-uploads/1/boat1_2026-08-04T17-10.csv) - keeps a multi-boat
@@ -78,6 +153,7 @@ function startUploadServer({ port, uploadDir }) {
     const boatDir = path.join(uploadDir, filenameMatch[1]);
     fs.mkdirSync(boatDir, { recursive: true });
 
+    const receiveStart = Date.now();
     const finalPath = path.join(boatDir, filename);
     const partPath = `${finalPath}.part`;
     const out = fs.createWriteStream(partPath);
@@ -85,6 +161,7 @@ function startUploadServer({ port, uploadDir }) {
 
     const onError = (stage) => (err) => {
       console.error(`[uploadServer] ${stage} failed for ${filename}:`, err.message);
+      stats.recordUploadFailure(boatId);
       if (!res.headersSent) {
         res.writeHead(500);
         res.end();
@@ -114,13 +191,17 @@ function startUploadServer({ port, uploadDir }) {
       fs.rename(partPath, finalPath, (err) => {
         if (err) {
           console.error(`[uploadServer] failed to finalize ${filename}:`, err.message);
+          stats.recordUploadFailure(boatId);
           if (!res.headersSent) {
             res.writeHead(500);
             res.end();
           }
           return;
         }
-        console.log(`[uploadServer] received ${filename} (${fs.statSync(finalPath).size} bytes)`);
+        const bytes = fs.statSync(finalPath).size;
+        const durationS = ((Date.now() - receiveStart) / 1000).toFixed(2);
+        stats.recordUploadSuccess(boatId, bytes);
+        console.log(`[uploadServer] ${new Date().toISOString()} received ${filename} (${bytes} bytes, ${durationS}s)`);
         res.writeHead(200);
         res.end('ok');
       });
@@ -135,6 +216,7 @@ function startUploadServer({ port, uploadDir }) {
         // `out` here means it never reaches 'finish' above, so no rename
         // happens - the stale .part file just gets overwritten by the
         // next retry.
+        stats.recordUploadFailure(boatId);
         out.destroy();
         if (gunzip) gunzip.destroy();
         fs.unlink(partPath, () => {});
@@ -148,4 +230,4 @@ function startUploadServer({ port, uploadDir }) {
   return server;
 }
 
-module.exports = { startUploadServer, detectLocalIp, VALID_FILENAME };
+module.exports = { startUploadServer, detectLocalIp, scanUploadDir, VALID_FILENAME };
