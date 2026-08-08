@@ -140,7 +140,8 @@ attached. In this mode:
   windward-leeward course around a configurable center point - beating
   upwind on alternating tacks, running downwind on alternating gybes, with
   randomized leg lengths so no two laps look the same - in place of the real
-  UBX-NAV-PVT parser.
+  UBX-NAV-PVT parser. Always races the green (short-course) marks - see
+  "Changing the course" below.
 - `src/simRadioLink.js` replaces the serial radio link with a shared UDP
   broadcast socket carrying the exact same frames (`src/protocol.js`), so
   the real encode/decode/checksum path is still exercised end to end — just
@@ -199,7 +200,8 @@ output all work exactly as they would with real hardware.
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
 | `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8898` / `-118.3821` | Center point of the simulated racecourse - setting either clears any already-published course marks on startup so the new center actually takes effect (see "Changing the course" below), same as `SIM_COURSE_LENGTH_NM` below |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
-| `SIM_COURSE_LENGTH_NM` | 1 | Leeward-to-windward distance in nautical miles - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect (see "Changing the course" below) |
+| `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect |
+| `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end - reference only, the simulator never races them. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
@@ -374,21 +376,39 @@ want cleared.
 
 ### Changing the course
 
+The course has seven marks (`src/course.js`'s `MARK_NAMES`): `pin`,
+`committee`, and `finish` make up the start/finish complex, and there are
+two windward marks and two leeward marks - a closer **green** pair (the
+short course) and a further-out **black** pair (the long course), matching
+how a real committee lays two mark pairs on the same axis so either course
+can be called without re-laying anything. `windwardGreen`/`leewardGreen`
+are exactly what a single "windward"/"leeward" mark used to mean in this
+app (same position, same meaning) - `windwardBlack`/`leewardBlack` are new,
+sitting `SIM_LONG_COURSE_EXTRA_NM` (default 0.25nm) further out beyond each
+green mark, on the far side from the start/finish complex. **The simulator
+(`simGps.js`) always races the green marks** - the black ones are published
+for reference only, same as `pin`/`committee`/`finish` are never targeted
+directly by the tacking logic.
+
 ```
 npm run clear-course
 ```
 
-Deletes the five `mark:*` keys so the next `base` run recomputes and
+Deletes all seven `mark:*` keys so the next `base` run recomputes and
 republishes the course from scratch instead of reusing whatever's already
 there. Boat tracks are left untouched — pair with `npm run clear-boats` if
 you want those cleared too. You normally don't need to run this yourself
-when changing `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, or
-`SIM_CENTER_LON`: `base` checks the *actual* published course against what
-you've requested on startup, and only clears/recomputes if they genuinely
-differ - not just because one of those env vars happens to be set. That
-makes it safe to restart `base` repeatedly with the same settings (a
-normal thing to do) without it re-clearing and re-broadcasting the course
-every time; it only touches Redis when something has actually changed.
+when changing `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`, or
+`SIM_LONG_COURSE_EXTRA_NM`: `base` checks the *actual* published course
+against what you've requested on startup, and only clears/recomputes if
+they genuinely differ - not just because one of those env vars happens to
+be set. That makes it safe to restart `base` repeatedly with the same
+settings (a normal thing to do) without it re-clearing and re-broadcasting
+the course every time; it only touches Redis when something has actually
+changed. (If you're upgrading from a version of this app that only had a
+single windward/leeward mark, a boat's old `course_marks.json` cache in
+that shape is detected and ignored automatically - no crash, it just waits
+for a fresh broadcast in the current shape.)
 
 ### Broadcasting marks to the rovers
 
@@ -546,10 +566,12 @@ card.
 
 Once the course marks are known, the dashboard also shows a compact
 lat/lon table for them, plus a "map ↗" link (`GET /map`) to a full-page
-map view - the five marks plotted over satellite imagery (not a street
+map view - all seven marks plotted over satellite imagery (not a street
 basemap - these courses are typically raced on a dry lake bed with no
-roads or buildings for a vector basemap to draw), with the start line
-(pin↔committee) and finish gate (committee↔finish) drawn in, auto-fit to
+roads or buildings for a vector basemap to draw), black marks rendered
+with a light outline so they don't disappear against the dark UI/imagery,
+with the start line (pin↔committee) and finish gate (committee↔finish)
+drawn in, auto-fit to
 the course's extent. It pulls map tiles from a public CDN (Esri World
 Imagery) at request time, so the browser viewing it needs internet
 access - the base station's own connectivity for publishing marks/tracks

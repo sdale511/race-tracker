@@ -89,13 +89,17 @@ function decode(buf) {
 // byte-stream scanner (radioLink.js) can tell them apart before it knows
 // how many bytes to consume.
 //
-// Layout (all little-endian), marks in MARK_NAMES order:
-//   [0]      sync byte     0xBB
-//   ...      5x { lat*1e7 int32, lon*1e7 int32 }  (40 bytes total)
-//   [41..44] base IP       4 bytes, one octet each (0.0.0.0 = unknown/none)
-//   [45..46] base upload port  uint16
-//   [47..48] base admin port   uint16
-//   [49]     checksum      uint8  (sum of bytes 1..48 mod 256)
+// Layout (all little-endian), marks in MARK_NAMES order (currently 7:
+// windwardGreen/windwardBlack/leewardGreen/leewardBlack/pin/committee/
+// finish - see course.js):
+//   [0]  sync byte     0xBB
+//   ...  MARK_NAMES.length x { lat*1e7 int32, lon*1e7 int32 }  (8 bytes each)
+//   ...  base IP       4 bytes, one octet each (0.0.0.0 = unknown/none)
+//   ...  base upload port  uint16
+//   ...  base admin port   uint16
+//   [last] checksum     uint8  (sum of all preceding bytes mod 256)
+// Total length is MARKS_FRAME_LEN below - deliberately not hardcoded here
+// as fixed byte offsets, since it shifts whenever MARK_NAMES grows/shrinks.
 
 const MARKS_SYNC = 0xbb;
 const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 2 + 1;

@@ -2,7 +2,7 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
-const { distanceMeters, COURSE_LENGTH_M, MARK_NAMES } = require('./course');
+const { distanceMeters, COURSE_LENGTH_M, LONG_COURSE_EXTRA_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
@@ -197,12 +197,17 @@ function main() {
         const existing = await redisStore.getMarks();
         const hasExisting = MARK_NAMES.every((name) => existing[name]);
         const centerMatches =
-          hasExisting && distanceMeters(existing.leeward, { lat: config.sim.centerLat, lon: config.sim.centerLon }) < 0.1;
-        const lengthMatches = hasExisting && Math.abs(distanceMeters(existing.leeward, existing.windward) - COURSE_LENGTH_M) < 0.1;
-        const requestedChange = ['SIM_COURSE_LENGTH_NM', 'SIM_CENTER_LAT', 'SIM_CENTER_LON'].some(
+          hasExisting &&
+          distanceMeters(existing.leewardGreen, { lat: config.sim.centerLat, lon: config.sim.centerLon }) < 0.1;
+        const lengthMatches =
+          hasExisting && Math.abs(distanceMeters(existing.leewardGreen, existing.windwardGreen) - COURSE_LENGTH_M) < 0.1;
+        const longCourseMatches =
+          hasExisting &&
+          Math.abs(distanceMeters(existing.windwardGreen, existing.windwardBlack) - LONG_COURSE_EXTRA_M) < 0.1;
+        const requestedChange = ['SIM_COURSE_LENGTH_NM', 'SIM_CENTER_LAT', 'SIM_CENTER_LON', 'SIM_LONG_COURSE_EXTRA_NM'].some(
           (name) => process.env[name] !== undefined
         );
-        if (requestedChange && !(centerMatches && lengthMatches)) {
+        if (requestedChange && !(centerMatches && lengthMatches && longCourseMatches)) {
           await redisStore.clearCourseMarks();
           console.log('[baseStation] requested course differs from what\'s published - cleared old marks so they get recomputed');
         }

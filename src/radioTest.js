@@ -13,6 +13,15 @@ const protocol = require('./protocol');
 //   RADIO_TEST_MODE=send   RADIO_PORT=/dev/cu.usbserial-A npm run radio-test
 //   RADIO_TEST_MODE=listen RADIO_PORT=/dev/cu.usbserial-B npm run radio-test
 //
+// `send` mode only ever emits synthetic position frames (boat -> base
+// direction) - it doesn't send marks, since marks are base-station-
+// generated (course.js/redisStore.js), not something this bench test has
+// any business fabricating. `listen` mode does report both frame types
+// though: position frames (as before) and, separately, any marks frame it
+// receives - useful for isolating a real base -> boat marks-broadcast
+// problem from a boat -> base position-frame problem, since they're
+// different frame types/directions that can fail independently.
+//
 // `ls /dev/cu.*` before/after plugging in each radio to find its device
 // path. RADIO_BAUD must match what's actually configured on both radios
 // (9600 for a factory-default XBee SX, see README's "Radio configuration").
@@ -74,6 +83,18 @@ if (mode === 'send') {
     }
     lastSeq = seq;
     console.log(`[radioTest] received seq=${seq} from boatId=${decoded.boatId} carrSoln=${decoded.carrSoln}${note}`);
+  });
+
+  // The other frame type sharing this link (base -> boats course marks, see
+  // radioLink.js's FRAME_TYPES) - a separate event from 'frame' above, so a
+  // listener testing base->boat reception specifically (not just boat->base
+  // position frames) has something to actually watch for. Previously this
+  // tool had no handler for it at all, so "not seeing marks in radio-test"
+  // proved nothing either way about whether marks were actually arriving.
+  radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
+    console.log(
+      `[radioTest] received marks: ${Object.keys(marks).join(', ')}, base ${baseIp}:${basePort} (admin :${baseAdminPort})`
+    );
   });
 
   // Distinct from `missed` above: a missed seq means a frame never arrived

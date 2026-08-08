@@ -1,6 +1,6 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS } = require('./course');
+const { MARK_NAMES, MARK_COLORS, markStroke } = require('./course');
 const { renderConfigPage } = require('./configReport');
 
 // A boat is "online" if we've heard a position frame from it recently - a
@@ -101,13 +101,18 @@ function renderDashboard(s) {
   .card .label { color: #8b94a3; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
   .card .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .card .sub { color: #8b94a3; font-size: 12px; margin-top: 4px; }
+  .marks-card { grid-column: span 2; }
+  .marks-mini { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+  .marks-mini .mark-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+  .marks-mini .mark-row .name { flex-shrink: 0; }
+  .marks-mini .mark-row .coords { color: #8b94a3; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
   section { margin-bottom: 28px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #262c36; border-radius: 10px; overflow: hidden; }
   th, td { text-align: left; padding: 10px 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
   th { color: #8b94a3; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid #262c36; }
   tr:not(:last-child) td { border-bottom: 1px solid #1c222b; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
   .dot-green { background: #3fb950; box-shadow: 0 0 6px #3fb95080; }
   .dot-gray { background: #4b535e; }
   .dot-red { background: #f85149; box-shadow: 0 0 6px #f8514980; }
@@ -125,6 +130,7 @@ function renderDashboard(s) {
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
     &nbsp;·&nbsp; refreshes every 5s
     &nbsp;·&nbsp; <a href="/config">config</a>
+    ${s.course ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
   </div>
 
   <div class="grid">
@@ -164,33 +170,27 @@ function renderDashboard(s) {
     <div class="card">
       <div class="label">Course</div>
       <div class="value">${s.course ? 'set' : 'none'}</div>
-      <div class="sub">${
-        s.course
-          ? `${Object.keys(s.course.marks).length} marks published &nbsp;·&nbsp; <a href="/map">map ↗</a>`
-          : 'waiting for marks'
-      }</div>
+      <div class="sub">${s.course ? `${Object.keys(s.course.marks).length} marks published` : 'waiting for marks'}</div>
     </div>
+    ${
+      s.course
+        ? `<div class="card marks-card">
+      <div class="label">Course marks</div>
+      <div class="marks-mini">
+        ${MARK_NAMES.map((name) => {
+          const m = s.course.marks[name];
+          return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span></div>`;
+        }).join('')}
+      </div>
+    </div>`
+        : ''
+    }
     <div class="card">
       <div class="label">RegattaUp webhook</div>
       <div class="value">${s.webhook.enabled ? 'on' : 'off'}</div>
       <div class="sub">${s.webhook.queueReady ? 'queue ready' : 'queue initializing'}</div>
     </div>
   </div>
-
-  ${
-    s.course
-      ? `<section>
-    <h2>Course marks</h2>
-    <table>
-      <thead><tr><th>Mark</th><th>Lat</th><th>Lon</th></tr></thead>
-      <tbody>${MARK_NAMES.map((name) => {
-        const m = s.course.marks[name];
-        return `<tr><td><span class="dot" style="background:${MARK_COLORS[name]}"></span>${name}</td><td>${m.lat.toFixed(6)}</td><td>${m.lon.toFixed(6)}</td></tr>`;
-      }).join('')}</tbody>
-    </table>
-  </section>`
-      : ''
-  }
 
   <section>
     <h2>Fleet</h2>
@@ -242,7 +242,7 @@ function renderMap(s) {
   const marks = s.course.marks;
   const markersJs = MARK_NAMES.map(
     (name) =>
-      `L.circleMarker([${marks[name].lat}, ${marks[name].lon}], { radius: 8, color: '${MARK_COLORS[name]}', weight: 2, fillColor: '${MARK_COLORS[name]}', fillOpacity: 0.85 })
+      `L.circleMarker([${marks[name].lat}, ${marks[name].lon}], { radius: 8, color: '${markStroke(name)}', weight: 2, fillColor: '${MARK_COLORS[name]}', fillOpacity: 0.85 })
         .addTo(map)
         .bindTooltip('${name}', { permanent: true, direction: 'top', offset: [0, -8], className: 'mark-label' });`
   ).join('\n    ');
@@ -334,9 +334,12 @@ function renderMap(s) {
     // Start line (pin <-> committee) and finish gate (committee <-> finish).
     L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committee.lat}, ${marks.committee.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
     L.polyline([[${marks.committee.lat}, ${marks.committee.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
-    // Course axis (leeward <-> windward) - just a visual reference; boats
-    // actually tack back and forth across this, not sail it directly.
-    L.polyline([[${marks.leeward.lat}, ${marks.leeward.lon}], [${marks.windward.lat}, ${marks.windward.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
+    // Course axis (leewardBlack <-> windwardBlack) - just a visual
+    // reference; boats actually tack back and forth across this, not sail
+    // it directly. Drawn between the black (outer) marks rather than the
+    // green ones since both pairs sit on the same axis - one line covers
+    // the full extent, green marks included, since they fall on it too.
+    L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
 
     // Capped below the tile layer's own maxZoom so a very short course
     // (e.g. a shrunk SIM_COURSE_LENGTH_NM test course) doesn't fit so

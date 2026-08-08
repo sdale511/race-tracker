@@ -13,28 +13,58 @@ const NM_TO_M = 1852;
 // takes several real minutes even at raised sim speeds) - read directly
 // here rather than via config.js since this fixes the course geometry once
 // at process start for both boatAgent.js and baseStation.js, same as every
-// other constant in this file.
+// other constant in this file. This is specifically the green-mark
+// (short-course) distance - see the windward/leeward pair comment below.
 const COURSE_LENGTH_NM = parseFloat(process.env.SIM_COURSE_LENGTH_NM || '1');
 const COURSE_LENGTH_M = COURSE_LENGTH_NM * NM_TO_M;
 const WIND_FROM_DEG = 0; // wind blows from true north, down the course axis
 
 const FEET_TO_M = 0.3048;
 
+// Real committee-run courses typically lay out two windward marks and two
+// leeward marks on the same north-south axis - a closer "green" pair (the
+// short course) and a further-out "black" pair (the long course), so the
+// committee can call either course depending on conditions without
+// re-laying marks. SIM_LONG_COURSE_EXTRA_NM is how much further out the
+// black marks sit beyond the green ones, on each end - black windward
+// extends COURSE_LENGTH_M + this beyond leewardGreen, black leeward sits
+// this far on the far side of leewardGreen (away from the start/finish
+// complex). The simulator always races the green marks (see
+// boatAgent.js/simGps.js) - black marks are published for reference only,
+// same as pin/committee/finish are never targeted by the tacking logic
+// directly.
+const LONG_COURSE_EXTRA_NM = parseFloat(process.env.SIM_LONG_COURSE_EXTRA_NM || '0.25');
+const LONG_COURSE_EXTRA_M = LONG_COURSE_EXTRA_NM * NM_TO_M;
+
 // Canonical mark list/order - shared by redisStore.js (Redis key names),
 // protocol.js (the base's mark-broadcast radio frame), and getMarks() below,
 // so there's exactly one place that says what marks exist and in what order.
-const MARK_NAMES = ['windward', 'leeward', 'pin', 'committee', 'finish'];
+const MARK_NAMES = ['windwardGreen', 'windwardBlack', 'leewardGreen', 'leewardBlack', 'pin', 'committee', 'finish'];
 
 // Fixed per-mark colors, shared between the base and rover admin
 // dashboards' map pages (adminServer.js, roverAdminServer.js) so markers
-// stay visually consistent between the two.
+// stay visually consistent between the two. Green/black marks are colored
+// to match their real on-the-water color, not an arbitrary UI choice - a
+// green windward and green leeward mark are the same color for the same
+// reason they are on the water: position (top vs bottom of the course)
+// tells them apart, not color.
 const MARK_COLORS = {
-  windward: '#f85149',
-  leeward: '#58a6ff',
+  windwardGreen: '#3fb950',
+  windwardBlack: '#000000',
+  leewardGreen: '#3fb950',
+  leewardBlack: '#000000',
   pin: '#e3b341',
   committee: '#bc8cff',
-  finish: '#3fb950',
+  finish: '#58a6ff',
 };
+
+// A pure black dot/marker would disappear against this app's dark UI (map
+// tiles, dashboard cards) - black marks get a light stroke so they stay
+// visible; every other mark's stroke just matches its own fill, which
+// renders as no visible border at all.
+function markStroke(name) {
+  return name.endsWith('Black') ? '#e6e9ef' : MARK_COLORS[name];
+}
 
 // The start/finish complex sits halfway between the windward/leeward marks,
 // with the committee boat in the middle of two separate sides (perpendicular
@@ -73,15 +103,22 @@ function distanceMeters(a, b) {
   return Math.sqrt(north * north + east * east);
 }
 
-// The leeward mark sits at the configured center point (SIM_CENTER_LAT/LON);
-// the windward mark is COURSE_LENGTH_M due north of it. `committee` sits on
-// the course's rhumb line at the start/finish complex's north position;
-// `pin` is START_SIDE_LENGTH_M to its west (the start side), `finish` is
-// FINISH_SIDE_LENGTH_M to its east (the finish side).
+// The green leeward mark sits exactly at the configured center point
+// (SIM_CENTER_LAT/LON) - this is the one point that hasn't moved as this
+// function grew from a single windward/leeward pair to green+black pairs,
+// so SIM_CENTER_LAT/LON keeps meaning exactly what it always has. Green
+// windward is COURSE_LENGTH_M due north of it (the short course); black
+// windward/leeward extend LONG_COURSE_EXTRA_M further out on each end (the
+// long course), on the same north-south axis. `committee` sits on that
+// same axis at the start/finish complex's position (halfway up the green
+// course); `pin` is START_SIDE_LENGTH_M to its west (the start side),
+// `finish` is FINISH_SIDE_LENGTH_M to its east (the finish side).
 function getMarks(centerLat, centerLon) {
   return {
-    leeward: offsetToLatLon(centerLat, centerLon, { north: 0, east: 0 }),
-    windward: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M, east: 0 }),
+    leewardGreen: offsetToLatLon(centerLat, centerLon, { north: 0, east: 0 }),
+    leewardBlack: offsetToLatLon(centerLat, centerLon, { north: -LONG_COURSE_EXTRA_M, east: 0 }),
+    windwardGreen: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M, east: 0 }),
+    windwardBlack: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M + LONG_COURSE_EXTRA_M, east: 0 }),
     committee: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: 0 }),
     pin: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: -START_SIDE_LENGTH_M }),
     finish: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: FINISH_SIDE_LENGTH_M }),
@@ -122,10 +159,12 @@ function getStartPosition(slotIndex, geometry) {
 // them some other way entirely). Every simulator-side geometry decision
 // (tacking, mark rounding, gate targeting) should follow whatever the marks
 // actually say, not this process's own environment - that's the only way
-// a boat and the marks it's racing against are guaranteed to agree.
+// a boat and the marks it's racing against are guaranteed to agree. Always
+// measured off the green marks - the simulator never races the black
+// (long-course) marks, see getMarks' own comment.
 function deriveGeometry(marks) {
-  const courseLengthM = distanceMeters(marks.leeward, marks.windward);
-  const startLineNorthM = distanceMeters(marks.leeward, marks.committee);
+  const courseLengthM = distanceMeters(marks.leewardGreen, marks.windwardGreen);
+  const startLineNorthM = distanceMeters(marks.leewardGreen, marks.committee);
   const startSideLengthM = distanceMeters(marks.committee, marks.pin);
   const finishSideLengthM = distanceMeters(marks.committee, marks.finish);
   // Boat-to-boat start spacing isn't a mark - keep it proportional to the
@@ -141,6 +180,8 @@ module.exports = {
   NM_TO_M,
   COURSE_LENGTH_NM,
   COURSE_LENGTH_M,
+  LONG_COURSE_EXTRA_NM,
+  LONG_COURSE_EXTRA_M,
   WIND_FROM_DEG,
   START_LINE_NORTH_M,
   START_SIDE_LENGTH_M,
@@ -148,6 +189,7 @@ module.exports = {
   BOAT_START_SPACING_M,
   MARK_NAMES,
   MARK_COLORS,
+  markStroke,
   offsetToLatLon,
   distanceMeters,
   getMarks,

@@ -1,6 +1,6 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS } = require('./course');
+const { MARK_NAMES, MARK_COLORS, markStroke } = require('./course');
 const { renderConfigPage } = require('./configReport');
 
 // Renders the boat's own dashboard server-side from one stats snapshot (see
@@ -15,12 +15,6 @@ function renderDashboard(s) {
   const fixStale = fixAgeMs == null || fixAgeMs > 10000;
 
   const baseReachable = s.upload.lastHealthCheckOkAt && Date.now() - s.upload.lastHealthCheckOkAt < 60000;
-
-  const marksRows = s.currentMarks
-    ? Object.entries(s.currentMarks)
-        .map(([name, pos]) => `<tr><td>${name}</td><td>${pos.lat.toFixed(6)}</td><td>${pos.lon.toFixed(6)}</td></tr>`)
-        .join('')
-    : '';
 
   return `<!doctype html>
 <html>
@@ -51,13 +45,18 @@ function renderDashboard(s) {
   .card .label { color: #8b94a3; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
   .card .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .card .sub { color: #8b94a3; font-size: 12px; margin-top: 4px; }
+  .marks-card { grid-column: span 2; }
+  .marks-mini { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+  .marks-mini .mark-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+  .marks-mini .mark-row .name { flex-shrink: 0; }
+  .marks-mini .mark-row .coords { color: #8b94a3; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
   section { margin-bottom: 28px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #262c36; border-radius: 10px; overflow: hidden; }
   th, td { text-align: left; padding: 10px 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
   th { color: #8b94a3; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid #262c36; }
   tr:not(:last-child) td { border-bottom: 1px solid #1c222b; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
   .dot-green { background: #3fb950; box-shadow: 0 0 6px #3fb95080; }
   .dot-gray { background: #4b535e; }
   .dot-red { background: #f85149; box-shadow: 0 0 6px #f8514980; }
@@ -75,6 +74,7 @@ function renderDashboard(s) {
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; refreshes every 5s
     &nbsp;·&nbsp; <a href="/config">config</a>
+    ${s.currentMarks || fix ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
     ${s.baseIp ? `&nbsp;·&nbsp; <a href="http://${s.baseIp}:${s.adminPort}/" target="_blank" rel="noopener">base dashboard ↗</a>` : ''}
   </div>
 
@@ -92,11 +92,21 @@ function renderDashboard(s) {
     <div class="card">
       <div class="label">Course</div>
       <div class="value">${s.currentMarks ? 'known' : 'waiting'}</div>
-      <div class="sub">
-        ${s.marksReceivedCount} broadcasts received, last ${formatAgo(s.lastMarksReceivedAt)}
-        ${s.currentMarks || fix ? `&nbsp;·&nbsp; <a href="/map">map ↗</a>` : ''}
-      </div>
+      <div class="sub">${s.marksReceivedCount} broadcasts received, last ${formatAgo(s.lastMarksReceivedAt)}</div>
     </div>
+    ${
+      s.currentMarks
+        ? `<div class="card marks-card">
+      <div class="label">Course marks</div>
+      <div class="marks-mini">
+        ${MARK_NAMES.map((name) => {
+          const m = s.currentMarks[name];
+          return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span></div>`;
+        }).join('')}
+      </div>
+    </div>`
+        : ''
+    }
     <div class="card">
       <div class="label">Frames sent</div>
       <div class="value">${s.radio.framesSent.toLocaleString()}</div>
@@ -123,18 +133,6 @@ function renderDashboard(s) {
       <div class="sub">${pct(s.upload.successes, s.upload.attempts)} success rate, ${s.upload.failures} failures</div>
     </div>
   </div>
-
-  <section>
-    <h2>Course marks</h2>
-    ${
-      marksRows
-        ? `<table>
-      <thead><tr><th>Mark</th><th>Lat</th><th>Lon</th></tr></thead>
-      <tbody>${marksRows}</tbody>
-    </table>`
-        : '<div class="card empty">No course marks received yet.</div>'
-    }
-  </section>
 </body>
 </html>`;
 }
@@ -177,7 +175,7 @@ function renderMap(s) {
   const markersJs = marks
     ? MARK_NAMES.map(
         (name) =>
-          `L.circleMarker([${marks[name].lat}, ${marks[name].lon}], { radius: 8, color: '${MARK_COLORS[name]}', weight: 2, fillColor: '${MARK_COLORS[name]}', fillOpacity: 0.85 })
+          `L.circleMarker([${marks[name].lat}, ${marks[name].lon}], { radius: 8, color: '${markStroke(name)}', weight: 2, fillColor: '${MARK_COLORS[name]}', fillOpacity: 0.85 })
         .addTo(map)
         .bindTooltip('${name}', { permanent: true, direction: 'top', offset: [0, -8], className: 'mark-label' });`
       ).join('\n    ')
@@ -186,7 +184,7 @@ function renderMap(s) {
     ? `
     L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committee.lat}, ${marks.committee.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
     L.polyline([[${marks.committee.lat}, ${marks.committee.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
-    L.polyline([[${marks.leeward.lat}, ${marks.leeward.lon}], [${marks.windward.lat}, ${marks.windward.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);`
+    L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);`
     : '';
   const boatMarkerJs = fix
     ? `boatMarker = L.circleMarker([${fix.lat}, ${fix.lon}], { radius: 7, color: '#ffffff', weight: 2, fillColor: '${fixStale ? '#8b94a3' : '#3fb950'}', fillOpacity: 0.9 })

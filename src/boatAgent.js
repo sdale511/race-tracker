@@ -7,7 +7,7 @@ const { UbxParser } = require('./ubxParser');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
 const protocol = require('./protocol');
-const { distanceMeters } = require('./course');
+const { distanceMeters, MARK_NAMES } = require('./course');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const roverStats = require('./roverStats');
@@ -79,8 +79,19 @@ if (config.simulate) {
 const marksFilePath = path.join(config.logDir, 'course_marks.json');
 let currentMarks = null;
 try {
-  currentMarks = JSON.parse(fs.readFileSync(marksFilePath, 'utf8'));
-  console.log(`[boatAgent] loaded last-known course marks from disk: ${Object.keys(currentMarks).join(', ')}`);
+  const loaded = JSON.parse(fs.readFileSync(marksFilePath, 'utf8'));
+  // Reject a cache written by an older version of this app whose mark
+  // schema doesn't match the current one (e.g. before green/black mark
+  // pairs existed) - trusting it as-is would crash deriveGeometry on a
+  // missing property the moment startGpsSimIfReady runs. Treat it the
+  // same as no cache at all: wait for the next broadcast to write a
+  // fresh one in the current shape.
+  if (MARK_NAMES.every((name) => loaded[name])) {
+    currentMarks = loaded;
+    console.log(`[boatAgent] loaded last-known course marks from disk: ${Object.keys(currentMarks).join(', ')}`);
+  } else {
+    console.log('[boatAgent] persisted course marks on disk are in an outdated format - ignoring, waiting for a fresh broadcast');
+  }
 } catch (err) {
   if (err.code !== 'ENOENT') console.error('[boatAgent] failed to read persisted course marks:', err.message);
 }
@@ -219,11 +230,14 @@ function startGpsSimIfReady() {
 
   console.log(`[boatAgent] starting simulated GPS, course marks: ${Object.keys(currentMarks).join(', ')}, start slot: ${startSlot}`);
 
-  // The leeward mark *is* the course's center/reference point by
+  // The green leeward mark *is* the course's center/reference point by
   // construction (course.js), so it's exactly what SimGpsSource needs.
+  // The simulator always races the green (short-course) marks - never the
+  // black (long-course) ones, which exist only for reference (see
+  // course.js's getMarks comment).
   const gps = new SimGpsSource({
-    centerLat: currentMarks.leeward.lat,
-    centerLon: currentMarks.leeward.lon,
+    centerLat: currentMarks.leewardGreen.lat,
+    centerLon: currentMarks.leewardGreen.lon,
     upwindSpeedKn: config.sim.upwindSpeedKn,
     downwindSpeedKn: config.sim.downwindSpeedKn,
     hz: config.sim.gpsHz,
