@@ -2,7 +2,7 @@
 
 Reports GPS position from a boat (Pi Zero 2 W + simpleRTK2B LR) to a shore/
 committee base station over a long-range telemetry radio (>2 mi), with
-full-rate logging to microSD as a durable backup.
+logging to microSD as a durable backup.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ full-rate logging to microSD as a durable backup.
 [simpleRTK2B LR]--UART-->[Pi Zero 2 W]--UART-->[Telemetry radio]==RF==>[Telemetry radio]--UART-->[Base station]--> race software
                               |
                               v
-                          microSD (CSV, every fix)
+                    microSD (CSV, same fixes sent over radio)
 ```
 
 - **GPS**: ZED-F9P emits `UBX-NAV-PVT` binary messages (position, speed,
@@ -20,8 +20,12 @@ full-rate logging to microSD as a durable backup.
   SiK, etc). Bytes written to the boat-side UART come out the base-side UART.
   A compact 23-byte binary frame (`src/protocol.js`) is used to minimize
   airtime.
-- **SD log**: every GPS fix is logged to CSV regardless of radio status, so a
-  dropped radio link never loses data — only live tracking is affected.
+- **SD log**: a fix is logged to CSV exactly when it also clears the
+  `TX_DISTANCE_M` threshold (same gate as the radio send, see below) - the
+  SD record mirrors what actually got transmitted rather than keeping an
+  independent full-rate trace, so a dropped radio link never loses data
+  the boat itself considered worth sending - only live tracking is
+  affected, not the durable record.
 
 ## Wiring notes
 
@@ -658,7 +662,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
-| `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio (SD log is always full-rate) — distance-based, not time-based, so a stopped boat doesn't keep re-sending the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
+| `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 | `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |

@@ -146,7 +146,6 @@ let lastPvt = null;
 function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
-  sdLogger.logPvt(pvt); // log every fix, full rate
   console.log(
     `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
       `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
@@ -157,10 +156,15 @@ function handlePvt(pvt) {
   // moved TX_DISTANCE_M since the last transmitted fix, regardless of how
   // long that took - a stopped or barely-drifting boat doesn't need to
   // keep re-transmitting the same position on a timer, and a fast-moving
-  // one gets updates as often as its own movement actually warrants.
+  // one gets updates as often as its own movement actually warrants. The
+  // SD log follows the exact same gate rather than logging every fix -
+  // the SD record is meant to mirror what actually went out over the
+  // radio, not a separate full-rate trace, so a fix that wouldn't have
+  // been worth transmitting isn't worth logging either.
   const movedM = lastTxPosition ? distanceMeters(lastTxPosition, pvt) : Infinity;
   if (movedM >= config.txDistanceM) {
     lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
+    sdLogger.logPvt(pvt);
     const frame = protocol.encode(config.boatId, pvt);
     const sent = radio.send(frame);
     if (sent) roverStats.recordFrameSent();
