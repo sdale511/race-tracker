@@ -197,6 +197,28 @@ function renderMap(s) {
     ...(fix ? [`[${fix.lat}, ${fix.lon}]`] : []),
   ];
 
+  // Editing only makes sense once this boat actually knows a course to
+  // edit, and only works when it knows where to send the edit - a real
+  // rover has no Redis access of its own (see baseStation.js's
+  // mark-broadcast comment), so "Set" here doesn't write anything
+  // locally, it POSTs to the base's own /api/marks/:name cross-origin
+  // (see the base admin/adminPort learned from the marks broadcast,
+  // same address already used for the "base dashboard" link above) -
+  // only reachable when this boat currently has WiFi connectivity to the
+  // base, same requirement as log uploads.
+  const canEditMarks = !!marks && !!s.baseIp;
+  const markSetRowsHtml = canEditMarks
+    ? MARK_NAMES.map(
+        (name) =>
+          `<div class="mark-set-row">
+        <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
+        <span class="name">${name}</span>
+        <button type="button" class="set-mark-btn" data-mark="${name}">Set</button>
+      </div>`
+      ).join('')
+    : '';
+  const markBoundsJs = marks ? `[${MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`).join(', ')}]` : '[]';
+
   return `<!doctype html>
 <html>
 <head>
@@ -205,7 +227,7 @@ function renderMap(s) {
 <title>boat ${s.boatId} map</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <style>
-  html, body, #map { height: 100%; margin: 0; background: #0f1216; }
+  html, body { height: 100%; margin: 0; background: #0f1216; }
   .topbar {
     position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
     display: flex; align-items: center; gap: 14px;
@@ -223,12 +245,62 @@ function renderMap(s) {
   .topbar .spacer { flex: 1; }
   .refresh-toggle { display: flex; align-items: center; gap: 6px; color: #8b94a3; cursor: pointer; user-select: none; }
   .refresh-toggle input { accent-color: #3fb950; cursor: pointer; }
+  #editToggle { accent-color: #e3b341; }
   .mark-label {
     background: #161b22; border: 1px solid #262c36; color: #e6e9ef;
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
     padding: 2px 6px; border-radius: 4px;
   }
   .leaflet-tooltip.mark-label::before { display: none; }
+
+  /* Edit mode - see the matching block in adminServer.js's renderMap for
+     the overall design (a map area that shrinks for a column of "set
+     this mark here" buttons, plus a crosshair fixed at its exact
+     center). */
+  .main { position: absolute; inset: 0; display: flex; }
+  .map-wrap { position: relative; flex: 1; min-width: 0; }
+  #map { position: absolute; inset: 0; }
+  .crosshair {
+    position: absolute; top: 50%; left: 50%; z-index: 900;
+    width: 30px; height: 30px; margin: -15px 0 0 -15px;
+    pointer-events: none; display: none;
+  }
+  .crosshair.visible { display: block; }
+  .crosshair::before, .crosshair::after { content: ''; position: absolute; background: #e3b341; box-shadow: 0 0 3px #000a; }
+  .crosshair::before { left: 14px; top: 0; width: 2px; height: 30px; }
+  .crosshair::after { top: 14px; left: 0; width: 30px; height: 2px; }
+
+  .edit-column {
+    width: 0; flex-shrink: 0; overflow: hidden;
+    background: #161b22; border-left: 1px solid #262c36;
+    transition: width 0.15s ease;
+  }
+  .edit-column.visible { width: 240px; }
+  .edit-column-inner {
+    width: 240px; box-sizing: border-box; height: 100%; overflow-y: auto;
+    padding: 56px 14px 14px;
+    color: #e6e9ef;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .edit-column h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
+  .recenter-btn {
+    display: block; width: 100%; margin-bottom: 14px;
+    padding: 8px 10px; border-radius: 6px; border: 1px solid #262c36;
+    background: #1c222b; color: #e6e9ef; font-size: 12px; cursor: pointer;
+  }
+  .recenter-btn:hover { background: #262c36; }
+  .gps-readout { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: #8b94a3; margin: 2px 0 6px; gap: 6px; }
+  .gps-readout .value { color: #e6e9ef; font-variant-numeric: tabular-nums; text-align: right; }
+  .mark-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1c222b; font-size: 12px; }
+  .mark-set-row:last-child { border-bottom: none; }
+  .mark-set-row .name { flex: 1; }
+  .mark-set-row button {
+    padding: 4px 10px; border-radius: 4px; border: 1px solid #262c36;
+    background: #1c222b; color: #e6e9ef; font-size: 11px; cursor: pointer;
+  }
+  .mark-set-row button:hover { background: #262c36; }
+  .mark-set-row button:disabled { opacity: 0.5; cursor: default; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -237,16 +309,59 @@ function renderMap(s) {
     <span class="muted" id="fixStatus">${fix ? `last fix ${fixStale ? 'stale, ' : ''}${formatAgo(fix.timestamp)}` : 'no GPS fix yet'}</span>
     <a href="/">&larr; back to dashboard</a>
     <div class="spacer"></div>
+    ${
+      canEditMarks
+        ? `<label class="refresh-toggle">
+      <input type="checkbox" id="editToggle">
+      edit marks
+    </label>`
+        : ''
+    }
     <label class="refresh-toggle">
       <input type="checkbox" id="autoRefresh">
       auto-refresh (5s)
     </label>
   </div>
-  <div id="map"></div>
+  <div class="main">
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div class="crosshair" id="crosshair"></div>
+    </div>
+    ${
+      canEditMarks
+        ? `<div class="edit-column" id="editColumn">
+      <div class="edit-column-inner">
+        <h2>Edit course marks</h2>
+        <div class="muted" style="font-size:11px;margin-bottom:10px;">Edits are sent to the base at ${s.baseIp}:${s.adminPort} - only works while this boat has WiFi connectivity to it, same as log uploads.</div>
+
+        <div class="gps-readout"><span>Boat RTK GPS</span><span class="value" id="boatGpsReadout">${
+          fix
+            ? `${fix.lat.toFixed(6)}, ${fix.lon.toFixed(6)} (${
+                fix.carrSoln === 2 ? 'RTK fixed' : fix.carrSoln === 1 ? 'RTK float' : fix.gnssFixOk ? 'GPS' : 'no fix'
+              }, ±${(fix.hAccMm / 1000).toFixed(2)}m)`
+            : '—'
+        }</span></div>
+        <button type="button" class="recenter-btn" id="recenterBoatGps">Recenter on boat GPS</button>
+
+        <div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
+        <button type="button" class="recenter-btn" id="recenterGps">Recenter on my GPS</button>
+
+        <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
+        ${markSetRowsHtml}
+      </div>
+    </div>`
+        : ''
+    }
+  </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
     const map = L.map('map', { zoomControl: true });
     let boatMarker = null;
+    // Kept live by refreshBoat() below, used by the edit column's
+    // "Recenter on boat GPS" button (see the canEditMarks block further
+    // down) - initialized from the server-rendered fix so it's usable
+    // immediately on page load, before the first refresh tick.
+    let lastKnownFix = ${fix ? `{ lat: ${fix.lat}, lon: ${fix.lon} }` : 'null'};
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 19,
       attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
@@ -273,9 +388,15 @@ function renderMap(s) {
         return; // boat unreachable for a moment - just try again next tick
       }
       const fixStatusEl = document.getElementById('fixStatus');
+      const boatGpsReadout = document.getElementById('boatGpsReadout');
       if (!pos) {
         fixStatusEl.textContent = 'no GPS fix yet';
         return;
+      }
+      lastKnownFix = { lat: pos.lat, lon: pos.lon };
+      if (boatGpsReadout) {
+        boatGpsReadout.textContent =
+          pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6) + ' (' + fixQualityText(pos) + ', ±' + (pos.hAccMm / 1000).toFixed(2) + 'm)';
       }
       const ageMs = Date.now() - pos.timestamp;
       const stale = ageMs > 10000;
@@ -308,6 +429,151 @@ function renderMap(s) {
       });
       reschedule();
     })();
+    ${
+      canEditMarks
+        ? `
+    const editModeKey = 'raceTrackerMapEditMode';
+    const editColumn = document.getElementById('editColumn');
+    const crosshair = document.getElementById('crosshair');
+    const editToggle = document.getElementById('editToggle');
+    const browserGpsReadout = document.getElementById('browserGpsReadout');
+    let lastBrowserPos = null; // {lat, lon}, kept live by the watch below
+    let geoWatchId = null;
+
+    function fixQualityText(f) {
+      if (f.carrSoln === 2) return 'RTK fixed';
+      if (f.carrSoln === 1) return 'RTK float';
+      if (f.gnssFixOk) return 'GPS';
+      return 'no fix';
+    }
+
+    // A one-shot getCurrentPosition() call defaults to low accuracy with
+    // no timeout - it can silently hang for a long time (or forever) if
+    // the browser's location provider is struggling, and "Recenter on my
+    // GPS" would just look broken with no feedback either way.
+    // watchPosition with enableHighAccuracy instead keeps a continuous
+    // stream running the whole time edit mode is on - the readout shows
+    // whether it's actually gotten a fix yet, and by the time you go to
+    // click "Recenter" a fresh position is usually already sitting there.
+    function startBrowserGpsWatch() {
+      if (!navigator.geolocation) {
+        browserGpsReadout.textContent = 'not available';
+        return;
+      }
+      browserGpsReadout.textContent = 'waiting for fix…';
+      geoWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          lastBrowserPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          browserGpsReadout.textContent =
+            lastBrowserPos.lat.toFixed(6) + ', ' + lastBrowserPos.lon.toFixed(6) + ' (±' + Math.round(pos.coords.accuracy) + 'm)';
+        },
+        (err) => {
+          browserGpsReadout.textContent = err.code === err.PERMISSION_DENIED ? 'permission denied' : 'unavailable (' + err.message + ')';
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+      );
+    }
+    function stopBrowserGpsWatch() {
+      if (geoWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(geoWatchId);
+      geoWatchId = null;
+      lastBrowserPos = null;
+      browserGpsReadout.textContent = '—';
+    }
+
+    function applyEditMode(checked) {
+      editColumn.classList.toggle('visible', checked);
+      crosshair.classList.toggle('visible', checked);
+      // Leaflet caches its container size - the column's width
+      // transitions via CSS, not instantly, so this has to wait for
+      // that to settle rather than measuring the pre-transition size.
+      setTimeout(() => map.invalidateSize(), 200);
+      if (checked) {
+        startBrowserGpsWatch();
+      } else {
+        // A continuous GPS watch has a real battery/permission-indicator
+        // cost - no reason to keep it running once the column showing
+        // the result isn't even visible.
+        stopBrowserGpsWatch();
+      }
+    }
+
+    // Persisted like auto-refresh above (localStorage, off by default) -
+    // setting a mark still requires its own explicit confirm() further
+    // down, so remembering the column's open/closed state across reloads
+    // doesn't risk an accidental edit, just saves re-opening it every visit.
+    editToggle.checked = localStorage.getItem(editModeKey) === '1';
+    applyEditMode(editToggle.checked);
+    editToggle.addEventListener('change', () => {
+      localStorage.setItem(editModeKey, editToggle.checked ? '1' : '0');
+      applyEditMode(editToggle.checked);
+    });
+
+    document.getElementById('recenterGps').addEventListener('click', () => {
+      if (!lastBrowserPos) {
+        alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
+        return;
+      }
+      map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
+    });
+
+    // This boat's own GPS, kept live by refreshBoat() above - already
+    // flowing regardless of edit mode, so this just reuses whatever it
+    // last saw rather than needing its own separate polling.
+    document.getElementById('recenterBoatGps').addEventListener('click', () => {
+      if (!lastKnownFix) {
+        alert('No GPS fix from this boat yet.');
+        return;
+      }
+      map.setView([lastKnownFix.lat, lastKnownFix.lon], map.getZoom());
+    });
+
+    const markBounds = ${markBoundsJs};
+    document.getElementById('recenterMarks').addEventListener('click', () => {
+      map.fitBounds(markBounds, { padding: [60, 60], maxZoom: 18 });
+    });
+
+    // Unlike the base's own edit column, this doesn't write anywhere
+    // locally - this boat has no Redis access of its own (see this
+    // function's module comment), so "Set" POSTs cross-origin straight
+    // to the base's own /api/marks/:name (see adminServer.js, which has
+    // CORS enabled specifically for this). Only works while this boat
+    // currently has WiFi reachability to the base - same requirement as
+    // log uploads, nothing to do with the radio link.
+    const baseMarksUrl = 'http://${s.baseIp}:${s.adminPort}/api/marks/';
+    document.querySelectorAll('.set-mark-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const name = btn.dataset.mark;
+        const center = map.getCenter();
+        const latText = center.lat.toFixed(6);
+        const lonText = center.lng.toFixed(6);
+        if (!confirm('Set ' + name + ' to ' + latText + ', ' + lonText + ' on the base course?\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch(baseMarksUrl + encodeURIComponent(name), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: center.lat, lon: center.lng })
+          });
+          const body = await res.json();
+          if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+          // Not reloading - this boat's own currentMarks won't reflect
+          // the change until the next broadcast actually reaches it
+          // (course marks aren't a live-polled loop on this page, see
+          // refreshBoat above), so a reload right now would just show
+          // the same pre-edit positions.
+          alert('Set ' + name + '. This boat will pick up the change once the next marks broadcast reaches it (usually within moments) - reload afterward to see it reflected here.');
+        } catch (err) {
+          alert('Failed to set ' + name + ' - could not reach the base (' + err.message + '). Make sure this boat currently has WiFi connectivity to it.');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+    `
+        : ''
+    }
   </script>
 </body>
 </html>`;

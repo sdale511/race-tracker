@@ -264,11 +264,27 @@ function renderMap(s) {
     })
     .join('\n    ');
 
+  const markBoundsPoints = MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`);
+  const markBoundsJs = `[${markBoundsPoints.join(', ')}]`;
   const boundsPoints = [
-    ...MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`),
+    ...markBoundsPoints,
     ...boatIds.map((id) => `[${s.boats[id].lastPosition.lat}, ${s.boats[id].lastPosition.lon}]`),
   ];
   const boundsJs = `[${boundsPoints.join(', ')}]`;
+
+  // One row per settable mark in the "edit marks" column (see the
+  // .edit-column below) - each button sets that mark to wherever the
+  // fixed center crosshair currently points, read from map.getCenter()
+  // at click time (see setEditMode/set-mark-btn handler below), not
+  // anything server-rendered here.
+  const markSetRowsHtml = MARK_NAMES.map(
+    (name) =>
+      `<div class="mark-set-row">
+        <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
+        <span class="name">${name}</span>
+        <button type="button" class="set-mark-btn" data-mark="${name}">Set</button>
+      </div>`
+  ).join('');
 
   return `<!doctype html>
 <html>
@@ -278,7 +294,7 @@ function renderMap(s) {
 <title>race-tracker course map</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <style>
-  html, body, #map { height: 100%; margin: 0; background: #0f1216; }
+  html, body { height: 100%; margin: 0; background: #0f1216; }
   .topbar {
     position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
     display: flex; align-items: center; gap: 14px;
@@ -295,12 +311,62 @@ function renderMap(s) {
   .topbar .spacer { flex: 1; }
   .refresh-toggle { display: flex; align-items: center; gap: 6px; color: #8b94a3; cursor: pointer; user-select: none; }
   .refresh-toggle input { accent-color: #3fb950; cursor: pointer; }
+  #editToggle { accent-color: #e3b341; }
   .mark-label {
     background: #161b22; border: 1px solid #262c36; color: #e6e9ef;
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
     padding: 2px 6px; border-radius: 4px;
   }
   .leaflet-tooltip.mark-label::before { display: none; }
+
+  /* Edit mode: a map area that shrinks to make room for a column of
+     "set this mark here" buttons, plus a crosshair fixed at the exact
+     center of whatever's left of the map - see the class comment on
+     renderMap() in adminServer.js for the overall design. */
+  .main { position: absolute; inset: 0; display: flex; }
+  .map-wrap { position: relative; flex: 1; min-width: 0; }
+  #map { position: absolute; inset: 0; }
+  .crosshair {
+    position: absolute; top: 50%; left: 50%; z-index: 900;
+    width: 30px; height: 30px; margin: -15px 0 0 -15px;
+    pointer-events: none; display: none;
+  }
+  .crosshair.visible { display: block; }
+  .crosshair::before, .crosshair::after { content: ''; position: absolute; background: #e3b341; box-shadow: 0 0 3px #000a; }
+  .crosshair::before { left: 14px; top: 0; width: 2px; height: 30px; }
+  .crosshair::after { top: 14px; left: 0; width: 30px; height: 2px; }
+
+  .edit-column {
+    width: 0; flex-shrink: 0; overflow: hidden;
+    background: #161b22; border-left: 1px solid #262c36;
+    transition: width 0.15s ease;
+  }
+  .edit-column.visible { width: 240px; }
+  .edit-column-inner {
+    width: 240px; box-sizing: border-box; height: 100%; overflow-y: auto;
+    padding: 56px 14px 14px;
+    color: #e6e9ef;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .edit-column h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
+  .recenter-btn {
+    display: block; width: 100%; margin-bottom: 14px;
+    padding: 8px 10px; border-radius: 6px; border: 1px solid #262c36;
+    background: #1c222b; color: #e6e9ef; font-size: 12px; cursor: pointer;
+  }
+  .recenter-btn:hover { background: #262c36; }
+  .gps-readout { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: #8b94a3; margin: 2px 0 6px; gap: 6px; }
+  .gps-readout .value { color: #e6e9ef; font-variant-numeric: tabular-nums; text-align: right; }
+  .mark-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1c222b; font-size: 12px; }
+  .mark-set-row:last-child { border-bottom: none; }
+  .mark-set-row .name { flex: 1; }
+  .mark-set-row button {
+    padding: 4px 10px; border-radius: 4px; border: 1px solid #262c36;
+    background: #1c222b; color: #e6e9ef; font-size: 11px; cursor: pointer;
+  }
+  .mark-set-row button:hover { background: #262c36; }
+  .mark-set-row button:disabled { opacity: 0.5; cursor: default; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -309,11 +375,34 @@ function renderMap(s) {
     <a href="/">&larr; back to dashboard</a>
     <div class="spacer"></div>
     <label class="refresh-toggle">
+      <input type="checkbox" id="editToggle">
+      edit marks
+    </label>
+    <label class="refresh-toggle">
       <input type="checkbox" id="autoRefresh">
       auto-refresh boats (5s)
     </label>
   </div>
-  <div id="map"></div>
+  <div class="main">
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div class="crosshair" id="crosshair"></div>
+    </div>
+    <div class="edit-column" id="editColumn">
+      <div class="edit-column-inner">
+        <h2>Edit course marks</h2>
+
+        <div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
+        <button type="button" class="recenter-btn" id="recenterGps">Recenter on my GPS</button>
+
+        <div class="gps-readout"><span>Base RTK GPS</span><span class="value" id="baseGpsReadout">—</span></div>
+        <button type="button" class="recenter-btn" id="recenterBaseGps">Recenter on base GPS</button>
+
+        <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
+        ${markSetRowsHtml}
+      </div>
+    </div>
+  </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
     const map = L.map('map', { zoomControl: true });
@@ -340,6 +429,12 @@ function renderMap(s) {
     // green ones since both pairs sit on the same axis - one line covers
     // the full extent, green marks included, since they fall on it too.
     L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
+
+    // Marks-only bounds, kept separate from the initial-load fit below
+    // (which also includes boats) - this is what the "Recenter on marks"
+    // button in the edit column snaps back to, regardless of where a
+    // boat happens to be or how far "Recenter on my GPS" panned away.
+    const markBounds = ${markBoundsJs};
 
     // Capped below the tile layer's own maxZoom so a very short course
     // (e.g. a shrunk SIM_COURSE_LENGTH_NM test course) doesn't fit so
@@ -391,9 +486,210 @@ function renderMap(s) {
       });
       reschedule();
     })();
+
+    // Edit mode: shrinks the map to make room for the "set this mark
+    // here" column and shows the fixed center crosshair. Persisted like
+    // auto-refresh above (localStorage, off by default) - actually
+    // setting a mark still requires its own explicit confirm() below, so
+    // remembering the column's open/closed state across reloads doesn't
+    // risk an accidental edit, just saves re-opening it every visit.
+    const editModeKey = 'raceTrackerMapEditMode';
+    const editColumn = document.getElementById('editColumn');
+    const crosshair = document.getElementById('crosshair');
+    const editToggle = document.getElementById('editToggle');
+    const browserGpsReadout = document.getElementById('browserGpsReadout');
+    const baseGpsReadout = document.getElementById('baseGpsReadout');
+    let lastBrowserPos = null; // {lat, lon}, kept live by the watch below
+    let lastBaseGpsFix = null; // {lat, lon, carrSoln, ...}, kept live by the poll below
+    let geoWatchId = null;
+    let baseGpsTimer = null;
+
+    function fixQualityText(f) {
+      if (f.carrSoln === 2) return 'RTK fixed';
+      if (f.carrSoln === 1) return 'RTK float';
+      if (f.gnssFixOk) return 'GPS';
+      return 'no fix';
+    }
+
+    // A one-shot getCurrentPosition() call defaults to low accuracy with
+    // no timeout - it can silently hang for a long time (or forever) if
+    // the browser's location provider is struggling, especially indoors
+    // or on a cold GPS start, and "Recenter on my GPS" would just look
+    // broken with no feedback either way. watchPosition with
+    // enableHighAccuracy instead keeps a continuous stream running in
+    // the background the whole time edit mode is on - the readout shows
+    // whether it's actually gotten a fix yet, and by the time you go to
+    // click "Recenter" a fresh position is usually already sitting there
+    // instead of starting cold at click time.
+    function startBrowserGpsWatch() {
+      if (!navigator.geolocation) {
+        browserGpsReadout.textContent = 'not available';
+        return;
+      }
+      browserGpsReadout.textContent = 'waiting for fix…';
+      geoWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          lastBrowserPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          browserGpsReadout.textContent =
+            lastBrowserPos.lat.toFixed(6) + ', ' + lastBrowserPos.lon.toFixed(6) + ' (±' + Math.round(pos.coords.accuracy) + 'm)';
+        },
+        (err) => {
+          browserGpsReadout.textContent = err.code === err.PERMISSION_DENIED ? 'permission denied' : 'unavailable (' + err.message + ')';
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+      );
+    }
+    function stopBrowserGpsWatch() {
+      if (geoWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(geoWatchId);
+      geoWatchId = null;
+      lastBrowserPos = null;
+      browserGpsReadout.textContent = '—';
+    }
+
+    // A GPS module wired directly to this base station (config.js's gps
+    // section, GPS_PORT - shared with the boat's own GPS config) - real
+    // RTK precision, not a phone's much coarser Geolocation API. Most
+    // base stations don't have one attached at all, so a null response
+    // here (never an error - see baseStation.js's getBaseGpsFix) is the
+    // expected, common case, not a failure.
+    async function pollBaseGps() {
+      let fix;
+      try {
+        fix = await (await fetch('/api/gps')).json();
+      } catch (err) {
+        baseGpsReadout.textContent = 'unreachable';
+        return;
+      }
+      lastBaseGpsFix = fix;
+      baseGpsReadout.textContent = fix
+        ? fix.lat.toFixed(6) + ', ' + fix.lon.toFixed(6) + ' (' + fixQualityText(fix) + ', ±' + (fix.hAccMm / 1000).toFixed(2) + 'm)'
+        : 'unavailable';
+    }
+    function startBaseGpsPoll() {
+      pollBaseGps();
+      baseGpsTimer = setInterval(pollBaseGps, 3000);
+    }
+    function stopBaseGpsPoll() {
+      if (baseGpsTimer) clearInterval(baseGpsTimer);
+      baseGpsTimer = null;
+      lastBaseGpsFix = null;
+      baseGpsReadout.textContent = '—';
+    }
+
+    function applyEditMode(checked) {
+      editColumn.classList.toggle('visible', checked);
+      crosshair.classList.toggle('visible', checked);
+      // The column's width transitions via CSS, not instantly - Leaflet
+      // caches its container size and won't notice the map-wrap resizing
+      // on its own, so it has to be told explicitly once the transition
+      // settles (an immediate call would measure the pre-transition size).
+      setTimeout(() => map.invalidateSize(), 200);
+      if (checked) {
+        startBrowserGpsWatch();
+        startBaseGpsPoll();
+      } else {
+        // Stop both rather than leaving them running unattended - a
+        // continuous GPS watch has a real battery/permission-indicator
+        // cost, and there's no reason to keep polling the base once the
+        // column showing the result isn't even visible.
+        stopBrowserGpsWatch();
+        stopBaseGpsPoll();
+      }
+    }
+
+    editToggle.checked = localStorage.getItem(editModeKey) === '1'; // off by default
+    applyEditMode(editToggle.checked);
+    editToggle.addEventListener('change', () => {
+      localStorage.setItem(editModeKey, editToggle.checked ? '1' : '0');
+      applyEditMode(editToggle.checked);
+    });
+
+    document.getElementById('recenterGps').addEventListener('click', () => {
+      if (!lastBrowserPos) {
+        alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
+        return;
+      }
+      map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
+    });
+
+    document.getElementById('recenterBaseGps').addEventListener('click', () => {
+      if (!lastBaseGpsFix) {
+        alert('No GPS is attached to this base station (set GPS_PORT to enable one when running the base), or it hasn\\'t produced a fix yet.');
+        return;
+      }
+      map.setView([lastBaseGpsFix.lat, lastBaseGpsFix.lon], map.getZoom());
+    });
+
+    // Snaps back to the whole course - useful after either GPS button
+    // walked the view away, or after just panning around to line up a
+    // shot with the crosshair.
+    document.getElementById('recenterMarks').addEventListener('click', () => {
+      map.fitBounds(markBounds, { padding: [60, 60], maxZoom: 18 });
+    });
+
+    // Sets a mark to wherever the crosshair currently points - i.e.
+    // map.getCenter(), read fresh at click time, not wherever the map
+    // happened to be when the page loaded. Confirms first since this
+    // immediately updates the live course and re-broadcasts to every
+    // boat (see baseStation.js's setMarkLocation) - not something to
+    // fire accidentally. Reloads on success rather than patching the
+    // moved marker/lines in place - unlike the 5s boat-position refresh
+    // loop, this only happens on a deliberate, infrequent edit, so
+    // losing pan/zoom here to guarantee everything (including the
+    // course-axis/start-line polylines) reflects the change is a fine
+    // trade.
+    document.querySelectorAll('.set-mark-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const name = btn.dataset.mark;
+        const center = map.getCenter();
+        const latText = center.lat.toFixed(6);
+        const lonText = center.lng.toFixed(6);
+        if (!confirm('Set ' + name + ' to ' + latText + ', ' + lonText + '?\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/marks/' + encodeURIComponent(name), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: center.lat, lon: center.lng })
+          });
+          const body = await res.json();
+          if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+          location.reload();
+        } catch (err) {
+          alert('Failed to set ' + name + ': ' + err.message);
+          btn.disabled = false;
+        }
+      });
+    });
   </script>
 </body>
 </html>`;
+}
+
+// Reads and JSON-parses a request body - only the mark-editing POST route
+// below needs this, everything else on this server is GET/no-body, so
+// this doesn't need to be anything fancier than accumulate-then-parse.
+// Capped well above any real {lat, lon} payload's size so a malformed or
+// hostile client can't hold the connection open buffering an unbounded
+// body.
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 10000) req.destroy(new Error('body too large'));
+    });
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (err) {
+        reject(new Error('invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
 // Serves the admin dashboard (base station only) - GET / for the human-
@@ -406,9 +702,46 @@ function renderMap(s) {
 // baseStation.js's getBoatPositions) - the map page's own live-refresh
 // loop (renderMap above) polls GET /api/positions instead of /api/stats
 // specifically so watching the map doesn't cost a Redis round trip every
-// 5s for data it doesn't use.
-function startAdminServer({ port, getStats, getPositions }) {
+// 5s for data it doesn't use. setMark (see baseStation.js's
+// setMarkLocation) is the one non-GET operation this server exposes -
+// used by the map page's "edit marks" column to persist and
+// re-broadcast a corrected mark position; it's also the one route with
+// CORS enabled, since a boat's own rover dashboard calls it cross-origin
+// (see roverAdminServer.js). getBaseGps (see baseStation.js's
+// getBaseGpsFix) reports a GPS module wired directly to this base
+// station, if any - null (not an error) when none is configured.
+function startAdminServer({ port, getStats, getPositions, setMark, getBaseGps }) {
   const server = http.createServer(async (req, res) => {
+    const marksMatch = req.url.match(/^\/api\/marks\/([^/?]+)$/);
+    if (marksMatch && (req.method === 'POST' || req.method === 'OPTIONS')) {
+      // CORS: unlike every other route here (same-origin only - each
+      // dashboard only ever calls its own server), this one is also
+      // called cross-origin from a boat's own rover dashboard - a
+      // completely different host:port - when it's in WiFi range of the
+      // base (see roverAdminServer.js's edit-marks column, which already
+      // knows this base's address from the marks broadcast). A JSON POST
+      // triggers a browser preflight, so OPTIONS needs handling too.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const name = decodeURIComponent(marksMatch[1]);
+      try {
+        const body = await readJsonBody(req);
+        const marks = await setMark(name, Number(body.lat), Number(body.lon));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, marks }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
     if (req.method !== 'GET') {
       res.writeHead(404);
       res.end();
@@ -430,6 +763,12 @@ function startAdminServer({ port, getStats, getPositions }) {
     if (req.url === '/api/positions') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getPositions()));
+      return;
+    }
+
+    if (req.url === '/api/gps') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getBaseGps()));
       return;
     }
 

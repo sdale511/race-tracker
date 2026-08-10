@@ -146,11 +146,13 @@ let lastPvt = null;
 function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
-  console.log(
-    `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
-      `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
-      `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
-  );
+  if (config.gps.logConsole) {
+    console.log(
+      `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+        `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
+        `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
+    );
+  }
 
   // Distance-based, not time-based: send whenever the boat has actually
   // moved TX_DISTANCE_M since the last transmitted fix, regardless of how
@@ -316,7 +318,17 @@ function getRoverStats() {
 // fs.readdirSync entirely - no reason to re-scan the log directory every
 // 5s just to throw the result away.
 function getPosition() {
-  return lastPvt ? { lat: lastPvt.lat, lon: lastPvt.lon, timestamp: lastPvt.timestamp } : null;
+  return lastPvt
+    ? {
+        lat: lastPvt.lat,
+        lon: lastPvt.lon,
+        timestamp: lastPvt.timestamp,
+        carrSoln: lastPvt.carrSoln,
+        gnssFixOk: lastPvt.gnssFixOk,
+        numSV: lastPvt.numSV,
+        hAccMm: lastPvt.hAccMm,
+      }
+    : null;
 }
 
 startRoverAdminServer({ port: myAdminPort, getStats: getRoverStats, getPosition });

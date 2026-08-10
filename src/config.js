@@ -98,9 +98,26 @@ module.exports = {
   // radio link is) - default matches the ZED-F9P's factory-default UART1
   // baud so no baud reconfig step is needed on the module, just enabling
   // NAV-PVT/disabling NMEA.
+  // Also doubles as the base station's own optional GPS (a module wired
+  // directly to whatever machine runs the base, e.g. the same simpleRTK2B
+  // LR hardware a boat uses) - not for tracking the base itself, but so
+  // an operator setting up the course (see adminServer.js's "edit marks"
+  // column) can plant marks at their own position with real RTK
+  // precision, not just a phone's much coarser Geolocation API. Base and
+  // boat are always separate processes, so there's no actual conflict in
+  // sharing one var - baseStation.js only opens a port at all when
+  // GPS_PORT is *explicitly* set (see its own comment), unlike the boat
+  // which always opens one (falling back to this same default) since a
+  // boat is assumed to always have real GPS hardware unless told
+  // otherwise (SIMULATE/NO_GPS).
   gps: {
     port: process.env.GPS_PORT || '/dev/ttyACM0',
     baud: parseInt(process.env.GPS_BAUD || '38400', 10),
+    // On by default (matches existing behavior on both roles) - set
+    // GPS_LOG=0 to silence the per-fix [gps]/[baseGps] console line, e.g.
+    // once you've confirmed a good fix and don't want it scrolling by
+    // during an actual race.
+    logConsole: process.env.GPS_LOG !== '0' && process.env.GPS_LOG !== 'false',
   },
 
   // --- Telemetry radio (transparent-serial style, e.g. Digi XBee-PRO S3B) ---

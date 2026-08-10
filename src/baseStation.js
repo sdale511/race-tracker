@@ -9,6 +9,8 @@ const { pruneOldLogs } = require('./logRotation');
 const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
 const { startAdminServer } = require('./adminServer');
 const stats = require('./stats');
+const { SerialPort } = require('serialport');
+const { UbxParser } = require('./ubxParser');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -73,6 +75,47 @@ function main() {
   }
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+
+  // Optional GPS wired directly to this machine (see config.js's gps
+  // comment - shared with the boat's own GPS_PORT/GPS_BAUD) - purely so
+  // an operator can plant a mark at their own real current position from
+  // the admin map's "edit marks" column, with real RTK precision rather
+  // than a phone's much coarser Geolocation API. Gated on GPS_PORT being
+  // *explicitly* set (not just "does config.gps.port have a value" -
+  // that's always true, it has a default) - most base stations don't
+  // have GPS hardware attached at all, and unlike the boat (which always
+  // opens one, since it's assumed to always have real GPS hardware
+  // unless told otherwise), a base silently retrying against a
+  // nonexistent default port forever would just be noise.
+  let baseGpsFix = null;
+  if (process.env.GPS_PORT) {
+    console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
+    (function openBaseGps() {
+      const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {
+        if (err) {
+          console.error('[baseGps] open failed:', err.message, '- retrying in 3s');
+          setTimeout(openBaseGps, 3000);
+        }
+      });
+      const parser = new UbxParser();
+      gpsPort.on('data', (chunk) => parser.write(chunk));
+      gpsPort.on('close', () => {
+        console.warn('[baseGps] port closed, retrying in 3s');
+        setTimeout(openBaseGps, 3000);
+      });
+      gpsPort.on('error', (err) => console.error('[baseGps] error:', err.message));
+      parser.on('nav-pvt', (pvt) => {
+        baseGpsFix = pvt;
+        if (config.gps.logConsole) {
+          console.log(
+            `[baseGps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+              `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
+              `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
+          );
+        }
+      });
+    })();
+  }
 
   // Receives boat log uploads over WiFi whenever a boat happens to be in
   // range (see uploadServer.js/uploadClient.js) - its address is what gets
@@ -165,6 +208,32 @@ function main() {
     console.log(
       `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
     );
+  }
+
+  // Lets an operator correct/set a single mark's position from the base's
+  // own admin map page (see adminServer.js's renderMap - the "edit marks"
+  // column) - e.g. walking out to the actual mark with a phone and
+  // recording its real GPS position, or nudging one that was set up
+  // wrong. Persists to Redis (so it survives a base restart the same way
+  // an initially-resolved course does) and re-broadcasts immediately,
+  // same as any other course change.
+  async function setMarkLocation(name, lat, lon) {
+    if (!MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
+    if (!raceMarks) throw new Error('no course published yet - nothing to edit');
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+      throw new Error('invalid lat/lon');
+    }
+    const pos = { lat, lon };
+    await redisStore.setMark(name, pos);
+    raceMarks[name] = pos;
+    // Existing finish-line watchers cached committee/finish's position at
+    // whatever it was when a given boat's first fix arrived (see
+    // watcherFor below) - clear so every boat's watcher rebuilds fresh
+    // from the corrected marks on its next fix, rather than silently
+    // keeping stale gate geometry for the rest of the race.
+    finishLineWatchers.clear();
+    broadcastMarksNow();
+    return raceMarks;
   }
 
   // Course marks - windward, leeward, and the pin/committee ends of the
@@ -464,7 +533,35 @@ function main() {
     return positions;
   }
 
-  startAdminServer({ port: config.admin.port, getStats: getFullStats, getPositions: getBoatPositions });
+  // Returns null - never throws - whenever there's nothing to report: no
+  // GPS_PORT configured at all (the overwhelmingly common case; most
+  // base stations have no GPS hardware attached), or configured but no
+  // fix received yet. The admin map's GPS readout/recenter button (see
+  // adminServer.js's renderMap) treats null as "not available" and says
+  // so, not an error. Includes fix-quality fields (same ones the rover
+  // dashboard already shows) alongside the coordinates, not just
+  // lat/lon, so that readout can show whether this is an actual
+  // RTK-fixed reading or something rougher.
+  function getBaseGpsFix() {
+    if (!baseGpsFix) return null;
+    return {
+      lat: baseGpsFix.lat,
+      lon: baseGpsFix.lon,
+      timestamp: baseGpsFix.timestamp,
+      carrSoln: baseGpsFix.carrSoln,
+      gnssFixOk: baseGpsFix.gnssFixOk,
+      numSV: baseGpsFix.numSV,
+      hAccMm: baseGpsFix.hAccMm,
+    };
+  }
+
+  startAdminServer({
+    port: config.admin.port,
+    getStats: getFullStats,
+    getPositions: getBoatPositions,
+    setMark: setMarkLocation,
+    getBaseGps: getBaseGpsFix,
+  });
 
   if (config.simulate) {
     console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);

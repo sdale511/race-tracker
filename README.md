@@ -603,6 +603,85 @@ re-fetched at all, since they don't move mid-race. The boat's own rover
 dashboard has the same toggle on its `GET /map` (see below), polling its
 own equally-lean `GET /api/position` to move just its own marker.
 
+#### Editing mark positions from the map
+
+An "edit marks" checkbox in the top bar of both the base's `/map` and
+each boat's own `/map` reveals a column listing all seven marks, each
+with its own "Set" button, plus a fixed crosshair at the exact center of
+the map. The workflow this is built for: walk (or sail) out to the
+actual mark, snap the map to your current position, fine-tune by panning
+if needed (the crosshair always shows `map.getCenter()` - wherever it
+points is what gets set), then tap "Set" next to that mark. It asks for
+confirmation first, since this immediately updates the live course and
+re-broadcasts it to every boat - not something to fire by accident. The
+checkbox state itself is persisted (`localStorage`, like auto-refresh
+below) so the column stays open across a page reload instead of
+resetting closed every visit - the confirm step on "Set" is what guards
+against an accidental edit, not this.
+
+Each GPS-based recenter button has a live coordinate readout above it
+(updated continuously while edit mode is on, cleared when it's turned
+back off) rather than being a blind one-shot lookup - `getCurrentPosition()`
+defaults to low accuracy with no timeout and can hang or return a slow,
+coarse fix, which made this button occasionally look broken with no
+feedback at all. Instead, toggling edit mode starts a continuous
+`watchPosition()` (`enableHighAccuracy: true`) that keeps refining the
+browser's own location in the background the whole time the column is
+open, so by the time you actually click "Recenter" a fresh position is
+already sitting there - the readout doubles as visible proof it's
+actually working (or a clear "permission denied"/"unavailable" if not),
+rather than a button that might just silently do nothing. The RTK-based
+readouts (base GPS, boat GPS) also show fix quality - "RTK fixed"/"RTK
+float"/"GPS"/"no fix" from `carrSoln`/`gnssFixOk` - and horizontal
+accuracy (`hAcc`), the same signal the `[baseGps]`/`[gps]` console lines
+report, so you can judge whether a mark is actually worth setting from
+the readout alone, before ever tapping "Set."
+
+Recenter buttons, all optional to use:
+- **Recenter on my GPS** - the *viewing device's* location, via the
+  browser's Geolocation API. Requires a secure context (HTTPS, or
+  `localhost`) in most browsers, so it may be silently blocked when
+  viewing the dashboard over plain HTTP on your LAN from a phone - pan
+  manually if so, the crosshair-based "set" flow doesn't depend on it.
+- **Recenter on marks** - snaps back to fit the whole course, useful
+  after a GPS recenter walked the view away or after panning to line up
+  a shot with the crosshair.
+- **Recenter on base GPS** (base's map only) - a GPS module wired
+  directly to whatever machine is running the base station (reuses
+  `GPS_PORT`/`GPS_BAUD`, see below - the same vars the boat's own GPS
+  uses, since base and boat are always separate processes and there's no
+  actual conflict in sharing them) - not for tracking the base itself,
+  but so an operator can plant a mark at their own position with real
+  RTK precision instead of a phone's much coarser Geolocation API. Most
+  base stations don't have one attached, which is the expected common
+  case, not an error - the readout just says "unavailable."
+- **Recenter on boat GPS** (a boat's own map only) - that boat's own
+  already-flowing GPS fix (the same one driving its live marker on this
+  same map) - the obvious choice for a boat that's physically sailed out
+  to survey a mark, and needs no separate polling since the position was
+  already being tracked regardless of edit mode.
+
+Setting a mark persists it to Redis the same way the initial course
+does, clears any cached finish-line watchers so lap detection picks up a
+corrected `committee`/`finish` position instead of silently keeping
+stale gate geometry for the rest of the race, and calls the same
+immediate-broadcast path used when the course first resolves
+(`POST /api/marks/:name`, see `baseStation.js`'s `setMarkLocation`).
+
+A boat has no Redis access of its own (same reason it can't resolve the
+course itself), so "Set" on a boat's own map doesn't write anything
+locally - it POSTs cross-origin straight to the base's
+`/api/marks/:name` (CORS-enabled specifically for this), using the
+base's address it already learned from the marks broadcast. This only
+works while that boat currently has WiFi connectivity to the base - same
+requirement as log uploads, nothing to do with the radio link - and the
+edit column says so, and which base address it's pointed at, right in
+the panel. Since a boat's own view of the course doesn't live-poll the
+way boat positions do (marks "don't move mid-race" is the working
+assumption elsewhere on these maps too), a successful edit doesn't
+repaint that boat's own marker immediately - reload the page after the
+next broadcast reaches it (usually within moments) to see it reflected.
+
 Boats in the Fleet table are sorted most-recently-seen first, so an
 active fleet naturally floats to the top instead of being scattered
 through however boat IDs happen to be numbered - a boat this base hasn't
@@ -656,7 +735,8 @@ given `boat`/`base` run will actually use, instead of reading through
 
 | Var | Default | Purpose |
 |---|---|---|
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyACM0` / 38400 | GPS UART (simpleRTK2B LR's own USB port by default — override to `/dev/ttyAMA0` if wired to the Pi's hardware UART instead, see "Wiring notes" above) |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyACM0` / 38400 | GPS UART (simpleRTK2B LR's own USB port by default — override to `/dev/ttyAMA0` if wired to the Pi's hardware UART instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — set on `npm run base` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`); the base only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
+| `GPS_LOG` | unset (on) | Both roles — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy). On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
