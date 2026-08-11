@@ -133,11 +133,17 @@ function formatValue(v, unit) {
 // `inverted` is for flags like NO_RADIO/REGATTAUP_WEBHOOK_DISABLED where the
 // resolved config value (enabled=true) is the *negation* of the env var
 // actually being set - still an override worth flagging as such.
+//
+// The env var name is shown unconditionally (not just once overridden) -
+// same reasoning as renderConfigPage's HTML table below: it's the actual
+// command-line/`.env` knob for this setting, so it should be visible right
+// next to its current value even while still at the default, not just
+// after you've already gone and set it once.
 function overrideTag(envVar, inverted) {
   if (!envVar) return '';
   const isSet = process.env[envVar] !== undefined;
-  if (!isSet) return '(default)';
-  return `(env: ${envVar}${inverted ? '=' + process.env[envVar] : ''})`;
+  if (!isSet) return `(${envVar}, default)`;
+  return `(${envVar}${inverted ? '=' + process.env[envVar] : ''}, overridden)`;
 }
 
 // HTML rendering shared by both admin dashboards' GET /config (see
