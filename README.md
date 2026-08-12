@@ -29,15 +29,10 @@ logging to microSD as a durable backup.
 
 ## Wiring notes
 
-The simpleRTK2B LR has its own USB port, which is what the default config
-assumes: GPS over the module's own USB (shows up as `/dev/ttyACM0`), radio
-over a separate USB-to-serial adapter (`/dev/ttyUSB0`) - both off a hub,
-since Pi Zero 2 W only has one USB/OTG port natively.
-
-If you'd rather free up a USB port, GPS can instead go over the Pi's
-dedicated hardware UART (`/dev/ttyAMA0`, GPIO 14/15 - avoid the mini-UART,
-its clock is tied to the core clock and can glitch) with `GPS_PORT=/dev/ttyAMA0`,
-leaving the radio as the only USB-to-serial adapter needed:
+Default config assumes GPS over the Pi's own dedicated hardware UART
+(`/dev/ttyAMA0`, GPIO 14/15 - avoid the mini-UART, its clock is tied to the
+core clock and can glitch), leaving the Pi's one USB/OTG port free for the
+telemetry radio alone - no hub needed.
 
 ```
 sudo raspi-config   # Interface Options -> Serial Port
@@ -46,21 +41,95 @@ sudo raspi-config   # Interface Options -> Serial Port
 ```
 This frees `/dev/ttyAMA0` for the GPS instead of the console.
 
+If you'd rather use the simpleRTK2B LR's own USB port for GPS instead
+(shows up as `/dev/ttyACM0`) - e.g. simpler wiring, at the cost of needing
+a USB hub since the radio then also needs its own USB-to-serial adapter -
+override `GPS_PORT=/dev/ttyACM0` (and `GPS_BAUD` to match whatever that
+port is actually running at, likely different from the GPIO UART's).
+
+On any Pi with onboard Bluetooth (Zero 2 W, 3A+/3B+, 4, etc.), the step
+above alone isn't enough - GPIO14/15 default to the **mini-UART**
+(`ttyS0`), not the real hardware UART, because Bluetooth occupies the real
+one. Disable Bluetooth to free it up:
+```
+# add to /boot/firmware/config.txt (Bookworm+) or /boot/config.txt (older)
+dtoverlay=disable-bt
+```
+then disable the `hciuart`/`bluetooth` services and reboot. Without this,
+`/dev/ttyAMA0` either won't exist or will silently be the glitch-prone
+mini-UART instead.
+
+Which physical UART on the module (UART1 vs UART2) your wiring actually
+reaches depends on the board/breakout used - ArduSimple's simpleRTK2B
+routes UART2 to the XBee socket (used for RTCM correction radios, a
+separate concern from this app entirely - see below), so a direct wire to
+a general breakout pin is more likely UART1, but don't assume it - see
+"Verifying the connection" below for a way to prove it rather than guess.
+
 ## GPS configuration (one-time, via u-center or ubxtool)
 
-By default the ZED-F9P outputs a mix of NMEA sentences at 38400 baud, which
-this app's `GPS_BAUD` default already matches - no baud reconfiguration
-needed. For this app you just want `UBX-NAV-PVT` enabled and NMEA disabled
-on the UART feeding the Pi:
+Don't assume the UART your wiring reaches is already at this app's
+`GPS_BAUD` default or already NMEA-free just because the module's USB port
+is - each UART is configured independently, and in practice a GPIO-wired
+UART may still be sitting at factory defaults (NMEA on, UBX off, and not
+necessarily the same baud as USB) even after the USB port's been fully
+configured. Verify directly instead of assuming:
 
 ```
-ubxtool -P 27.11 -p CFG-VALSET -z CFG-MSGOUT-UBX_NAV_PVT_UART1,1
-ubxtool -P 27.11 -p CFG-VALSET -z CFG-UART1OUTPROT-NMEA,0
-ubxtool -P 27.11 -p CFG-VALSET -z CFG-RATE-MEAS,1000   # 1Hz; raise if you want faster fixes
+stty -F /dev/ttyAMA0 <baud> raw -echo
+cat /dev/ttyAMA0        # Ctrl-C to stop
 ```
-Save the config to flash on the module (`-p CFG-VALSET ... ,,,, 7` or via
-u-center's "Save Config") so it survives power cycles — otherwise it reverts
-to NMEA-only output on the next power-up.
+Try common bauds (9600, 19200, 38400, 57600, 115200) until you get clean,
+complete `$GNGGA`/`$GNRMC`/... text - that confirms both the wiring
+(TX/RX/GND all correctly connected) and the real baud in one step, since a
+wiring fault or wrong baud both just produce silence or garbage.
+
+Install `ubxtool` if it's not already there (Raspberry Pi OS, via `gpsd`'s
+client tools):
+```
+sudo apt update
+sudo apt install -y gpsd gpsd-clients python3-gps
+sudo systemctl disable --now gpsd.socket gpsd   # stop it grabbing the port itself
+```
+
+Then, at the baud you just confirmed, enable `UBX-NAV-PVT` and disable NMEA
+on whichever UART number your wiring reaches (try `UART1` first; if
+nothing changes, undo it and try `UART2` instead - see "Verifying the
+connection" below for how to tell which one actually took effect):
+```
+ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-MSGOUT-UBX_NAV_PVT_UART1,1,7
+ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-UART1OUTPROT-NMEA,0,7
+ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-RATE-MEAS,1000,7   # 1Hz; raise if you want faster fixes
+```
+The trailing `,7` is a layer bitmask (`RAM=1, BBR=2, Flash=4`) - `7` writes
+to all three at once, so the change takes effect immediately *and*
+survives a power cycle. Omit NMEA's disable step if you'd rather leave it
+on - the app's own UBX parser isn't confused by NMEA sharing the line (it
+scans for UBX's own sync bytes and reads each frame's declared length, so
+interleaved NMEA text is simply skipped over), it's purely about not
+wasting bandwidth on unneeded chatter.
+
+### Verifying the connection
+
+Raw serial first - after the NMEA-disable step above, expect quiet gaps
+with a short unreadable binary burst about once a second (the UBX-NAV-PVT
+frame), not readable text:
+```
+stty -F /dev/ttyAMA0 115200 raw -echo
+cat /dev/ttyAMA0
+```
+
+Then confirm this app itself decodes it - this is the check that actually
+matters, since raw bytes "looking" correct doesn't guarantee this app's
+parser agrees:
+```
+GPS_PORT=/dev/ttyAMA0 GPS_BAUD=115200 npm run boat
+```
+Watch for `[gps]` lines with real `fixType`/`numSV` values (see `GPS_LOG`
+in "Tuning knobs" below if you want to silence this once confirmed
+working). If you enabled `UBX-NAV-PVT` on the wrong UART number, this
+simply stays silent - undo that one (`CFG-MSGOUT-UBX_NAV_PVT_UARTx,0,7`)
+and try the other.
 
 The simpleRTK2B LR's onboard LoRa radio is a **separate concern** — that's
 normally used for RTCM3 correction data between your RTK base and this
@@ -122,8 +191,11 @@ Boat (Pi Zero 2 W):
 ```
 cd race-tracker
 npm install
-GPS_PORT=/dev/ttyACM0 RADIO_PORT=/dev/ttyUSB0 BOAT_ID=1 npm run boat
+RADIO_PORT=/dev/ttyUSB0 BOAT_ID=1 npm run boat
 ```
+(GPS defaults to the Pi's hardware UART, `/dev/ttyAMA0` - add
+`GPS_PORT=/dev/ttyACM0` if you've wired the simpleRTK2B LR's own USB port
+instead, see "Wiring notes" above.)
 
 Base station (another Pi, or a laptop with a USB radio):
 ```
@@ -735,7 +807,7 @@ given `boat`/`base` run will actually use, instead of reading through
 
 | Var | Default | Purpose |
 |---|---|---|
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyACM0` / 38400 | GPS UART (simpleRTK2B LR's own USB port by default — override to `/dev/ttyAMA0` if wired to the Pi's hardware UART instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — set on `npm run base` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`); the base only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`); the base only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
 | `GPS_LOG` | unset (on) | Both roles — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy). On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
@@ -766,9 +838,9 @@ given `boat`/`base` run will actually use, instead of reading through
 ## What still needs real-hardware testing
 
 - Actual achievable baud/range tradeoff for your specific radio model
-- Whether the Pi's hardware UART (`/dev/ttyAMA0`) is more reliable than the
-  simpleRTK2B LR's own USB port (`/dev/ttyACM0`, the default) for your GPS
-  wiring in practice
+- Whether the Pi's hardware UART (`/dev/ttyAMA0`, the default) holds up as
+  reliably over a full race day as the simpleRTK2B LR's own USB port
+  (`/dev/ttyACM0`) did before this wiring change
 - UBX checksum/frame-sync robustness over a long noisy USB-serial run (the
   parser resyncs on bad frames, but hasn't been stress-tested on real RF
   noise)

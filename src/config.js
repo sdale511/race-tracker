@@ -91,13 +91,17 @@ module.exports = {
   },
 
   // --- GPS (simpleRTK2B LR, ZED-F9P) ---
-  // Default port is the Pi's USB CDC-ACM device, since the simpleRTK2B LR's
-  // own USB port is what's actually used - not the Pi's hardware UART pins
-  // (override GPS_PORT if you do wire it to GPIO 14/15 instead). This link
-  // is Pi<->GPS only, so baud/bandwidth here is NOT the constraint (the
-  // radio link is) - default matches the ZED-F9P's factory-default UART1
-  // baud so no baud reconfig step is needed on the module, just enabling
-  // NAV-PVT/disabling NMEA.
+  // Default port is the Pi's own hardware UART (GPIO 14/15, see "Wiring
+  // notes" in the README - requires disabling Bluetooth on Pis that have
+  // it, or these pins default to the glitch-prone mini-UART instead) -
+  // frees up the Pi's one USB/OTG port for the radio instead of a hub.
+  // Override GPS_PORT back to the module's own USB CDC-ACM device (usually
+  // `/dev/ttyACM0`) if you'd rather wire it that way instead. This link is
+  // Pi<->GPS only, so baud/bandwidth here is NOT the constraint (the radio
+  // link is) - default baud is whatever this UART was actually found
+  // running at on real hardware (see README's "GPS configuration"), not
+  // the ZED-F9P's factory default (38400) - each UART configures
+  // independently, so the two aren't guaranteed to match on a given unit.
   // Also doubles as the base station's own optional GPS (a module wired
   // directly to whatever machine runs the base, e.g. the same simpleRTK2B
   // LR hardware a boat uses) - not for tracking the base itself, but so
@@ -109,10 +113,13 @@ module.exports = {
   // GPS_PORT is *explicitly* set (see its own comment), unlike the boat
   // which always opens one (falling back to this same default) since a
   // boat is assumed to always have real GPS hardware unless told
-  // otherwise (SIMULATE/NO_GPS).
+  // otherwise (SIMULATE/NO_GPS). A base's GPS is commonly wired over USB
+  // instead (e.g. straight into the machine running `npm run base`), in
+  // which case both GPS_PORT and GPS_BAUD will usually need overriding to
+  // match that connection instead of this GPIO-tuned default.
   gps: {
-    port: process.env.GPS_PORT || '/dev/ttyACM0',
-    baud: parseInt(process.env.GPS_BAUD || '38400', 10),
+    port: process.env.GPS_PORT || '/dev/ttyAMA0',
+    baud: parseInt(process.env.GPS_BAUD || '115200', 10),
     // On by default (matches existing behavior on both roles) - set
     // GPS_LOG=0 to silence the per-fix [gps]/[baseGps] console line, e.g.
     // once you've confirmed a good fix and don't want it scrolling by
