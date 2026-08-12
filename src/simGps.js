@@ -140,9 +140,20 @@ class SimGpsSource extends EventEmitter {
 
     // Position relative to the leeward mark, which sits at the configured
     // center point (SIM_CENTER_LAT/LON). Boats start spread out along the
-    // start/finish line (see course.js), not at a mark. `startSlot` is a
-    // 0-based registration-order slot (see redisStore.getOrAssignStartSlot),
-    // not the boat's own ID/sail number.
+    // start/finish line (see course.js), not at a mark - startOnly keeps
+    // this same per-slot spread (still useful to see multiple simulated
+    // boats sitting at their own distinct positions along the line, e.g.
+    // testing a fleet start) rather than collapsing every boat onto the
+    // same point. `startSlot` is a 0-based registration-order slot (see
+    // redisStore.getOrAssignStartSlot), not the boat's own ID/sail number.
+    //
+    // Every slot from getStartPosition is already exactly on the line
+    // (north = startLineNorthM, so 0 perpendicular distance) and strictly
+    // between the marks by construction (see getStartPosition's own
+    // comment) - onGridWatcher.js's own independent lat/lon projection
+    // should agree closely enough that this alone is already reliable, but
+    // see its ONGRID_EDGE_MARGIN_M for why that's backed up explicitly
+    // rather than left to coincide.
     const start = getStartPosition(startSlot, geometry);
     this.north = start.north;
     this.east = start.east;

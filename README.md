@@ -290,7 +290,7 @@ output all work exactly as they would with real hardware.
 | `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect |
 | `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end - reference only, the simulator never races them. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
-| `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat just sits at its start position on the line forever, emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Useful for testing start-line-adjacent features (on-grid detection, the map's "edit marks" column) without a moving target |
+| `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
 but the `boat` process itself keeps running rather than exiting - so its
@@ -402,8 +402,12 @@ pin<->committee segment, not committee<->finish - and reports whenever a
 boat's in/out state actually *changes*, not on every fix. A boat counts as
 on-grid when it's both:
 
-- Between the pin and committee marks (literally - not just close to the
-  line's infinite extension past either mark), and
+- Between the pin and committee marks (not just close to the line's
+  infinite extension past either mark) - with 1m of slack right at either
+  end, so a boat genuinely sitting at a mark isn't excluded by
+  floating-point/projection noise between whatever produced the fix (real
+  GPS, or the simulator's own independent lat/lon math) and this watcher's
+  own, and
 - Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line itself, on
   either side
 
