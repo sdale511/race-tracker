@@ -5,6 +5,8 @@ const { RedisStore } = require('./redisStore');
 const { distanceMeters, COURSE_LENGTH_M, LONG_COURSE_EXTRA_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
+const { OnGridWatcher } = require('./onGridWatcher');
+const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
 const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
 const { startAdminServer } = require('./adminServer');
@@ -230,8 +232,11 @@ function main() {
     // whatever it was when a given boat's first fix arrived (see
     // watcherFor below) - clear so every boat's watcher rebuilds fresh
     // from the corrected marks on its next fix, rather than silently
-    // keeping stale gate geometry for the rest of the race.
+    // keeping stale gate geometry for the rest of the race. Same reasoning
+    // for on-grid watchers (pin/committee), regardless of which specific
+    // mark was actually edited - simplest to always clear both.
     finishLineWatchers.clear();
+    onGridWatchers.clear();
     broadcastMarksNow();
     return raceMarks;
   }
@@ -350,6 +355,21 @@ function main() {
     return watcher;
   }
 
+  // One OnGridWatcher per boat, same lazy-build-per-boat pattern as
+  // finishLineWatchers above (see onGridWatcher.js) - independent in/out
+  // state per boat, built once raceMarks (specifically pin/committee) is
+  // available.
+  const onGridWatchers = new Map();
+  function onGridWatcherFor(boatId) {
+    if (!raceMarks) return null;
+    let watcher = onGridWatchers.get(boatId);
+    if (!watcher) {
+      watcher = new OnGridWatcher(raceMarks, config.regattaup.onGridZoneM);
+      onGridWatchers.set(boatId, watcher);
+    }
+    return watcher;
+  }
+
   // Lap webhook queue (see lapWebhookQueue.js) - initializes asynchronously
   // (it reads/creates a small sqlite file), so a lap detected before it's
   // ready gets buffered here rather than dropped. Once ready, buffered laps
@@ -368,6 +388,24 @@ function main() {
       setInterval(() => retryQueuedLaps(lapWebhookQueue), config.regattaup.retryIntervalMs);
     } catch (err) {
       console.error('[regattaup] failed to initialize lap webhook queue:', err.message);
+    }
+  })();
+
+  // Same buffer-then-flush pattern as the lap queue above, for on-grid/
+  // off-grid transitions (see onGridWatcher.js) - its own separate queue
+  // file, see onGridWebhookQueue.js's module comment for why.
+  let onGridWebhookQueue = null;
+  let bufferedOnGrid = [];
+
+  (async () => {
+    try {
+      onGridWebhookQueue = await OnGridWebhookQueue.create(config.regattaup.onGridQueueDbPath);
+      console.log(`[baseStation] on-grid webhook queue ready at ${config.regattaup.onGridQueueDbPath}`);
+      for (const event of bufferedOnGrid) enqueueOnGrid(event);
+      bufferedOnGrid = [];
+      setInterval(() => retryQueuedOnGrid(onGridWebhookQueue), config.regattaup.retryIntervalMs);
+    } catch (err) {
+      console.error('[regattaup] failed to initialize on-grid webhook queue:', err.message);
     }
   })();
 
@@ -409,6 +447,22 @@ function main() {
         else bufferedLaps.push(lap);
       }
     }
+
+    const onGridWatcher = onGridWatcherFor(decoded.boatId);
+    const onGridMode = onGridWatcher && onGridWatcher.check(decoded.lat, decoded.lon);
+    if (onGridMode) {
+      console.log(`[baseStation] boat=${decoded.boatId} ${onGridMode === 'ongrid' ? 'entered' : 'left'} the start grid`);
+      if (config.regattaup.enabled) {
+        const event = {
+          boatId: decoded.boatId,
+          mode: onGridMode,
+          rtcTime: decoded.timestamp * 1000, // ms -> microseconds
+          receivedAt: new Date().toISOString(),
+        };
+        if (onGridWebhookQueue) enqueueOnGrid(event);
+        else bufferedOnGrid.push(event);
+      }
+    }
   });
 
   // Durably records the lap (see lapWebhookQueue.js's module comment for
@@ -425,6 +479,18 @@ function main() {
   function retryQueuedLaps(queue) {
     for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
       sendQueuedLap(queue, row);
+    }
+  }
+
+  // Same pattern as enqueueLap/retryQueuedLaps above, for on-grid events.
+  function enqueueOnGrid(event) {
+    const id = onGridWebhookQueue.enqueue(event);
+    sendQueuedOnGrid(onGridWebhookQueue, onGridWebhookQueue.get(id));
+  }
+
+  function retryQueuedOnGrid(queue) {
+    for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
+      sendQueuedOnGrid(queue, row);
     }
   }
 
@@ -582,6 +648,9 @@ function main() {
       ? `[baseStation] lap crossings post to RegattaUp at ${config.regattaup.webhookUrl}`
       : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_DISABLED=1)'
   );
+  if (config.regattaup.enabled) {
+    console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m either side of the pin<->committee line`);
+  }
 }
 
 function toGGA(d) {
@@ -645,6 +714,36 @@ async function sendQueuedLap(queue, row) {
   } catch (err) {
     console.error(
       `[regattaup] webhook failed for boat=${row.boat_id} lap=${row.lap} (attempt ${row.attempts + 1}), will retry:`,
+      err.message
+    );
+  }
+}
+
+// Tells RegattaUp a boat entered/left the start grid (see onGridWatcher.js)
+// - same tranCode/rtcTime conventions as sendQueuedLap above, and the exact
+// same retry/removal semantics, just posting to the same webhook URL with
+// `mode` instead of a lap number.
+async function sendQueuedOnGrid(queue, row) {
+  queue.recordAttempt(row.id);
+  const payload = {
+    mode: row.mode,
+    decoded: {
+      tranCode: String(row.boat_id),
+      rtcTime: row.rtc_time,
+    },
+  };
+  try {
+    const res = await fetch(config.regattaup.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    queue.remove(row.id);
+    console.log(`[regattaup] ${row.mode} webhook sent for boat=${row.boat_id}`);
+  } catch (err) {
+    console.error(
+      `[regattaup] ${row.mode} webhook failed for boat=${row.boat_id} (attempt ${row.attempts + 1}), will retry:`,
       err.message
     );
   }

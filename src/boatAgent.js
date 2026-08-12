@@ -309,6 +309,7 @@ function startGpsSimIfReady() {
     startSlot,
     lapCount: config.sim.lapCount,
     geometry,
+    startOnly: config.sim.startOnly,
   });
   gps.on('nav-pvt', handlePvt);
   // Diagnostic only - the sim's own internal lap counting, used to decide

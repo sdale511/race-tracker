@@ -290,6 +290,7 @@ output all work exactly as they would with real hardware.
 | `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect |
 | `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end - reference only, the simulator never races them. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
+| `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat just sits at its start position on the line forever, emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Useful for testing start-line-adjacent features (on-grid detection, the map's "edit marks" column) without a moving target |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
 but the `boat` process itself keeps running rather than exiting - so its
@@ -391,6 +392,54 @@ race has - just the "lap" field on that one synthetic event.
 `TEST_LAP_BOAT_ID` (default 1) is the other half of that payload - which
 boat the fake lap is attributed to - and only matters alongside a
 positive `TEST_LAP_NUMBER`.
+
+## On-grid detection -> RegattaUp
+
+Separate from lap detection above: `src/onGridWatcher.js`, one instance
+per boat (same lazy-build-per-boat pattern as `FinishLineWatcher`), watches
+every incoming fix against the **start** side of the course - the
+pin<->committee segment, not committee<->finish - and reports whenever a
+boat's in/out state actually *changes*, not on every fix. A boat counts as
+on-grid when it's both:
+
+- Between the pin and committee marks (literally - not just close to the
+  line's infinite extension past either mark), and
+- Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line itself, on
+  either side
+
+Each transition POSTs to the same RegattaUp webhook laps use, with its own
+payload shape:
+
+```json
+{ "mode": "ongrid", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
+```
+```json
+{ "mode": "offgrid", "decoded": { "tranCode": "51", "rtcTime": 1785337745000000 } }
+```
+
+- `tranCode` — the boat's ID (as a string), same convention as laps
+- `rtcTime` — the fix's own timestamp at the moment of the transition,
+  converted from milliseconds to microseconds
+
+Uses the exact same durable-queue-plus-retry mechanics as laps (see
+"Durable retry queue" above) - `src/onGridWebhookQueue.js`, same
+capped-exponential-backoff loop, same `REGATTAUP_RETRY_INTERVAL_MS`/
+`REGATTAUP_MAX_BACKOFF_MS` settings - just its own separate sqlite file
+(`REGATTAUP_ONGRID_QUEUE_DB`), since `sql.js` overwrites its whole file on
+every save and two independent queue instances can't safely share one.
+`REGATTAUP_WEBHOOK_DISABLED` disables both lap and on-grid webhooks
+together - there's no separate on/off switch for on-grid alone. Editing
+the pin or committee mark from the map (see "Editing mark positions from
+the map" above) clears every boat's on-grid watcher, same as it already
+does for finish-line watchers, so a corrected mark position doesn't leave
+stale gate geometry active for the rest of the race.
+
+For testing without a boat sailing off the line seconds after startup,
+`SIM_START_ONLY=1` (see "Simulation mode" above) parks a simulated boat
+on the start line indefinitely:
+```
+SIM_START_ONLY=1 SIMULATE=1 BOAT_ID=1 npm run boat
+```
 
 ## Redis track storage
 
@@ -847,7 +896,9 @@ given `boat`/`base` run will actually use, instead of reading through
 | `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base station only — where the synthesized `$GPGGA` NMEA sentence for each decoded fix is UDP-broadcast, see "Connecting to your race committee software" above. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
-| `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue |
+| `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_RETRY_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid webhook's retry queue too |
+| `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
+| `REGATTAUP_ONGRID_QUEUE_DB` | `<LOG_DIR>/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
 | `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
 | `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |
 

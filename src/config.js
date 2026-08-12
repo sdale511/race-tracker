@@ -88,6 +88,14 @@ module.exports = {
     centerLon: parseFloat(process.env.SIM_CENTER_LON || '-118.3821'),
     // % chance (0-100) each frame is dropped, to simulate radio range dropouts.
     packetLossPct: parseFloat(process.env.SIM_PACKET_LOSS || '0'),
+    // Off by default - set to 1 to skip the simulated race entirely and
+    // just sit the boat at its start position (see simGps.js's _tick())
+    // forever, emitting a stationary but otherwise normal fix stream.
+    // Useful for testing start-line-adjacent features (on-grid detection,
+    // the map's "edit marks" column) without waiting for a boat to sail
+    // off the line seconds after simulation start, or fighting the sim's
+    // own movement to keep it near the line.
+    startOnly: process.env.SIM_START_ONLY === '1' || process.env.SIM_START_ONLY === 'true',
   },
 
   // --- GPS (simpleRTK2B LR, ZED-F9P) ---
@@ -277,5 +285,14 @@ module.exports = {
     queueDbPath: process.env.REGATTAUP_QUEUE_DB || path.join(logDir, 'lap_webhook_queue.sqlite'),
     retryIntervalMs: parseInt(process.env.REGATTAUP_RETRY_INTERVAL_MS || '15000', 10),
     maxBackoffMs: parseInt(process.env.REGATTAUP_MAX_BACKOFF_MS || '300000', 10), // 5 minutes
+    // On-grid detection (see onGridWatcher.js): how close a boat has to be
+    // to the pin<->committee (start) line, while still between the two
+    // marks, to count as "on-grid" - an ongrid/offgrid webhook fires on
+    // each transition. Same enabled/retry/backoff settings as laps above
+    // (REGATTAUP_WEBHOOK_DISABLED also disables this), but its own queue
+    // file - see onGridWebhookQueue.js's module comment for why it can't
+    // just share lap_webhook_queue.sqlite.
+    onGridZoneM: parseFloat(process.env.REGATTAUP_ONGRID_ZONE_M || '10'),
+    onGridQueueDbPath: process.env.REGATTAUP_ONGRID_QUEUE_DB || path.join(logDir, 'ongrid_webhook_queue.sqlite'),
   },
 };

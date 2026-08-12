@@ -115,10 +115,13 @@ class SimGpsSource extends EventEmitter {
   // finishSideLengthM, boatStartSpacingM } - see course.js's deriveGeometry.
   // Measured from the actual marks by the caller, not assumed from this
   // process's own SIM_COURSE_LENGTH_NM (see module comment above).
-  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount, geometry }) {
+  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount, geometry, startOnly }) {
     super();
     this.centerLat = centerLat;
     this.centerLon = centerLon;
+    // See _tick() - when true, every other field this constructor sets up
+    // (phase, side, leg targets, lap counting, ...) is simply never read.
+    this.startOnly = !!startOnly;
     this.courseLengthM = geometry.courseLengthM;
     this.startLineNorthM = geometry.startLineNorthM;
     this.startSideLengthM = geometry.startSideLengthM;
@@ -161,8 +164,13 @@ class SimGpsSource extends EventEmitter {
     this.crossedLineThisLeg = true;
     this.finishCoastRemainingM = null; // set once the final lap's crossing is detected, see _tick()
 
-    this._setLegTarget();
-    this._startNewLeg();
+    // Leg/target setup is irrelevant in startOnly mode - _tick() below
+    // never reads any of it, so skip it entirely rather than run setup for
+    // state that'll never be used.
+    if (!this.startOnly) {
+      this._setLegTarget();
+      this._startNewLeg();
+    }
     this._timer = setInterval(() => this._tick(), this.intervalMs);
   }
 
@@ -399,6 +407,29 @@ class SimGpsSource extends EventEmitter {
 
   _tick() {
     if (this.finished) return; // stop() already called; ignore any stray timer fire
+
+    if (this.startOnly) {
+      // Sits at the start position forever - north/east never change, so
+      // this is the same lat/lon on every tick. Still a fully valid,
+      // continuously-updating fix stream (fresh timestamp each time, real
+      // fix-quality fields) - just stationary, not a synthetic race.
+      const { lat, lon } = offsetToLatLon(this.centerLat, this.centerLon, { north: this.north, east: this.east });
+      this.emit('nav-pvt', {
+        fixType: 3,
+        gnssFixOk: true,
+        diffSoln: true,
+        carrSoln: 2,
+        numSV: 14,
+        lat,
+        lon,
+        heightMm: 5000,
+        hAccMm: 15,
+        gSpeedMmS: 0,
+        headMotDeg: 0,
+        timestamp: Date.now(),
+      });
+      return;
+    }
 
     const dt = this.intervalMs / 1000;
     this.timeSinceManeuverS += dt;
