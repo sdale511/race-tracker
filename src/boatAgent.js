@@ -164,8 +164,13 @@ function handlePvt(pvt) {
   // above - so the console mirrors what actually happened, not the full
   // raw stream.
   if (config.gps.logConsole && (config.gps.logAll || clearedTxGate)) {
+    // Timestamp included mainly for the in-place overwrite mode below - a
+    // stationary boat can otherwise repeat the exact same line forever,
+    // which looks indistinguishable from a frozen/dead connection. The
+    // clock visibly ticking is what proves it's still live.
+    const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
     const line =
-      `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+      `[gps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
       `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
       `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
     // In-place overwriting only ever applies when GPS_LOG_ALL is actually

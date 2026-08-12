@@ -202,6 +202,17 @@ Base station (another Pi, or a laptop with a USB radio):
 RADIO_PORT=/dev/ttyUSB0 npm run base
 ```
 
+On macOS, device paths look different - a USB-to-serial radio adapter
+(FTDI/CP210x-style) shows up as `/dev/cu.usbserial-XXXX`, and a GPS
+module's native USB (like the simpleRTK2B's own CDC-ACM port) as
+`/dev/cu.usbmodemXXXX`, e.g.:
+```
+RADIO_PORT=/dev/cu.usbserial-0001 GPS_PORT=/dev/cu.usbmodem1101 npm run base
+```
+The exact suffix isn't fixed - it depends on the specific adapter and
+sometimes which USB port it's plugged into. Run `ls /dev/cu.*` before and
+after plugging in each device to see which path just appeared.
+
 Auto-start on boat boot:
 ```
 sudo cp systemd/boat-agent.service /etc/systemd/system/

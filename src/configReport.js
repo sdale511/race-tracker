@@ -44,7 +44,7 @@ const sections = [
   {
     title: 'GPS (simpleRTK2B LR)',
     rows: [
-      { label: 'port', value: config.gps.port, envVar: 'GPS_PORT' },
+      { label: 'port', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX' },
       { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud' },
       { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG' },
       { label: 'logAll', value: config.gps.logAll, envVar: 'GPS_LOG_ALL' },
@@ -54,7 +54,7 @@ const sections = [
     title: 'Radio (telemetry)',
     rows: [
       { label: 'enabled', value: config.radio.enabled, envVar: 'NO_RADIO', inverted: true },
-      { label: 'port', value: config.radio.port, envVar: 'RADIO_PORT' },
+      { label: 'port', value: config.radio.port, envVar: 'RADIO_PORT', note: 'macOS: /dev/cu.usbserial-XXXX' },
       { label: 'baud', value: config.radio.baud, envVar: 'RADIO_BAUD', unit: 'baud' },
     ],
   },
@@ -157,7 +157,7 @@ function renderConfigPage() {
   const sectionsHtml = sections
     .map((section) => {
       const rows = section.rows
-        .map(({ label, value, envVar, inverted, unit }) => {
+        .map(({ label, value, envVar, inverted, unit, note }) => {
           // Env Var is shown unconditionally (not just once overridden) -
           // this is the actual command-line/`.env` knob for this setting,
           // so it should be visible right next to its current value even
@@ -173,10 +173,15 @@ function renderConfigPage() {
                 // it's not confusing that e.g. NO_RADIO=1 shows "enabled: false".
                 `<span class="overridden">overridden${inverted ? ` (${envVar}=${process.env[envVar]})` : ''}</span>`
               : '<span class="muted">default</span>';
+          // A platform-specific hint (e.g. what this path looks like on
+          // macOS vs the Linux paths used as the actual defaults) - shown
+          // as a small muted line under the value, not part of the
+          // resolved value itself.
+          const valueHtml = note ? `${formatValue(value, unit)}<div class="muted" style="font-size:11px;">${note}</div>` : formatValue(value, unit);
           return `<tr>
             <td>${label}</td>
             <td>${envVarHtml}</td>
-            <td>${formatValue(value, unit)}</td>
+            <td>${valueHtml}</td>
             <td>${statusHtml}</td>
           </tr>`;
         })
