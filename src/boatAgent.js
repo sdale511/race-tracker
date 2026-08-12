@@ -146,13 +146,6 @@ let lastPvt = null;
 function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
-  if (config.gps.logConsole) {
-    console.log(
-      `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
-        `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
-        `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
-    );
-  }
 
   // Distance-based, not time-based: send whenever the boat has actually
   // moved TX_DISTANCE_M since the last transmitted fix, regardless of how
@@ -164,7 +157,41 @@ function handlePvt(pvt) {
   // radio, not a separate full-rate trace, so a fix that wouldn't have
   // been worth transmitting isn't worth logging either.
   const movedM = lastTxPosition ? distanceMeters(lastTxPosition, pvt) : Infinity;
-  if (movedM >= config.txDistanceM) {
+  const clearedTxGate = movedM >= config.txDistanceM;
+
+  // GPS_LOG_ALL=1 logs every fix (1-10Hz, noisy); off by default, which
+  // instead follows the same TX_DISTANCE_M gate as the SD log/radio TX
+  // above - so the console mirrors what actually happened, not the full
+  // raw stream.
+  if (config.gps.logConsole && (config.gps.logAll || clearedTxGate)) {
+    const line =
+      `[gps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+      `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
+      `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
+    // In-place overwriting only ever applies when GPS_LOG_ALL is actually
+    // on AND stdout is a real interactive terminal - piped to a file or
+    // captured by systemd/journald, `\x1b[2K\r` would just write raw
+    // control characters into the log instead of behaving like an
+    // overwrite, so that combination always falls through to a plain
+    // console.log below (same as the GPS_LOG_ALL=0 default already did).
+    const inPlaceMode = config.gps.logAll && process.stdout.isTTY;
+    if (inPlaceMode && !clearedTxGate) {
+      // Noise between the fixes that matter - overwrite the same
+      // terminal line instead of scrolling at the full 1-10Hz GPS rate.
+      // `\x1b[2K\r` clears whatever's on the line first so a shorter new
+      // line never leaves stale trailing characters from a longer one.
+      process.stdout.write(`\x1b[2K\r${line}`);
+    } else if (inPlaceMode) {
+      // A real event (cleared the gate) while in TTY full-logging mode -
+      // clear any pending in-place line first, then commit this one to
+      // scrollback with a trailing newline.
+      process.stdout.write(`\x1b[2K\r${line}\n`);
+    } else {
+      console.log(line);
+    }
+  }
+
+  if (clearedTxGate) {
     lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
     sdLogger.logPvt(pvt);
     const frame = protocol.encode(config.boatId, pvt);

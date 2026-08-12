@@ -125,6 +125,13 @@ module.exports = {
     // once you've confirmed a good fix and don't want it scrolling by
     // during an actual race.
     logConsole: process.env.GPS_LOG !== '0' && process.env.GPS_LOG !== 'false',
+    // Off by default - boat only (see boatAgent.js's handlePvt). GPS fixes
+    // can arrive at 1-10Hz; with this off, the console (like the SD log
+    // and radio TX) only shows the ones that actually cleared
+    // TX_DISTANCE_M, not the full raw stream. Set GPS_LOG_ALL=1 to log
+    // every fix regardless of movement - useful for closely watching RTK
+    // convergence bench-side, noisy the rest of the time.
+    logAll: process.env.GPS_LOG_ALL === '1' || process.env.GPS_LOG_ALL === 'true',
   },
 
   // --- Telemetry radio (transparent-serial style, e.g. Digi XBee-PRO S3B) ---
