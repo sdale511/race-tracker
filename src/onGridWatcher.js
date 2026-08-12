@@ -1,11 +1,13 @@
-// Detects when a boat enters or leaves the "on-grid" pre-start zone: the
-// area between the pin and committee marks (the start line itself), within
-// a configurable distance of the line (see config.js's
-// regattaup.onGridZoneM) - used to tell RegattaUp a boat is queued up for
-// the start. Distinct from finishLineWatcher.js's one-shot crossing
-// detection - this is a continuous in/out state, reported only on the
-// transitions (entering -> 'ongrid', leaving -> 'offgrid'), not on every
-// fix.
+// Detects when a boat is in the "on-grid" pre-start zone: the area between
+// the pin and committee marks (the start line itself), within a
+// configurable distance of the line (see config.js's regattaup.onGridZoneM)
+// - used to tell RegattaUp a boat is queued up for the start. Distinct from
+// finishLineWatcher.js's one-shot crossing detection - 'ongrid' re-fires on
+// every fix for as long as the boat stays in the zone (so RegattaUp sees a
+// live signal tied to actual incoming position updates, not one stale event
+// for however long the boat sits there), while 'offgrid' only fires once,
+// on the transition out - there's no reason to keep affirming "still not
+// there."
 const METERS_PER_DEG_LAT = 111320;
 
 // A boat genuinely sitting at either mark (a real committee boat or pin,
@@ -41,15 +43,17 @@ class OnGridWatcher {
     this.onGrid = false;
   }
 
-  // Call with every new fix's lat/lon. Returns 'ongrid'/'offgrid' the
-  // instant the boat's in/out state actually changes, null otherwise (the
-  // common case - a boat sits solidly on the grid or solidly off it far
-  // more often than it's actually transitioning).
+  // Call with every new fix's lat/lon. Returns 'ongrid' every time the boat
+  // is currently in the zone (not just on the transition in - a fix that
+  // arrives while already on-grid still re-fires it), 'offgrid' once on the
+  // transition out, or null if it was outside and still is (nothing to
+  // report - repeating "still not there" on every fix would just be noise).
   check(lat, lon) {
     const inside = this._isInZone(this._toXY(lat, lon));
-    if (inside === this.onGrid) return null;
+    const wasInside = this.onGrid;
     this.onGrid = inside;
-    return inside ? 'ongrid' : 'offgrid';
+    if (inside) return 'ongrid';
+    return wasInside ? 'offgrid' : null;
   }
 
   // Standard point-to-segment distance, but deliberately NOT clamped to

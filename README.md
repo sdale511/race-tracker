@@ -398,9 +398,8 @@ positive `TEST_LAP_NUMBER`.
 Separate from lap detection above: `src/onGridWatcher.js`, one instance
 per boat (same lazy-build-per-boat pattern as `FinishLineWatcher`), watches
 every incoming fix against the **start** side of the course - the
-pin<->committee segment, not committee<->finish - and reports whenever a
-boat's in/out state actually *changes*, not on every fix. A boat counts as
-on-grid when it's both:
+pin<->committee segment, not committee<->finish. A boat counts as on-grid
+when it's both:
 
 - Between the pin and committee marks (not just close to the line's
   infinite extension past either mark) - with 1m of slack right at either
@@ -411,8 +410,7 @@ on-grid when it's both:
 - Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line itself, on
   either side
 
-Each transition POSTs to the same RegattaUp webhook laps use, with its own
-payload shape:
+POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 
 ```json
 { "mode": "ongrid", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
@@ -422,8 +420,22 @@ payload shape:
 ```
 
 - `tranCode` — the boat's ID (as a string), same convention as laps
-- `rtcTime` — the fix's own timestamp at the moment of the transition,
-  converted from milliseconds to microseconds
+- `rtcTime` — the fix's own timestamp, converted from milliseconds to
+  microseconds
+
+`ongrid` re-fires on **every** incoming fix for as long as the boat stays
+in the zone (not just the moment it enters) - so RegattaUp sees a live
+signal tied to real position updates arriving, rather than one stale
+event for however long the boat sits there. `offgrid` still only fires
+once, on the transition out - there's no reason to keep affirming "still
+not there." Since this rides on actual fixes rather than a wall-clock
+timer, how often it re-fires for a given boat follows `TX_DISTANCE_M`
+(the boat only transmits once it's moved that far - see "Running" above)
+- a boat that's genuinely dead-still (e.g. `SIM_START_ONLY`, which reports
+zero speed) will only send its very first frame and never trigger a
+re-fire at all, since it never clears that gate again. A boat with any
+real drift (wind, waves, GPS noise) will re-fire every time it moves
+`TX_DISTANCE_M`.
 
 Uses the exact same durable-queue-plus-retry mechanics as laps (see
 "Durable retry queue" above) - `src/onGridWebhookQueue.js`, same

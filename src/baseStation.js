@@ -449,9 +449,14 @@ function main() {
     }
 
     const onGridWatcher = onGridWatcherFor(decoded.boatId);
+    const wasOnGrid = onGridWatcher && onGridWatcher.onGrid;
     const onGridMode = onGridWatcher && onGridWatcher.check(decoded.lat, decoded.lon);
     if (onGridMode) {
-      console.log(`[baseStation] boat=${decoded.boatId} ${onGridMode === 'ongrid' ? 'entered' : 'left'} the start grid`);
+      // 'ongrid' fires on every fix while in the zone (see onGridWatcher.js),
+      // not just the first one - distinguish the actual entry from a
+      // repeat re-affirmation so the log doesn't claim "entered" every time.
+      const label = onGridMode === 'offgrid' ? 'left' : wasOnGrid ? 'still on' : 'entered';
+      console.log(`[baseStation] boat=${decoded.boatId} ${label} the start grid`);
       if (config.regattaup.enabled) {
         const event = {
           boatId: decoded.boatId,
@@ -719,10 +724,10 @@ async function sendQueuedLap(queue, row) {
   }
 }
 
-// Tells RegattaUp a boat entered/left the start grid (see onGridWatcher.js)
-// - same tranCode/rtcTime conventions as sendQueuedLap above, and the exact
-// same retry/removal semantics, just posting to the same webhook URL with
-// `mode` instead of a lap number.
+// Tells RegattaUp a boat is (still) on the grid or has left it (see
+// onGridWatcher.js) - same tranCode/rtcTime conventions as sendQueuedLap
+// above, and the exact same retry/removal semantics, just posting to the
+// same webhook URL with `mode` instead of a lap number.
 async function sendQueuedOnGrid(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
