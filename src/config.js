@@ -132,6 +132,16 @@ module.exports = {
     // every fix regardless of movement - useful for closely watching RTK
     // convergence bench-side, noisy the rest of the time.
     logAll: process.env.GPS_LOG_ALL === '1' || process.env.GPS_LOG_ALL === 'true',
+    // On by default - boat only, and only actually matters when logAll is
+    // also on and stdout is a real terminal (see boatAgent.js's
+    // handlePvt) - that's when a fix that hasn't cleared TX_DISTANCE_M
+    // overwrites the same console line instead of scrolling. Set
+    // GPS_LOG_REPLACE=0 to always scroll (one line per logged fix)
+    // instead, e.g. if something downstream is tailing/grepping this
+    // process's own terminal output directly rather than a piped/redirected
+    // copy (where the in-place escape codes never applied in the first
+    // place - see isTTY check).
+    logReplace: process.env.GPS_LOG_REPLACE !== '0' && process.env.GPS_LOG_REPLACE !== 'false',
   },
 
   // --- Telemetry radio (transparent-serial style, e.g. Digi XBee-PRO S3B) ---

@@ -48,6 +48,7 @@ const sections = [
       { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud' },
       { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG' },
       { label: 'logAll', value: config.gps.logAll, envVar: 'GPS_LOG_ALL' },
+      { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE' },
     ],
   },
   {

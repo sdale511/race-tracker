@@ -12,6 +12,28 @@ const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const roverStats = require('./roverStats');
 
+// True while the cursor is sitting mid-line after an in-place GPS log
+// overwrite (see handlePvt's inPlaceMode) - any *other* log call landing
+// while that's true would otherwise get silently tacked onto the end of
+// that same line instead of starting its own, since nothing else in this
+// process knows the cursor isn't at column 0. Wrapping console.log/warn/
+// error here (rather than auditing every call site across this file and
+// every module it pulls in - radioLink, uploadClient, roverStats, ...) is
+// the only way to catch all of them, including ones added later. warn/
+// error are included too, not just log - stdout and stderr both render to
+// the same physical terminal, so either can land on that dirty line.
+let gpsLineDirty = false;
+for (const method of ['log', 'warn', 'error']) {
+  const original = console[method].bind(console);
+  console[method] = (...args) => {
+    if (gpsLineDirty) {
+      process.stdout.write('\n');
+      gpsLineDirty = false;
+    }
+    original(...args);
+  };
+}
+
 console.log(`[boatAgent] starting, boatId=${config.boatId}`);
 if (config.noGps) {
   console.log('[boatAgent] NO_GPS=1 - not starting any GPS source (real or simulated)');
@@ -179,18 +201,23 @@ function handlePvt(pvt) {
     // control characters into the log instead of behaving like an
     // overwrite, so that combination always falls through to a plain
     // console.log below (same as the GPS_LOG_ALL=0 default already did).
-    const inPlaceMode = config.gps.logAll && process.stdout.isTTY;
+    // GPS_LOG_REPLACE=0 opts out of it entirely (always scroll instead).
+    const inPlaceMode = config.gps.logAll && config.gps.logReplace && process.stdout.isTTY;
     if (inPlaceMode && !clearedTxGate) {
       // Noise between the fixes that matter - overwrite the same
       // terminal line instead of scrolling at the full 1-10Hz GPS rate.
       // `\x1b[2K\r` clears whatever's on the line first so a shorter new
       // line never leaves stale trailing characters from a longer one.
+      // gpsLineDirty stays true - see the console wrapper above, which is
+      // what stops some *other* log call from landing on this same line.
       process.stdout.write(`\x1b[2K\r${line}`);
+      gpsLineDirty = true;
     } else if (inPlaceMode) {
       // A real event (cleared the gate) while in TTY full-logging mode -
       // clear any pending in-place line first, then commit this one to
       // scrollback with a trailing newline.
       process.stdout.write(`\x1b[2K\r${line}\n`);
+      gpsLineDirty = false;
     } else {
       console.log(line);
     }
