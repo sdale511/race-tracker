@@ -50,6 +50,8 @@ const sections = [
       { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG' },
       { label: 'logAll', value: config.gps.logAll, envVar: 'GPS_LOG_ALL' },
       { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE' },
+      { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's' },
+      { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm' },
     ],
   },
   {

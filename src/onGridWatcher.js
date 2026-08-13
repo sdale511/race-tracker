@@ -11,8 +11,8 @@
 const METERS_PER_DEG_LAT = 111320;
 
 // A boat genuinely sitting at either mark (a real committee boat or pin,
-// or a simulated one via getStartPosition in simGps.js, which places every
-// start slot exactly on the line by construction) should always count as
+// or a simulated one via simGps.js, which places every start slot exactly
+// on the real pin<->committee line by construction) should always count as
 // on-grid - but "exactly on the line" from one source (real GPS noise, or
 // a different flat-earth projection upstream - simGps.js's own
 // offsetToLatLon uses a different origin than this file's toXY below) can

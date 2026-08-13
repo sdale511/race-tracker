@@ -1,14 +1,34 @@
 const { EventEmitter } = require('events');
-const { WIND_FROM_DEG, offsetToLatLon, getStartPosition } = require('./course');
+const { WIND_FROM_DEG, offsetToLatLon, getStartFraction } = require('./course');
 
-// Course geometry (courseLengthM, startLineNorthM, startSideLengthM,
-// finishSideLengthM - see the constructor) is passed in, derived by the
-// caller from the actual marks (course.js's deriveGeometry), not imported
-// as fixed module constants here - this process's own SIM_COURSE_LENGTH_NM
-// might not agree with whatever course was actually published to Redis
-// (published earlier, by a different process, possibly at a different
-// length), and every tacking/rounding/gate decision below needs to follow
-// whatever the marks actually say, not this process's own environment.
+const METERS_PER_DEG_LAT = 111320;
+
+// Fraction (0=a, 1=b) of point p's projection onto segment a->b - all three
+// as {north, east} in this file's own local (course-relative, rotated)
+// frame. Used to test whether a local point falls between two other local
+// points (the start/finish line's own marks) - same idea as
+// onGridWatcher.js's zone check, just in local coordinates instead of real
+// lat/lon.
+function projectFraction(a, b, p) {
+  const abNorth = b.north - a.north;
+  const abEast = b.east - a.east;
+  const lenSq = abNorth * abNorth + abEast * abEast;
+  if (lenSq === 0) return 0; // degenerate: a and b on top of each other
+  const apNorth = p.north - a.north;
+  const apEast = p.east - a.east;
+  return (apNorth * abNorth + apEast * abEast) / lenSq;
+}
+
+// Course geometry (courseLengthM, courseBearingDeg, boatStartSpacingM - see
+// the constructor) is passed in, derived by the caller from the actual
+// marks (course.js's deriveGeometry), not imported as fixed module
+// constants here - this process's own SIM_COURSE_LENGTH_NM might not agree
+// with whatever course was actually published to Redis (published earlier,
+// by a different process, possibly at a different length), and every
+// tacking/rounding/gate decision below needs to follow whatever the marks
+// actually say, not this process's own environment. pin/committee/finish's
+// own true positions (see the constructor) are measured the same way, for
+// the same reason.
 //
 // Upwind crossings of the start/finish line must pass through the finish
 // gate (committee <-> finish, on the east side of the rhumb line - see
@@ -111,11 +131,23 @@ function interpolateEastAt(prevNorth, prevEast, curNorth, curEast, targetNorth) 
 }
 
 class SimGpsSource extends EventEmitter {
-  // geometry: { courseLengthM, startLineNorthM, startSideLengthM,
-  // finishSideLengthM, boatStartSpacingM } - see course.js's deriveGeometry.
-  // Measured from the actual marks by the caller, not assumed from this
-  // process's own SIM_COURSE_LENGTH_NM (see module comment above).
-  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount, geometry, startOnly }) {
+  // geometry: { courseLengthM, courseBearingDeg, boatStartSpacingM } - see
+  // course.js's deriveGeometry. Measured from the actual marks by the
+  // caller, not assumed from this process's own SIM_COURSE_LENGTH_NM (see
+  // module comment above).
+  //
+  // pin/committee/finish: the REAL lat/lon of the start/finish complex.
+  // windward/leeward always sit exactly on this file's own local north
+  // axis, by definition of how courseBearingDeg is derived (the leeward
+  // -> windward bearing) - but pin/committee/finish are NOT guaranteed to,
+  // since an operator can drag any mark independently of any other (see
+  // adminServer.js's "edit marks" column). Their true position in this
+  // local frame has to be measured (see _toLocal below), not assumed to
+  // sit at some fixed offset perpendicular to the beat axis - otherwise an
+  // edited windward mark rotates the beat axis right out from under a
+  // *stationary* real finish line, and the boat stops crossing it
+  // entirely (the bug this whole approach exists to avoid).
+  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount, geometry, startOnly, pin, committee, finish }) {
     super();
     this.centerLat = centerLat;
     this.centerLon = centerLon;
@@ -123,12 +155,31 @@ class SimGpsSource extends EventEmitter {
     // (phase, side, leg targets, lap counting, ...) is simply never read.
     this.startOnly = !!startOnly;
     this.courseLengthM = geometry.courseLengthM;
-    this.startLineNorthM = geometry.startLineNorthM;
-    this.startSideLengthM = geometry.startSideLengthM;
-    this.finishSideLengthM = geometry.finishSideLengthM;
-    // Aiming for the gate's center is what makes the upwind finish-gate
-    // requirement (see module comment) achievable.
-    this.finishGateCenterM = geometry.finishSideLengthM / 2;
+    // Everything below (phase/tacking/leg targets/gate checks) works
+    // entirely in this local, course-relative frame - "north" always means
+    // "toward windwardGreen," matching WIND_FROM_DEG=0's own assumption, so
+    // none of that logic needs to know or care which way the course
+    // actually points in the real world. Only _toLatLon() (see below)
+    // needs the real bearing, to rotate this local frame into a true
+    // north/east offset right before it becomes an actual lat/lon fix.
+    this.courseBearingDeg = geometry.courseBearingDeg;
+
+    // pin/committee/finish's TRUE position in this same local frame -
+    // their real offset from leewardGreen, rotated by -courseBearingDeg
+    // (the inverse of _toLatLon's own rotation). At courseBearingDeg=0
+    // (unedited layout) this reduces to exactly the old assumed values
+    // (committee at local (startLineNorthM, 0), etc.) - it's a
+    // generalization, not a behavior change, for the common case.
+    this.pinLocal = this._toLocal(pin.lat, pin.lon);
+    this.committeeLocal = this._toLocal(committee.lat, committee.lon);
+    this.finishLocal = this._toLocal(finish.lat, finish.lon);
+    // The gate's actual center - what the boat steers toward on its final
+    // upwind approach (see _targetWaypoint()), replacing the old assumed
+    // "(startLineNorthM, finishSideLengthM/2)" point.
+    this.gateCenterLocal = {
+      north: (this.committeeLocal.north + this.finishLocal.north) / 2,
+      east: (this.committeeLocal.east + this.finishLocal.east) / 2,
+    };
 
     // Each boat has its own fixed "speed personality" (+/-10%, drawn once,
     // not per-tick) applied to both upwind and downwind speed, so a fleet
@@ -147,16 +198,13 @@ class SimGpsSource extends EventEmitter {
     // same point. `startSlot` is a 0-based registration-order slot (see
     // redisStore.getOrAssignStartSlot), not the boat's own ID/sail number.
     //
-    // Every slot from getStartPosition is already exactly on the line
-    // (north = startLineNorthM, so 0 perpendicular distance) and strictly
-    // between the marks by construction (see getStartPosition's own
-    // comment) - onGridWatcher.js's own independent lat/lon projection
-    // should agree closely enough that this alone is already reliable, but
-    // see its ONGRID_EDGE_MARGIN_M for why that's backed up explicitly
-    // rather than left to coincide.
-    const start = getStartPosition(startSlot, geometry);
-    this.north = start.north;
-    this.east = start.east;
+    // Interpolated against the TRUE local pin/committee positions (not a
+    // simple east offset - see course.js's getStartFraction), so every
+    // slot lands exactly on the real pin<->committee line regardless of
+    // whether that line happens to be perpendicular to the beat axis.
+    const startFrac = getStartFraction(startSlot, geometry);
+    this.north = this.pinLocal.north + startFrac * (this.committeeLocal.north - this.pinLocal.north);
+    this.east = this.pinLocal.east + startFrac * (this.committeeLocal.east - this.pinLocal.east);
     this.phase = 'upwind'; // 'upwind' (beating) | 'downwind' (running)
     this.side = Math.random() < 0.5 ? 1 : -1;
     this.timeSinceManeuverS = 999;
@@ -203,8 +251,13 @@ class SimGpsSource extends EventEmitter {
   // land inside it.
   _targetWaypoint() {
     if (!this.crossedLineThisLeg) {
-      const eastTarget = this.phase === 'upwind' ? this.finishGateCenterM : 0;
-      return { targetNorth: this.startLineNorthM, targetEastM: eastTarget };
+      // Upwind aims at the gate's TRUE center (both north and east - see
+      // gateCenterLocal); downwind keeps the old plain rhumb-line bias
+      // (east=0), just measured against committeeLocal's own true north
+      // instead of an assumed scalar.
+      return this.phase === 'upwind'
+        ? { targetNorth: this.gateCenterLocal.north, targetEastM: this.gateCenterLocal.east }
+        : { targetNorth: this.committeeLocal.north, targetEastM: 0 };
     }
     return { targetNorth: this.phase === 'upwind' ? this.courseLengthM : 0, targetEastM: 0 };
   }
@@ -297,12 +350,21 @@ class SimGpsSource extends EventEmitter {
       const Diff = dEastCorrected / Math.sin(maxAngleRad);
       const Lplus = (S + Diff) / 2;
       const Lminus = (S - Diff) / 2;
-      // A fraction of a normal tack length, not a fixed distance - a fixed
-      // meters value stops being "near zero" once the whole course (and so
-      // the gate/mark it's trying to precisely hit) shrinks enough that the
-      // fixed value is no longer small relative to it (see course.js's
-      // similar reasoning for the start/finish line's own width).
-      const NEAR_ZERO_M = this.targetLegM * 0.05;
+      // A tack this short isn't worth a separate leg of its own - below
+      // this, skip straight to sailing the other (longer) tack in full,
+      // rather than a near-instant leg that would immediately re-trigger
+      // another _startNewLeg() call. Scaled to the course (not a fixed
+      // distance) for the same reason course.js scales the start/finish
+      // line's own width - a fixed value stops being "negligible" once the
+      // whole course shrinks enough - but capped at 2m absolute regardless
+      // of course length: the tacking angle is exactly known, so anything
+      // above a couple meters is a real, visible correction actually worth
+      // sailing, not noise to approximate away. This used to be 5% of
+      // targetLegM (4-5m on a typical course) - large enough to regularly
+      // discard a real tack's worth of lateral correction, which is
+      // exactly why the finish gate crossing was landing meters off instead
+      // of exactly on target.
+      const NEAR_ZERO_M = Math.min(this.targetLegM * 0.01, 2);
 
       if (Lplus >= -NEAR_ZERO_M && Lminus >= -NEAR_ZERO_M) {
         if (Lminus <= NEAR_ZERO_M) {
@@ -317,18 +379,28 @@ class SimGpsSource extends EventEmitter {
 
       // Close enough to be trying to converge, but the needed correction
       // still exceeds what's reachable in a clean two-tack solve at this
-      // angle - always take the correcting side at full angle, with a
-      // normal (not threshold-capped) leg length, so this makes real
-      // progress across possibly several legs. Monotonic (never picks the
-      // "wrong" side for variety), so this reliably shrinks the error leg
-      // over leg until the exact solve above becomes reachable.
+      // angle - always take the correcting side at full angle, so this
+      // makes real progress across possibly several legs. Monotonic (never
+      // picks the "wrong" side for variety), so this reliably shrinks the
+      // error leg over leg until the exact solve above becomes reachable.
       const correctingSide = dEastCorrected >= 0 ? 1 : -1;
       // Already guaranteed positive and proportional to targetLegM (which
       // itself scales with the course length) - no separate floor needed;
       // a fixed one (e.g. 50m) would force tacks longer than intended once
       // targetLegM itself gets small (a short SIM_COURSE_LENGTH_NM course).
       const lengthM = randRange(this.targetLegM * (1 - LEG_JITTER_FRAC), this.targetLegM * (1 + LEG_JITTER_FRAC));
-      this._setLeg(correctingSide, lengthM);
+      // Capped below the distance that would actually reach the target's
+      // own north coordinate (0.8x, leaving room to still be shrinking on
+      // the next call rather than re-triggering this same degenerate
+      // branch immediately) - otherwise this leg can sail straight through
+      // the crossing threshold before finishing, locking in whatever
+      // partly-corrected east it happened to be at instead of the several
+      // legs of refinement this branch is meant to produce (the "possibly
+      // several legs" above only actually happens if a leg stops short of
+      // the line - one that overshoots past it ends the approach on the
+      // spot, cutting off every leg after the first).
+      const maxLengthM = Math.max((dNorth / northPerM) * 0.8, 1);
+      this._setLeg(correctingSide, Math.min(lengthM, maxLengthM));
       return;
     }
 
@@ -354,10 +426,10 @@ class SimGpsSource extends EventEmitter {
     // shouldn't normally need to fire once this is in place).
     if (this.phase === 'downwind' && !this.crossedLineThisLeg) {
       const projected = this._projectedCrossingEast(side);
-      const wouldViolate = projected >= -this.startSideLengthM && projected <= this.finishSideLengthM;
+      const wouldViolate = this._inLocalStrip(this.committeeLocal.north, projected);
       if (wouldViolate) {
         const otherProjected = this._projectedCrossingEast(-side);
-        const otherViolates = otherProjected >= -this.startSideLengthM && otherProjected <= this.finishSideLengthM;
+        const otherViolates = this._inLocalStrip(this.committeeLocal.north, otherProjected);
         if (!otherViolates) side = -side;
         // If both tacks project into the strip (only possible very close
         // to the line with little room left to redirect), leave side as
@@ -381,7 +453,7 @@ class SimGpsSource extends EventEmitter {
     const maxAngleDeg = this.phase === 'upwind' ? CLOSE_HAULED_DEG : RUN_DEG;
     const baseDeg = this.phase === 'upwind' ? WIND_FROM_DEG : (WIND_FROM_DEG + 180) % 360;
     const headingRad = (((baseDeg + side * maxAngleDeg) % 360) * Math.PI) / 180;
-    const dNorth = this.startLineNorthM - this.north;
+    const dNorth = this.committeeLocal.north - this.north;
     const distance = dNorth / Math.cos(headingRad);
     return this.east + distance * Math.sin(headingRad);
   }
@@ -416,6 +488,53 @@ class SimGpsSource extends EventEmitter {
     return (((baseDeg + this.side * angleDeg + this.headingJitterDeg) % 360) + 360) % 360;
   }
 
+  // Converts a local (course-relative, "north"=toward windwardGreen)
+  // offset into a real lat/lon, rotating by courseBearingDeg first so the
+  // fix lands on the course's actual real-world orientation, not wherever
+  // it would be if windwardGreen were still due north of leewardGreen (see
+  // the constructor's own comment). A rotation, not a re-derivation - all
+  // the tacking/leg logic upstream still computed north/east purely in the
+  // local frame, unaware this rotation even happens. At courseBearingDeg=0
+  // (the freshly-generated, unedited layout) this is the identity
+  // transform - north/east pass through unchanged.
+  _toLatLon(north, east) {
+    const rad = (this.courseBearingDeg * Math.PI) / 180;
+    const trueNorth = north * Math.cos(rad) - east * Math.sin(rad);
+    const trueEast = north * Math.sin(rad) + east * Math.cos(rad);
+    return offsetToLatLon(this.centerLat, this.centerLon, { north: trueNorth, east: trueEast });
+  }
+
+  // Inverse of _toLatLon (rotates by -courseBearingDeg instead of
+  // +courseBearingDeg) - converts a REAL lat/lon (pin/committee/finish)
+  // into this file's own local frame, so the start/finish complex's true
+  // position can be compared directly against the boat's own north/east,
+  // instead of assuming it sits at some fixed offset from the beat axis
+  // (see the constructor's own comment on why that assumption breaks once
+  // marks are edited independently).
+  _toLocal(lat, lon) {
+    const realNorth = (lat - this.centerLat) * METERS_PER_DEG_LAT;
+    const realEast = (lon - this.centerLon) * METERS_PER_DEG_LAT * Math.cos((this.centerLat * Math.PI) / 180);
+    const rad = (this.courseBearingDeg * Math.PI) / 180;
+    return {
+      north: realNorth * Math.cos(rad) + realEast * Math.sin(rad),
+      east: -realNorth * Math.sin(rad) + realEast * Math.cos(rad),
+    };
+  }
+
+  // Is local point (north, east) within the forbidden start/finish strip -
+  // pinLocal<->committeeLocal (start side) or committeeLocal<->finishLocal
+  // (finish side), the two together spanning pin to finish with no gap
+  // (see module comment). Projects onto each in turn (projectFraction) and
+  // accepts either landing in [0,1] - not assumed to be one straight
+  // horizontal segment the way the old scalar bounds check was, since pin/
+  // committee/finish aren't guaranteed collinear once edited independently.
+  _inLocalStrip(north, east) {
+    const p = { north, east };
+    const tStart = projectFraction(this.pinLocal, this.committeeLocal, p);
+    const tFinish = projectFraction(this.committeeLocal, this.finishLocal, p);
+    return (tStart >= 0 && tStart <= 1) || (tFinish >= 0 && tFinish <= 1);
+  }
+
   _tick() {
     if (this.finished) return; // stop() already called; ignore any stray timer fire
 
@@ -424,7 +543,7 @@ class SimGpsSource extends EventEmitter {
       // this is the same lat/lon on every tick. Still a fully valid,
       // continuously-updating fix stream (fresh timestamp each time, real
       // fix-quality fields) - just stationary, not a synthetic race.
-      const { lat, lon } = offsetToLatLon(this.centerLat, this.centerLon, { north: this.north, east: this.east });
+      const { lat, lon } = this._toLatLon(this.north, this.east);
       this.emit('nav-pvt', {
         fixType: 3,
         gnssFixOk: true,
@@ -451,7 +570,22 @@ class SimGpsSource extends EventEmitter {
     const speedMS = nominalSpeedMS * speedFrac;
 
     const headingDeg = this.clearingHeadingDeg ?? this._heading();
-    const distM = speedMS * dt;
+    const rawDistM = speedMS * dt;
+    // Clamped to the leg's own remaining length, but only during normal
+    // tack/gybe progress - not mid-clearing or coasting to a stop, where
+    // legRemainingM is just stale leftover from whatever leg was in
+    // progress when the clearing/finish trigger fired, not a real distance
+    // budget for this movement. Without this clamp, a tick could overshoot
+    // a precisely-computed tack (see _startNewLeg()'s two-tack solve) by
+    // up to this tick's own full distance - and that overshoot propagated
+    // into the NEXT leg's own precision recalculation, compounding tick by
+    // tick into a real, multi-meter miss on the actual finish-gate
+    // crossing (the tacking angle is exactly known, so there's no reason
+    // this shouldn't land precisely).
+    const distM =
+      this.finishCoastRemainingM == null && this.clearingHeadingDeg == null
+        ? Math.min(rawDistM, this.legRemainingM)
+        : rawDistM;
     const headingRad = (headingDeg * Math.PI) / 180;
     const prevNorth = this.north;
     const prevEast = this.east;
@@ -525,18 +659,31 @@ class SimGpsSource extends EventEmitter {
       this.clearingHeadingDeg == null &&
       this.phase === 'upwind' &&
       !this.crossedLineThisLeg &&
-      this.north > this.startLineNorthM
+      this.north > this.committeeLocal.north
     ) {
       this.crossedLineThisLeg = true;
       this.lapsCompleted++;
-      // Interpolated east position at the exact moment north crossed the
-      // line, not just wherever this tick's discrete step happened to land
-      // - at a short SIM_COURSE_LENGTH_NM the finish gate can be narrower
-      // than a single tick's own travel distance, so checking the
-      // post-step position directly would report "missed the gate" even
-      // when the true crossing point was well inside it.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.startLineNorthM);
-      const inGate = crossingEast >= 0 && crossingEast <= this.finishSideLengthM;
+      // Interpolated east position at the exact moment north crossed
+      // committee's own true north level, not just wherever this tick's
+      // discrete step happened to land - at a short SIM_COURSE_LENGTH_NM
+      // the finish gate can be narrower than a single tick's own travel
+      // distance, so checking the post-step position directly would
+      // report "missed the gate" even when the true crossing point was
+      // well inside it.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.committeeLocal.north);
+      // Projected onto the TRUE committeeLocal<->finishLocal segment
+      // (projectFraction), not an assumed scalar bound - see the
+      // constructor's comment on why pin/committee/finish can't be
+      // assumed to sit at simple offsets from the beat axis once edited
+      // independently. This is also what actually matters for the base
+      // station's own lap detection (finishLineWatcher.js, watching the
+      // boat's real transmitted fixes) to agree with what the simulator
+      // itself thinks happened - since _targetWaypoint() now steers at
+      // this exact same gateCenterLocal, the boat's real sailed path
+      // should actually reach it, not just be checked against it after
+      // the fact.
+      const t = projectFraction(this.committeeLocal, this.finishLocal, { north: this.committeeLocal.north, east: crossingEast });
+      const inGate = t >= 0 && t <= 1;
       this.emit('lap', { lap: this.lapsCompleted, inGate, eastM: crossingEast });
       if (this.lapsCompleted >= this.lapTarget) {
         // Race is over - start coasting (see above) instead of planning
@@ -553,7 +700,7 @@ class SimGpsSource extends EventEmitter {
       this.clearingHeadingDeg == null &&
       this.phase === 'downwind' &&
       !this.crossedLineThisLeg &&
-      this.north < this.startLineNorthM
+      this.north < this.committeeLocal.north
     ) {
       // Same interpolation as the upwind gate check above - but here it
       // isn't just a diagnostic: avoiding the strip is a hard requirement,
@@ -565,10 +712,10 @@ class SimGpsSource extends EventEmitter {
       // tick-end position had already carried a little further into the
       // strip than the interpolated point - reporting a violating fix even
       // though the crossing itself looked clean.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.startLineNorthM);
-      this.north = this.startLineNorthM;
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.committeeLocal.north);
+      this.north = this.committeeLocal.north;
       this.east = crossingEast;
-      const inStrip = crossingEast >= -this.startSideLengthM && crossingEast <= this.finishSideLengthM;
+      const inStrip = this._inLocalStrip(this.north, this.east);
       if (inStrip) {
         // Free-tacking wasn't aiming for a particular spot here (there's no
         // reason to be near either mark downwind), so it can occasionally
@@ -578,8 +725,8 @@ class SimGpsSource extends EventEmitter {
         // some forward progress, not frozen sideways like a mark rounding)
         // that bears away back to the normal run angle the instant it's
         // clear (handled above, same as any other tack/gybe transition).
-        const distToFinishSide = this.finishSideLengthM - this.east;
-        const distToStartSide = this.east - -this.startSideLengthM;
+        const distToFinishSide = this.finishLocal.east - this.east;
+        const distToStartSide = this.east - this.pinLocal.east;
         this.clearingDirection = distToFinishSide <= distToStartSide ? 1 : -1;
         // sin(180+x) = -sin(x) - a lean off the downwind base heading (180)
         // moves east/west opposite of the same lean off the upwind base
@@ -590,8 +737,8 @@ class SimGpsSource extends EventEmitter {
         this.clearingHeadingDeg = (downwindBaseDeg - this.clearingDirection * DOWNWIND_CLEAR_HEAD_UP_DEG + 360) % 360;
         this.clearingTargetEastM =
           this.clearingDirection === 1
-            ? this.finishSideLengthM + DOWNWIND_CLEAR_MARGIN_M
-            : -this.startSideLengthM - DOWNWIND_CLEAR_MARGIN_M;
+            ? this.finishLocal.east + DOWNWIND_CLEAR_MARGIN_M
+            : this.pinLocal.east - DOWNWIND_CLEAR_MARGIN_M;
         this.clearingIsLineCross = true;
         this.timeSinceManeuverS = 0;
       } else {
@@ -600,7 +747,7 @@ class SimGpsSource extends EventEmitter {
       }
     }
 
-    const { lat, lon } = offsetToLatLon(this.centerLat, this.centerLon, { north: this.north, east: this.east });
+    const { lat, lon } = this._toLatLon(this.north, this.east);
 
     this.emit('nav-pvt', {
       fixType: 3,

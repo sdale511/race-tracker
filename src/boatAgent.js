@@ -126,8 +126,18 @@ try {
 // current one.
 let baseAddress = null;
 
+// True once marks have actually been received on THIS run, as opposed to
+// the possibly-stale copy loaded from disk above. SIMULATE_GPS always waits
+// for this before starting a simulated race - the disk cache exists so a
+// restart has *something* immediately, but a real rover has no way to know
+// whether the base's course has changed since that copy was written, so the
+// simulator (standing in for a real rover, which would just report whatever
+// its hardware GPS says regardless of marks) shouldn't either.
+let freshMarksReceived = false;
+
 radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   currentMarks = marks;
+  freshMarksReceived = true;
   baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort, adminPort: baseAdminPort } : null;
   roverStats.recordMarksReceived();
   try {
@@ -270,7 +280,7 @@ let gpsSimStarted = false;
 // GPS source has to wait on exactly the same information a real rover would
 // have to wait on - whatever the base station has actually radioed out.
 function startGpsSimIfReady() {
-  if (config.noGps || !config.simulateGps || gpsSimStarted || !currentMarks) return;
+  if (config.noGps || !config.simulateGps || gpsSimStarted || !freshMarksReceived) return;
   gpsSimStarted = true;
 
   const { SimGpsSource } = require('./simGps');
@@ -285,7 +295,7 @@ function startGpsSimIfReady() {
 
   // No Redis-assigned sequential start slot anymore (a real rover has no
   // Redis access, and registration-order slot assignment lived there) -
-  // fall back to the boat's own ID. getStartPosition's existing modulo
+  // fall back to the boat's own ID. getStartFraction's existing modulo
   // wraparound still keeps every boat on the real line rather than
   // overflowing past it, but boats no longer get spread out in the
   // registration order they actually joined in - a real per-boat start
@@ -310,6 +320,13 @@ function startGpsSimIfReady() {
     lapCount: config.sim.lapCount,
     geometry,
     startOnly: config.sim.startOnly,
+    // The start/finish line logic needs the REAL pin/committee/finish
+    // positions, not just geometry's scalar distances - see simGps.js's
+    // own comment on why (an edited windward mark rotates the beat axis
+    // independently of wherever the start/finish complex actually still is).
+    pin: currentMarks.pin,
+    committee: currentMarks.committee,
+    finish: currentMarks.finish,
   });
   gps.on('nav-pvt', handlePvt);
   // Diagnostic only - the sim's own internal lap counting, used to decide
@@ -340,14 +357,11 @@ if (config.noGps) {
   // all still fully running above - this just skips ever starting a GPS
   // source, real or simulated, so no position fixes/frames are produced.
 } else if (config.simulateGps) {
-  if (currentMarks) {
-    startGpsSimIfReady();
-  } else {
-    console.log(
-      '[boatAgent] SIMULATE_GPS - no course marks yet, waiting for a broadcast from the base station ' +
-        '(NO_RADIO=1 has no radio to receive one on, so this would wait forever)'
-    );
-  }
+  console.log(
+    '[boatAgent] SIMULATE_GPS - waiting for a fresh course marks broadcast from the base station before starting' +
+      (currentMarks ? ' (ignoring the last-known copy cached on disk - it may be stale)' : '') +
+      (radioMode === 'none' ? ' (NO_RADIO=1 has no radio to receive one on, so this would wait forever)' : '')
+  );
 } else {
   openGps();
 }

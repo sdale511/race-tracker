@@ -8,6 +8,221 @@ const { renderConfigPage } = require('./configReport');
 // tell "actively out there" from "was here earlier, gone quiet."
 const ONLINE_THRESHOLD_MS = 60000;
 
+function fixQualityText(f) {
+  if (f.carrSoln === 2) return 'RTK fixed';
+  if (f.carrSoln === 1) return 'RTK float';
+  if (f.gnssFixOk) return 'GPS';
+  return 'No fix';
+}
+
+// Dilution of precision - how much the current satellite geometry is
+// amplifying measurement error, independent of hAcc/vAcc. Standard rough
+// bands (surveying/aviation guides agree on this shape, if not the exact
+// cutoffs): under 2 is about as good as GPS geometry gets, 2-5 is normal
+// good-sky conditions, 5-10 means a partially obstructed view, above 10
+// means treat the fix with real suspicion.
+function dopQualityText(dop) {
+  if (dop < 2) return 'excellent';
+  if (dop < 5) return 'good';
+  if (dop < 10) return 'fair';
+  return 'poor';
+}
+
+// The base's own ordinary GPS fix (NAV-PVT - same message a boat's rover
+// dashboard is built from), shown here mainly as a "is the base's GPS
+// module even alive and locked on" sanity view - the TMODE3/survey-in card
+// below is what actually matters for RTK correction quality, but this one
+// exists independent of TMODE3 mode/config, so it's useful even before
+// survey-in has produced anything. Null both when no GPS_PORT is
+// configured and when one is configured but no fix has arrived yet - same
+// ambiguity the map's "Base RTK GPS" readout and the survey-in card below
+// already accept, since "no GPS hardware attached" is the overwhelmingly
+// common case for a base station.
+function renderBaseGpsCard(fix, gpsPort) {
+  const portLine = gpsPort ? `${gpsPort.port} @ ${gpsPort.baud}` : null;
+  if (!fix) {
+    return `<div class="card">
+      <div class="label">Base GPS</div>
+      <div class="value">—</div>
+      <div class="sub">${portLine ? `${portLine} - no fix yet` : 'no base GPS (GPS_PORT not set)'}</div>
+    </div>`;
+  }
+  const rows = [
+    { label: 'Position', value: `${fix.lat.toFixed(7)}, ${fix.lon.toFixed(7)}` },
+  ];
+  if (fix.hMSLMm != null) {
+    const ellipsoidM = fix.heightMm != null ? ` / ${(fix.heightMm / 1000).toFixed(2)}m ellipsoid` : '';
+    rows.push({ label: 'Altitude', value: `${(fix.hMSLMm / 1000).toFixed(2)}m MSL${ellipsoidM}` });
+  }
+  rows.push({ label: 'Satellites', value: `${fix.numSV}` });
+  if (fix.hAccMm != null) {
+    const vAccPart = fix.vAccMm != null ? ` / ±${(fix.vAccMm / 1000).toFixed(2)}m vert` : '';
+    rows.push({ label: 'Accuracy', value: `±${(fix.hAccMm / 1000).toFixed(2)}m horiz${vAccPart}` });
+  }
+  if (fix.pDOP != null) rows.push({ label: 'DOP', value: `${fix.pDOP.toFixed(2)} (${dopQualityText(fix.pDOP)})` });
+  if (fix.gSpeedMmS != null) {
+    const speedKn = (fix.gSpeedMmS / 1000 / 1852) * 3600;
+    // A stationary base reading ~0.0kn is itself a useful sanity check
+    // (confirms the antenna isn't drifting/slipping), so this is shown
+    // even at zero rather than only when actually moving.
+    rows.push({ label: 'Speed', value: `${speedKn.toFixed(1)}kn` });
+  }
+  if (fix.utcValid) {
+    const p2 = (n) => String(n).padStart(2, '0');
+    rows.push({
+      label: 'GPS time (UTC)',
+      value: `${fix.utcYear}-${p2(fix.utcMonth)}-${p2(fix.utcDay)} ${p2(fix.utcHour)}:${p2(fix.utcMin)}:${p2(fix.utcSec)}`,
+    });
+  }
+  if (portLine) rows.push({ label: 'Port', value: portLine });
+  const rowsHtml = rows
+    .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+    .join('');
+  return `<div class="card">
+      <div class="label">Base GPS</div>
+      <div class="value">${fixQualityText(fix)}</div>
+      <div class="stat-rows">${rowsHtml}</div>
+    </div>`;
+}
+
+// TMODE3 governs how the base's own RTK receiver establishes ITS fixed
+// reference position before it's trustworthy to broadcast RTCM corrections
+// from - distinct from the boats' own fix quality shown in the Fleet table
+// below. survey (see baseStation.js's getBaseGpsSurveyStatus) is null both
+// when no base GPS is attached at all and when one is attached but hasn't
+// answered a poll yet - same ambiguity as the map page's "Base RTK GPS"
+// readout already accepts, since a base without GPS hardware is the
+// overwhelmingly common case and this card just reads "unavailable" for it
+// rather than needing a separate "not configured" signal plumbed through.
+function renderBaseGpsSurveyCard(survey, fix) {
+  // NAV-SVIN streams on its own once enabled, independent of the TMODE3
+  // poll cycle (see baseStation.js's openBaseGps) - a fresh connection can
+  // easily have real survey-in progress before that poll's first response
+  // lands, so mode alone being unknown doesn't mean there's nothing to
+  // show. Only the true "nothing at all yet" case (neither mode nor any
+  // survey/fixed-position data) falls through to the placeholder below.
+  if (!survey || (survey.mode == null && !survey.survey && !survey.fixedPosition)) {
+    return `<div class="card">
+      <div class="label">Base GPS survey-in</div>
+      <div class="value">—</div>
+      <div class="sub">no base GPS, or not polled yet</div>
+    </div>`;
+  }
+  const modeLabel = { disabled: 'Disabled', 'survey-in': 'Survey-in', fixed: 'Fixed' }[survey.modeText] || 'Unknown';
+  // Built as {label, value} pairs and rendered one per row below, rather
+  // than crammed onto one comma-separated line - status/time/accuracy are
+  // different-shaped numbers (a clock, a distance, a count) that scan much
+  // faster stacked than run together.
+  const rows = [];
+  if (survey.modeText === 'fixed' && survey.fixedPosition) {
+    // The position TMODE3 is actually fixed to right now (see
+    // ubxParser.js's _decodeTmode3 parsing the poll response's own
+    // position fields) - shown instead of the survey-in rows below even if
+    // a completed survey exists, since once mode has actually moved to
+    // "fixed" that leftover NAV-SVIN result is stale (and stops updating -
+    // the receiver only streams it in survey-in mode), while this reflects
+    // whatever's live right now, however it got set.
+    const fp = survey.fixedPosition;
+    rows.push({ label: 'Status', value: 'Fixed position' });
+    if (fp.fixedPosAccMm != null) rows.push({ label: 'Accuracy', value: `±${(fp.fixedPosAccMm / 1000).toFixed(2)}m` });
+    rows.push({ label: 'Position', value: `${fp.lat.toFixed(7)}, ${fp.lon.toFixed(7)} (${fp.heightM.toFixed(2)}m)` });
+  } else if (survey.survey) {
+    const sv = survey.survey;
+    const accM = (sv.meanAccMm / 1000).toFixed(2);
+    // Survey-in finishes once BOTH conditions clear, whichever takes
+    // longer - a duration well past the minimum with accuracy nowhere near
+    // the limit (long-running but still wide) reads very differently from
+    // the reverse (nearly there, just needs a few more seconds), so both
+    // targets are shown alongside the live numbers rather than just "in
+    // progress."
+    const durTarget = survey.configuredMinDurS;
+    const accTargetM = survey.configuredAccLimitMm != null ? (survey.configuredAccLimitMm / 1000).toFixed(2) : null;
+    if (sv.valid) {
+      rows.push({ label: 'Status', value: 'Done' });
+      rows.push({ label: 'Time', value: `${sv.durationS}s` });
+      rows.push({ label: 'Observations', value: `${sv.observations}` });
+      rows.push({ label: 'Accuracy', value: `±${accM}m` });
+      rows.push({ label: 'Position', value: `${sv.lat.toFixed(7)}, ${sv.lon.toFixed(7)} (${sv.heightM.toFixed(2)}m)` });
+    } else if (sv.active) {
+      rows.push({ label: 'Status', value: 'In progress' });
+      rows.push({ label: 'Time', value: durTarget != null ? `${sv.durationS}s / ${durTarget}s` : `${sv.durationS}s` });
+      rows.push({ label: 'Observations', value: `${sv.observations}` });
+      rows.push({ label: 'Accuracy', value: accTargetM != null ? `±${accM}m / ${accTargetM}m` : `±${accM}m` });
+      // Still converging, not the final answer - labeled so it doesn't
+      // read like the confirmed position the "done" case above shows,
+      // just something to sanity-check against ("is this even in the
+      // right county") long before waiting out however many hours full
+      // convergence takes.
+      rows.push({ label: 'Current estimate', value: `${sv.lat.toFixed(7)}, ${sv.lon.toFixed(7)} (${sv.heightM.toFixed(2)}m)` });
+    } else {
+      rows.push({ label: 'Status', value: 'Not active' });
+    }
+  } else {
+    rows.push({ label: 'Status', value: 'No survey-in status received yet' });
+  }
+  const rowsHtml = rows
+    .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+    .join('');
+  return `<div class="card">
+      <div class="label">Base GPS survey-in</div>
+      <div class="value">${modeLabel}</div>
+      <div class="stat-rows">${rowsHtml}</div>
+      <div class="card-actions">
+        <button type="button" class="card-btn" onclick="setTmode3Mode('survey-in', this)">Start survey-in</button>
+        <button type="button" class="card-btn" onclick="setTmode3Mode('fixed', this)">Use as fixed position</button>
+      </div>
+    </div>`;
+}
+
+// A separate, wider card (spans 2 grid columns, like the Course marks card)
+// for typing in a known position - e.g. a club's own previously-surveyed
+// benchmark for a permanent committee boat mooring, more trustworthy than
+// anything survey-in or a live fix can produce itself. Split out from
+// renderBaseGpsSurveyCard above (rather than folded into its
+// card-actions row) so each input gets enough room to show a full
+// 7-decimal lat/lon without truncating - three number inputs sharing a
+// normal single-width card's row were too cramped for that.
+function renderManualFixedPositionCard(survey, fix) {
+  // Starting point - whatever position is already known, best first: the
+  // currently-fixed position, then survey-in's own result - a converging
+  // average, even mid-survey and not yet "valid", is still a better
+  // estimate than a single instantaneous fix - and only then the base's
+  // own live fix, if no survey-in data exists at all. So an operator
+  // entering a known-good benchmark is editing a real nearby value rather
+  // than typing coordinates from scratch, while still being free to
+  // overwrite it entirely.
+  const prefillPos =
+    survey && survey.modeText === 'fixed' && survey.fixedPosition
+      ? survey.fixedPosition
+      : survey && survey.survey && (survey.survey.valid || survey.survey.active)
+      ? survey.survey
+      : fix
+      ? { lat: fix.lat, lon: fix.lon, heightM: fix.heightMm != null ? fix.heightMm / 1000 : null }
+      : null;
+  const prefillLat = prefillPos ? prefillPos.lat.toFixed(7) : '';
+  const prefillLon = prefillPos ? prefillPos.lon.toFixed(7) : '';
+  const prefillHeight = prefillPos && prefillPos.heightM != null ? prefillPos.heightM.toFixed(2) : '';
+  return `<div class="card manual-fixed-card">
+      <div class="label">Set base GPS to a known position</div>
+      <div class="sub">e.g. a surveyed benchmark for this club/mooring - overrides survey-in or a live fix</div>
+      <div class="manual-fixed-field">
+        <label for="manualLat">Lat</label>
+        <input type="number" step="any" class="manual-input" id="manualLat" placeholder="Lat" value="${prefillLat}">
+      </div>
+      <div class="manual-fixed-field">
+        <label for="manualLon">Lon</label>
+        <input type="number" step="any" class="manual-input" id="manualLon" placeholder="Lon" value="${prefillLon}">
+      </div>
+      <div class="manual-fixed-field">
+        <label for="manualHeight">Height (m)</label>
+        <input type="number" step="any" class="manual-input" id="manualHeight" placeholder="Height (m)" value="${prefillHeight}">
+      </div>
+      <div class="card-actions">
+        <button type="button" class="card-btn" onclick="setManualFixedPosition(this)">Set exact position</button>
+      </div>
+    </div>`;
+}
+
 // Renders the whole dashboard server-side from one stats snapshot (see
 // baseStation.js's getFullStats) - simpler than shipping a client-side
 // templating setup for what's fundamentally a page that reloads its data
@@ -106,6 +321,10 @@ function renderDashboard(s) {
   .marks-mini .mark-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
   .marks-mini .mark-row .name { flex-shrink: 0; }
   .marks-mini .mark-row .coords { color: #8b94a3; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+  .stat-rows { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+  .stat-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+  .stat-row .name { flex-shrink: 0; color: #8b94a3; }
+  .stat-row .val { color: #e6e9ef; font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; }
   section { margin-bottom: 28px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #262c36; border-radius: 10px; overflow: hidden; }
@@ -120,6 +339,21 @@ function renderDashboard(s) {
   .empty { color: #8b94a3; padding: 20px; text-align: center; }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .card-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .card-btn {
+    flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid #262c36;
+    background: #1c222b; color: #e6e9ef; font-size: 11px; cursor: pointer;
+  }
+  .card-btn:hover { background: #262c36; }
+  .card-btn:disabled { opacity: 0.5; cursor: default; }
+  .manual-fixed-card { grid-column: span 2; }
+  .manual-fixed-field { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .manual-fixed-field label { flex-shrink: 0; width: 70px; font-size: 11px; color: #8b94a3; }
+  .manual-input {
+    flex: 1; min-width: 0; padding: 7px 10px; border-radius: 6px; border: 1px solid #262c36;
+    background: #0f1216; color: #e6e9ef; font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .manual-input::placeholder { color: #5a6270; }
 </style>
 </head>
 <body>
@@ -144,33 +378,22 @@ function renderDashboard(s) {
       <div class="sub">recorded fixes, all boats</div>
     </div>
     <div class="card">
-      <div class="label">Uploaded files</div>
+      <div class="label">Uploads</div>
       <div class="value">${s.upload.successes.toLocaleString()}</div>
-      <div class="sub">${formatBytes(s.upload.bytesTotal)} total</div>
-    </div>
-    <div class="card">
-      <div class="label">Upload attempts</div>
-      <div class="value">${s.upload.attempts.toLocaleString()}</div>
-      <div class="sub">${pct(s.upload.successes, s.upload.attempts)} success rate</div>
-    </div>
-    <div class="card">
-      <div class="label">Pending uploads</div>
-      <div class="value">${totalPending}</div>
-      <div class="sub">across all boats, self-reported</div>
-    </div>
-    <div class="card">
-      <div class="label">Upload failures</div>
-      <div class="value">${s.upload.failures.toLocaleString()}</div>
+      <div class="stat-rows">
+        <div class="stat-row"><span class="name">Files</span><span class="val">${s.upload.successes.toLocaleString()} (${formatBytes(s.upload.bytesTotal)})</span></div>
+        <div class="stat-row"><span class="name">Attempts</span><span class="val">${s.upload.attempts.toLocaleString()} (${pct(s.upload.successes, s.upload.attempts)})</span></div>
+        <div class="stat-row"><span class="name">Pending</span><span class="val">${totalPending} <span class="muted">(self-reported)</span></span></div>
+        <div class="stat-row"><span class="name">Failures</span><span class="val">${s.upload.failures.toLocaleString()}</span></div>
+      </div>
     </div>
     <div class="card">
       <div class="label">Radio frames</div>
       <div class="value">${s.radio.framesReceived.toLocaleString()}</div>
-      <div class="sub">${s.radio.syncErrors.toLocaleString()} sync errors (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</div>
-    </div>
-    <div class="card">
-      <div class="label">Course</div>
-      <div class="value">${s.course ? 'set' : 'none'}</div>
-      <div class="sub">${s.course ? `${Object.keys(s.course.marks).length} marks published` : 'waiting for marks'}</div>
+      <div class="stat-rows">
+        <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
+        <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (NO_RADIO=1)'}</span></div>
+      </div>
     </div>
     ${
       s.course
@@ -190,6 +413,9 @@ function renderDashboard(s) {
       <div class="value">${s.webhook.enabled ? 'on' : 'off'}</div>
       <div class="sub">${s.webhook.queueReady ? 'queue ready' : 'queue initializing'}</div>
     </div>
+    ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort)}
+    ${renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix)}
+    ${renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix)}
   </div>
 
   <section>
@@ -205,6 +431,72 @@ function renderDashboard(s) {
     </table>`
     }
   </section>
+  <script>
+    // Switches the base GPS's TMODE3 mode (see baseStation.js's
+    // setBaseGpsSurveyIn/setBaseGpsFixed) - confirm() first since this
+    // reconfigures what the base itself broadcasts as RTCM correction
+    // data, affecting every boat's RTK fix quality, not just this page.
+    // No optimistic UI update: the page's own 5s meta-refresh (see
+    // <meta http-equiv="refresh"> above) picks up the new mode on its own
+    // once the receiver's actually responded to the poll baseStation.js
+    // sends right after the SET - reloading immediately here would still
+    // show the OLD mode, since that poll response hasn't arrived yet.
+    async function setTmode3Mode(mode, btn) {
+      const label = mode === 'fixed' ? 'lock the base GPS to a fixed position' : 'start (or restart) survey-in on the base GPS';
+      if (!confirm('Are you sure you want to ' + label + '? This affects RTK corrections for every boat.')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/gps/survey/mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        setTimeout(() => location.reload(), 800);
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    // Manual-entry counterpart to setTmode3Mode('fixed', ...) above - an
+    // operator-typed position (e.g. a club's own previously-surveyed
+    // benchmark) instead of whatever this app's own survey-in/live-fix
+    // would otherwise supply. Validated here (range checks) AND again
+    // server-side (see baseStation.js's setBaseGpsFixed) - this is just for
+    // a fast, clear error before ever sending a request; the server-side
+    // check is the one that actually matters. The confirm() spells out the
+    // exact numbers about to be sent, not just "are you sure", so a typo
+    // (wrong sign, transposed digits) is visible one last time before it
+    // reconfigures RTK corrections for every boat.
+    async function setManualFixedPosition(btn) {
+      const lat = parseFloat(document.getElementById('manualLat').value);
+      const lon = parseFloat(document.getElementById('manualLon').value);
+      const heightM = parseFloat(document.getElementById('manualHeight').value);
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) return alert('Lat must be a number between -90 and 90.');
+      if (!Number.isFinite(lon) || lon < -180 || lon > 180) return alert('Lon must be a number between -180 and 180.');
+      if (!Number.isFinite(heightM)) return alert('Height must be a number (meters).');
+      const confirmMsg =
+        'Set the base GPS fixed position to exactly ' + lat.toFixed(7) + ', ' + lon.toFixed(7) + ' (' + heightM.toFixed(2) + 'm)?\\n\\n' +
+        'This affects RTK corrections for every boat - double-check these numbers against your known position before continuing.';
+      if (!confirm(confirmMsg)) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/gps/survey/mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'fixed', lat, lon, heightM }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        setTimeout(() => location.reload(), 800);
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+  </script>
 </body>
 </html>`;
 }
@@ -710,8 +1002,39 @@ function readJsonBody(req) {
 // (see roverAdminServer.js). getBaseGps (see baseStation.js's
 // getBaseGpsFix) reports a GPS module wired directly to this base
 // station, if any - null (not an error) when none is configured.
-function startAdminServer({ port, getStats, getPositions, setMark, getBaseGps }) {
+// getBaseGpsSurvey (see baseStation.js's getBaseGpsSurveyStatus) reports
+// that same GPS module's TMODE3 mode and, while in survey-in mode, its
+// progress/result - also null when no base GPS is configured.
+// setBaseGpsSurveyIn/setBaseGpsFixed (see baseStation.js) switch that same
+// GPS module's TMODE3 mode - unlike setMark, this is base-only (no rover
+// equivalent), so it doesn't need setMark's CORS handling.
+function startAdminServer({ port, getStats, getPositions, setMark, getBaseGps, getBaseGpsSurvey, setBaseGpsSurveyIn, setBaseGpsFixed }) {
   const server = http.createServer(async (req, res) => {
+    if (req.url === '/api/gps/survey/mode' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        if (body.mode === 'survey-in') setBaseGpsSurveyIn();
+        else if (body.mode === 'fixed') {
+          // lat/lon/heightM present means the dashboard's manual-entry
+          // form was used (an operator-typed known-good position, e.g. a
+          // club's own surveyed benchmark) rather than the plain "Use as
+          // fixed position" button, which sends none of these and lets
+          // setBaseGpsFixed fall back to survey-in/live-fix itself.
+          const manualPos =
+            body.lat != null || body.lon != null || body.heightM != null
+              ? { lat: Number(body.lat), lon: Number(body.lon), heightM: Number(body.heightM) }
+              : null;
+          setBaseGpsFixed(manualPos);
+        } else throw new Error(`unknown mode "${body.mode}"`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
     const marksMatch = req.url.match(/^\/api\/marks\/([^/?]+)$/);
     if (marksMatch && (req.method === 'POST' || req.method === 'OPTIONS')) {
       // CORS: unlike every other route here (same-origin only - each
@@ -769,6 +1092,16 @@ function startAdminServer({ port, getStats, getPositions, setMark, getBaseGps })
     if (req.url === '/api/gps') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getBaseGps()));
+      return;
+    }
+
+    // TMODE3/survey-in status (see baseStation.js's getBaseGpsSurveyStatus)
+    // - already included in /api/stats too (renderDashboard's card reads
+    // it from there), but exposed standalone same as /api/gps above, for
+    // anything that wants just this without the full stats payload.
+    if (req.url === '/api/gps/survey') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getBaseGpsSurvey()));
       return;
     }
 

@@ -136,6 +136,24 @@ normally used for RTCM3 correction data between your RTK base and this
 rover, not for the position telemetry this app sends. Nothing here touches
 that link.
 
+### Base station: enabling the survey-in status card (optional)
+
+If the base's admin dashboard's "Base GPS survey-in" card (see "Admin
+dashboard" below) is showing "no base GPS, or not polled yet" even with
+`GPS_PORT` set and TMODE3 actually configured for survey-in, it's usually
+because `UBX-NAV-SVIN` isn't enabled as an output message - unlike
+`UBX-CFG-TMODE3` (which this app polls for itself), NAV-SVIN only streams
+if the receiver's been told to send it:
+```
+ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-MSGOUT-UBX_NAV_SVIN_UART1,1,7
+```
+Configuring TMODE3 itself for survey-in (as opposed to just reading it) is
+a separate one-time step, typically done once via u-center when the base
+station is first set up at a fixed location - see u-blox's own ZED-F9P
+integration manual for the full survey-in setup (minimum duration,
+required accuracy, etc.), since that part is receiver setup rather than
+anything this app configures.
+
 ## Radio configuration
 
 Pair every radio (boat + base) on the same netid/frequency/baud, in
@@ -710,6 +728,86 @@ restart. The durable records are Redis (tracks) and `race-uploads` (log
 files); the dashboard just reflects them plus some things Redis doesn't
 track at all, like radio link quality and upload success/failure counts.
 
+When `GPS_PORT` is set (see "Recenter on base GPS" below), the dashboard
+also shows a "Base GPS" card - the receiver's ordinary NAV-PVT fix (the
+same message a boat's own rover dashboard is built from), useful mainly as
+a quick "is the base's GPS module even alive and locked on" check
+independent of TMODE3/survey-in state: fix quality (RTK fixed / RTK float
+/ GPS / no fix), position, altitude (both above mean sea level and above
+the WGS84 ellipsoid - GPS height is normally ellipsoid-referenced, which
+reads oddly to anyone expecting "altitude" to mean sea level, so both are
+shown), satellite count, horizontal/vertical accuracy, dilution of
+precision (DOP - how much the current satellite geometry itself is
+amplifying measurement error, independent of the accuracy estimates,
+labeled excellent/good/fair/poor rather than a bare number), ground speed
+(a stationary base reading ~0.0kn is itself a useful sanity check that the
+antenna isn't drifting), and the receiver's own satellite-derived UTC
+clock, once valid.
+
+The dashboard also shows a "Base GPS survey-in" card: the receiver's current TMODE3 mode
+(disabled / survey-in / fixed - whether it's even trying to establish its
+own fixed reference position at all), and while in survey-in mode, live
+progress against both of survey-in's own completion conditions - elapsed
+duration vs. the configured minimum (`GPS_SVIN_MIN_DUR_S`), and current
+accuracy vs. the configured limit (`GPS_SVIN_ACC_LIMIT_MM`), e.g. `27835s /
+60s, ±19.83m / 2.00m` - since survey-in only finishes once
+*both* clear, and a run that's long past its minimum duration but nowhere
+near its accuracy target (usually an obstructed antenna, indoor testing, or
+too few satellites) reads very differently from one that just needs a few
+more seconds. Once the survey finishes (`valid` in `UBX-NAV-SVIN`), the
+resulting lat/lon/height it settled on is shown too. Once mode is actually
+`fixed`, the card instead shows whatever position TMODE3 is currently fixed
+to - read back from the poll response itself (which echoes the position
+back, not just the mode), so it reflects reality regardless of whether this
+app set it or it was configured some other way (e.g. u-center) before this
+app ever connected - so you can tell from the dashboard alone whether the
+base is actually ready to be trusted as an RTK reference yet, without
+needing u-center or ubxtool. The receiver only
+reports its TMODE3 mode when polled, not on its own, so
+`src/baseStation.js` sends a `UBX-CFG-TMODE3` poll request once on connect
+and every 15s after; NAV-SVIN itself streams on its own once survey-in is
+configured and enabled as an output message. Also available standalone as
+`GET /api/gps/survey` (same null-means-not-available contract as
+`/api/gps`).
+
+Two buttons on the card let you switch TMODE3 mode directly from the
+dashboard, each behind a `confirm()` since this reconfigures what the base
+itself broadcasts as RTCM correction data - not something to fire by
+accident mid-race:
+- **Start survey-in** - (re)starts survey-in using `GPS_SVIN_MIN_DUR_S` /
+  `GPS_SVIN_ACC_LIMIT_MM`. Also the way to restart one - TMODE3 has no
+  separate "restart" command, sending the same request again is how u-blox
+  receivers do it, useful if conditions changed or a first attempt is
+  taking too long (see the progress-vs-target reading above).
+- **Use as fixed position** - locks TMODE3 to a fixed reference position,
+  preferring the completed survey-in's own result if one exists (the
+  normal flow: survey in, then lock to it) and otherwise falling back to
+  the base's current ordinary GPS fix - usable for bench testing, but
+  nowhere near RTK-base-grade precision that way, since it's a single fix's
+  accuracy rather than an averaged one.
+
+Below those, a small form lets you type in a known position instead -
+useful if the base's location has already been surveyed independently
+(e.g. a club's own benchmark for a permanent committee boat mooring), which
+is more trustworthy than anything survey-in or a live fix can produce
+itself. The three fields prefill from whatever position is already known
+(currently-fixed position, then a completed survey's result, then the
+base's live fix, in that order) so you're editing a real nearby value
+rather than typing from scratch, but any of them can be overwritten
+outright. Validated both client-side (range checks, for a fast error) and
+server-side in `setBaseGpsFixed` (the check that actually matters, since a
+request could reach it some other way) - lat within ±90°, lon within
+±180°, height between -500m and 9000m. The confirm dialog spells out the
+exact numbers about to be sent rather than a generic "are you sure," so a
+typo (wrong sign, transposed digits) is visible one last time before it
+reconfigures RTK corrections for every boat.
+
+All three actions POST to `/api/gps/survey/mode` (base-only, no CORS - unlike
+`/api/marks/:name`, there's no rover-side equivalent that needs to call it
+cross-origin) with `{"mode": "survey-in"}`, `{"mode": "fixed"}`, or
+`{"mode": "fixed", "lat": ..., "lon": ..., "heightM": ...}` for a manual
+position.
+
 A boat's "pending uploads" figure is self-reported: it rides along on the
 same periodic health check the boat already does to test reachability
 (see "Uploading boat logs to the base over WiFi" above), since the base
@@ -889,6 +987,8 @@ given `boat`/`base` run will actually use, instead of reading through
 | `GPS_LOG` | unset (on) | Both roles — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
 | `GPS_LOG_ALL` | unset (off) | Boat only — when `GPS_LOG` is on, this decides *how much* it logs. Off by default: only fixes that clear `TX_DISTANCE_M` are logged (mirrors what's actually sent over radio/written to SD, not the full 1-10Hz raw stream). Set to `1` to log every fix regardless of movement — noisy, but useful for closely watching RTK convergence bench-side |
 | `GPS_LOG_REPLACE` | unset (on) | Boat only — when `GPS_LOG_ALL` is on *and* you're watching a real interactive terminal (not piped/redirected, e.g. to a file or `systemd`/journald), a fix that hasn't cleared `TX_DISTANCE_M` overwrites the same console line instead of scrolling, so a stationary boat doesn't flood the screen. Set to `0` to always scroll instead (one line per logged fix) — e.g. if something else is tailing/grepping this process's own terminal output directly, where overwritten lines would never actually appear to it |
+| `GPS_SVIN_MIN_DUR_S` | 60 | Base station only — minimum duration (seconds) the base GPS must spend surveying before the "Start survey-in" dashboard button's request can complete, regardless of how quickly the accuracy estimate converges — see "Admin dashboard" above |
+| `GPS_SVIN_ACC_LIMIT_MM` | 2000 | Base station only — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
@@ -928,3 +1028,7 @@ given `boat`/`base` run will actually use, instead of reading through
   parser resyncs on bad frames, but hasn't been stress-tested on real RF
   noise)
 - The actual ingestion format for whichever race software you land on
+- The "Base GPS survey-in" dashboard card (`UBX-NAV-SVIN`/`UBX-CFG-TMODE3`
+  parsing, ECEF-to-lat/lon conversion, and the TMODE3 poll request) - built
+  and verified against synthetic UBX frames only, never against a real
+  ZED-F9P actually running survey-in

@@ -12,7 +12,7 @@ const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadSer
 const { startAdminServer } = require('./adminServer');
 const stats = require('./stats');
 const { SerialPort } = require('serialport');
-const { UbxParser } = require('./ubxParser');
+const { UbxParser, encodePollRequest, encodeSetTmode3, TMODE3_MODE_NAMES, CLASS_CFG, ID_CFG_TMODE3 } = require('./ubxParser');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -65,6 +65,12 @@ async function runTestLap() {
 
 function main() {
   let radio;
+  // Tracked alongside the radio object itself so the dashboard's "Radio
+  // frames" card (see adminServer.js) can show which port/mode is actually
+  // in play, not just the frame/error counters - useful for confirming
+  // this process picked up the port you expected, especially with
+  // SIMULATE=1 or NO_RADIO=1 around to override the default.
+  const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
   if (config.simulate) {
     const { SimRadioLink } = require('./simRadioLink');
     radio = new SimRadioLink({ port: config.sim.port });
@@ -90,18 +96,42 @@ function main() {
   // unless told otherwise), a base silently retrying against a
   // nonexistent default port forever would just be noise.
   let baseGpsFix = null;
+  // TMODE3 (Time Mode 3) is the ZED-F9P's config for how it establishes its
+  // OWN fixed reference position before it's trustworthy as an RTK base
+  // (disabled / survey-in / fixed-position) - separate from baseGpsFix
+  // above, which is just the receiver's ordinary nav solution and keeps
+  // updating regardless. Neither is pushed by the receiver on its own the
+  // way NAV-PVT is: TMODE3 has to be polled (see encodePollRequest below),
+  // and NAV-SVIN only streams while survey-in mode is actually configured
+  // and enabled as an output message. Both null until we've heard something,
+  // same "never throws, null means not available yet" contract as
+  // getBaseGpsFix.
+  let baseGpsTmode3 = null;
+  let baseGpsSvin = null;
+  // The currently-open port, if any - null whenever GPS_PORT isn't set, or
+  // it's set but momentarily disconnected/reconnecting. Only needed for
+  // sending a SET command on demand (see setBaseGpsSurveyIn/setBaseGpsFixed
+  // below, triggered by the admin dashboard's mode buttons) - everything
+  // else about this GPS (fixes, poll responses) flows the other direction,
+  // through the parser's event handlers, and never needed a reference to
+  // the port itself outside this block.
+  let currentGpsPort = null;
   if (process.env.GPS_PORT) {
     console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
     (function openBaseGps() {
       const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {
         if (err) {
+          if (currentGpsPort === gpsPort) currentGpsPort = null;
           console.error('[baseGps] open failed:', err.message, '- retrying in 3s');
           setTimeout(openBaseGps, 3000);
         }
       });
+      currentGpsPort = gpsPort;
       const parser = new UbxParser();
       gpsPort.on('data', (chunk) => parser.write(chunk));
       gpsPort.on('close', () => {
+        if (currentGpsPort === gpsPort) currentGpsPort = null;
+        clearInterval(tmode3PollTimer);
         console.warn('[baseGps] port closed, retrying in 3s');
         setTimeout(openBaseGps, 3000);
       });
@@ -116,6 +146,23 @@ function main() {
           );
         }
       });
+      parser.on('cfg-tmode3', (t) => {
+        baseGpsTmode3 = t;
+      });
+      parser.on('nav-svin', (s) => {
+        baseGpsSvin = s;
+      });
+      // The receiver only tells us its TMODE3 mode when asked - poll once
+      // right after opening (so the UI has something on the very first
+      // load) and again periodically, since a poll request sent before the
+      // receiver's serial buffer is ready, or one that's simply lost, would
+      // otherwise leave the UI stuck showing nothing until a manual
+      // restart. 15s is frequent enough to feel live without meaningfully
+      // adding to the base GPS's own UART traffic.
+      gpsPort.write(encodePollRequest(CLASS_CFG, ID_CFG_TMODE3));
+      const tmode3PollTimer = setInterval(() => {
+        gpsPort.write(encodePollRequest(CLASS_CFG, ID_CFG_TMODE3));
+      }, 15000);
     })();
   }
 
@@ -581,6 +628,24 @@ function main() {
       course: raceMarks ? { marks: raceMarks, boatsKnown: knownBoatIds.size } : null,
       lapCounts,
       redis: redisStats,
+      // Merged onto snapshot.radio's own {framesReceived, syncErrors} -
+      // port is a plain serial path in 'real' mode, or the UDP port
+      // SimRadioLink actually listens on in 'simulated' mode (no baud
+      // there, it isn't a serial connection); both null in 'none' mode
+      // (NO_RADIO=1).
+      radio: {
+        ...snapshot.radio,
+        mode: radioMode,
+        port: radioMode === 'real' ? config.radio.port : radioMode === 'simulated' ? `UDP :${config.sim.port}` : null,
+        baud: radioMode === 'real' ? config.radio.baud : null,
+      },
+      // Null whenever GPS_PORT isn't set at all - same "not configured"
+      // signal getBaseGpsFix/getBaseGpsSurveyStatus already use, so the
+      // dashboard can show which port it's trying even before any fix has
+      // actually arrived (see renderBaseGpsCard).
+      baseGpsPort: process.env.GPS_PORT ? { port: config.gps.port, baud: config.gps.baud } : null,
+      baseGpsFix: getBaseGpsFix(),
+      baseGpsSurvey: getBaseGpsSurveyStatus(),
       webhook: {
         enabled: config.regattaup.enabled,
         queueReady: !!lapWebhookQueue,
@@ -609,10 +674,11 @@ function main() {
   // base stations have no GPS hardware attached), or configured but no
   // fix received yet. The admin map's GPS readout/recenter button (see
   // adminServer.js's renderMap) treats null as "not available" and says
-  // so, not an error. Includes fix-quality fields (same ones the rover
-  // dashboard already shows) alongside the coordinates, not just
-  // lat/lon, so that readout can show whether this is an actual
-  // RTK-fixed reading or something rougher.
+  // so, not an error. Includes every NAV-PVT field this app decodes (see
+  // ubxParser.js's _decodePvt), not just lat/lon/fix-quality - the main
+  // dashboard's "Base GPS" card (see adminServer.js's renderBaseGpsCard)
+  // shows the fuller picture; the map's lighter readout just ignores the
+  // extra fields it doesn't use.
   function getBaseGpsFix() {
     if (!baseGpsFix) return null;
     return {
@@ -621,9 +687,137 @@ function main() {
       timestamp: baseGpsFix.timestamp,
       carrSoln: baseGpsFix.carrSoln,
       gnssFixOk: baseGpsFix.gnssFixOk,
+      fixType: baseGpsFix.fixType,
       numSV: baseGpsFix.numSV,
       hAccMm: baseGpsFix.hAccMm,
+      vAccMm: baseGpsFix.vAccMm,
+      heightMm: baseGpsFix.heightMm,
+      hMSLMm: baseGpsFix.hMSLMm,
+      pDOP: baseGpsFix.pDOP,
+      gSpeedMmS: baseGpsFix.gSpeedMmS,
+      headMotDeg: baseGpsFix.headMotDeg,
+      utcValid: baseGpsFix.utcValid,
+      utcYear: baseGpsFix.utcYear,
+      utcMonth: baseGpsFix.utcMonth,
+      utcDay: baseGpsFix.utcDay,
+      utcHour: baseGpsFix.utcHour,
+      utcMin: baseGpsFix.utcMin,
+      utcSec: baseGpsFix.utcSec,
     };
+  }
+
+  // Same null-means-not-available contract as getBaseGpsFix, but for the
+  // TMODE3/survey-in status - reported separately since a base can have a
+  // perfectly good ordinary GPS fix (baseGpsFix) while TMODE3 itself is
+  // still disabled, mid-survey, or never polled yet. modeText is a plain
+  // label the UI can show directly, since 0/1/2 means nothing to an
+  // operator glancing at the dashboard.
+  function getBaseGpsSurveyStatus() {
+    if (!baseGpsTmode3 && !baseGpsSvin) return null;
+    return {
+      mode: baseGpsTmode3 ? baseGpsTmode3.mode : null,
+      modeText: baseGpsTmode3 ? TMODE3_MODE_NAMES[baseGpsTmode3.mode] || 'unknown' : null,
+      tmode3Timestamp: baseGpsTmode3 ? baseGpsTmode3.timestamp : null,
+      // The targets THIS APP last asked for via setBaseGpsSurveyIn (see
+      // config.gps.svinMinDurS/svinAccLimitMm) - not read back from the
+      // receiver itself (TMODE3's poll response doesn't echo them), so
+      // this reflects our own request, not necessarily whatever an
+      // operator may have separately configured via u-center. Given
+      // alongside survey.durationS/meanAccMm below so the UI can show
+      // progress against the actual finish line, not just raw numbers -
+      // survey-in only completes once duration clears configuredMinDurS
+      // AND accuracy drops to or below configuredAccLimitMm, whichever
+      // takes longer.
+      configuredMinDurS: config.gps.svinMinDurS,
+      configuredAccLimitMm: config.gps.svinAccLimitMm,
+      // Only meaningful once mode is actually 2 (fixed) - the poll
+      // response echoes back whatever position it's fixed to (see
+      // ubxParser.js's _decodeTmode3), whether this app set it (via
+      // setBaseGpsFixed) or it was configured some other way, e.g.
+      // u-center, before this app ever connected.
+      fixedPosition:
+        baseGpsTmode3 && baseGpsTmode3.mode === 2 && baseGpsTmode3.lat != null
+          ? {
+              lat: baseGpsTmode3.lat,
+              lon: baseGpsTmode3.lon,
+              heightM: baseGpsTmode3.heightM,
+              fixedPosAccMm: baseGpsTmode3.fixedPosAccMm,
+            }
+          : null,
+      survey: baseGpsSvin
+        ? {
+            active: baseGpsSvin.active,
+            valid: baseGpsSvin.valid,
+            durationS: baseGpsSvin.durationS,
+            observations: baseGpsSvin.observations,
+            meanAccMm: baseGpsSvin.meanAccMm,
+            lat: baseGpsSvin.lat,
+            lon: baseGpsSvin.lon,
+            heightM: baseGpsSvin.heightM,
+            timestamp: baseGpsSvin.timestamp,
+          }
+        : null,
+    };
+  }
+
+  // Re-polls TMODE3 shortly after a SET command - the receiver doesn't
+  // announce its new config on its own, and the operator clicking a mode
+  // button wants to see it take effect, not wait up to 15s for the next
+  // scheduled poll (see openBaseGps above).
+  function requestTmode3Refresh() {
+    setTimeout(() => {
+      if (currentGpsPort) currentGpsPort.write(encodePollRequest(CLASS_CFG, ID_CFG_TMODE3));
+    }, 500);
+  }
+
+  // Switches the base GPS into survey-in mode - see the admin dashboard's
+  // "Start survey-in" button. Also the right call to REstart a survey (e.g.
+  // conditions changed, or an operator wants a fresh/longer one) - TMODE3
+  // has no separate "restart" command, sending the same SET again is how
+  // u-blox receivers do it.
+  function setBaseGpsSurveyIn() {
+    if (!currentGpsPort) throw new Error('base GPS not connected');
+    currentGpsPort.write(
+      encodeSetTmode3({ mode: 1, svinMinDurS: config.gps.svinMinDurS, svinAccLimitMm: config.gps.svinAccLimitMm })
+    );
+    requestTmode3Refresh();
+  }
+
+  // Locks the base GPS to a fixed reference position - see the admin
+  // dashboard's "Use as fixed position" button and the manual-entry form
+  // beside it. manualPos, when given, is an operator-typed {lat, lon,
+  // heightM, fixedPosAccMm} - e.g. a club's own previously-surveyed
+  // benchmark position, which is more trustworthy than anything this app
+  // can measure itself. Re-validated here even though the dashboard's own
+  // form already checks ranges client-side, since this reconfigures RTK
+  // corrections for every boat and a request could reach this function by
+  // some other path than that form. Without manualPos, prefers the
+  // completed survey-in's own mean position (what an operator normally
+  // wants: survey in, then lock to the result) but falls back to whatever
+  // ordinary fix the base currently has if no valid survey-in result
+  // exists yet - still useful for bench testing, though nowhere near
+  // RTK-base-grade precision that way (an ordinary nav fix's own accuracy,
+  // not an averaged one).
+  function setBaseGpsFixed(manualPos) {
+    if (!currentGpsPort) throw new Error('base GPS not connected');
+    let pos;
+    if (manualPos) {
+      const { lat, lon, heightM } = manualPos;
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) throw new Error('lat must be a number between -90 and 90');
+      if (!Number.isFinite(lon) || lon < -180 || lon > 180) throw new Error('lon must be a number between -180 and 180');
+      if (!Number.isFinite(heightM) || heightM < -500 || heightM > 9000) throw new Error('height must be a number between -500 and 9000 meters');
+      pos = manualPos;
+    } else {
+      pos =
+        baseGpsSvin && baseGpsSvin.valid
+          ? { lat: baseGpsSvin.lat, lon: baseGpsSvin.lon, heightM: baseGpsSvin.heightM, fixedPosAccMm: baseGpsSvin.meanAccMm }
+          : baseGpsFix
+          ? { lat: baseGpsFix.lat, lon: baseGpsFix.lon, heightM: baseGpsFix.heightMm / 1000, fixedPosAccMm: baseGpsFix.hAccMm }
+          : null;
+    }
+    if (!pos) throw new Error('no base GPS position available yet to fix to');
+    currentGpsPort.write(encodeSetTmode3({ mode: 2, ...pos }));
+    requestTmode3Refresh();
   }
 
   startAdminServer({
@@ -632,6 +826,9 @@ function main() {
     getPositions: getBoatPositions,
     setMark: setMarkLocation,
     getBaseGps: getBaseGpsFix,
+    getBaseGpsSurvey: getBaseGpsSurveyStatus,
+    setBaseGpsSurveyIn,
+    setBaseGpsFixed,
   });
 
   if (config.simulate) {

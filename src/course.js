@@ -103,6 +103,20 @@ function distanceMeters(a, b) {
   return Math.sqrt(north * north + east * east);
 }
 
+// Compass bearing (degrees, 0=north, clockwise) from point a to point b -
+// same flat-earth approximation as distanceMeters above, fine at
+// course-length scales. deriveGeometry uses this so the simulator sails
+// toward wherever the windward mark actually is, not wherever it would be
+// if it were still due north of leeward - an operator can drag it (or any
+// mark) anywhere via the map's "edit marks" column (see adminServer.js),
+// and getMarks' own "due north" layout is only the *initial* generated
+// position, not a standing assumption the rest of the app can keep making.
+function bearingDeg(a, b) {
+  const north = (b.lat - a.lat) * METERS_PER_DEG_LAT;
+  const east = (b.lon - a.lon) * METERS_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
+  return ((Math.atan2(east, north) * 180) / Math.PI + 360) % 360;
+}
+
 // The green leeward mark sits exactly at the configured center point
 // (SIM_CENTER_LAT/LON) - this is the one point that hasn't moved as this
 // function grew from a single windward/leeward pair to green+black pairs,
@@ -141,14 +155,20 @@ function getMarks(centerLat, centerLon) {
 // start side actually holds, so a boat always lands somewhere on the real
 // line (cycling positions past that point) instead of overflowing out past
 // committee or even the finish mark.
-function getStartPosition(slotIndex, geometry) {
-  const { startLineNorthM, startSideLengthM, boatStartSpacingM } = geometry;
+//
+// Returns a 0 (pin) to 1 (committee) FRACTION along the line, not an
+// absolute north/east - unlike windward/leeward (always exactly on
+// simGps.js's own rotated local-north axis, by definition of how that
+// rotation is derived), pin/committee can be edited independently of the
+// beat axis (see adminServer.js's "edit marks" column) and end up
+// anywhere. simGps.js interpolates this fraction against pin/committee's
+// own true local positions (each independently measured, not assumed),
+// so a boat's start position stays correct regardless.
+function getStartFraction(slotIndex, geometry) {
+  const { startSideLengthM, boatStartSpacingM } = geometry;
   const maxSlots = Math.max(1, Math.floor(startSideLengthM / boatStartSpacingM));
   const wrappedSlot = slotIndex % maxSlots;
-  return {
-    north: startLineNorthM,
-    east: -startSideLengthM + boatStartSpacingM / 2 + wrappedSlot * boatStartSpacingM,
-  };
+  return (boatStartSpacingM / 2 + wrappedSlot * boatStartSpacingM) / startSideLengthM;
 }
 
 // Derives the course's actual geometry by measuring the marks themselves,
@@ -164,15 +184,27 @@ function getStartPosition(slotIndex, geometry) {
 // (long-course) marks, see getMarks' own comment.
 function deriveGeometry(marks) {
   const courseLengthM = distanceMeters(marks.leewardGreen, marks.windwardGreen);
-  const startLineNorthM = distanceMeters(marks.leewardGreen, marks.committee);
+  // The actual compass direction from leeward to windward - NOT assumed to
+  // be true north (0). Only the freshly-generated layout (getMarks above)
+  // puts them exactly on a north-south axis; once an operator edits a mark,
+  // the real bearing can be anything. simGps.js rotates its whole (locally
+  // north-relative) tacking model by this before converting to lat/lon, so
+  // the simulated boat actually sails toward wherever windwardGreen really
+  // is.
+  const courseBearingDeg = bearingDeg(marks.leewardGreen, marks.windwardGreen);
+  // Only the pin<->committee distance is still needed here (by
+  // getStartFraction, for boat start spacing) - simGps.js measures
+  // committee/finish's own true positions directly (see its _toLocal), not
+  // via a scalar distance/assumed-perpendicular-offset from this file, so
+  // there's no longer a startLineNorthM/finishSideLengthM this module needs
+  // to hand it.
   const startSideLengthM = distanceMeters(marks.committee, marks.pin);
-  const finishSideLengthM = distanceMeters(marks.committee, marks.finish);
   // Boat-to-boat start spacing isn't a mark - keep it proportional to the
   // measured course length (same ratio as getMarks uses when first
   // defining a course), so it still makes sense at whatever scale the
   // marks turn out to be.
   const boatStartSpacingM = courseLengthM * ((25 * FEET_TO_M) / NM_TO_M);
-  return { courseLengthM, startLineNorthM, startSideLengthM, finishSideLengthM, boatStartSpacingM };
+  return { courseLengthM, courseBearingDeg, startSideLengthM, boatStartSpacingM };
 }
 
 module.exports = {
@@ -192,7 +224,8 @@ module.exports = {
   markStroke,
   offsetToLatLon,
   distanceMeters,
+  bearingDeg,
   getMarks,
-  getStartPosition,
+  getStartFraction,
   deriveGeometry,
 };

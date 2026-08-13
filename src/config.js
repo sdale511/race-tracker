@@ -150,6 +150,18 @@ module.exports = {
     // copy (where the in-place escape codes never applied in the first
     // place - see isTTY check).
     logReplace: process.env.GPS_LOG_REPLACE !== '0' && process.env.GPS_LOG_REPLACE !== 'false',
+    // Base station only - parameters sent along with a UBX-CFG-TMODE3
+    // survey-in request (see adminServer.js's "Start survey-in" button).
+    // svinMinDurS is the minimum time the receiver must spend surveying
+    // before it can call the result valid, regardless of how quickly the
+    // accuracy estimate converges; svinAccLimitMm is the accuracy the mean
+    // position has to reach before it's accepted, regardless of how long
+    // that takes - survey-in only completes once BOTH are satisfied. 60s /
+    // 2000mm are gentle defaults for testing; a real fixed installation
+    // typically wants both tightened (longer duration, tighter accuracy)
+    // for cm-level RTK base precision.
+    svinMinDurS: parseInt(process.env.GPS_SVIN_MIN_DUR_S || '60', 10),
+    svinAccLimitMm: parseInt(process.env.GPS_SVIN_ACC_LIMIT_MM || '2000', 10),
   },
 
   // --- Telemetry radio (transparent-serial style, e.g. Digi XBee-PRO S3B) ---
