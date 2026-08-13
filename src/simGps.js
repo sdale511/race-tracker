@@ -378,9 +378,6 @@ class SimGpsSource extends EventEmitter {
       const Diff = dEastCorrected / Math.sin(maxAngleRad);
       const Lplus = (S + Diff) / 2;
       const Lminus = (S - Diff) / 2;
-      if (process.env.SIMGPS_DEBUG) {
-        console.error(`[DEBUG] _startNewLeg closeEnough: dNorth=${dNorth.toFixed(2)} dEastCorrected=${dEastCorrected.toFixed(2)} S=${S.toFixed(2)} Diff=${Diff.toFixed(2)} Lplus=${Lplus.toFixed(2)} Lminus=${Lminus.toFixed(2)} north=${this.north.toFixed(2)} east=${this.east.toFixed(2)} targetNorth=${targetNorth.toFixed(2)} targetEastM=${targetEastM.toFixed(2)}`);
-      }
       // A tack this short isn't worth a separate leg of its own - below
       // this, skip straight to sailing the other (longer) tack in full,
       // rather than a near-instant leg that would immediately re-trigger
@@ -752,9 +749,6 @@ class SimGpsSource extends EventEmitter {
         // position close enough that it should converge cleanly.
         this.north = prevNorth;
         this.east = prevEast;
-        if (process.env.SIMGPS_DEBUG) {
-          console.error(`[DEBUG] invalid upwind crossing: t=${t.toFixed(3)} crossingEast=${crossingEast.toFixed(2)} prevNorth=${prevNorth.toFixed(2)} prevEast=${prevEast.toFixed(2)} committeeLocal.north=${this.committeeLocal.north.toFixed(2)} pinLocal.east=${this.pinLocal.east.toFixed(2)} committeeLocal.east=${this.committeeLocal.east.toFixed(2)} finishLocal.east=${this.finishLocal.east.toFixed(2)}`);
-        }
         this._startNewLeg();
       }
     } else if (
