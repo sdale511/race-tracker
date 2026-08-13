@@ -24,6 +24,12 @@ class RadioLink extends EventEmitter {
       }
     });
 
+    // Standard serialport event, fired once the port has actually opened
+    // successfully - distinct from the constructor callback above, which
+    // only ever fires on the *error* path. Lets a caller (see
+    // baseStation.js's dashboard connection-status tracking) tell "opened
+    // fine" apart from "still trying" without polling anything.
+    this.port.on('open', () => this.emit('connected'));
     this.port.on('data', (chunk) => this._onData(chunk));
     this.port.on('close', () => {
       this.emit('disconnected');

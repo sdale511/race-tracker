@@ -32,8 +32,12 @@ function projectFraction(a, b, p) {
 //
 // Upwind crossings of the start/finish line must pass through the finish
 // gate (committee <-> finish, on the east side of the rhumb line - see
-// course.js) to count a lap. Aiming for the gate's center is what makes
-// that achievable.
+// course.js) to count a lap - never the start side, never beyond either
+// mark. Aiming for the gate's center (see _targetWaypoint()) is what
+// usually gets it there, but it's also hard-enforced: a crossing found to
+// land outside the gate is never committed to (see _tick()'s upwind
+// crossing check) - the tick rolls back to the last known-good position and
+// re-aims instead of reporting a fix on the wrong side of the line.
 //
 // Downwind crossings can go anywhere EXCEPT through the start side (pin <->
 // committee) or finish side (committee <-> finish) - those two occupy the
@@ -42,11 +46,14 @@ function projectFraction(a, b, p) {
 // to be near either mark - the target (see _targetWaypoint()) is picked
 // dynamically off whichever side of the strip the boat's current position
 // already sits on, so the boat clears past the nearest edge of the strip
-// rather than converging toward a fixed point next to a mark.
-// DOWNWIND_CLEAR_MARGIN_M pushes that target just past the strip's edge so
-// the crossing is a clean pass rather than a graze - no more margin than
-// that is needed, since the only actual requirement is not sailing through
-// the strip.
+// rather than converging toward a fixed point next to a mark. Also
+// hard-enforced the same way as the upwind gate above - a crossing found to
+// land inside the strip is rolled back rather than committed to, see
+// _tick()'s downwind crossing check.
+// DOWNWIND_CLEAR_MARGIN_M pushes the clearing target just past the strip's
+// edge so the crossing is a clean pass rather than a graze - no more margin
+// than that is needed, since the only actual requirement is not sailing
+// through the strip.
 const DOWNWIND_CLEAR_MARGIN_M = 15;
 
 // Once the boat reaches a mark's latitude (ordinary north/leeward
@@ -303,7 +310,28 @@ class SimGpsSource extends EventEmitter {
       // beat/run remaining for even a fully-correcting tack to recover
       // before the next crossing/rounding, since that tack can get cut
       // short if it reaches the threshold before finishing.
-      const lengthM = randRange(this.targetLegM * 0.35, this.targetLegM * 0.6);
+      let lengthM = randRange(this.targetLegM * 0.35, this.targetLegM * 0.6);
+      // targetLegM itself isn't always "a fraction of a multi-tack beat" -
+      // on a short course (or one that's collapsed to single-tack mode, see
+      // _setLegTarget), targetLegM can be close to HALF the entire
+      // beat/run's own north distance, so 35-60% of it can still consume
+      // most of the north-distance available for the whole leg - leaving
+      // too little dNorth for the normal precision-targeting logic
+      // afterward to recover whatever lateral drift this forced,
+      // uncorrected tack itself introduces. Unlike every other leg's own
+      // overshoot risk (which just costs a bit of precision), an
+      // unrecoverable one here is a real correctness problem: at a fixed
+      // tacking angle, once dNorth runs out there is no later tack that can
+      // still fix it - exactly the "missed layline with no north left to
+      // recover on" case _tick()'s crossing checks now catch and reject.
+      // Capped against the ACTUAL remaining dNorth to the line (not just
+      // targetLegM) at a conservative fraction, so meaningfully more
+      // runway is always left after this leg than it itself used.
+      const { targetNorth: departureTargetNorth } = this._targetWaypoint();
+      const departureDNorth = Math.abs(departureTargetNorth - this.north);
+      const departureNorthPerM = Math.cos((maxAngleDeg * Math.PI) / 180);
+      const maxByRunwayM = (departureDNorth * 0.4) / departureNorthPerM;
+      lengthM = Math.min(lengthM, Math.max(maxByRunwayM, 1));
       this._setLeg(-1, lengthM, randRange(-HEADING_JITTER_DEG, HEADING_JITTER_DEG));
       return;
     }
@@ -350,6 +378,9 @@ class SimGpsSource extends EventEmitter {
       const Diff = dEastCorrected / Math.sin(maxAngleRad);
       const Lplus = (S + Diff) / 2;
       const Lminus = (S - Diff) / 2;
+      if (process.env.SIMGPS_DEBUG) {
+        console.error(`[DEBUG] _startNewLeg closeEnough: dNorth=${dNorth.toFixed(2)} dEastCorrected=${dEastCorrected.toFixed(2)} S=${S.toFixed(2)} Diff=${Diff.toFixed(2)} Lplus=${Lplus.toFixed(2)} Lminus=${Lminus.toFixed(2)} north=${this.north.toFixed(2)} east=${this.east.toFixed(2)} targetNorth=${targetNorth.toFixed(2)} targetEastM=${targetEastM.toFixed(2)}`);
+      }
       // A tack this short isn't worth a separate leg of its own - below
       // this, skip straight to sailing the other (longer) tack in full,
       // rather than a near-instant leg that would immediately re-trigger
@@ -388,19 +419,24 @@ class SimGpsSource extends EventEmitter {
       // itself scales with the course length) - no separate floor needed;
       // a fixed one (e.g. 50m) would force tacks longer than intended once
       // targetLegM itself gets small (a short SIM_COURSE_LENGTH_NM course).
+      //
+      // Deliberately NOT capped short of the crossing threshold (this used
+      // to cap at 0.8x the remaining north distance, to "leave room for
+      // more legs" rather than risk sailing through) - that reasoning
+      // predates _tick()'s upwind crossing check actually rejecting and
+      // retrying an out-of-gate crossing (see there): capping this tack
+      // short means EVERY retry after a rejected crossing recomputes from
+      // the same, only-partially-corrected position, making the same small
+      // amount of progress each time - which, if dNorth is already small
+      // enough that even a capped tack overshoots it, never converges at
+      // all (an infinite retry loop, confirmed live: the boat can get
+      // stuck alternating between the same two positions forever). Running
+      // this tack its full natural length instead means a rejected
+      // crossing's retry starts from a position that's already absorbed
+      // this whole tack's worth of correction, not a truncated fraction of
+      // it - genuinely closing the gap each retry instead of repeating it.
       const lengthM = randRange(this.targetLegM * (1 - LEG_JITTER_FRAC), this.targetLegM * (1 + LEG_JITTER_FRAC));
-      // Capped below the distance that would actually reach the target's
-      // own north coordinate (0.8x, leaving room to still be shrinking on
-      // the next call rather than re-triggering this same degenerate
-      // branch immediately) - otherwise this leg can sail straight through
-      // the crossing threshold before finishing, locking in whatever
-      // partly-corrected east it happened to be at instead of the several
-      // legs of refinement this branch is meant to produce (the "possibly
-      // several legs" above only actually happens if a leg stops short of
-      // the line - one that overshoots past it ends the approach on the
-      // spot, cutting off every leg after the first).
-      const maxLengthM = Math.max((dNorth / northPerM) * 0.8, 1);
-      this._setLeg(correctingSide, Math.min(lengthM, maxLengthM));
+      this._setLeg(correctingSide, lengthM);
       return;
     }
 
@@ -639,21 +675,27 @@ class SimGpsSource extends EventEmitter {
       this._startNewLeg(); // tack or gybe
     }
 
-    // Crossing the start/finish line's latitude: upwind crossings complete a
-    // lap and must go through the finish gate; downwind crossings must NOT
-    // go through either side of the strip (no requirement to be near it
-    // otherwise - see needsPrecisionTarget in _startNewLeg()). _startNewLeg()
-    // aims the upwind approach at the gate, so that lands correctly most of
-    // the time, but isn't hard-enforced - `inGate` on the emitted event says
-    // whether it did.
+    // Crossing the start/finish line's latitude: upwind crossings must go
+    // through the finish gate specifically (not the start side, and not
+    // beyond either mark) to count a lap; downwind crossings must NOT go
+    // through either side of the strip at all. Both are hard requirements,
+    // not just "usually lands right because _startNewLeg() aims for it" -
+    // either check below can find the raw crossing landed somewhere
+    // forbidden, in which case that position is never actually reported:
+    // the tick rolls back to the last known-good position (prevNorth/
+    // prevEast, still on the correct side of the line) and redirects from
+    // there instead, so a bad crossing never makes it into an emitted fix
+    // even for one tick, and downstream consumers watching this boat's real
+    // transmitted position (like the base's own finishLineWatcher.js) never
+    // see it either.
     //
     // Skipped entirely while mid-clearing-leg (north frozen, see above) or
     // already coasting to a stop past the finish - the crossing that
-    // triggered a clearing leg (mark rounding, or a downwind crossing
-    // already being corrected below) was already handled when it happened;
-    // re-checking a frozen north against the same threshold every
-    // subsequent tick is not just redundant but, since north hasn't moved,
-    // would divide by zero in interpolateEastAt.
+    // triggered a clearing leg (mark rounding, or a crossing already being
+    // corrected below) was already handled when it happened; re-checking a
+    // frozen north against the same threshold every subsequent tick is not
+    // just redundant but, since north hasn't moved, would divide by zero in
+    // interpolateEastAt.
     if (
       this.finishCoastRemainingM == null &&
       this.clearingHeadingDeg == null &&
@@ -661,8 +703,6 @@ class SimGpsSource extends EventEmitter {
       !this.crossedLineThisLeg &&
       this.north > this.committeeLocal.north
     ) {
-      this.crossedLineThisLeg = true;
-      this.lapsCompleted++;
       // Interpolated east position at the exact moment north crossed
       // committee's own true north level, not just wherever this tick's
       // discrete step happened to land - at a short SIM_COURSE_LENGTH_NM
@@ -684,15 +724,37 @@ class SimGpsSource extends EventEmitter {
       // the fact.
       const t = projectFraction(this.committeeLocal, this.finishLocal, { north: this.committeeLocal.north, east: crossingEast });
       const inGate = t >= 0 && t <= 1;
-      this.emit('lap', { lap: this.lapsCompleted, inGate, eastM: crossingEast });
-      if (this.lapsCompleted >= this.lapTarget) {
-        // Race is over - start coasting (see above) instead of planning
-        // another leg toward the windward mark.
-        this.finishCoastRemainingM = FINISH_COAST_M;
+      if (inGate) {
+        this.north = this.committeeLocal.north;
+        this.east = crossingEast;
+        this.crossedLineThisLeg = true;
+        this.lapsCompleted++;
+        this.emit('lap', { lap: this.lapsCompleted, inGate: true, eastM: crossingEast });
+        if (this.lapsCompleted >= this.lapTarget) {
+          // Race is over - start coasting (see above) instead of planning
+          // another leg toward the windward mark.
+          this.finishCoastRemainingM = FINISH_COAST_M;
+        } else {
+          // The target just changed (start/finish line -> the mark) -
+          // recompute this leg now instead of continuing on a heading aimed
+          // at the old target for however much of it happens to remain.
+          this._startNewLeg();
+        }
       } else {
-        // The target just changed (start/finish line -> the mark) -
-        // recompute this leg now instead of continuing on a heading aimed
-        // at the old target for however much of it happens to remain.
+        // Would cross the line, but outside the finish gate (the start
+        // side, or beyond either mark) - not a valid finish. Roll back to
+        // the pre-tick position (still short of the line) rather than
+        // commit to this crossing, and re-aim: crossedLineThisLeg is still
+        // false and the phase is still upwind, so _startNewLeg()'s existing
+        // gate-targeting precision math (see needsPrecisionTarget) is
+        // exactly the right corrective action here - same mechanism
+        // already steering every upwind approach, just re-run from a
+        // position close enough that it should converge cleanly.
+        this.north = prevNorth;
+        this.east = prevEast;
+        if (process.env.SIMGPS_DEBUG) {
+          console.error(`[DEBUG] invalid upwind crossing: t=${t.toFixed(3)} crossingEast=${crossingEast.toFixed(2)} prevNorth=${prevNorth.toFixed(2)} prevEast=${prevEast.toFixed(2)} committeeLocal.north=${this.committeeLocal.north.toFixed(2)} pinLocal.east=${this.pinLocal.east.toFixed(2)} committeeLocal.east=${this.committeeLocal.east.toFixed(2)} finishLocal.east=${this.finishLocal.east.toFixed(2)}`);
+        }
         this._startNewLeg();
       }
     } else if (
@@ -702,31 +764,32 @@ class SimGpsSource extends EventEmitter {
       !this.crossedLineThisLeg &&
       this.north < this.committeeLocal.north
     ) {
-      // Same interpolation as the upwind gate check above - but here it
-      // isn't just a diagnostic: avoiding the strip is a hard requirement,
-      // so the boat's own reported position is snapped back to this exact
-      // crossing point (see below) rather than left at wherever this
-      // tick's discrete step happened to land. Without that, a large
-      // enough per-tick step (relative to the strip's own width) could
-      // interpolate as "just outside, no clearing needed" while the raw
-      // tick-end position had already carried a little further into the
-      // strip than the interpolated point - reporting a violating fix even
-      // though the crossing itself looked clean.
+      // Same interpolation as the upwind gate check above.
       const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.committeeLocal.north);
-      this.north = this.committeeLocal.north;
-      this.east = crossingEast;
-      const inStrip = this._inLocalStrip(this.north, this.east);
+      const inStrip = this._inLocalStrip(this.committeeLocal.north, crossingEast);
       if (inStrip) {
+        // Avoiding the strip is a hard requirement - the crossing point
+        // itself is inside it, so it can't be committed to even as a
+        // transient position (unlike the clean-crossing case below, this
+        // one rolls back to prevNorth/prevEast, still on the correct side
+        // of the line, rather than snapping to the violating point and
+        // correcting from there - that would still report one fix sitting
+        // inside the forbidden strip before ever redirecting).
+        this.north = prevNorth;
+        this.east = prevEast;
         // Free-tacking wasn't aiming for a particular spot here (there's no
         // reason to be near either mark downwind), so it can occasionally
         // land inside the forbidden strip by chance - clear it by heading
-        // up toward whichever edge is nearer: a real, wider-than-normal
-        // angle off dead downwind (more lateral speed, but still making
-        // some forward progress, not frozen sideways like a mark rounding)
-        // that bears away back to the normal run angle the instant it's
-        // clear (handled above, same as any other tack/gybe transition).
-        const distToFinishSide = this.finishLocal.east - this.east;
-        const distToStartSide = this.east - this.pinLocal.east;
+        // up toward whichever edge is nearer (evaluated against the
+        // violating crossing point, not the rolled-back position, since
+        // that's where the boat was actually headed): a real,
+        // wider-than-normal angle off dead downwind (more lateral speed,
+        // but still making some forward progress, not frozen sideways like
+        // a mark rounding) that bears away back to the normal run angle the
+        // instant it's clear (handled above, same as any other tack/gybe
+        // transition).
+        const distToFinishSide = this.finishLocal.east - crossingEast;
+        const distToStartSide = crossingEast - this.pinLocal.east;
         this.clearingDirection = distToFinishSide <= distToStartSide ? 1 : -1;
         // sin(180+x) = -sin(x) - a lean off the downwind base heading (180)
         // moves east/west opposite of the same lean off the upwind base
@@ -742,6 +805,8 @@ class SimGpsSource extends EventEmitter {
         this.clearingIsLineCross = true;
         this.timeSinceManeuverS = 0;
       } else {
+        this.north = this.committeeLocal.north;
+        this.east = crossingEast;
         this.crossedLineThisLeg = true; // doesn't count a lap, just marks the crossing handled
         this._startNewLeg();
       }

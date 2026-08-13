@@ -84,6 +84,27 @@ function main() {
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 
+  // Surfaced on the dashboard (see adminServer.js's "Radio frames" card) so
+  // a lost connection actually shows as lost, rather than the card just
+  // quietly freezing on whatever counters it last had - the values
+  // themselves staying put is fine (this is a live view, not something
+  // that needs to guess "still true" vs "last known"), but there needs to
+  // be SOME live signal distinguishing "still connected" from "was
+  // connected." Only 'real' mode has an actual disconnect concept - a
+  // SimRadioLink's UDP socket, once bound, doesn't have a serial-port-style
+  // physical disconnect to track, and 'none' (NO_RADIO=1) has no
+  // connection to speak of at all, so `radioConnected` stays null there
+  // (adminServer.js treats null as "not applicable," not "disconnected").
+  let radioConnected = radioMode === 'simulated' ? true : radioMode === 'real' ? false : null;
+  if (radioMode === 'real') {
+    radio.on('connected', () => {
+      radioConnected = true;
+    });
+    radio.on('disconnected', () => {
+      radioConnected = false;
+    });
+  }
+
   // Optional GPS wired directly to this machine (see config.js's gps
   // comment - shared with the boat's own GPS_PORT/GPS_BAUD) - purely so
   // an operator can plant a mark at their own real current position from
@@ -638,12 +659,23 @@ function main() {
         mode: radioMode,
         port: radioMode === 'real' ? config.radio.port : radioMode === 'simulated' ? `UDP :${config.sim.port}` : null,
         baud: radioMode === 'real' ? config.radio.baud : null,
+        // null = not applicable (radioMode 'none'), not "disconnected" -
+        // see radioConnected's own comment above.
+        connected: radioConnected,
       },
       // Null whenever GPS_PORT isn't set at all - same "not configured"
       // signal getBaseGpsFix/getBaseGpsSurveyStatus already use, so the
       // dashboard can show which port it's trying even before any fix has
       // actually arrived (see renderBaseGpsCard).
       baseGpsPort: process.env.GPS_PORT ? { port: config.gps.port, baud: config.gps.baud } : null,
+      // Whether the serial port is actually open right now - independent
+      // of baseGpsFix below, which just holds the last fix received and
+      // has no way on its own to show a lost connection (see
+      // currentGpsPort's own comment - same variable setBaseGpsSurveyIn/
+      // setBaseGpsFixed already rely on to know whether they can send a
+      // command). null when GPS_PORT isn't set at all, same
+      // not-applicable convention as radio.connected above.
+      baseGpsConnected: process.env.GPS_PORT ? !!currentGpsPort : null,
       baseGpsFix: getBaseGpsFix(),
       baseGpsSurvey: getBaseGpsSurveyStatus(),
       webhook: {

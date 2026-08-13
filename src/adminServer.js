@@ -15,6 +15,20 @@ function fixQualityText(f) {
   return 'No fix';
 }
 
+// A live connected/disconnected dot for the radio and base GPS cards -
+// those cards otherwise just show the last values received, which stay put
+// (correctly - this is a live view, not something that should guess or
+// clear stale data) even after the underlying connection actually drops,
+// so there needs to be some separate signal that's actually live. `connected`
+// is a tri-state: true/false is an actual live/dead reading, null means "not
+// applicable" (no radio/GPS configured at all, e.g. NO_RADIO=1 or no
+// GPS_PORT) - same dot/text pair the page's own Redis indicator already
+// uses in the subtitle, reused here for visual consistency.
+function connectionDot(connected) {
+  if (connected == null) return null;
+  return `<span class="dot ${connected ? 'dot-green' : 'dot-red'}"></span>${connected ? 'Connected' : 'Disconnected'}`;
+}
+
 // Dilution of precision - how much the current satellite geometry is
 // amplifying measurement error, independent of hAcc/vAcc. Standard rough
 // bands (surveying/aviation guides agree on this shape, if not the exact
@@ -38,18 +52,22 @@ function dopQualityText(dop) {
 // ambiguity the map's "Base RTK GPS" readout and the survey-in card below
 // already accept, since "no GPS hardware attached" is the overwhelmingly
 // common case for a base station.
-function renderBaseGpsCard(fix, gpsPort) {
+function renderBaseGpsCard(fix, gpsPort, connected) {
   const portLine = gpsPort ? `${gpsPort.port} @ ${gpsPort.baud}` : null;
+  const statusHtml = connectionDot(connected);
   if (!fix) {
     return `<div class="card">
       <div class="label">Base GPS</div>
       <div class="value">—</div>
-      <div class="sub">${portLine ? `${portLine} - no fix yet` : 'no base GPS (GPS_PORT not set)'}</div>
+      <div class="sub">${statusHtml ? `${statusHtml} - ` : ''}${portLine ? `${portLine} - no fix yet` : 'no base GPS (GPS_PORT not set)'}</div>
     </div>`;
   }
-  const rows = [
-    { label: 'Position', value: `${fix.lat.toFixed(7)}, ${fix.lon.toFixed(7)}` },
-  ];
+  const rows = [];
+  // Shown first, ahead of Position - the whole point is that it's visible
+  // even at a glance, not buried under a screenful of otherwise-current-
+  // looking (but possibly stale) numbers.
+  if (statusHtml) rows.push({ label: 'Status', value: statusHtml });
+  rows.push({ label: 'Position', value: `${fix.lat.toFixed(7)}, ${fix.lon.toFixed(7)}` });
   if (fix.hMSLMm != null) {
     const ellipsoidM = fix.heightMm != null ? ` / ${(fix.heightMm / 1000).toFixed(2)}m ellipsoid` : '';
     rows.push({ label: 'Altitude', value: `${(fix.hMSLMm / 1000).toFixed(2)}m MSL${ellipsoidM}` });
@@ -391,6 +409,7 @@ function renderDashboard(s) {
       <div class="label">Radio frames</div>
       <div class="value">${s.radio.framesReceived.toLocaleString()}</div>
       <div class="stat-rows">
+        ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
         <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
         <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (NO_RADIO=1)'}</span></div>
       </div>
@@ -413,7 +432,7 @@ function renderDashboard(s) {
       <div class="value">${s.webhook.enabled ? 'on' : 'off'}</div>
       <div class="sub">${s.webhook.queueReady ? 'queue ready' : 'queue initializing'}</div>
     </div>
-    ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort)}
+    ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix)}
     ${renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix)}
   </div>
