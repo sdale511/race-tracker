@@ -5,7 +5,7 @@ const { RedisStore } = require('./redisStore');
 const { distanceMeters, COURSE_LENGTH_M, LONG_COURSE_EXTRA_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
-const { OnGridWatcher } = require('./onGridWatcher');
+const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
 const { MarkRoundingWatcher } = require('./markRoundingWatcher');
 const { MarkRoundingWebhookQueue } = require('./markRoundingWebhookQueue');
@@ -315,6 +315,17 @@ function main() {
     console.log(
       `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
     );
+    // Republishes the on-grid zone alongside the marks themselves, same
+    // trigger points (initial resolve, an edit, the periodic heartbeat) -
+    // so anything reading it from Redis (RegattaUp, another dashboard) sees
+    // the same zone the base's own OnGridWatcher instances are actually
+    // using, never a stale one left over from marks that have since
+    // changed. Fire-and-forget, same as the other non-critical Redis
+    // writes in this file - a failed publish here doesn't affect detection
+    // itself, only what an external reader sees.
+    redisStore
+      .setOnGridZone(zonePolygon(raceMarks, config.regattaup.onGridZoneM))
+      .catch((err) => console.error('[redis] failed to publish on-grid zone:', err.message));
   }
 
   // Lets an operator correct/set a single mark's position from the base's

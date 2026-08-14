@@ -598,6 +598,16 @@ common queries are a single range read:
   a timeframe without knowing boat IDs up front.
 - `boats:known` — a set of every boat ID that's ever reported in
   (`knownBoatIds()`), for discovering which boats exist without scanning keys.
+- `course:on_grid_zone` — the on-grid detection zone's own boundary, as a
+  JSON array of `{lat, lon}` points (`setOnGridZone`/`getOnGridZone`) - the
+  exact quadrilateral `OnGridWatcher.check` tests against (see
+  `onGridWatcher.js`'s `zonePolygon`), republished every time marks are
+  broadcast (initial resolve, an edit, the periodic heartbeat), so anything
+  reading it - RegattaUp, another dashboard - sees the same zone the base
+  is actually detecting against, not a separately-derived approximation.
+
+Course marks themselves live in `mark:<name>` (one Redis hash per mark,
+`lat`/`lon` fields) - see "Editing mark positions from the map" below.
 
 Each stored entry is the decoded frame (`boatId, timestamp, lat, lon,
 speedKnots, headingDeg, gnssFixOk, carrSoln, numSV`) plus `receivedAt` (the

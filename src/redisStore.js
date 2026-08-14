@@ -180,7 +180,9 @@ class RedisStore {
     return computed;
   }
 
-  // Deletes the five `mark:*` keys, so the next getOrCreateMarks call
+  // Deletes the five `mark:*` keys (plus the derived on-grid zone, so a
+  // reader mid-transition sees "no zone" rather than one computed from
+  // marks that no longer exist), so the next getOrCreateMarks call
   // recomputes and republishes the course from scratch instead of reusing
   // whatever's already there - needed any time the course geometry itself
   // changes (e.g. SIM_COURSE_LENGTH_NM), since getOrCreateMarks otherwise
@@ -188,13 +190,32 @@ class RedisStore {
   // Leaves boat tracks/start slots untouched (see clearBoatData for those).
   async clearCourseMarks() {
     await this.ready;
-    const keys = MARK_NAMES.map((name) => `mark:${name}`);
+    const keys = [...MARK_NAMES.map((name) => `mark:${name}`), 'course:on_grid_zone'];
     const existingKeys = [];
     for (const key of keys) {
       if (await this.client.exists(key)) existingKeys.push(key);
     }
     if (existingKeys.length > 0) await this.client.del(...existingKeys);
     return existingKeys;
+  }
+
+  // The on-grid detection zone's own boundary - the exact quadrilateral
+  // OnGridWatcher.check tests against (see onGridWatcher.js's zonePolygon),
+  // published so anything outside this process (RegattaUp, another
+  // dashboard, a course-review tool) can draw or reason about the same
+  // zone without re-deriving the geometry itself and risking it drift out
+  // of sync with what actually gets detected. A single JSON-array key
+  // (`course:on_grid_zone`), not a hash per point like mark:* - this is one
+  // ordered polygon, not named fields.
+  async setOnGridZone(polygon) {
+    await this.ready;
+    await this.client.set('course:on_grid_zone', JSON.stringify(polygon));
+  }
+
+  async getOnGridZone() {
+    await this.ready;
+    const raw = await this.client.get('course:on_grid_zone');
+    return raw ? JSON.parse(raw) : null;
   }
 
   // Assigns each boat a 0-based start-line slot by registration order (the
