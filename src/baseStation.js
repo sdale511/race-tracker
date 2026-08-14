@@ -567,12 +567,28 @@ function main() {
   // A boat that starts up (or reconnects) after marks already resolved and
   // already broadcast would otherwise wait out a full
   // MARKS_BROADCAST_INTERVAL_MS before ever hearing about the course -
-  // broadcasting again the instant a new boatId is heard from closes that
-  // gap. Broadcast itself doesn't need this (every boat is always a valid
-  // target, real radio or SimRadioLink alike - see simRadioLink.js); this
-  // is purely about not making a newly-joined boat wait on a timer for
-  // something the base already knows.
-  const knownBoatIds = new Set();
+  // broadcasting again the instant a boat that LOOKS like it just (re)started
+  // is heard from closes that gap. Broadcast itself doesn't need this (every
+  // boat is always a valid target, real radio or SimRadioLink alike - see
+  // simRadioLink.js); this is purely about not making a newly-joined boat
+  // wait on a timer for something the base already knows.
+  //
+  // Tracks last-seen time per boat, not just "ever seen" (a plain Set):
+  // a real dev workflow restarts boatAgent.js far more often than
+  // baseStation.js, and a restarted boat reuses the same boatId - a Set
+  // would only ever trigger this once per boatId for the process's whole
+  // lifetime, leaving every later restart to wait out the full periodic
+  // heartbeat despite boatAgent.js's own startup marks-ping (see its
+  // sendMarksPing) being heard just fine, just not treated as "new."
+  //
+  // BOAT_RECONNECT_GAP_MS, not marksBroadcastIntervalMs (60s default): a
+  // restarted boat is heard from again within seconds, not a minute, so a
+  // threshold tied to the periodic heartbeat's own cadence would rarely
+  // actually trigger for the case this exists to fix. A false trigger here
+  // just re-sends marks every boat already has - harmless - so there's no
+  // real cost to erring short.
+  const BOAT_RECONNECT_GAP_MS = 10000;
+  const lastSeenByBoat = new Map();
 
   radio.on('frame', (decoded) => {
     stats.recordFrame(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
@@ -581,10 +597,12 @@ function main() {
     redisStore.recordFix(decoded, new Date()).catch((err) => console.error('[redis] write failed:', err.message));
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
-    if (!knownBoatIds.has(decoded.boatId)) {
-      knownBoatIds.add(decoded.boatId);
+    const now = Date.now();
+    const lastSeen = lastSeenByBoat.get(decoded.boatId);
+    if (lastSeen === undefined || now - lastSeen > BOAT_RECONNECT_GAP_MS) {
       broadcastMarksNow();
     }
+    lastSeenByBoat.set(decoded.boatId, now);
 
     const watcher = watcherFor(decoded.boatId);
     const crossing = watcher && watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
@@ -761,7 +779,7 @@ function main() {
         adminPort: config.admin.port,
         redisConnected: redisStore.isConnected(),
       },
-      course: raceMarks ? { marks: raceMarks, boatsKnown: knownBoatIds.size } : null,
+      course: raceMarks ? { marks: raceMarks, boatsKnown: lastSeenByBoat.size } : null,
       lapCounts,
       redis: redisStats,
       // Merged onto snapshot.radio's own {framesReceived, syncErrors} -

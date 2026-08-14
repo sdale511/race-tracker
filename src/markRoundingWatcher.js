@@ -28,6 +28,22 @@
 const METERS_PER_DEG_LAT = 111320;
 const BACK_MARGIN_M = 10;
 
+// A real rounding isn't always one clean crossing: a boat correcting onto
+// its final tack right at the mark, then peeling into the clearing leg
+// (see simGps.js's own MARK_CLEARANCE_M), can cross the gate line twice
+// within about a second - once on the old tack, once on the new one after
+// a genuine mid-rounding tack change, both real crossings of the same
+// physical rounding, not two separate ones. Confirmed against an actual
+// base station log: two crossings ~1s apart, headings 320 -> 40 -> 90
+// (a real tack change followed by the windward clearing heading).
+// ROUNDING_DEBOUNCE_MS suppresses any further crossing within this long of
+// the last COUNTED one - far longer than that kind of double-crossing
+// takes, far shorter than sailing all the way around the course again for
+// a genuine next-lap rounding of the same mark (multiple minutes even on a
+// short course), so there's no realistic way this coalesces two real,
+// separate roundings into one.
+const ROUNDING_DEBOUNCE_MS = 30000;
+
 // Same flat-earth approximation as finishLineWatcher.js/onGridWatcher.js -
 // fine at the meter-scale distances a mark rounding spans.
 function toXY(originLat, originLon, lat, lon) {
@@ -79,24 +95,30 @@ class MarkRoundingWatcher {
     this.prevPos = null;
     this.prevTimestamp = null;
     this.roundingCount = 0;
+    this.lastRoundingTime = null;
   }
 
   // Call with every new fix's lat/lon/timestamp (ms), in order. Returns
   // { rounding, crossingTime } if this fix completes a rounding - the
-  // boat's path crossed the virtual gate beyond the mark. The very first
-  // call never reports a rounding (nothing to compare against yet).
+  // boat's path crossed the virtual gate beyond the mark, and it's been at
+  // least ROUNDING_DEBOUNCE_MS since the last counted one (see its own
+  // comment). The very first call never reports a rounding (nothing to
+  // compare against yet).
   check(lat, lon, timestamp) {
     const curPos = this._toXY(lat, lon);
     let result = null;
     if (this.prevPos && segmentsIntersect(this.prevPos, curPos, this.gateStart, this.gateEnd)) {
-      this.roundingCount++;
       // Interpolate the actual crossing instant between the two bracketing
       // fixes, same reasoning as finishLineWatcher.js's crossingTime.
       const d1 = cross(this.gateStart, this.gateEnd, this.prevPos);
       const d2 = cross(this.gateStart, this.gateEnd, curPos);
       const t = d1 / (d1 - d2);
       const crossingTime = this.prevTimestamp + t * (timestamp - this.prevTimestamp);
-      result = { rounding: this.roundingCount, crossingTime };
+      if (this.lastRoundingTime === null || crossingTime - this.lastRoundingTime >= ROUNDING_DEBOUNCE_MS) {
+        this.roundingCount++;
+        this.lastRoundingTime = crossingTime;
+        result = { rounding: this.roundingCount, crossingTime };
+      }
     }
     this.prevPos = curPos;
     this.prevTimestamp = timestamp;

@@ -138,6 +138,7 @@ let freshMarksReceived = false;
 radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   currentMarks = marks;
   freshMarksReceived = true;
+  stopMarksPingRetry();
   baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort, adminPort: baseAdminPort } : null;
   roverStats.recordMarksReceived();
   try {
@@ -154,9 +155,10 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
 
 // Without this, a fresh boat has to sit idle for up to
 // MARKS_BROADCAST_INTERVAL_MS (60s default) before it ever hears the
-// course: the base only re-broadcasts immediately upon hearing a NEW boat
-// ID (see baseStation.js's knownBoatIds), which requires this boat to have
-// already sent a frame - a chicken-and-egg wait that's pure friction during
+// course: the base only re-broadcasts immediately upon hearing a boat that
+// looks like it just (re)started (see baseStation.js's lastSeenByBoat),
+// which requires this boat to have already sent a frame - a chicken-and-egg
+// wait that's pure friction during
 // testing/iteration, since SIMULATE_GPS can't start until freshMarksReceived
 // either way. One throwaway frame, using the exact same encode/send path a
 // real fix would, breaks that: it's not itself meant to be a tracked
@@ -187,23 +189,48 @@ function sendMarksPing() {
   // Same "best effort, not critical" handling as handlePvt's own send
   // below - a real radio that isn't connected yet just falls back to the
   // periodic broadcast, same as before this ping existed at all.
-  if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped the startup marks-ping frame');
+  if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a marks-ping frame');
+}
+
+// A single ping isn't enough - the base might not even be up yet when this
+// boat starts (there's no guaranteed startup order between the two
+// processes), or the one frame could just be lost, and either way there's
+// no ack to know it missed. Retries on a short interval until marks
+// actually arrive, rather than falling back to the full
+// MARKS_BROADCAST_INTERVAL_MS heartbeat after a single failed attempt -
+// stopped the instant real marks show up (see stopMarksPingRetry, called
+// from the 'marks' handler above), so this never lingers once it's done
+// its job.
+let marksPingIntervalId = null;
+const MARKS_PING_RETRY_MS = 3000;
+
+function startMarksPingRetry() {
+  if (marksPingIntervalId || freshMarksReceived) return;
+  sendMarksPing();
+  marksPingIntervalId = setInterval(sendMarksPing, MARKS_PING_RETRY_MS);
+}
+
+function stopMarksPingRetry() {
+  if (marksPingIntervalId) {
+    clearInterval(marksPingIntervalId);
+    marksPingIntervalId = null;
+  }
 }
 
 // Waits for radio's own 'connected' event (both RadioLink and
 // SimRadioLink emit it once actually ready to send - see radioLink.js/
-// simRadioLink.js) rather than calling sendMarksPing() immediately here:
-// SimRadioLink's socket bind() is asynchronous, so sending right after
-// construction would race ahead of setBroadcast(true) actually running -
-// on at least some OSes that silently drops a broadcast send entirely
-// (no error, no exception, just never arrives), which is exactly the kind
-// of one-off miss this ping is meant to prevent, not reproduce. The
-// NO_RADIO stub never emits 'connected', so this is simply a no-op there
-// (nothing to ping over anyway). Left as a persistent listener, not
-// `.once()`, so a boat that reconnects after a radio dropout pings again
-// too, rather than only ever getting the marks-ping benefit on its very
-// first connection.
-if (config.simulateGps) radio.on('connected', sendMarksPing);
+// simRadioLink.js) rather than calling startMarksPingRetry() immediately
+// here: SimRadioLink's socket bind() is asynchronous, so sending right
+// after construction would race ahead of setBroadcast(true) actually
+// running - on at least some OSes that silently drops a broadcast send
+// entirely (no error, no exception, just never arrives), which is exactly
+// the kind of one-off miss these pings are meant to prevent, not
+// reproduce. The NO_RADIO stub never emits 'connected', so this is simply
+// a no-op there (nothing to ping over anyway). Left as a persistent
+// listener, not `.once()`, so a boat that reconnects after a radio dropout
+// (re-)starts retrying too, rather than only ever getting the marks-ping
+// benefit on its very first connection.
+if (config.simulateGps) radio.on('connected', startMarksPingRetry);
 
 radio.on('sync-error', () => roverStats.recordSyncError());
 
