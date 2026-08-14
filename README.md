@@ -530,6 +530,8 @@ own switch rather than riding on `REGATTAUP_WEBHOOK_DISABLED` alone
 (both still have to allow it - `REGATTAUP_WEBHOOK_DISABLED=1` still turns
 everything off, laps and on-grid included).
 
+![A virtual gate extends from just behind windwardGreen to well beyond it, along the axis toward leewardGreen; a boat's track loops around the mark and crosses the gate to register a rounding.](docs/mark-rounding.svg)
+
 `src/markRoundingWatcher.js`, one instance per boat per mark (windward and
 leeward have no second physical mark between them to form a gate the way
 the finish line does, so it's watched per-mark rather than per-line). The
