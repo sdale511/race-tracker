@@ -96,6 +96,15 @@ module.exports = {
     // off the line seconds after simulation start, or fighting the sim's
     // own movement to keep it near the line.
     startOnly: process.env.SIM_START_ONLY === '1' || process.env.SIM_START_ONLY === 'true',
+    // How long (seconds) a normal (non-SIM_START_ONLY) simulated race sits
+    // stationary at its start position before actually departing upwind -
+    // without this, a normal race launches on its very first tick with no
+    // pre-start dwell modeled at all, so on-grid detection (which is
+    // specifically about that dwell) never gets a real window to fire in
+    // an ordinary test race, only under SIM_START_ONLY's permanent version
+    // of the same stationary state. 0 disables the dwell (departs
+    // immediately, the old behavior).
+    prestartDwellS: parseFloat(process.env.SIM_PRESTART_DWELL_S || '15'),
   },
 
   // --- GPS (simpleRTK2B LR, ZED-F9P) ---
@@ -306,5 +315,21 @@ module.exports = {
     // just share lap_webhook_queue.sqlite.
     onGridZoneM: parseFloat(process.env.REGATTAUP_ONGRID_ZONE_M || '10'),
     onGridQueueDbPath: process.env.REGATTAUP_ONGRID_QUEUE_DB || path.join(logDir, 'ongrid_webhook_queue.sqlite'),
+    // Mark-rounding detection (see markRoundingWatcher.js): reports a
+    // 'mark' webhook whenever a boat crosses the virtual gate extending
+    // markRoundingExtensionM beyond a windward/leeward mark. Off by
+    // default (REGATTAUP_MARK_ROUNDING_ENABLED=1 to turn on) - unlike laps
+    // and on-grid, this is a new event type RegattaUp's endpoint hasn't
+    // necessarily been confirmed to handle yet, so it stays opt-in
+    // independent of the overall REGATTAUP_WEBHOOK_DISABLED switch (which
+    // still gates it too - both must be satisfied for it to send).
+    markRoundingEnabled: process.env.REGATTAUP_MARK_ROUNDING_ENABLED === '1' || process.env.REGATTAUP_MARK_ROUNDING_ENABLED === 'true',
+    // Generous by default - there's no real downside to a longer gate (see
+    // markRoundingWatcher.js's module comment: it only extends *along the
+    // course axis*, so it stays far too short to be crossed by ordinary
+    // tacking/gybing well short of the mark, no matter how long).
+    markRoundingExtensionM: parseFloat(process.env.REGATTAUP_MARK_ROUNDING_EXTENSION_M || '50'),
+    markRoundingQueueDbPath:
+      process.env.REGATTAUP_MARK_ROUNDING_QUEUE_DB || path.join(logDir, 'mark_rounding_webhook_queue.sqlite'),
   },
 };

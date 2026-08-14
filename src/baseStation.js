@@ -7,6 +7,8 @@ const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { OnGridWatcher } = require('./onGridWatcher');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
+const { MarkRoundingWatcher } = require('./markRoundingWatcher');
+const { MarkRoundingWebhookQueue } = require('./markRoundingWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
 const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
 const { startAdminServer } = require('./adminServer');
@@ -36,6 +38,41 @@ const dgram = require('dgram');
 // it only ever sends its raw position - this is the one place that already
 // has both the marks and every boat's fixes, so it's the only place that
 // can watch for a finish-line crossing.
+
+// Which mark pairs with which "other mark" to define its rounding gate's
+// axis (see markRoundingWatcher.js) - one MarkRoundingWatcher per boat per
+// entry. Green and black windward/leeward marks are colinear on the same
+// axis (see course.js's getMarks), so both windward marks pair with
+// leewardGreen and both leeward marks pair with windwardGreen; which pair
+// is actually near a given boat is just whichever course it's sailing.
+//
+// `outerMark`, where present, is the mark that sits further out on that
+// same axis, beyond `mark` - windwardBlack beyond windwardGreen,
+// leewardBlack beyond leewardGreen (see course.js's own comment: green is
+// always the inner, short-course pair). Only the inner (green) marks have
+// one; windwardBlack/leewardBlack are the outermost marks on the course,
+// nothing sits beyond them to worry about reaching. Used below to cap the
+// green gate's forward extension short of the black mark's own position -
+// see markRoundingWatchersFor's OUTER_MARK_SAFETY_FRACTION comment for why
+// that cap has to hold regardless of how markRoundingExtensionM is
+// configured.
+const MARK_ROUNDING_GATES = [
+  { mark: 'windwardGreen', otherMark: 'leewardGreen', outerMark: 'windwardBlack' },
+  { mark: 'windwardBlack', otherMark: 'leewardGreen' },
+  { mark: 'leewardGreen', otherMark: 'windwardGreen', outerMark: 'leewardBlack' },
+  { mark: 'leewardBlack', otherMark: 'windwardGreen' },
+];
+
+// However markRoundingExtensionM is configured, an inner (green) mark's
+// gate must never reach anywhere near the corresponding outer (black)
+// mark - otherwise a boat rounding the black mark could get misattributed
+// as rounding the green one. Capped at half the green<->black distance,
+// not the full distance: half leaves a solid buffer on both sides (the
+// gate stops well short of black, and a boat actually at/rounding black
+// stays well clear of the green gate's own far end) rather than cutting
+// it exactly at the boundary, where real GPS noise or a slightly-off mark
+// position could still let the two overlap.
+const OUTER_MARK_SAFETY_FRACTION = 0.5;
 
 if (config.testLapNumber > 0) {
   console.log(
@@ -301,10 +338,12 @@ function main() {
     // watcherFor below) - clear so every boat's watcher rebuilds fresh
     // from the corrected marks on its next fix, rather than silently
     // keeping stale gate geometry for the rest of the race. Same reasoning
-    // for on-grid watchers (pin/committee), regardless of which specific
-    // mark was actually edited - simplest to always clear both.
+    // for on-grid watchers (pin/committee) and mark-rounding watchers
+    // (every windward/leeward mark), regardless of which specific mark was
+    // actually edited - simplest to always clear all three.
     finishLineWatchers.clear();
     onGridWatchers.clear();
+    markRoundingWatchers.clear();
     broadcastMarksNow();
     return raceMarks;
   }
@@ -425,17 +464,42 @@ function main() {
 
   // One OnGridWatcher per boat, same lazy-build-per-boat pattern as
   // finishLineWatchers above (see onGridWatcher.js) - independent in/out
-  // state per boat, built once raceMarks (specifically pin/committee) is
-  // available.
+  // state per boat, built once raceMarks has pin/committee/finish AND
+  // windwardGreen/leewardGreen (needed for the watcher's own starboard-tack
+  // exclusion corridor - see its module comment).
   const onGridWatchers = new Map();
   function onGridWatcherFor(boatId) {
-    if (!raceMarks) return null;
+    if (!raceMarks || !raceMarks.windwardGreen || !raceMarks.leewardGreen) return null;
     let watcher = onGridWatchers.get(boatId);
     if (!watcher) {
       watcher = new OnGridWatcher(raceMarks, config.regattaup.onGridZoneM);
       onGridWatchers.set(boatId, watcher);
     }
     return watcher;
+  }
+
+  // One MarkRoundingWatcher per boat per gate in MARK_ROUNDING_GATES (see
+  // markRoundingWatcher.js), same lazy-build pattern as the watchers above
+  // - keyed by "boatId:markName" since a boat needs an independent watcher
+  // per mark, not just per boat. Only built once raceMarks has both marks
+  // a given gate needs.
+  const markRoundingWatchers = new Map();
+  function markRoundingWatchersFor(boatId) {
+    if (!raceMarks) return [];
+    return MARK_ROUNDING_GATES.map((gate) => {
+      const key = `${boatId}:${gate.mark}`;
+      let watcher = markRoundingWatchers.get(key);
+      if (!watcher && raceMarks[gate.mark] && raceMarks[gate.otherMark]) {
+        let extensionM = config.regattaup.markRoundingExtensionM;
+        if (gate.outerMark && raceMarks[gate.outerMark]) {
+          const outerDistM = distanceMeters(raceMarks[gate.mark], raceMarks[gate.outerMark]);
+          extensionM = Math.min(extensionM, outerDistM * OUTER_MARK_SAFETY_FRACTION);
+        }
+        watcher = new MarkRoundingWatcher(raceMarks[gate.mark], raceMarks[gate.otherMark], extensionM);
+        markRoundingWatchers.set(key, watcher);
+      }
+      return watcher && { mark: gate.mark, watcher };
+    }).filter(Boolean);
   }
 
   // Lap webhook queue (see lapWebhookQueue.js) - initializes asynchronously
@@ -474,6 +538,29 @@ function main() {
       setInterval(() => retryQueuedOnGrid(onGridWebhookQueue), config.regattaup.retryIntervalMs);
     } catch (err) {
       console.error('[regattaup] failed to initialize on-grid webhook queue:', err.message);
+    }
+  })();
+
+  // Same buffer-then-flush pattern again, for mark roundings (see
+  // markRoundingWatcher.js) - its own separate queue file, same reasoning
+  // as onGridWebhookQueue.js's module comment. Created unconditionally
+  // (same as the lap/on-grid queues) even when markRoundingEnabled is off,
+  // so it's ready instantly if the feature gets turned on without needing
+  // this init to race a config change - config.regattaup.markRoundingEnabled
+  // (and .enabled) are only checked at the point roundings actually get
+  // enqueued, below.
+  let markRoundingWebhookQueue = null;
+  let bufferedMarkRoundings = [];
+
+  (async () => {
+    try {
+      markRoundingWebhookQueue = await MarkRoundingWebhookQueue.create(config.regattaup.markRoundingQueueDbPath);
+      console.log(`[baseStation] mark-rounding webhook queue ready at ${config.regattaup.markRoundingQueueDbPath}`);
+      for (const event of bufferedMarkRoundings) enqueueMarkRounding(event);
+      bufferedMarkRoundings = [];
+      setInterval(() => retryQueuedMarkRoundings(markRoundingWebhookQueue), config.regattaup.retryIntervalMs);
+    } catch (err) {
+      console.error('[regattaup] failed to initialize mark-rounding webhook queue:', err.message);
     }
   })();
 
@@ -536,6 +623,22 @@ function main() {
         else bufferedOnGrid.push(event);
       }
     }
+
+    for (const { mark, watcher } of markRoundingWatchersFor(decoded.boatId)) {
+      const rounding = watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
+      if (!rounding) continue;
+      console.log(`[baseStation] boat=${decoded.boatId} rounded ${mark} - rounding ${rounding.rounding}`);
+      if (config.regattaup.enabled && config.regattaup.markRoundingEnabled) {
+        const event = {
+          boatId: decoded.boatId,
+          mark,
+          rtcTime: rounding.crossingTime * 1000, // ms -> microseconds
+          receivedAt: new Date().toISOString(),
+        };
+        if (markRoundingWebhookQueue) enqueueMarkRounding(event);
+        else bufferedMarkRoundings.push(event);
+      }
+    }
   });
 
   // Durably records the lap (see lapWebhookQueue.js's module comment for
@@ -564,6 +667,18 @@ function main() {
   function retryQueuedOnGrid(queue) {
     for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
       sendQueuedOnGrid(queue, row);
+    }
+  }
+
+  // Same pattern again, for mark-rounding events.
+  function enqueueMarkRounding(event) {
+    const id = markRoundingWebhookQueue.enqueue(event);
+    sendQueuedMarkRounding(markRoundingWebhookQueue, markRoundingWebhookQueue.get(id));
+  }
+
+  function retryQueuedMarkRoundings(queue) {
+    for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
+      sendQueuedMarkRounding(queue, row);
     }
   }
 
@@ -884,6 +999,11 @@ function main() {
   );
   if (config.regattaup.enabled) {
     console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m either side of the pin<->committee line`);
+    console.log(
+      config.regattaup.markRoundingEnabled
+        ? `[baseStation] mark roundings post to RegattaUp (gate extends ${config.regattaup.markRoundingExtensionM}m beyond each mark)`
+        : '[baseStation] mark-rounding webhook disabled (set REGATTAUP_MARK_ROUNDING_ENABLED=1 to enable)'
+    );
   }
 }
 
@@ -978,6 +1098,37 @@ async function sendQueuedOnGrid(queue, row) {
   } catch (err) {
     console.error(
       `[regattaup] ${row.mode} webhook failed for boat=${row.boat_id} (attempt ${row.attempts + 1}), will retry:`,
+      err.message
+    );
+  }
+}
+
+// Tells RegattaUp a boat rounded a mark (see markRoundingWatcher.js) - same
+// tranCode/rtcTime conventions and retry/removal semantics as
+// sendQueuedOnGrid above, posting to the same webhook URL with mode 'mark'
+// and which mark (row.mark, e.g. 'windwardGreen') was rounded.
+async function sendQueuedMarkRounding(queue, row) {
+  queue.recordAttempt(row.id);
+  const payload = {
+    mode: 'mark',
+    mark: row.mark,
+    decoded: {
+      tranCode: String(row.boat_id),
+      rtcTime: row.rtc_time,
+    },
+  };
+  try {
+    const res = await fetch(config.regattaup.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    queue.remove(row.id);
+    console.log(`[regattaup] mark webhook sent for boat=${row.boat_id} mark=${row.mark}`);
+  } catch (err) {
+    console.error(
+      `[regattaup] mark webhook failed for boat=${row.boat_id} mark=${row.mark} (attempt ${row.attempts + 1}), will retry:`,
       err.message
     );
   }

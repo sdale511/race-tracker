@@ -309,6 +309,7 @@ output all work exactly as they would with real hardware.
 | `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end - reference only, the simulator never races them. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
+| `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
 but the `boat` process itself keeps running rather than exiting - so its
@@ -416,8 +417,11 @@ positive `TEST_LAP_NUMBER`.
 Separate from lap detection above: `src/onGridWatcher.js`, one instance
 per boat (same lazy-build-per-boat pattern as `FinishLineWatcher`), watches
 every incoming fix against the **start** side of the course - the
-pin<->committee segment, not committee<->finish. A boat counts as on-grid
-when it's both:
+pin<->committee segment, not committee<->finish.
+
+![The on-grid zone: a leeward strip along the pin-to-committee line, with a wedge cut from committee spanning 0° (perpendicular to the line) to 60° toward pin, excluding a starboard-tack finish approach without affecting genuine pre-start positions.](docs/on-grid-zone.svg)
+
+A boat counts as on-grid when it's all of:
 
 - Between the pin and committee marks (not just close to the line's
   infinite extension past either mark) - with 1m of slack right at either
@@ -425,8 +429,40 @@ when it's both:
   floating-point/projection noise between whatever produced the fix (real
   GPS, or the simulator's own independent lat/lon math) and this watcher's
   own, and
-- Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line itself, on
-  either side
+- Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line itself
+- **On the leeward side of the line only**, not the windward/course side -
+  a genuine pre-start boat sits behind the line (crossing early would be
+  OCS). "Leeward" is derived from the real windwardGreen<->leewardGreen
+  bearing (the only wind direction this app can know at all for real
+  racing - there's no live wind sensor anywhere in this codebase),
+  assuming the line was laid square to it, the standard practice.
+- **Not** inside the starboard-tack final-approach wedge into committee -
+  a boat finishing upwind on starboard tack near the committee end
+  approaches from the southwest, briefly on the geometric "pin side" of
+  committee while still south of the line, before crossing just past
+  committee. That point is unambiguously in the start zone by the checks
+  above (between pin and committee, within the zone, on the leeward side),
+  yet it's a finish approach, not pre-start queuing. `_inApproachWedge`
+  excludes a wedge from committee spanning 0 to `WEDGE_OUTER_ANGLE_DEG`
+  (60 degrees: the assumed 40-degree close-hauled bearing plus a 20-degree
+  fudge factor) off straight downwind, on the side that leans toward pin.
+  The near edge sits at 0 degrees - straight downwind, exactly
+  perpendicular to the start line - not offset from it: anywhere between
+  committee and that whole perpendicular is already ambiguous (a boat
+  could be crossing there instead of queuing - the pin<->committee and
+  committee<->finish segments share the committee endpoint and are
+  collinear by default), so one wedge covers both, rather than a separate
+  narrow exclusion right at committee stacked on top of it.
+
+  An *angular* tolerance, not a fixed-width corridor, because the real
+  approach scatters around the assumed bearing (free-tacking before the
+  final precision tack, plus normal heading jitter) by an amount that
+  grows the farther the boat is from committee, the same way an angular
+  tolerance naturally does and a fixed linear width can't - verified
+  empirically (see `src/onGridWatcher.js`'s own comments) that a
+  fixed-width version wide enough to catch a real approach's scatter far
+  from committee also excluded genuine start positions close to committee,
+  while the wedge catches the same real approaches without doing that.
 
 POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 
@@ -474,6 +510,84 @@ on the start line indefinitely:
 ```
 SIM_START_ONLY=1 SIMULATE=1 BOAT_ID=1 npm run boat
 ```
+
+An ordinary (non-`SIM_START_ONLY`) simulated race also sits at its start
+position for `SIM_PRESTART_DWELL_S` seconds (default 15) before actually
+departing, rather than launching upwind on its very first tick - without
+that dwell, on-grid never gets a real window to observe: the boat's very
+first transmitted fix would already reflect a full tick of movement past
+the line, and whether that lands inside or outside the zone is basically
+down to luck (initial tack side, timing), not something worth relying on
+for testing. Set `SIM_PRESTART_DWELL_S=0` to go back to departing
+immediately.
+
+## Mark-rounding detection -> RegattaUp
+
+Off by default - set `REGATTAUP_MARK_ROUNDING_ENABLED=1` to turn it on.
+Unlike laps and on-grid, this is a new event type RegattaUp's webhook
+endpoint hasn't necessarily been confirmed to accept yet, so it has its
+own switch rather than riding on `REGATTAUP_WEBHOOK_DISABLED` alone
+(both still have to allow it - `REGATTAUP_WEBHOOK_DISABLED=1` still turns
+everything off, laps and on-grid included).
+
+`src/markRoundingWatcher.js`, one instance per boat per mark (windward and
+leeward have no second physical mark between them to form a gate the way
+the finish line does, so it's watched per-mark rather than per-line). The
+gate is synthesized: extend the line from the *other* mark - leeward, for
+a windward rounding, and vice versa - straight through the mark being
+watched by `REGATTAUP_MARK_ROUNDING_EXTENSION_M` (default 50m) beyond it,
+and 10m short of it (a fixed margin, not configurable - absorbs a fix
+landing a couple meters short of the mark's own position purely from
+tick-rate granularity, real GPS included, not because the boat didn't
+round it), and treat that stretch as a one-shot crossing line - the same
+segment-intersection test `finishLineWatcher.js` uses for the finish gate.
+
+That gate is deliberately colinear with the course axis (not perpendicular
+to it, and not just "within Xm of the mark" the way on-grid works): since
+it only exists near/beyond the mark along the axis, a normal tack while
+still well short of the mark never comes near it - the segment isn't there
+yet at that point along the course - so it doesn't fire on ordinary
+tacking-through-the-centerline upwind. Only a boat that's actually reached
+the mark can cross it. Watched for all four windward/leeward marks
+(`windwardGreen`/`windwardBlack` against `leewardGreen`, `leewardGreen`/
+`leewardBlack` against `windwardGreen`) regardless of which course
+(green/black) is actually being sailed - whichever pair a boat is nowhere
+near just never fires.
+
+However `REGATTAUP_MARK_ROUNDING_EXTENSION_M` is configured, the green
+(inner) marks' gates never reach anywhere near the corresponding black
+(outer) mark - capped to half the actual green<->black distance
+(`OUTER_MARK_SAFETY_FRACTION` in `baseStation.js`), measured fresh off
+the real published marks each time a watcher is built, not assumed from
+`SIM_LONG_COURSE_EXTRA_NM`. Half rather than the full distance leaves a
+solid buffer on both sides, so a boat actually rounding the black mark
+stays clearly clear of the green gate's far end too, rather than the two
+meeting exactly at the boundary. Only applies to the green marks -
+windwardBlack/leewardBlack are the outermost marks on the course, nothing
+sits beyond them for their own gates to reach.
+
+POSTs to the same RegattaUp webhook laps and on-grid use, with its own
+payload shape:
+
+```json
+{ "mode": "mark", "mark": "windwardGreen", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
+```
+
+- `mark` — which mark was rounded (`windwardGreen`, `windwardBlack`,
+  `leewardGreen`, or `leewardBlack`)
+- `tranCode` — the boat's ID (as a string), same convention as laps/on-grid
+- `rtcTime` — the interpolated crossing instant (same upsampling
+  finish-line laps use, not just the later fix's own timestamp), converted
+  from milliseconds to microseconds
+
+Uses the exact same durable-queue-plus-retry mechanics as laps/on-grid
+(see "Durable retry queue" above) - `src/markRoundingWebhookQueue.js`, same
+capped-exponential-backoff loop, same `REGATTAUP_RETRY_INTERVAL_MS`/
+`REGATTAUP_MAX_BACKOFF_MS` settings, its own separate sqlite file
+(`REGATTAUP_MARK_ROUNDING_QUEUE_DB`). Editing any mark from the map (see
+"Editing mark positions from the map" above) clears every boat's
+mark-rounding watchers, same as it already does for finish-line and
+on-grid watchers.
 
 ## Redis track storage
 
@@ -618,10 +732,27 @@ this layer at all, on either side, the same as real hardware (a boat's
 `protocol.js`). That also means this works unchanged across a real LAN,
 not just localhost: put the boat on a different machine on the same
 subnet and it just works, no host/IP to configure - broadcast reaches it
-either way. You shouldn't need to wait on `MARKS_BROADCAST_INTERVAL_MS` at
-all to see a simulated boat get the course (the immediate-broadcast paths
-above cover it) - if you do, something's stuck (see the base's console log
-for what it's currently waiting on).
+either way.
+
+The "immediately whenever a previously-unseen boatId is heard from" path
+above still leaves a chicken-and-egg gap for a boat's own very first
+start, though: the base only re-broadcasts once it's actually heard from
+that boatId, but `SIMULATE_GPS` waits for fresh marks before it'll send
+anything at all. `src/boatAgent.js` closes that gap itself: with
+`config.simulateGps` set, it sends one throwaway frame at startup, before
+it even has real marks, using the exact same encode/send path a real fix
+would - just enough for the base to hear this boatId and broadcast right
+away, rather than this boat sitting idle for up to
+`MARKS_BROADCAST_INTERVAL_MS` waiting on the periodic heartbeat. Its
+position is a best guess (last-known marks from disk if this boat has run
+before, else `SIM_CENTER_LAT`/`SIM_CENTER_LON`) rather than an arbitrary
+sentinel like `(0,0)` - every position-based watcher on the base only
+compares a boat's fixes against its own previous one, so keeping this
+close to where the boat will actually start avoids a spurious crossing on
+the real fix that follows it. With this in place you shouldn't need to
+wait on `MARKS_BROADCAST_INTERVAL_MS` at all to see a simulated boat get
+the course - if you do, something's stuck (see the base's console log for
+what it's currently waiting on).
 
 ### Log rotation
 
@@ -1012,9 +1143,12 @@ given `boat`/`base` run will actually use, instead of reading through
 | `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base station only — where the synthesized `$GPGGA` NMEA sentence for each decoded fix is UDP-broadcast, see "Connecting to your race committee software" above. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
-| `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_RETRY_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid webhook's retry queue too |
+| `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_RETRY_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' retry queues too |
 | `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
 | `REGATTAUP_ONGRID_QUEUE_DB` | `<LOG_DIR>/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
+| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset | Base station only — set to `1` to turn on mark-rounding webhooks. Off by default, independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
+| `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base station only — how far (meters) beyond each windward/leeward mark, along the course axis, the virtual rounding gate extends — capped to half the distance to the corresponding outer (black) mark regardless of this setting — see "Mark-rounding detection -> RegattaUp" above |
+| `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `<LOG_DIR>/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
 | `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
 | `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |
 

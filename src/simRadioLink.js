@@ -49,7 +49,17 @@ class SimRadioLink extends EventEmitter {
       else this.emit('sync-error');
     });
 
-    this.socket.bind(this.port, () => this.socket.setBroadcast(true));
+    // Same 'connected' event RadioLink emits once its serial port actually
+    // opens (see radioLink.js) - lets callers (see boatAgent.js's startup
+    // marks-ping) wait for the socket to genuinely be ready to send,
+    // rather than racing ahead of bind()'s own async completion. Sending
+    // to the broadcast address before setBroadcast(true) has actually run
+    // can silently fail depending on the OS - bind() and its callback
+    // aren't synchronous with the constructor returning.
+    this.socket.bind(this.port, () => {
+      this.socket.setBroadcast(true);
+      this.emit('connected');
+    });
   }
 
   send(buf) {

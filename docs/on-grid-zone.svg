@@ -1,0 +1,44 @@
+<svg viewBox="0 0 620 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The on-grid zone is a strip along the leeward side of the pin-to-committee line, with a single wedge cut out of the committee end, spanning from straight downwind out to 60 degrees toward pin.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c8492a" />
+    </marker>
+    <pattern id="hatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#55686d" stroke-width="1" opacity="0.6" />
+    </pattern>
+  </defs>
+
+  <rect width="620" height="400" fill="#ffffff" />
+
+  <!-- valid leeward capsule (below the line only) -->
+  <rect x="90" y="130" width="310" height="90" fill="#2f669014" />
+  <text x="150" y="150" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#2f6690">on-grid zone (leeward only)</text>
+
+  <!-- windward side, explicitly excluded -->
+  <text x="245" y="70" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#55686d">windward side &#8212; excluded outright (OCS side)</text>
+  <line x1="245" y1="82" x2="245" y2="120" stroke="#8a9a97" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow)" />
+
+  <!-- start line, continuing on toward finish past committee -->
+  <line x1="90" y1="130" x2="480" y2="130" stroke="#1b2a2f" stroke-width="1.5" />
+  <text x="485" y="134" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#55686d">&#8594; finish</text>
+  <circle cx="90" cy="130" r="6" fill="#1b2a2f" />
+  <circle cx="400" cy="130" r="6" fill="#c8492a" />
+  <text x="90" y="116" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#1b2a2f">pin</text>
+  <text x="396" y="116" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#c8492a">committee</text>
+
+  <!-- single wedge, 0deg (straight down, perpendicular to the start line)
+       to 60deg, toward pin -->
+  <path d="M 400,130 L 400,225 A 95 95 0 0 0 317.7,177.5 Z" fill="url(#hatch)" stroke="#1b2a2f" stroke-width="0.75" stroke-dasharray="2 3" />
+  <text x="330" y="243" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#55686d">starboard-tack wedge</text>
+  <text x="330" y="257" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#55686d">0&#176;&#8211;60&#176; off straight downwind</text>
+  <line x1="402" y1="150" x2="418" y2="150" stroke="#8a9a97" stroke-width="1" stroke-dasharray="2 3" />
+  <text x="422" y="154" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#55686d">0&#176; edge: perpendicular to the line</text>
+
+  <!-- ghost finish-approach track through the wedge -->
+  <path d="M 175,370 C 230,320 290,260 340,205" fill="none" stroke="#c8492a99" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrow)" />
+  <text x="130" y="386" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#55686d">finishing boat, starboard tack &#8212; never counted on-grid</text>
+
+  <!-- genuine on-grid boat -->
+  <circle cx="140" cy="195" r="5" fill="#2f6690" />
+  <text x="152" y="199" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#2f6690">queuing boat</text>
+</svg>

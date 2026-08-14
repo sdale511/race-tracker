@@ -154,13 +154,33 @@ class SimGpsSource extends EventEmitter {
   // edited windward mark rotates the beat axis right out from under a
   // *stationary* real finish line, and the boat stops crossing it
   // entirely (the bug this whole approach exists to avoid).
-  constructor({ centerLat, centerLon, upwindSpeedKn, downwindSpeedKn, hz, startSlot, lapCount, geometry, startOnly, pin, committee, finish }) {
+  constructor({
+    centerLat,
+    centerLon,
+    upwindSpeedKn,
+    downwindSpeedKn,
+    hz,
+    startSlot,
+    lapCount,
+    geometry,
+    startOnly,
+    prestartDwellS,
+    pin,
+    committee,
+    finish,
+  }) {
     super();
     this.centerLat = centerLat;
     this.centerLon = centerLon;
     // See _tick() - when true, every other field this constructor sets up
     // (phase, side, leg targets, lap counting, ...) is simply never read.
     this.startOnly = !!startOnly;
+    // How many seconds of _tick() calls remain before the boat actually
+    // starts moving - see _tick()'s own comment. Meaningless (and unused)
+    // when startOnly is set, which dwells forever via its own separate
+    // path; defaults to 0 (no dwell, departs immediately) if omitted, so
+    // existing callers that don't pass this keep today's behavior.
+    this.dwellRemainingS = this.startOnly ? 0 : Math.max(0, prestartDwellS || 0);
     this.courseLengthM = geometry.courseLengthM;
     // Everything below (phase/tacking/leg targets/gate checks) works
     // entirely in this local, course-relative frame - "north" always means
@@ -568,6 +588,27 @@ class SimGpsSource extends EventEmitter {
     return (tStart >= 0 && tStart <= 1) || (tFinish >= 0 && tFinish <= 1);
   }
 
+  // Sits at the current position, emitting a fresh but otherwise stationary
+  // fix - shared by startOnly's permanent dwell and the prestart dwell
+  // below, which is the same thing for a limited time instead of forever.
+  _emitStationaryFix() {
+    const { lat, lon } = this._toLatLon(this.north, this.east);
+    this.emit('nav-pvt', {
+      fixType: 3,
+      gnssFixOk: true,
+      diffSoln: true,
+      carrSoln: 2,
+      numSV: 14,
+      lat,
+      lon,
+      heightMm: 5000,
+      hAccMm: 15,
+      gSpeedMmS: 0,
+      headMotDeg: 0,
+      timestamp: Date.now(),
+    });
+  }
+
   _tick() {
     if (this.finished) return; // stop() already called; ignore any stray timer fire
 
@@ -576,25 +617,26 @@ class SimGpsSource extends EventEmitter {
       // this is the same lat/lon on every tick. Still a fully valid,
       // continuously-updating fix stream (fresh timestamp each time, real
       // fix-quality fields) - just stationary, not a synthetic race.
-      const { lat, lon } = this._toLatLon(this.north, this.east);
-      this.emit('nav-pvt', {
-        fixType: 3,
-        gnssFixOk: true,
-        diffSoln: true,
-        carrSoln: 2,
-        numSV: 14,
-        lat,
-        lon,
-        heightMm: 5000,
-        hAccMm: 15,
-        gSpeedMmS: 0,
-        headMotDeg: 0,
-        timestamp: Date.now(),
-      });
+      this._emitStationaryFix();
       return;
     }
 
     const dt = this.intervalMs / 1000;
+
+    if (this.dwellRemainingS > 0) {
+      // Same stationary fix as startOnly above, just for a limited time -
+      // see the constructor's own comment on why this exists at all
+      // (mainly so on-grid detection gets a genuine window to observe in
+      // an ordinary test race, not just under SIM_START_ONLY). Every other
+      // field (phase, leg targets, ...) was already set up in the
+      // constructor and stays exactly as it was for whenever the dwell
+      // actually ends - departing is just the normal tick logic below
+      // picking up right where it would have started immediately.
+      this.dwellRemainingS -= dt;
+      this._emitStationaryFix();
+      return;
+    }
+
     this.timeSinceManeuverS += dt;
 
     const recoveryFrac = Math.min(1, this.timeSinceManeuverS / MANEUVER_RECOVERY_S);

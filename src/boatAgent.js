@@ -152,6 +152,59 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   startGpsSimIfReady();
 });
 
+// Without this, a fresh boat has to sit idle for up to
+// MARKS_BROADCAST_INTERVAL_MS (60s default) before it ever hears the
+// course: the base only re-broadcasts immediately upon hearing a NEW boat
+// ID (see baseStation.js's knownBoatIds), which requires this boat to have
+// already sent a frame - a chicken-and-egg wait that's pure friction during
+// testing/iteration, since SIMULATE_GPS can't start until freshMarksReceived
+// either way. One throwaway frame, using the exact same encode/send path a
+// real fix would, breaks that: it's not itself meant to be a tracked
+// position (see the position choice below), only to get this boat's ID
+// heard so the base's own "new boat" broadcast fires right away.
+//
+// Position: the best guess available before real marks exist - last-known
+// marks from disk (loaded above, if this boat has run before), else
+// SIM_CENTER_LAT/LON's own configured point. Deliberately NOT some
+// arbitrary sentinel like (0,0): every position-based watcher on the base
+// (finish line, on-grid, mark rounding) only compares a NEW fix against
+// this boat's own PREVIOUS one to detect a crossing, so keeping the ping
+// close to where the boat will actually start avoids a spurious crossing
+// on the very first real fix that follows it.
+function sendMarksPing() {
+  const pos = currentMarks ? currentMarks.leewardGreen : { lat: config.sim.centerLat, lon: config.sim.centerLon };
+  const pingPvt = {
+    timestamp: Date.now(),
+    lat: pos.lat,
+    lon: pos.lon,
+    gSpeedMmS: 0,
+    headMotDeg: 0,
+    gnssFixOk: true,
+    carrSoln: 0,
+    numSV: 0,
+  };
+  const sent = radio.send(protocol.encode(config.boatId, pingPvt));
+  // Same "best effort, not critical" handling as handlePvt's own send
+  // below - a real radio that isn't connected yet just falls back to the
+  // periodic broadcast, same as before this ping existed at all.
+  if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped the startup marks-ping frame');
+}
+
+// Waits for radio's own 'connected' event (both RadioLink and
+// SimRadioLink emit it once actually ready to send - see radioLink.js/
+// simRadioLink.js) rather than calling sendMarksPing() immediately here:
+// SimRadioLink's socket bind() is asynchronous, so sending right after
+// construction would race ahead of setBroadcast(true) actually running -
+// on at least some OSes that silently drops a broadcast send entirely
+// (no error, no exception, just never arrives), which is exactly the kind
+// of one-off miss this ping is meant to prevent, not reproduce. The
+// NO_RADIO stub never emits 'connected', so this is simply a no-op there
+// (nothing to ping over anyway). Left as a persistent listener, not
+// `.once()`, so a boat that reconnects after a radio dropout pings again
+// too, rather than only ever getting the marks-ping benefit on its very
+// first connection.
+if (config.simulateGps) radio.on('connected', sendMarksPing);
+
 radio.on('sync-error', () => roverStats.recordSyncError());
 
 // Pushes completed chunked SD-card logs to the base whenever it's actually
@@ -320,6 +373,7 @@ function startGpsSimIfReady() {
     lapCount: config.sim.lapCount,
     geometry,
     startOnly: config.sim.startOnly,
+    prestartDwellS: config.sim.prestartDwellS,
     // The start/finish line logic needs the REAL pin/committee/finish
     // positions, not just geometry's scalar distances - see simGps.js's
     // own comment on why (an edited windward mark rotates the beat axis

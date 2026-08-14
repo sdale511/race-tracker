@@ -116,7 +116,7 @@ const sections = [
     ],
   },
   {
-    title: 'RegattaUp webhooks - lap + on-grid (base station only)',
+    title: 'RegattaUp webhooks - lap + on-grid + mark rounding (base station only)',
     rows: [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
       { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_DISABLED', inverted: true },
@@ -125,6 +125,22 @@ const sections = [
       { label: 'maxBackoffMs', value: config.regattaup.maxBackoffMs, envVar: 'REGATTAUP_MAX_BACKOFF_MS', unit: 'ms' },
       { label: 'onGridZoneM', value: config.regattaup.onGridZoneM, envVar: 'REGATTAUP_ONGRID_ZONE_M', unit: 'm' },
       { label: 'onGridQueueDbPath', value: config.regattaup.onGridQueueDbPath, envVar: 'REGATTAUP_ONGRID_QUEUE_DB' },
+      {
+        label: 'markRoundingEnabled',
+        value: config.regattaup.markRoundingEnabled,
+        envVar: 'REGATTAUP_MARK_ROUNDING_ENABLED',
+      },
+      {
+        label: 'markRoundingExtensionM',
+        value: config.regattaup.markRoundingExtensionM,
+        envVar: 'REGATTAUP_MARK_ROUNDING_EXTENSION_M',
+        unit: 'm',
+      },
+      {
+        label: 'markRoundingQueueDbPath',
+        value: config.regattaup.markRoundingQueueDbPath,
+        envVar: 'REGATTAUP_MARK_ROUNDING_QUEUE_DB',
+      },
     ],
   },
 ];
