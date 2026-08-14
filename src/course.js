@@ -117,6 +117,18 @@ function bearingDeg(a, b) {
   return ((Math.atan2(east, north) * 180) / Math.PI + 360) % 360;
 }
 
+// Standard 16-point compass rose abbreviation for a bearingDeg() result -
+// used by the map pages' course-info card (adminServer.js/
+// roverAdminServer.js) to show "11° N" / "15° NNE" alongside the raw
+// degrees, not just the number. Each point spans 22.5 degrees, centered on
+// its own exact heading (N centered on 0, NNE on 22.5, ...), so the
+// boundary between two points sits at odd multiples of 11.25.
+const COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+function compassDir(bearingDegrees) {
+  const index = Math.round(bearingDegrees / 22.5) % 16;
+  return COMPASS_POINTS[index];
+}
+
 // The green leeward mark sits exactly at the configured center point
 // (SIM_CENTER_LAT/LON) - this is the one point that hasn't moved as this
 // function grew from a single windward/leeward pair to green+black pairs,
@@ -225,6 +237,7 @@ module.exports = {
   offsetToLatLon,
   distanceMeters,
   bearingDeg,
+  compassDir,
   getMarks,
   getStartFraction,
   deriveGeometry,

@@ -28,54 +28,24 @@ const ONGRID_EDGE_MARGIN_M = 1;
 // approaches from the southwest, briefly on the geometric "pin side" of
 // committee while still south of the line, before crossing just past
 // committee - indistinguishable from genuine pre-start queuing by the
-// ordinary "between pin and committee, within the zone" check alone. The
-// wedge below cuts that approach off directly: assuming the start line was
-// laid square to the wind (the standard, and the only wind direction this
-// app can derive at all for real racing - there's no live wind sensor
-// anywhere in this codebase), the real windwardGreen<->leewardGreen bearing
-// IS the wind axis, and a starboard-tack close-hauled boat finishing near
-// committee approaches along that axis rotated by the same close-hauled
-// angle upwind sailing always uses (see simGps.js's CLOSE_HAULED_DEG - kept
-// as a local copy here rather than importing simGps.js, which pulls in the
-// whole simulator for a single constant this file would be the only real
-// consumer of outside it), plus a fudge factor for how far off that exact
-// heading a real approach can scatter (see WEDGE_OUTER_ANGLE_DEG).
+// ordinary "between pin and committee, within the zone" check alone.
 //
-// The wedge's near edge sits at 0 degrees - straight downwind from
-// committee, i.e. exactly perpendicular to the start line - not offset
-// from it: anywhere between committee and that whole perpendicular is
-// already ambiguous (a boat could be crossing there instead of queuing),
-// so there's no reason to carve out a separate, narrower exclusion right
-// at committee itself on top of the wedge - one mechanism covers both.
+// Cut out with a straight line, not an arc: a right triangle, its
+// hypotenuse starting exactly at committee and running HYPOTENUSE_ANGLE_DEG
+// below the start line itself (not the wind axis) down into the zone,
+// continuing until it reaches the far (leeward) edge of the zone -
+// equivalently, the entire bottom-right corner of the on-grid box is cut
+// off: the triangle's two legs are the zone's own right edge (straight
+// down from committee, length zoneMeters) and its own bottom edge (length
+// zoneMeters / tan(HYPOTENUSE_ANGLE_DEG)), with the hypotenuse as the third
+// side. A boat only counts as on-grid if it's on the pin side of that
+// hypotenuse.
+//
 // The mirror-image port-tack case near the pin end doesn't need the
 // equivalent treatment, since a boat approaching there is already excluded
 // by the ordinary "between pin and committee" bound (see _isInZone) well
 // before it'd ever look on-grid.
-//
-// A WEDGE (angular tolerance from committee), not a fixed-width parallel
-// corridor: a real approach isn't a single perfect line - free-tacking
-// before the final precision tack, plus HEADING_JITTER_DEG, scatters the
-// actual track around the assumed heading, and that scatter is naturally
-// bigger in absolute meters the farther the boat is from committee. A
-// fixed-width corridor can't win against that: wide enough to cover the
-// scatter far from committee ends up swallowing genuine on-the-real-line
-// starts close to committee too (a high start slot can land only a few
-// meters out, see course.js's getStartFraction - verified empirically:
-// even a 5m-wide corridor excluded an actual start position). An angular
-// tolerance scales with distance the same way the real scatter does -
-// tight (a couple meters) right at committee, wider farther out - which a
-// fixed corridor width structurally can't do.
-const CLOSE_HAULED_DEG = 40;
-// Outer edge of the wedge, measured from straight downwind (0 degrees) -
-// the close-hauled angle plus a fudge factor for how far a real approach
-// scatters off that exact heading (free-tacking fixes before the boat
-// settles onto its final precision-solved tack can sit noticeably further
-// off the nominal bearing than instantaneous heading jitter alone would
-// suggest, since their position reflects the boat's whole tacking history,
-// not just where it's pointed right now). Verified empirically against
-// simGps.js's actual finish approaches and start positions - see
-// onGridWatcher's own test notes.
-const WEDGE_OUTER_ANGLE_DEG = CLOSE_HAULED_DEG + 20;
+const HYPOTENUSE_ANGLE_DEG = 40;
 
 // Same flat-earth approximation as finishLineWatcher.js - fine at the
 // meter-scale distances a start line and its surrounding zone span.
@@ -111,31 +81,37 @@ class OnGridWatcher {
     this.windUx = windUx;
     this.windUy = windUy;
 
-    // The wedge's two edges, both as unit vectors from committee: ray0 is
-    // straight downwind (perpendicular to the start line, the wedge's near
-    // edge - see the module comment on why it goes all the way to this,
-    // not some offset short of it), ray60 is the wind axis rotated
-    // WEDGE_OUTER_ANGLE_DEG toward whichever side actually leans toward
-    // pin (checked via a dot product against the real committee->pin
-    // direction, so this comes out right whichever way the course happens
-    // to be laid, not assumed from a fixed compass sense).
-    this.ray0x = -windUx;
-    this.ray0y = -windUy;
-
-    const angleRad = (WEDGE_OUTER_ANGLE_DEG * Math.PI) / 180;
-    const cos = Math.cos(angleRad);
-    const sin = Math.sin(angleRad);
-    const rotA = { x: -(windUx * cos - windUy * sin), y: -(windUx * sin + windUy * cos) };
-    const rotB = { x: -(windUx * cos + windUy * sin), y: -(-windUx * sin + windUy * cos) };
+    // The hypotenuse direction: the committee->pin direction (the start
+    // line itself), rotated HYPOTENUSE_ANGLE_DEG down into the zone. Both
+    // rotations of committee->pin are computed and whichever one actually
+    // leans toward leeward (down into the box, using straight-downwind -
+    // the negated wind axis - as the reference) is kept, so this comes out
+    // right whichever way the course happens to be laid, not assumed from
+    // a fixed compass sense.
+    const downX = -windUx;
+    const downY = -windUy;
     const pinDx = this.pin.x - this.committee.x;
     const pinDy = this.pin.y - this.committee.y;
-    const ray60 = rotA.x * pinDx + rotA.y * pinDy >= rotB.x * pinDx + rotB.y * pinDy ? rotA : rotB;
-    // Precomputed sign reference for _inApproachWedge's own side test -
-    // which rotational side of ray0 the wedge (and therefore pin) is on.
-    // ray60 itself doesn't need to be kept - only which side of ray0 it's
-    // on matters from here.
-    this.crossRay60 = this.ray0x * ray60.y - this.ray0y * ray60.x;
-    this.cosOuterAngle = cos;
+    const pinLen = Math.hypot(pinDx, pinDy) || 1;
+    const pinUx = pinDx / pinLen;
+    const pinUy = pinDy / pinLen;
+
+    const angleRad = (HYPOTENUSE_ANGLE_DEG * Math.PI) / 180;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+    const rotA = { x: pinUx * cos - pinUy * sin, y: pinUx * sin + pinUy * cos };
+    const rotB = { x: pinUx * cos + pinUy * sin, y: -pinUx * sin + pinUy * cos };
+    const hyp = rotA.x * downX + rotA.y * downY >= rotB.x * downX + rotB.y * downY ? rotA : rotB;
+    this.hypUx = hyp.x;
+    this.hypUy = hyp.y;
+
+    // Which side of the hypotenuse counts as "excluded" - the side the box's
+    // own bottom-right corner (straight downwind from committee, zoneMeters
+    // out) falls on, precomputed as a sign so check() only needs a dot/cross
+    // per fix, not this whole setup.
+    const cornerX = downX * zoneMeters;
+    const cornerY = downY * zoneMeters;
+    this.excludedSideSign = Math.sign(hyp.x * cornerY - hyp.y * cornerX);
   }
 
   // Call with every new fix's lat/lon. Returns 'ongrid' every time the boat
@@ -155,11 +131,11 @@ class OnGridWatcher {
     const windwardOfLine = (p.x - this.committee.x) * this.windUx + (p.y - this.committee.y) * this.windUy;
     // See the module comment above for the other exclusion: a boat only
     // counts as on-grid if it's also in the start zone and NOT in the
-    // starboard-tack final-approach wedge into committee.
+    // starboard-tack triangle cut from committee's corner.
     const inside =
       windwardOfLine <= ONGRID_EDGE_MARGIN_M &&
       this._isInZone(p, this.committee, this.pin, this.zoneMeters) &&
-      !this._inApproachWedge(p);
+      !this._inCommitteeTriangle(p);
     const wasInside = this.onGrid;
     this.onGrid = inside;
     if (inside) return 'ongrid';
@@ -191,23 +167,19 @@ class OnGridWatcher {
     return dist <= zoneMeters;
   }
 
-  // Is p in the wedge - within WEDGE_OUTER_ANGLE_DEG of ray0 (straight
-  // downwind from committee) AND on the same rotational side as ray60 (the
-  // pin side, not mirrored toward finish)? A point exactly at committee has
-  // no defined bearing - not excluded by this check (nothing else excludes
-  // it either now; see the module comment on why that's an accepted
-  // trade-off).
-  _inApproachWedge(p) {
+  // Is p on the excluded (committee/bottom-right-corner) side of the
+  // hypotenuse line through committee? A pure half-plane test - the
+  // triangle shape itself falls out of combining this with the zone's own
+  // existing bounds (between pin and committee, within zoneMeters), not
+  // anything this method needs to bound on its own. A point exactly at
+  // committee is on the line itself (cross=0) - excluded, consistent with
+  // committee being the triangle's own vertex.
+  _inCommitteeTriangle(p) {
     const dx = p.x - this.committee.x;
     const dy = p.y - this.committee.y;
-    const len = Math.hypot(dx, dy);
-    if (len === 0) return false;
-    const cosFromRay0 = (dx * this.ray0x + dy * this.ray0y) / len;
-    if (cosFromRay0 < this.cosOuterAngle) return false;
-    // Exactly on ray0 itself (cross=0) counts as in-wedge too - that's the
-    // "perpendicular to the start line" edge, inclusive by design.
-    const crossPoint = this.ray0x * dy - this.ray0y * dx;
-    return crossPoint === 0 || (crossPoint > 0) === (this.crossRay60 > 0);
+    const crossVal = this.hypUx * dy - this.hypUy * dx;
+    const sign = Math.sign(crossVal);
+    return sign === 0 || sign === this.excludedSideSign;
   }
 }
 

@@ -1,6 +1,6 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS, markStroke } = require('./course');
+const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
 
 // A boat is "online" if we've heard a position frame from it recently - a
@@ -528,6 +528,34 @@ function renderDashboard(s) {
 // looking at the dashboard). No live boat positions, just the five marks
 // and the start/finish lines between them - this is a course reference
 // view, not a live tracking map.
+// Floating card in the map page's top-left corner, showing the start/finish
+// line's own length and bearing plus a compass heading from committee to
+// each windward/leeward mark - the numbers a race committee actually calls
+// out on the water, not just raw mark coordinates (see the "Course marks"
+// card on the dashboard page for that). Bearings are all measured FROM
+// committee, matching how an operator standing at the committee boat would
+// actually read them - not from the boat's own live position, which would
+// make every reading shift as the boat moves.
+function buildCourseInfoHtml(marks) {
+  const startLineM = distanceMeters(marks.pin, marks.committee);
+  const startLineBearing = bearingDeg(marks.committee, marks.pin);
+  const finishLineM = distanceMeters(marks.committee, marks.finish);
+  const finishLineBearing = bearingDeg(marks.committee, marks.finish);
+  const headingRows = ['windwardBlack', 'windwardGreen', 'leewardGreen', 'leewardBlack']
+    .map((name) => {
+      const label = name[0].toUpperCase() + name.slice(1);
+      const bearing = bearingDeg(marks.committee, marks[name]);
+      return `<div class="course-info-row"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
+    })
+    .join('');
+  return `<div class="course-info-card">
+    <div class="course-info-title">Course</div>
+    <div class="course-info-row"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
+    <div class="course-info-row"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    ${headingRows}
+  </div>`;
+}
+
 function renderMap(s) {
   if (!s.course) {
     return `<!doctype html>
@@ -630,6 +658,29 @@ function renderMap(s) {
   }
   .leaflet-tooltip.mark-label::before { display: none; }
 
+  /* Zoom control moved to the top-right (Leaflet's own default is
+     top-left, set via zoomControl:false + a manual L.control.zoom below)
+     - offset down past the topbar the same way .edit-column-inner already
+     does (56px), so it doesn't sit underneath/behind it. */
+  .leaflet-top.leaflet-right { top: 56px; }
+
+  /* Course-info card, top-left, offset past the topbar the same way -
+     deliberately a light card (not this page's usual dark chrome) so it
+     reads clearly over satellite imagery of any brightness, the same
+     reasoning real paper course cards on a committee boat use a plain
+     white background regardless of the water/sky behind them. */
+  .course-info-card {
+    position: absolute; top: 66px; left: 16px; z-index: 800;
+    background: #ffffff; color: #1b2430;
+    border-radius: 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    padding: 14px 18px; min-width: 230px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .course-info-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
+  .course-info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; padding: 4px 0; font-size: 13px; }
+  .course-info-row .label { color: #8a94a3; }
+  .course-info-row .value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
   /* Edit mode: a map area that shrinks to make room for a column of
      "set this mark here" buttons, plus a crosshair fixed at the exact
      center of whatever's left of the map - see the class comment on
@@ -698,6 +749,7 @@ function renderMap(s) {
     <div class="map-wrap">
       <div id="map"></div>
       <div class="crosshair" id="crosshair"></div>
+      ${buildCourseInfoHtml(marks)}
     </div>
     <div class="edit-column" id="editColumn">
       <div class="edit-column-inner">
@@ -716,7 +768,16 @@ function renderMap(s) {
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
-    const map = L.map('map', { zoomControl: true });
+    // zoomControl:false + a manual L.control.zoom below (positioned
+    // top-right, see .leaflet-top.leaflet-right above) instead of Leaflet's
+    // own default top-left control, which sits under the topbar/course-info
+    // card. maxZoom:22 matches RegattaUp's own map, well past the imagery's
+    // own native resolution (maxNativeZoom below) - Leaflet upscales the
+    // last real tile level for anything past that rather than showing
+    // nothing, so zooming that far in still shows *something*, just soft,
+    // instead of hitting a hard ceiling.
+    const map = L.map('map', { zoomControl: false, maxZoom: 22 });
+    L.control.zoom({ position: 'topright' }).addTo(map);
     const boatMarkers = {};
     // Satellite imagery, not a street/vector basemap - these courses are
     // typically raced on a dry lake bed (Black Rock Desert-style playa)
@@ -724,7 +785,8 @@ function renderMap(s) {
     // an OSM/CARTO-style layer render as an almost-empty void at any
     // useful zoom. Imagery actually shows the ground.
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19,
+      maxZoom: 22,
+      maxNativeZoom: 19,
       attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
     }).addTo(map);
 

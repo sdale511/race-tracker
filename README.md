@@ -419,7 +419,7 @@ per boat (same lazy-build-per-boat pattern as `FinishLineWatcher`), watches
 every incoming fix against the **start** side of the course - the
 pin<->committee segment, not committee<->finish.
 
-![The on-grid zone: a leeward strip along the pin-to-committee line, with a wedge cut from committee spanning 0° (perpendicular to the line) to 60° toward pin, excluding a starboard-tack finish approach without affecting genuine pre-start positions.](docs/on-grid-zone.svg)
+![The on-grid zone: a box along the leeward side of the pin-to-committee line, with a right triangle cut from the committee corner - hypotenuse starting at committee, running 40° down from the start line to the far edge of the zone, cutting off the entire bottom-right corner of the box.](docs/on-grid-zone.svg)
 
 A boat counts as on-grid when it's all of:
 
@@ -436,33 +436,26 @@ A boat counts as on-grid when it's all of:
   bearing (the only wind direction this app can know at all for real
   racing - there's no live wind sensor anywhere in this codebase),
   assuming the line was laid square to it, the standard practice.
-- **Not** inside the starboard-tack final-approach wedge into committee -
+- **Not** inside the starboard-tack triangle cut from committee's corner -
   a boat finishing upwind on starboard tack near the committee end
   approaches from the southwest, briefly on the geometric "pin side" of
   committee while still south of the line, before crossing just past
   committee. That point is unambiguously in the start zone by the checks
   above (between pin and committee, within the zone, on the leeward side),
-  yet it's a finish approach, not pre-start queuing. `_inApproachWedge`
-  excludes a wedge from committee spanning 0 to `WEDGE_OUTER_ANGLE_DEG`
-  (60 degrees: the assumed 40-degree close-hauled bearing plus a 20-degree
-  fudge factor) off straight downwind, on the side that leans toward pin.
-  The near edge sits at 0 degrees - straight downwind, exactly
-  perpendicular to the start line - not offset from it: anywhere between
-  committee and that whole perpendicular is already ambiguous (a boat
-  could be crossing there instead of queuing - the pin<->committee and
-  committee<->finish segments share the committee endpoint and are
-  collinear by default), so one wedge covers both, rather than a separate
-  narrow exclusion right at committee stacked on top of it.
+  yet it's a finish approach, not pre-start queuing.
 
-  An *angular* tolerance, not a fixed-width corridor, because the real
-  approach scatters around the assumed bearing (free-tacking before the
-  final precision tack, plus normal heading jitter) by an amount that
-  grows the farther the boat is from committee, the same way an angular
-  tolerance naturally does and a fixed linear width can't - verified
-  empirically (see `src/onGridWatcher.js`'s own comments) that a
-  fixed-width version wide enough to catch a real approach's scatter far
-  from committee also excluded genuine start positions close to committee,
-  while the wedge catches the same real approaches without doing that.
+  Cut with a straight line, not an arc: `_inCommitteeTriangle` excludes a
+  right triangle whose hypotenuse starts exactly at committee and runs
+  `HYPOTENUSE_ANGLE_DEG` (40 degrees) below the start line itself down into
+  the zone, continuing until it reaches the far (leeward) edge - the whole
+  bottom-right corner of the on-grid box, one straight cut. The triangle's
+  two legs are the zone's own right edge (straight down from committee,
+  length `REGATTAUP_ONGRID_ZONE_M`) and its own bottom edge (length
+  `REGATTAUP_ONGRID_ZONE_M / tan(40°)` - about 11.92m at the 10m default).
+  The mirror-image port-tack case near the pin end doesn't need the
+  equivalent treatment, since a boat approaching there is already excluded
+  by the ordinary "between pin and committee" bound well before it'd ever
+  look on-grid.
 
 POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 

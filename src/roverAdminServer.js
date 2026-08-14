@@ -1,6 +1,6 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS, markStroke } = require('./course');
+const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
 
 // Renders the boat's own dashboard server-side from one stats snapshot (see
@@ -145,6 +145,35 @@ function renderDashboard(s) {
 // last known fix - a live breadcrumb, not just the static course - since
 // that's the one thing the base's fleet-wide map doesn't have room to
 // show per-boat.
+// Floating card in the map page's top-left corner, showing the start/finish
+// line's own length and bearing plus a compass heading from committee to
+// each windward/leeward mark - the numbers a race committee actually calls
+// out on the water, not just raw mark coordinates. Bearings are all
+// measured FROM committee, matching how an operator standing at the
+// committee boat would actually read them - not from this boat's own live
+// position, which would make every reading shift as the boat moves. Same
+// as adminServer.js's own copy - see its comment for why this file doesn't
+// import that one instead.
+function buildCourseInfoHtml(marks) {
+  const startLineM = distanceMeters(marks.pin, marks.committee);
+  const startLineBearing = bearingDeg(marks.committee, marks.pin);
+  const finishLineM = distanceMeters(marks.committee, marks.finish);
+  const finishLineBearing = bearingDeg(marks.committee, marks.finish);
+  const headingRows = ['windwardBlack', 'windwardGreen', 'leewardGreen', 'leewardBlack']
+    .map((name) => {
+      const label = name[0].toUpperCase() + name.slice(1);
+      const bearing = bearingDeg(marks.committee, marks[name]);
+      return `<div class="course-info-row"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
+    })
+    .join('');
+  return `<div class="course-info-card">
+    <div class="course-info-title">Course</div>
+    <div class="course-info-row"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
+    <div class="course-info-row"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    ${headingRows}
+  </div>`;
+}
+
 function renderMap(s) {
   const fix = s.lastFix;
   const fixAgeMs = fix ? Date.now() - fix.timestamp : null;
@@ -218,6 +247,7 @@ function renderMap(s) {
       ).join('')
     : '';
   const markBoundsJs = marks ? `[${MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`).join(', ')}]` : '[]';
+  const courseInfoHtml = marks ? buildCourseInfoHtml(marks) : '';
 
   return `<!doctype html>
 <html>
@@ -252,6 +282,29 @@ function renderMap(s) {
     padding: 2px 6px; border-radius: 4px;
   }
   .leaflet-tooltip.mark-label::before { display: none; }
+
+  /* Zoom control moved to the top-right (Leaflet's own default is
+     top-left, set via zoomControl:false + a manual L.control.zoom below)
+     - offset down past the topbar the same way .edit-column-inner already
+     does (56px), so it doesn't sit underneath/behind it. */
+  .leaflet-top.leaflet-right { top: 56px; }
+
+  /* Course-info card, top-left, offset past the topbar the same way -
+     deliberately a light card (not this page's usual dark chrome) so it
+     reads clearly over satellite imagery of any brightness, the same
+     reasoning real paper course cards on a committee boat use a plain
+     white background regardless of the water/sky behind them. */
+  .course-info-card {
+    position: absolute; top: 66px; left: 16px; z-index: 800;
+    background: #ffffff; color: #1b2430;
+    border-radius: 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    padding: 14px 18px; min-width: 230px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .course-info-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
+  .course-info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; padding: 4px 0; font-size: 13px; }
+  .course-info-row .label { color: #8a94a3; }
+  .course-info-row .value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   /* Edit mode - see the matching block in adminServer.js's renderMap for
      the overall design (a map area that shrinks for a column of "set
@@ -326,6 +379,7 @@ function renderMap(s) {
     <div class="map-wrap">
       <div id="map"></div>
       <div class="crosshair" id="crosshair"></div>
+      ${courseInfoHtml}
     </div>
     ${
       canEditMarks
@@ -355,7 +409,16 @@ function renderMap(s) {
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
-    const map = L.map('map', { zoomControl: true });
+    // zoomControl:false + a manual L.control.zoom below (positioned
+    // top-right, see .leaflet-top.leaflet-right above) instead of Leaflet's
+    // own default top-left control, which sits under the topbar/course-info
+    // card. maxZoom:22 matches RegattaUp's own map, well past the imagery's
+    // own native resolution (maxNativeZoom below) - Leaflet upscales the
+    // last real tile level for anything past that rather than showing
+    // nothing, so zooming that far in still shows *something*, just soft,
+    // instead of hitting a hard ceiling.
+    const map = L.map('map', { zoomControl: false, maxZoom: 22 });
+    L.control.zoom({ position: 'topright' }).addTo(map);
     let boatMarker = null;
     // Kept live by refreshBoat() below, used by the edit column's
     // "Recenter on boat GPS" button (see the canEditMarks block further
@@ -363,7 +426,8 @@ function renderMap(s) {
     // immediately on page load, before the first refresh tick.
     let lastKnownFix = ${fix ? `{ lat: ${fix.lat}, lon: ${fix.lon} }` : 'null'};
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19,
+      maxZoom: 22,
+      maxNativeZoom: 19,
       attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
     }).addTo(map);
 
