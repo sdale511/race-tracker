@@ -55,63 +55,117 @@ function toXY(originLat, originLon, lat, lon) {
   return { x, y };
 }
 
+// Inverse of toXY - local {x,y} meters back to {lat,lon}, same origin
+// convention. Only zonePolygon (below) needs this - check() only ever
+// converts fixes lat/lon -> local, never the other way.
+function toLatLon(originLat, originLon, x, y) {
+  return {
+    lat: originLat + y / METERS_PER_DEG_LAT,
+    lon: originLon + x / (METERS_PER_DEG_LAT * Math.cos((originLat * Math.PI) / 180)),
+  };
+}
+
+// Shared by the constructor and zonePolygon (below) - the one place this
+// geometry actually gets computed, so a drawn zone (see zonePolygon) can
+// never drift out of sync with what check() actually detects against.
+// marks: { committee, pin, windwardGreen, leewardGreen } (all {lat, lon}).
+function computeGeometry(marks) {
+  const originLat = marks.committee.lat;
+  const originLon = marks.committee.lon;
+  const toLocal = (lat, lon) => toXY(originLat, originLon, lat, lon);
+  const committee = toLocal(marks.committee.lat, marks.committee.lon);
+  const pin = toLocal(marks.pin.lat, marks.pin.lon);
+
+  // Wind axis: leewardGreen -> windwardGreen, pointing upwind.
+  const windward = toLocal(marks.windwardGreen.lat, marks.windwardGreen.lon);
+  const leeward = toLocal(marks.leewardGreen.lat, marks.leewardGreen.lon);
+  const windDx = windward.x - leeward.x;
+  const windDy = windward.y - leeward.y;
+  const windLen = Math.hypot(windDx, windDy) || 1;
+  const windUx = windDx / windLen;
+  const windUy = windDy / windLen;
+
+  // The hypotenuse direction: the committee->pin direction (the start
+  // line itself), rotated HYPOTENUSE_ANGLE_DEG down into the zone. Both
+  // rotations of committee->pin are computed and whichever one actually
+  // leans toward leeward (down into the box, using straight-downwind -
+  // the negated wind axis - as the reference) is kept, so this comes out
+  // right whichever way the course happens to be laid, not assumed from
+  // a fixed compass sense.
+  const downX = -windUx;
+  const downY = -windUy;
+  const pinDx = pin.x - committee.x;
+  const pinDy = pin.y - committee.y;
+  const pinLen = Math.hypot(pinDx, pinDy) || 1;
+  const pinUx = pinDx / pinLen;
+  const pinUy = pinDy / pinLen;
+
+  const angleRad = (HYPOTENUSE_ANGLE_DEG * Math.PI) / 180;
+  const cos = Math.cos(angleRad);
+  const sin = Math.sin(angleRad);
+  const rotA = { x: pinUx * cos - pinUy * sin, y: pinUx * sin + pinUy * cos };
+  const rotB = { x: pinUx * cos + pinUy * sin, y: -pinUx * sin + pinUy * cos };
+  const hyp = rotA.x * downX + rotA.y * downY >= rotB.x * downX + rotB.y * downY ? rotA : rotB;
+
+  // Which side of the hypotenuse counts as "excluded" - the side the box's
+  // own bottom-right corner (straight downwind from committee, any
+  // positive distance out) falls on, precomputed as a sign so check() only
+  // needs a dot/cross per fix, not this whole setup.
+  const excludedSideSign = Math.sign(hyp.x * downY - hyp.y * downX);
+
+  return { originLat, originLon, toLocal, committee, pin, windUx, windUy, hypUx: hyp.x, hypUy: hyp.y, sinAngle: sin, excludedSideSign };
+}
+
+// The on-grid zone's own boundary as a lat/lon polygon - for drawing it on
+// a map (see adminServer.js/roverAdminServer.js), not for detection itself
+// (OnGridWatcher.check still does that per-fix). A quadrilateral: pin ->
+// committee -> the point where the hypotenuse reaches the zone's far
+// (leeward) edge -> the equivalent point straight out from pin -> back to
+// pin. Built from the exact same computeGeometry() the detector itself
+// uses, so this can never show a different zone than what actually gets
+// detected.
+function zonePolygon(marks, zoneMeters) {
+  const geo = computeGeometry(marks);
+  const downX = -geo.windUx;
+  const downY = -geo.windUy;
+  // Distance along the hypotenuse to travel before its own leeward
+  // (downwind) component reaches zoneMeters - the hypotenuse makes
+  // HYPOTENUSE_ANGLE_DEG with the (horizontal) start line, so a unit step
+  // along it has a leeward component of sin(that angle).
+  const hypLengthM = zoneMeters / geo.sinAngle;
+  const far = {
+    x: geo.committee.x + geo.hypUx * hypLengthM,
+    y: geo.committee.y + geo.hypUy * hypLengthM,
+  };
+  const pinFar = {
+    x: geo.pin.x + downX * zoneMeters,
+    y: geo.pin.y + downY * zoneMeters,
+  };
+  return [
+    marks.pin,
+    marks.committee,
+    toLatLon(geo.originLat, geo.originLon, far.x, far.y),
+    toLatLon(geo.originLat, geo.originLon, pinFar.x, pinFar.y),
+  ];
+}
+
 class OnGridWatcher {
   // marks: { committee, pin, windwardGreen, leewardGreen } (all {lat, lon}).
   // zoneMeters: how far to either side of the line still counts as on-grid.
   constructor(marks, zoneMeters) {
-    const originLat = marks.committee.lat;
-    const originLon = marks.committee.lon;
-    this._toXY = (lat, lon) => toXY(originLat, originLon, lat, lon);
-    this.committee = this._toXY(marks.committee.lat, marks.committee.lon);
-    this.pin = this._toXY(marks.pin.lat, marks.pin.lon);
+    const geo = computeGeometry(marks);
+    this._toXY = geo.toLocal;
+    this.committee = geo.committee;
+    this.pin = geo.pin;
     this.zoneMeters = zoneMeters;
     this.onGrid = false;
-
-    // Wind axis: leewardGreen -> windwardGreen, pointing upwind.
-    const windward = this._toXY(marks.windwardGreen.lat, marks.windwardGreen.lon);
-    const leeward = this._toXY(marks.leewardGreen.lat, marks.leewardGreen.lon);
-    const windDx = windward.x - leeward.x;
-    const windDy = windward.y - leeward.y;
-    const windLen = Math.hypot(windDx, windDy) || 1;
-    const windUx = windDx / windLen;
-    const windUy = windDy / windLen;
-    // Kept on the instance too (not just used locally below) - check()
-    // reuses this same wind axis to reject anything on the windward/course
-    // side of the line, see its own comment.
-    this.windUx = windUx;
-    this.windUy = windUy;
-
-    // The hypotenuse direction: the committee->pin direction (the start
-    // line itself), rotated HYPOTENUSE_ANGLE_DEG down into the zone. Both
-    // rotations of committee->pin are computed and whichever one actually
-    // leans toward leeward (down into the box, using straight-downwind -
-    // the negated wind axis - as the reference) is kept, so this comes out
-    // right whichever way the course happens to be laid, not assumed from
-    // a fixed compass sense.
-    const downX = -windUx;
-    const downY = -windUy;
-    const pinDx = this.pin.x - this.committee.x;
-    const pinDy = this.pin.y - this.committee.y;
-    const pinLen = Math.hypot(pinDx, pinDy) || 1;
-    const pinUx = pinDx / pinLen;
-    const pinUy = pinDy / pinLen;
-
-    const angleRad = (HYPOTENUSE_ANGLE_DEG * Math.PI) / 180;
-    const cos = Math.cos(angleRad);
-    const sin = Math.sin(angleRad);
-    const rotA = { x: pinUx * cos - pinUy * sin, y: pinUx * sin + pinUy * cos };
-    const rotB = { x: pinUx * cos + pinUy * sin, y: -pinUx * sin + pinUy * cos };
-    const hyp = rotA.x * downX + rotA.y * downY >= rotB.x * downX + rotB.y * downY ? rotA : rotB;
-    this.hypUx = hyp.x;
-    this.hypUy = hyp.y;
-
-    // Which side of the hypotenuse counts as "excluded" - the side the box's
-    // own bottom-right corner (straight downwind from committee, zoneMeters
-    // out) falls on, precomputed as a sign so check() only needs a dot/cross
-    // per fix, not this whole setup.
-    const cornerX = downX * zoneMeters;
-    const cornerY = downY * zoneMeters;
-    this.excludedSideSign = Math.sign(hyp.x * cornerY - hyp.y * cornerX);
+    // check() reuses this wind axis to reject anything on the
+    // windward/course side of the line, see its own comment.
+    this.windUx = geo.windUx;
+    this.windUy = geo.windUy;
+    this.hypUx = geo.hypUx;
+    this.hypUy = geo.hypUy;
+    this.excludedSideSign = geo.excludedSideSign;
   }
 
   // Call with every new fix's lat/lon. Returns 'ongrid' every time the boat
@@ -183,4 +237,4 @@ class OnGridWatcher {
   }
 }
 
-module.exports = { OnGridWatcher };
+module.exports = { OnGridWatcher, zonePolygon };

@@ -2,6 +2,8 @@ const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
+const { zonePolygon } = require('./onGridWatcher');
+const config = require('./config');
 
 // A boat is "online" if we've heard a position frame from it recently - a
 // looser threshold than any single TX_DISTANCE_M-driven gap, just enough to
@@ -802,6 +804,11 @@ function renderMap(s) {
     // green ones since both pairs sit on the same axis - one line covers
     // the full extent, green marks included, since they fall on it too.
     L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
+    // On-grid detection zone - the exact quadrilateral OnGridWatcher.check
+    // itself tests against (see onGridWatcher.js's zonePolygon), not a
+    // separately-eyeballed approximation, so this can never show a
+    // different zone than what actually gets detected as on-grid.
+    L.polygon(${JSON.stringify(zonePolygon(marks, config.regattaup.onGridZoneM).map((p) => [p.lat, p.lon]))}, { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '4 6', fillColor: '${MARK_COLORS.pin}', fillOpacity: 0.08 }).addTo(map);
 
     // Marks-only bounds, kept separate from the initial-load fit below
     // (which also includes boats) - this is what the "Recenter on marks"
