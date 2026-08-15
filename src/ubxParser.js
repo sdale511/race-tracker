@@ -18,9 +18,11 @@ const ID_NAV_PVT = 0x07;
 const ID_NAV_SVIN = 0x3b;
 const CLASS_CFG = 0x06;
 const ID_CFG_TMODE3 = 0x71;
+const ID_CFG_CFG = 0x09;
 const PVT_LENGTH = 92;
 const SVIN_LENGTH = 40;
 const TMODE3_LENGTH = 40;
+const CFG_CFG_LENGTH = 13;
 
 // WGS84 ellipsoid constants, for converting the ECEF position NAV-SVIN
 // reports (survey-in works in ECEF, not lat/lon) into something the admin
@@ -109,6 +111,88 @@ function encodeSetTmode3({ mode, lat, lon, heightM, fixedPosAccMm, svinMinDurS, 
     payload.writeUInt32LE(Math.max(0, Math.round((svinAccLimitMm || 0) * 10)), 28);
   }
   return buildFrame(CLASS_CFG, ID_CFG_TMODE3, payload);
+}
+
+// Persists the receiver's current configuration (whatever TMODE3 mode was
+// last SET, among everything else) to non-volatile storage, so it's still
+// there after a power cycle - encodeSetTmode3 above only ever changes the
+// receiver's live RAM config, the same as every other legacy UBX-CFG-*
+// message (unlike the newer CFG-VALSET interface, which takes an explicit
+// RAM/BBR/Flash layer bitmask per call - see the README's own ubxtool setup
+// commands for that style). Without a save, TMODE3 silently reverts to
+// whatever was last saved (or the factory default) on every restart.
+//
+// saveMask 0xffffffff saves every configuration group currently active, not
+// just TMODE3 specifically - there's no narrower "just this one setting"
+// option in this message. deviceMask targets BOTH BBR (bit 0) and Flash
+// (bit 1): ArduSimple's simpleRTK2B boards typically have no SPI flash at
+// all, relying on BBR (kept alive by an onboard supercap, or a coin cell if
+// one's fitted) instead, but requesting Flash too is harmless when it's
+// absent - the receiver just skips that part - and covers boards that do
+// have it. BBR persistence only lasts as long as its own backup power does;
+// a sufficiently long full power-down can still lose it.
+function encodeSaveConfig() {
+  const payload = Buffer.alloc(CFG_CFG_LENGTH);
+  payload.writeUInt32LE(0x00000000, 0); // clearMask - nothing to clear
+  payload.writeUInt32LE(0xffffffff, 4); // saveMask - save every active config group
+  payload.writeUInt32LE(0x00000000, 8); // loadMask - nothing to load
+  payload.writeUInt8(0x03, 12); // deviceMask - BBR (bit 0) | Flash (bit 1)
+  return buildFrame(CLASS_CFG, ID_CFG_CFG, payload);
+}
+
+// Builds a synthetic UBX-NAV-PVT message from an already-decoded pvt-like
+// object - the exact inverse of _decodePvt above, field for field. Used by
+// baseStation.js/boatAgent.js's own local UDP broadcast (see config.js's
+// GPS_OUTPUT_FORMAT) to re-emit position data in the format the GPS
+// receiver itself speaks, rather than translating to NMEA - anything that
+// already knows how to read UBX-NAV-PVT (u-center, this app's own
+// UbxParser, ...) can consume it directly. Not a byte-for-byte replay of
+// the original message (the original bytes aren't kept around once
+// decoded) - re-encoded fresh from the same decoded field values instead,
+// so there's no precision loss versus the original, just the handful of
+// fields this app never decodes in the first place (velocity N/E/D
+// components, heading accuracy, magnetic declination, ...) left at zero,
+// same as any other UBX field a consumer doesn't care about.
+//
+// Works with EITHER a boat's own full pvt object (see _decodePvt, every
+// field populated from its own hardware) or the base's own decoded radio
+// frame (see protocol.js's decode - a much smaller field set, since the
+// long-range radio link only carries what actually matters for race
+// tracking, and uses speedKnots/headingDeg names instead of
+// gSpeedMmS/headMotDeg) - fields the given object doesn't have fall back
+// to a reasonable default (0, or the current wall-clock time for
+// date/time) rather than throwing, so the same function serves both
+// callers.
+function encodeNavPvt(pvt) {
+  const payload = Buffer.alloc(PVT_LENGTH);
+  const now = new Date(pvt.timestamp ?? Date.now());
+  payload.writeUInt16LE(pvt.utcYear ?? now.getUTCFullYear(), 4);
+  payload.writeUInt8(pvt.utcMonth ?? now.getUTCMonth() + 1, 6);
+  payload.writeUInt8(pvt.utcDay ?? now.getUTCDate(), 7);
+  payload.writeUInt8(pvt.utcHour ?? now.getUTCHours(), 8);
+  payload.writeUInt8(pvt.utcMin ?? now.getUTCMinutes(), 9);
+  payload.writeUInt8(pvt.utcSec ?? now.getUTCSeconds(), 10);
+  payload.writeUInt8(pvt.utcValid ? 0x03 : 0x00, 11); // bit0 validDate, bit1 validTime
+  payload.writeUInt8(pvt.fixType ?? (pvt.gnssFixOk ? 3 : 0), 20);
+  const flags = (pvt.gnssFixOk ? 0x01 : 0) | (pvt.diffSoln ? 0x02 : 0) | ((pvt.carrSoln & 0x03) << 6);
+  payload.writeUInt8(flags, 21);
+  payload.writeUInt8(Math.min(Math.max(pvt.numSV ?? 0, 0), 255), 23);
+  payload.writeInt32LE(Math.round(pvt.lon * 1e7), 24);
+  payload.writeInt32LE(Math.round(pvt.lat * 1e7), 28);
+  payload.writeInt32LE(Math.round(pvt.heightMm ?? 0), 32);
+  payload.writeInt32LE(Math.round(pvt.hMSLMm ?? pvt.heightMm ?? 0), 36);
+  payload.writeUInt32LE(Math.max(0, Math.round(pvt.hAccMm ?? 0)), 40);
+  payload.writeUInt32LE(Math.max(0, Math.round(pvt.vAccMm ?? 0)), 44);
+  // gSpeedMmS/headMotDeg: a boat's own raw pvt already has these; the
+  // base's own decoded radio frame instead carries the same information
+  // as speedKnots/headingDeg (see protocol.js) - convert whichever is
+  // actually present.
+  const gSpeedMmS = pvt.gSpeedMmS ?? (pvt.speedKnots != null ? Math.round((pvt.speedKnots / 1.94384) * 1000) : 0);
+  payload.writeInt32LE(gSpeedMmS, 60);
+  const headMotDeg = pvt.headMotDeg ?? pvt.headingDeg ?? 0;
+  payload.writeInt32LE(Math.round(headMotDeg * 1e5), 64);
+  payload.writeUInt16LE(Math.max(0, Math.round((pvt.pDOP ?? 0) * 100)), 76);
+  return buildFrame(CLASS_NAV, ID_NAV_PVT, payload);
 }
 
 class UbxParser extends EventEmitter {
@@ -282,6 +366,8 @@ module.exports = {
   TMODE3_LENGTH,
   encodePollRequest,
   encodeSetTmode3,
+  encodeSaveConfig,
+  encodeNavPvt,
   ecefToLla,
   TMODE3_MODE_NAMES,
   CLASS_CFG,

@@ -70,6 +70,17 @@ const DOWNWIND_CLEAR_MARGIN_M = 15;
 // when heading the opposite direction).
 const MARK_CLEARANCE_M = 5;
 
+// How far leeward (behind, not on top of) the pin<->committee line a boat's
+// starting/pending position sits - a boat genuinely queuing for the start
+// stands off the line a little, not straddling it exactly, and it gives
+// on-grid detection (see onGridWatcher.js) real margin against the
+// leeward-side check's own ONGRID_EDGE_MARGIN_M (1m): a boat placed
+// *exactly* on the line has zero headroom against any small numerical
+// difference between this file's own lat/lon math (offsetToLatLon, a
+// different origin/rotation than onGridWatcher.js's independent toXY) and
+// the detector's - 2m of real standoff comfortably absorbs that regardless.
+const PENDING_LINE_OFFSET_M = 2;
+
 // Once the final lap's finish-line crossing is detected, the boat keeps
 // sailing straight on its current tack/heading for this much farther
 // before the simulation actually stops - a real boat eases across the
@@ -227,10 +238,13 @@ class SimGpsSource extends EventEmitter {
     //
     // Interpolated against the TRUE local pin/committee positions (not a
     // simple east offset - see course.js's getStartFraction), so every
-    // slot lands exactly on the real pin<->committee line regardless of
-    // whether that line happens to be perpendicular to the beat axis.
+    // slot lands along the real pin<->committee line regardless of
+    // whether that line happens to be perpendicular to the beat axis -
+    // then pulled PENDING_LINE_OFFSET_M leeward (south, in this local
+    // frame) of it, not left sitting exactly on top of the line (see that
+    // constant's own comment).
     const startFrac = getStartFraction(startSlot, geometry);
-    this.north = this.pinLocal.north + startFrac * (this.committeeLocal.north - this.pinLocal.north);
+    this.north = this.pinLocal.north + startFrac * (this.committeeLocal.north - this.pinLocal.north) - PENDING_LINE_OFFSET_M;
     this.east = this.pinLocal.east + startFrac * (this.committeeLocal.east - this.pinLocal.east);
     this.phase = 'upwind'; // 'upwind' (beating) | 'downwind' (running)
     this.side = Math.random() < 0.5 ? 1 : -1;

@@ -2,8 +2,10 @@ const { SerialPort } = require('serialport');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
+const dgram = require('dgram');
 const config = require('./config');
-const { UbxParser } = require('./ubxParser');
+const { UbxParser, encodeNavPvt } = require('./ubxParser');
+const { toGGA } = require('./nmea');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
 const protocol = require('./protocol');
@@ -73,6 +75,26 @@ const sdLogger = new SdLogger({
   retentionDays: config.logRetentionDays,
   chunkMinutes: config.logChunkMinutes,
 });
+
+// Local UDP broadcast of this boat's own fixes - onboard instruments
+// (chartplotter, a laptop running OpenCPN, u-center) on the same LAN can
+// pick this up directly, independent of the long-range radio TX to the
+// base station below. Runs unthrottled (every fix, not gated by
+// TX_DISTANCE_M like the radio) since it's a local broadcast, not
+// bandwidth-constrained long-range airtime. Same format choice and
+// UDP_BROADCAST_ADDR/UDP_PORT settings as baseStation.js's own copy of
+// this - see config.js's localBroadcast.
+const localBroadcastSocket = dgram.createSocket('udp4');
+localBroadcastSocket.bind(() => localBroadcastSocket.setBroadcast(true));
+
+function outputLocalFrame(pvt) {
+  const buf = config.localBroadcast.format === 'nmea' ? Buffer.from(toGGA(pvt) + '\r\n') : encodeNavPvt(pvt);
+  localBroadcastSocket.send(buf, config.localBroadcast.port, config.localBroadcast.address);
+}
+
+console.log(
+  `[boatAgent] broadcasting ${config.localBroadcast.format.toUpperCase()} over UDP ${config.localBroadcast.address}:${config.localBroadcast.port}`
+);
 
 let radio;
 if (config.simulate) {
@@ -147,8 +169,8 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
     console.error('[boatAgent] failed to persist course marks to disk:', err.message);
   }
   console.log(
-    `[boatAgent] ${new Date().toISOString()} received course marks from base station: ${Object.keys(marks).join(', ')}` +
-      (baseAddress ? `, upload address: ${baseAddress.ip}:${baseAddress.port}` : '')
+    '[boatAgent] received course marks from base station' +
+      (baseAddress ? `, upload ${baseAddress.ip}:${baseAddress.port}` : '')
   );
   startGpsSimIfReady();
 });
@@ -172,9 +194,17 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
 // (finish line, on-grid, mark rounding) only compares a NEW fix against
 // this boat's own PREVIOUS one to detect a crossing, so keeping the ping
 // close to where the boat will actually start avoids a spurious crossing
-// on the very first real fix that follows it.
+// on the real fix that follows it - and specifically the midpoint of
+// pin<->committee, not a mark itself: this frame gets recorded and shown
+// on the map exactly like a real fix (see baseStation.js's radio.on
+// ('frame', ...)), so landing it on, say, leewardGreen would show the
+// boat starting AT a course mark it was never actually near. The midpoint
+// is guaranteed to read as on-grid (see onGridWatcher.js) regardless of
+// which slot this boat ends up drawing once it actually starts.
 function sendMarksPing() {
-  const pos = currentMarks ? currentMarks.leewardGreen : { lat: config.sim.centerLat, lon: config.sim.centerLon };
+  const pos = currentMarks
+    ? { lat: (currentMarks.pin.lat + currentMarks.committee.lat) / 2, lon: (currentMarks.pin.lon + currentMarks.committee.lon) / 2 }
+    : { lat: config.sim.centerLat, lon: config.sim.centerLon };
   const pingPvt = {
     timestamp: Date.now(),
     lat: pos.lat,
@@ -258,6 +288,7 @@ let lastPvt = null;
 function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
+  outputLocalFrame(pvt);
 
   // Distance-based, not time-based: send whenever the boat has actually
   // moved TX_DISTANCE_M since the last transmitted fix, regardless of how
@@ -375,13 +406,16 @@ function startGpsSimIfReady() {
 
   // No Redis-assigned sequential start slot anymore (a real rover has no
   // Redis access, and registration-order slot assignment lived there) -
-  // fall back to the boat's own ID. getStartFraction's existing modulo
-  // wraparound still keeps every boat on the real line rather than
-  // overflowing past it, but boats no longer get spread out in the
-  // registration order they actually joined in - a real per-boat start
-  // slot would need the base to assign and broadcast one, which isn't
-  // implemented.
-  const startSlot = config.boatId;
+  // and not the boat's own ID either, which would put this boat at the
+  // exact same spot on the line every single run, back to back, real
+  // testing usually wants a start position that actually varies (a fresh
+  // random draw each time this boat process starts, i.e. once per
+  // simulated race - startGpsSimIfReady only ever runs once per process).
+  // getStartFraction's existing modulo wraparound maps any integer onto a
+  // real slot on the line, so the draw doesn't need to know maxSlots
+  // itself - a real per-boat start slot assigned by the base isn't
+  // implemented, so this is a stand-in either way, not registration order.
+  const startSlot = Math.floor(Math.random() * 1000);
 
   console.log(`[boatAgent] starting simulated GPS, course marks: ${Object.keys(currentMarks).join(', ')}, start slot: ${startSlot}`);
 
@@ -421,10 +455,7 @@ function startGpsSimIfReady() {
     console.log(`[boatAgent] (sim) completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
   );
   gps.on('finished', ({ laps }) => {
-    console.log(
-      `[boatAgent] finished simulated race after ${laps} lap(s) - ` +
-        'staying alive so any pending log upload still gets a chance to go out (see uploadClient.js)'
-    );
+    console.log(`[boatAgent] finished simulated race after ${laps} lap(s) - staying alive for pending uploads`);
     // SimGpsSource already stopped its own tick timer before emitting this
     // (see simGps.js), so nothing keeps producing fixes/position frames -
     // the process just idles here, with the upload client's own periodic

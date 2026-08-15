@@ -149,10 +149,13 @@ module.exports = {
     // every fix regardless of movement - useful for closely watching RTK
     // convergence bench-side, noisy the rest of the time.
     logAll: process.env.GPS_LOG_ALL === '1' || process.env.GPS_LOG_ALL === 'true',
-    // On by default - boat only, and only actually matters when logAll is
-    // also on and stdout is a real terminal (see boatAgent.js's
-    // handlePvt) - that's when a fix that hasn't cleared TX_DISTANCE_M
-    // overwrites the same console line instead of scrolling. Set
+    // On by default, and only actually matters when stdout is a real
+    // terminal (see boatAgent.js's handlePvt and baseStation.js's
+    // openBaseGps) - that's when a fix overwrites the same console line
+    // instead of scrolling: on the boat, only fixes that haven't cleared
+    // TX_DISTANCE_M (with logAll on); on the base, every fix, since a
+    // stationary reference GPS has no equivalent "moved enough to be
+    // worth its own line" distinction to fall back on. Set
     // GPS_LOG_REPLACE=0 to always scroll (one line per logged fix)
     // instead, e.g. if something downstream is tailing/grepping this
     // process's own terminal output directly rather than a piped/redirected
@@ -331,5 +334,26 @@ module.exports = {
     markRoundingExtensionM: parseFloat(process.env.REGATTAUP_MARK_ROUNDING_EXTENSION_M || '50'),
     markRoundingQueueDbPath:
       process.env.REGATTAUP_MARK_ROUNDING_QUEUE_DB || path.join(logDir, 'mark_rounding_webhook_queue.sqlite'),
+  },
+
+  // --- Local UDP broadcast (base and boat both) ---
+  // Every fix each process itself decodes/produces is also re-broadcast on
+  // the local LAN, unthrottled (every fix, not gated by txDistanceM like
+  // the long-range radio TX) - meant for onboard/dockside instruments
+  // (chartplotters, a laptop running OpenCPN, u-center) to pick up
+  // directly, independent of the race-tracking path above. Base and boat
+  // share these settings so anything listening doesn't need to know which
+  // one it's hearing from.
+  localBroadcast: {
+    // 'ubx' (default) re-emits a synthetic UBX-NAV-PVT message (see
+    // ubxParser.js's encodeNavPvt) - the same format the GPS receiver
+    // itself speaks, so anything that already parses UBX (u-center, this
+    // app) can read it directly, and it carries fields (fix type, DOP,
+    // accuracy estimates) plain NMEA GGA can't. Set
+    // GPS_OUTPUT_FORMAT=nmea for a standard $GPGGA sentence instead, for
+    // tools that only speak NMEA.
+    format: (process.env.GPS_OUTPUT_FORMAT || 'ubx').toLowerCase(),
+    address: process.env.UDP_BROADCAST_ADDR || '255.255.255.255',
+    port: parseInt(process.env.UDP_PORT || '10110', 10), // 10110 is the conventional NMEA-over-UDP port
   },
 };

@@ -40,7 +40,7 @@ if (mode !== 'send' && mode !== 'listen') {
   process.exit(1);
 }
 
-console.log(`[radioTest] ${mode} mode on ${config.radio.port} @ ${config.radio.baud}, boatId=${config.boatId}`);
+console.log(`[radioTest] ${mode} mode on ${config.radio.port} @ ${config.radio.baud}, boat=${config.boatId}`);
 const radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
 radio.on('error', (err) => console.error('[radio] error:', err.message));
 radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));

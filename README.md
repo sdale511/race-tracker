@@ -295,8 +295,8 @@ station's own real-hardware path only reads marks, it won't invent a
 course (see "Connecting to your race committee software" below).
 
 CSV logs land in `./race-logs` (relative to the package, regardless of mode)
-unless you override `LOG_DIR`, and the base station's console/CSV/UDP GGA
-output all work exactly as they would with real hardware.
+unless you override `LOG_DIR`, and the base station's console/CSV/UDP local
+broadcast output all work exactly as they would with real hardware.
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -323,16 +323,25 @@ Ctrl+C once you're done, same as any other run.
 `src/baseStation.js` currently:
 1. Logs every decoded fix to console + CSV
 2. Records every decoded fix to Redis (see below) for querying tracks later
-3. Broadcasts a synthesized `$GPGGA` NMEA sentence over UDP (port 10110,
-   the conventional NMEA-over-UDP port) — some tracking tools can ingest
-   this directly
+3. Re-broadcasts every decoded fix locally over UDP (port 10110, the
+   conventional NMEA-over-UDP port) — as a synthetic `UBX-NAV-PVT` message
+   by default, so anything that already speaks UBX (u-center, this app's
+   own `UbxParser`) can read it directly, and it carries fields (fix type,
+   DOP, accuracy estimates) plain NMEA can't. Set `GPS_OUTPUT_FORMAT=nmea`
+   to get a standard `$GPGGA` sentence instead, for tools that only speak
+   NMEA. `src/boatAgent.js` does the exact same thing independently, on the
+   same port, for onboard instruments (chartplotter, a laptop running
+   OpenCPN) that want this boat's own fixes directly rather than waiting
+   for them to reach the base over radio — unthrottled (every fix, not
+   gated by `TX_DISTANCE_M` like the long-range radio TX), since it's a
+   local broadcast, not long-range airtime.
 
 Once you pick your race software (TracTrac, YB Tracking, RaceQs, Predict
-Wind, or in-house), the `outputFrame()` function is the one place to change
-— swap it for whatever that software actually expects (an HTTP POST to a
-cloud ingestion API is common for the commercial platforms; check their
-integration docs since most of them expect a per-boat auth token). Happy to
-build that adapter once you know the target.
+Wind, or in-house), the base station's `outputFrame()` function is the one
+place to change — swap it for whatever that software actually expects (an
+HTTP POST to a cloud ingestion API is common for the commercial platforms;
+check their integration docs since most of them expect a per-boat auth
+token). Happy to build that adapter once you know the target.
 
 ## Lap events -> RegattaUp
 
@@ -944,6 +953,23 @@ cross-origin) with `{"mode": "survey-in"}`, `{"mode": "fixed"}`, or
 `{"mode": "fixed", "lat": ..., "lon": ..., "heightM": ...}` for a manual
 position.
 
+A fourth button, **Save config**, is a separate, explicit step - none of
+the three actions above survive a power cycle on their own. They send a
+`UBX-CFG-TMODE3` message, and like every other legacy `UBX-CFG-*` message
+(as opposed to the newer `CFG-VALSET` interface the one-time `ubxtool`
+setup commands earlier in this README use, with their own explicit
+`RAM|BBR|Flash` layer flag), that only ever changes the receiver's live RAM
+config - without a save, TMODE3 silently reverts to whatever was last saved
+(or the factory default) on every restart. Save config sends a
+`UBX-CFG-CFG` message instead, persisting whatever's currently active to
+both BBR and flash (`src/ubxParser.js`'s `encodeSaveConfig`) - ArduSimple's
+simpleRTK2B boards typically have no SPI flash at all and rely on BBR
+(kept alive by an onboard supercap, or a coin cell if one's fitted)
+instead, but targeting flash too is harmless when it's absent and covers
+boards that do have it. BBR persistence only lasts as long as its own
+backup power does - a long enough full power-down can still lose it even
+after a save. POSTs to `/api/gps/save-config`, no body.
+
 A boat's "pending uploads" figure is self-reported: it rides along on the
 same periodic health check the boat already does to test reachability
 (see "Uploading boat logs to the base over WiFi" above), since the base
@@ -1119,6 +1145,8 @@ given `boat`/`base` run will actually use, instead of reading through
 |---|---|---|
 | `SIMULATE` | unset | Set to `1` to run `boat`/`base` with no GPS or radio hardware at all - fake GPS track + a UDP-broadcast stand-in for the radio, see "Simulation mode (no hardware)" above |
 | `SIMULATE_GPS` | unset | Fakes just the GPS track while still using real radio hardware on both ends - for bench-testing an actual radio link (range, packet loss) without needing a real GPS fix or being outdoors. Implied by `SIMULATE=1`; only needed on its own when you want simulated GPS with a real radio specifically, see "Simulated GPS with real radio hardware" above |
+| `GPS_OUTPUT_FORMAT` | `ubx` | Base and boat both — format of the local UDP broadcast, see "Connecting to your race committee software" above. `ubx` (default) sends a synthetic `UBX-NAV-PVT` message; `nmea` sends a standard `$GPGGA` sentence instead, for tools that only speak NMEA |
+| `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base and boat both — where each process's own local UDP broadcast (see `GPS_OUTPUT_FORMAT` above) is sent. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`); the base only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
 | `GPS_LOG` | unset (on) | Both roles — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
 | `GPS_LOG_ALL` | unset (off) | Boat only — when `GPS_LOG` is on, this decides *how much* it logs. Off by default: only fixes that clear `TX_DISTANCE_M` are logged (mirrors what's actually sent over radio/written to SD, not the full 1-10Hz raw stream). Set to `1` to log every fix regardless of movement — noisy, but useful for closely watching RTK convergence bench-side |
@@ -1145,7 +1173,6 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
 | `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
 | `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
-| `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base station only — where the synthesized `$GPGGA` NMEA sentence for each decoded fix is UDP-broadcast, see "Connecting to your race committee software" above. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_RETRY_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' retry queues too |

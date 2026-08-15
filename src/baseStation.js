@@ -14,11 +14,43 @@ const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadSer
 const { startAdminServer } = require('./adminServer');
 const stats = require('./stats');
 const { SerialPort } = require('serialport');
-const { UbxParser, encodePollRequest, encodeSetTmode3, TMODE3_MODE_NAMES, CLASS_CFG, ID_CFG_TMODE3 } = require('./ubxParser');
+const {
+  UbxParser,
+  encodePollRequest,
+  encodeSetTmode3,
+  encodeSaveConfig,
+  encodeNavPvt,
+  TMODE3_MODE_NAMES,
+  CLASS_CFG,
+  ID_CFG_TMODE3,
+} = require('./ubxParser');
+const { toGGA } = require('./nmea');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+
+// True while the cursor is sitting mid-line after an in-place base-GPS log
+// overwrite (see openBaseGps's nav-pvt handler below) - any *other* log
+// call landing while that's true would otherwise get silently tacked onto
+// the end of that same line instead of starting its own, since nothing
+// else in this process knows the cursor isn't at column 0. Wrapping
+// console.log/warn/error here (rather than auditing every call site across
+// this file and every module it pulls in) is the only way to catch all of
+// them, including ones added later. Same mechanism as boatAgent.js's own
+// gpsLineDirty - kept as a separate copy, not a shared import, since each
+// file's console output is its own process/terminal, nothing to share.
+let gpsLineDirty = false;
+for (const method of ['log', 'warn', 'error']) {
+  const original = console[method].bind(console);
+  console[method] = (...args) => {
+    if (gpsLineDirty) {
+      process.stdout.write('\n');
+      gpsLineDirty = false;
+    }
+    original(...args);
+  };
+}
 
 // Base station: sits at the committee boat/shore with the matching radio.
 // Decodes incoming frames and fans them out to whatever your race tracking
@@ -28,10 +60,12 @@ const dgram = require('dgram');
 //   1. console/JSON  - always on, good for debugging
 //   2. CSV file       - one row per fix, per boat
 //   3. Redis          - queryable per-boat or fleet-wide tracks, see redisStore.js
-//   4. UDP broadcast  - many tools can ingest a simple NMEA GGA sentence
-//                       over UDP; swap outputFrame() below for whatever
-//                       your chosen software's actual ingestion format is
-//                       (HTTP POST to a cloud API, TCP NMEA stream, etc).
+//   4. UDP broadcast  - re-broadcasts each fix locally as UBX-NAV-PVT
+//                       (default) or NMEA GGA (see config.js's
+//                       localBroadcast.format); swap outputFrame() below
+//                       for whatever your chosen software's actual
+//                       ingestion format is (HTTP POST to a cloud API,
+//                       TCP NMEA stream, etc).
 //
 // Lap detection also lives here (see finishLineWatcher.js), not on the
 // boat: a real rover has no Redis access to resolve course marks itself, so
@@ -197,11 +231,32 @@ function main() {
       parser.on('nav-pvt', (pvt) => {
         baseGpsFix = pvt;
         if (config.gps.logConsole) {
-          console.log(
-            `[baseGps] ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
-              `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
-              `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`
-          );
+          // The base GPS is normally stationary (it's the fixed reference,
+          // not something moving around a course), so unlike the boat's own
+          // TX_DISTANCE_M-gated logging, there's no "did it move enough to
+          // be worth its own line" distinction to fall back on here - every
+          // fix would otherwise scroll a near-identical line at whatever
+          // rate the receiver's configured for. Overwrite the same line
+          // instead (same mechanism as boatAgent.js's own in-place GPS log -
+          // see the gpsLineDirty wrapper above), and let any other log call
+          // advance past it. Timestamp included so a genuinely frozen
+          // connection is still visually distinguishable from a live one
+          // that just hasn't moved - the clock keeps ticking either way.
+          const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
+          const line =
+            `[baseGps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+            `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
+            `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
+          // Same isTTY/logReplace guard as boatAgent.js - piped/redirected
+          // output (a log file, systemd/journald) falls through to a plain
+          // scrolling console.log, since the in-place escape codes would
+          // just show up as raw control characters there.
+          if (config.gps.logReplace && process.stdout.isTTY) {
+            process.stdout.write(`\x1b[2K\r${line}`);
+            gpsLineDirty = true;
+          } else {
+            console.log(line);
+          }
         }
       });
       parser.on('cfg-tmode3', (t) => {
@@ -292,8 +347,8 @@ function main() {
   ensureCsvFile();
 
   const udpSocket = dgram.createSocket('udp4');
-  const UDP_BROADCAST_ADDR = process.env.UDP_BROADCAST_ADDR || '255.255.255.255';
-  const UDP_PORT = parseInt(process.env.UDP_PORT || '10110', 10); // 10110 is the conventional NMEA-over-UDP port
+  const UDP_BROADCAST_ADDR = config.localBroadcast.address;
+  const UDP_PORT = config.localBroadcast.port;
   udpSocket.bind(() => udpSocket.setBroadcast(true));
 
   const redisStore = new RedisStore({
@@ -312,9 +367,7 @@ function main() {
   function broadcastMarksNow() {
     if (!raceMarks) return;
     radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port }));
-    console.log(
-      `[baseStation] ${new Date().toISOString()} broadcast course marks to all boats: ${Object.keys(raceMarks).join(', ')}`
-    );
+    console.log(`[baseStation] ${new Date().toISOString()} broadcast course marks to all boats`);
     // Republishes the on-grid zone alongside the marks themselves, same
     // trigger points (initial resolve, an edit, the periodic heartbeat) -
     // so anything reading it from Redis (RegattaUp, another dashboard) sees
@@ -513,6 +566,22 @@ function main() {
     }).filter(Boolean);
   }
 
+  // All three webhook queues below default to the same LOG_DIR - a queue's
+  // own "ready" line just shows its filename (see queueFileLabel), with the
+  // shared directory logged once, immediately before the first "ready" line
+  // (inside the lap queue's own IIFE below), so the two appear as adjacent
+  // lines instead of the directory printing at setup time here while
+  // "ready" only lands later, once each queue actually finishes opening,
+  // with whatever else this file logs in between the two. Each
+  // REGATTAUP_*_QUEUE_DB env var can still override its own path
+  // independently, though, so a queue whose directory doesn't match this
+  // one falls back to its own full path in its "ready" line instead of
+  // silently going missing from the log.
+  const webhookQueueDir = path.dirname(config.regattaup.queueDbPath);
+  function queueFileLabel(dbPath) {
+    return path.dirname(dbPath) === webhookQueueDir ? path.basename(dbPath) : dbPath;
+  }
+
   // Lap webhook queue (see lapWebhookQueue.js) - initializes asynchronously
   // (it reads/creates a small sqlite file), so a lap detected before it's
   // ready gets buffered here rather than dropped. Once ready, buffered laps
@@ -525,7 +594,8 @@ function main() {
   (async () => {
     try {
       lapWebhookQueue = await LapWebhookQueue.create(config.regattaup.queueDbPath);
-      console.log(`[baseStation] lap webhook queue ready at ${config.regattaup.queueDbPath}`);
+      console.log(`[baseStation] webhook queues stored in ${webhookQueueDir}`);
+      console.log(`[baseStation] lap webhook queue ready (${queueFileLabel(config.regattaup.queueDbPath)})`);
       for (const lap of bufferedLaps) enqueueLap(lap);
       bufferedLaps = [];
       setInterval(() => retryQueuedLaps(lapWebhookQueue), config.regattaup.retryIntervalMs);
@@ -543,7 +613,7 @@ function main() {
   (async () => {
     try {
       onGridWebhookQueue = await OnGridWebhookQueue.create(config.regattaup.onGridQueueDbPath);
-      console.log(`[baseStation] on-grid webhook queue ready at ${config.regattaup.onGridQueueDbPath}`);
+      console.log(`[baseStation] on-grid webhook queue ready (${queueFileLabel(config.regattaup.onGridQueueDbPath)})`);
       for (const event of bufferedOnGrid) enqueueOnGrid(event);
       bufferedOnGrid = [];
       setInterval(() => retryQueuedOnGrid(onGridWebhookQueue), config.regattaup.retryIntervalMs);
@@ -566,7 +636,7 @@ function main() {
   (async () => {
     try {
       markRoundingWebhookQueue = await MarkRoundingWebhookQueue.create(config.regattaup.markRoundingQueueDbPath);
-      console.log(`[baseStation] mark-rounding webhook queue ready at ${config.regattaup.markRoundingQueueDbPath}`);
+      console.log(`[baseStation] mark-rounding webhook queue ready (${queueFileLabel(config.regattaup.markRoundingQueueDbPath)})`);
       for (const event of bufferedMarkRoundings) enqueueMarkRounding(event);
       bufferedMarkRoundings = [];
       setInterval(() => retryQueuedMarkRoundings(markRoundingWebhookQueue), config.regattaup.retryIntervalMs);
@@ -738,12 +808,17 @@ function main() {
   }
 
   // --- Adapter: replace this once you know your race software's expected
-  // input format/protocol. Currently emits a standard NMEA GGA sentence over
-  // UDP broadcast, which some tracking tools can ingest directly. ---
+  // input format/protocol. Currently re-broadcasts each fix over UDP as
+  // either a synthetic UBX-NAV-PVT message (default) or a standard NMEA GGA
+  // sentence - see config.js's localBroadcast.format. ---
   function outputFrame(d) {
-    const sentence = toGGA(d);
-    const buf = Buffer.from(sentence + '\r\n');
-    udpSocket.send(buf, UDP_PORT, UDP_BROADCAST_ADDR);
+    if (config.localBroadcast.format === 'nmea') {
+      const buf = Buffer.from(toGGA(d) + '\r\n');
+      udpSocket.send(buf, UDP_PORT, UDP_BROADCAST_ADDR);
+    } else {
+      const buf = encodeNavPvt(d);
+      udpSocket.send(buf, UDP_PORT, UDP_BROADCAST_ADDR);
+    }
   }
 
   // Everything the admin dashboard (adminServer.js) needs in one place -
@@ -996,6 +1071,18 @@ function main() {
     requestTmode3Refresh();
   }
 
+  // Persists whatever TMODE3 mode is CURRENTLY active (survey-in or fixed,
+  // set moments ago or long since) to the receiver's own non-volatile
+  // storage, so it's still set that way after a power cycle - see the
+  // admin dashboard's own "Save config" button and encodeSaveConfig's own
+  // comment for why this is a separate, explicit action rather than
+  // automatic: setBaseGpsSurveyIn/setBaseGpsFixed above only ever change
+  // the receiver's live RAM config on their own.
+  function saveBaseGpsConfig() {
+    if (!currentGpsPort) throw new Error('base GPS not connected');
+    currentGpsPort.write(encodeSaveConfig());
+  }
+
   startAdminServer({
     port: config.admin.port,
     getStats: getFullStats,
@@ -1005,6 +1092,7 @@ function main() {
     getBaseGpsSurvey: getBaseGpsSurveyStatus,
     setBaseGpsSurveyIn,
     setBaseGpsFixed,
+    saveBaseGpsConfig,
   });
 
   if (config.simulate) {
@@ -1020,50 +1108,22 @@ function main() {
       config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`
     }`
   );
-  console.log(`[baseStation] broadcasting NMEA GGA over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`);
+  console.log(
+    `[baseStation] broadcasting ${config.localBroadcast.format.toUpperCase()} over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`
+  );
   console.log(
     config.regattaup.enabled
       ? `[baseStation] lap crossings post to RegattaUp at ${config.regattaup.webhookUrl}`
       : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_DISABLED=1)'
   );
   if (config.regattaup.enabled) {
-    console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m either side of the pin<->committee line`);
+    console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m behind the pin<->committee line`);
     console.log(
       config.regattaup.markRoundingEnabled
         ? `[baseStation] mark roundings post to RegattaUp (gate extends ${config.regattaup.markRoundingExtensionM}m beyond each mark)`
         : '[baseStation] mark-rounding webhook disabled (set REGATTAUP_MARK_ROUNDING_ENABLED=1 to enable)'
     );
   }
-}
-
-function toGGA(d) {
-  const t = new Date(d.timestamp);
-  const hhmmss =
-    String(t.getUTCHours()).padStart(2, '0') +
-    String(t.getUTCMinutes()).padStart(2, '0') +
-    String(t.getUTCSeconds()).padStart(2, '0');
-
-  const latAbs = Math.abs(d.lat);
-  const latDeg = Math.floor(latAbs);
-  const latMin = (latAbs - latDeg) * 60;
-  const latStr = `${String(latDeg).padStart(2, '0')}${latMin.toFixed(4).padStart(7, '0')}`;
-  const latHem = d.lat >= 0 ? 'N' : 'S';
-
-  const lonAbs = Math.abs(d.lon);
-  const lonDeg = Math.floor(lonAbs);
-  const lonMin = (lonAbs - lonDeg) * 60;
-  const lonStr = `${String(lonDeg).padStart(3, '0')}${lonMin.toFixed(4).padStart(7, '0')}`;
-  const lonHem = d.lon >= 0 ? 'E' : 'W';
-
-  const fixQuality = d.carrSoln === 2 ? 4 : d.carrSoln === 1 ? 5 : d.gnssFixOk ? 1 : 0; // 4=RTK fixed,5=RTK float,1=GPS
-  const body = `GPGGA,${hhmmss},${latStr},${latHem},${lonStr},${lonHem},${fixQuality},${String(d.numSV).padStart(2, '0')},1.0,0.0,M,0.0,M,,`;
-  return '$' + body + '*' + checksum(body);
-}
-
-function checksum(str) {
-  let cs = 0;
-  for (let i = 0; i < str.length; i++) cs ^= str.charCodeAt(i);
-  return cs.toString(16).toUpperCase().padStart(2, '0');
 }
 
 // Counts the lap with RegattaUp (see https://regattaup.com) - boatId is

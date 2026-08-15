@@ -43,6 +43,14 @@ const sections = [
     ],
   },
   {
+    title: 'Local UDP broadcast (base and boat both)',
+    rows: [
+      { label: 'format', value: config.localBroadcast.format, envVar: 'GPS_OUTPUT_FORMAT' },
+      { label: 'address', value: config.localBroadcast.address, envVar: 'UDP_BROADCAST_ADDR' },
+      { label: 'port', value: config.localBroadcast.port, envVar: 'UDP_PORT' },
+    ],
+  },
+  {
     title: 'GPS (simpleRTK2B LR)',
     rows: [
       { label: 'port', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX' },

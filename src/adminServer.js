@@ -188,8 +188,8 @@ function renderBaseGpsSurveyCard(survey, fix) {
       <div class="value">${modeLabel}</div>
       <div class="stat-rows">${rowsHtml}</div>
       <div class="card-actions">
-        <button type="button" class="card-btn" onclick="setTmode3Mode('survey-in', this)">Start survey-in</button>
-        <button type="button" class="card-btn" onclick="setTmode3Mode('fixed', this)">Use as fixed position</button>
+        <button type="button" class="card-btn" onclick="setTmode3Mode('survey-in', this)">Survey-in</button>
+        <button type="button" class="card-btn" onclick="setTmode3Mode('fixed', this, true)">Set and save</button>
       </div>
     </div>`;
 }
@@ -238,7 +238,8 @@ function renderManualFixedPositionCard(survey, fix) {
         <input type="number" step="any" class="manual-input" id="manualHeight" placeholder="Height (m)" value="${prefillHeight}">
       </div>
       <div class="card-actions">
-        <button type="button" class="card-btn" onclick="setManualFixedPosition(this)">Set exact position</button>
+        <button type="button" class="card-btn" onclick="setManualFixedPosition(this, false)">Set exact</button>
+        <button type="button" class="card-btn" onclick="setManualFixedPosition(this, true)">Set and save</button>
       </div>
     </div>`;
 }
@@ -462,9 +463,24 @@ function renderDashboard(s) {
     // once the receiver's actually responded to the poll baseStation.js
     // sends right after the SET - reloading immediately here would still
     // show the OLD mode, since that poll response hasn't arrived yet.
-    async function setTmode3Mode(mode, btn) {
+    // Shared by setTmode3Mode/setManualFixedPosition below - POSTs the
+    // save-config request (see baseStation.js's saveBaseGpsConfig) right
+    // after a successful set, so "Set and save" is one click instead of
+    // two. Throws (rather than alerting itself) so the caller's own catch
+    // block reports it consistently with the set step's own errors -
+    // "set succeeded but save failed" is a meaningfully different problem
+    // from "set failed" and worth saying so explicitly, not just repeating
+    // a generic "request failed".
+    async function saveGpsConfigOrThrow() {
+      const res = await fetch('/api/gps/save-config', { method: 'POST' });
+      const result = await res.json();
+      if (!result.ok) throw new Error('set succeeded but save failed: ' + (result.error || 'request failed'));
+    }
+
+    async function setTmode3Mode(mode, btn, andSave) {
       const label = mode === 'fixed' ? 'lock the base GPS to a fixed position' : 'start (or restart) survey-in on the base GPS';
-      if (!confirm('Are you sure you want to ' + label + '? This affects RTK corrections for every boat.')) return;
+      const saveNote = andSave ? ' and save it so it survives a reboot' : '';
+      if (!confirm('Are you sure you want to ' + label + saveNote + '? This affects RTK corrections for every boat.')) return;
       btn.disabled = true;
       try {
         const res = await fetch('/api/gps/survey/mode', {
@@ -474,6 +490,7 @@ function renderDashboard(s) {
         });
         const result = await res.json();
         if (!result.ok) throw new Error(result.error || 'request failed');
+        if (andSave) await saveGpsConfigOrThrow();
         setTimeout(() => location.reload(), 800);
       } catch (err) {
         alert('Failed: ' + err.message);
@@ -490,16 +507,18 @@ function renderDashboard(s) {
     // check is the one that actually matters. The confirm() spells out the
     // exact numbers about to be sent, not just "are you sure", so a typo
     // (wrong sign, transposed digits) is visible one last time before it
-    // reconfigures RTK corrections for every boat.
-    async function setManualFixedPosition(btn) {
+    // reconfigures RTK corrections for every boat. andSave mirrors
+    // setTmode3Mode's own flag - see saveGpsConfigOrThrow above.
+    async function setManualFixedPosition(btn, andSave) {
       const lat = parseFloat(document.getElementById('manualLat').value);
       const lon = parseFloat(document.getElementById('manualLon').value);
       const heightM = parseFloat(document.getElementById('manualHeight').value);
       if (!Number.isFinite(lat) || lat < -90 || lat > 90) return alert('Lat must be a number between -90 and 90.');
       if (!Number.isFinite(lon) || lon < -180 || lon > 180) return alert('Lon must be a number between -180 and 180.');
       if (!Number.isFinite(heightM)) return alert('Height must be a number (meters).');
+      const saveNote = andSave ? ' and save it so it survives a reboot' : '';
       const confirmMsg =
-        'Set the base GPS fixed position to exactly ' + lat.toFixed(7) + ', ' + lon.toFixed(7) + ' (' + heightM.toFixed(2) + 'm)?\\n\\n' +
+        'Set the base GPS fixed position to exactly ' + lat.toFixed(7) + ', ' + lon.toFixed(7) + ' (' + heightM.toFixed(2) + 'm)' + saveNote + '?\\n\\n' +
         'This affects RTK corrections for every boat - double-check these numbers against your known position before continuing.';
       if (!confirm(confirmMsg)) return;
       btn.disabled = true;
@@ -511,6 +530,7 @@ function renderDashboard(s) {
         });
         const result = await res.json();
         if (!result.ok) throw new Error(result.error || 'request failed');
+        if (andSave) await saveGpsConfigOrThrow();
         setTimeout(() => location.reload(), 800);
       } catch (err) {
         alert('Failed: ' + err.message);
@@ -1096,7 +1116,17 @@ function readJsonBody(req) {
 // setBaseGpsSurveyIn/setBaseGpsFixed (see baseStation.js) switch that same
 // GPS module's TMODE3 mode - unlike setMark, this is base-only (no rover
 // equivalent), so it doesn't need setMark's CORS handling.
-function startAdminServer({ port, getStats, getPositions, setMark, getBaseGps, getBaseGpsSurvey, setBaseGpsSurveyIn, setBaseGpsFixed }) {
+function startAdminServer({
+  port,
+  getStats,
+  getPositions,
+  setMark,
+  getBaseGps,
+  getBaseGpsSurvey,
+  setBaseGpsSurveyIn,
+  setBaseGpsFixed,
+  saveBaseGpsConfig,
+}) {
   const server = http.createServer(async (req, res) => {
     if (req.url === '/api/gps/survey/mode' && req.method === 'POST') {
       try {
@@ -1114,6 +1144,22 @@ function startAdminServer({ port, getStats, getPositions, setMark, getBaseGps, g
               : null;
           setBaseGpsFixed(manualPos);
         } else throw new Error(`unknown mode "${body.mode}"`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Persists whatever TMODE3 mode is currently active (see
+    // baseStation.js's saveBaseGpsConfig) - a separate, explicit action
+    // from setting survey-in/fixed mode itself, which only ever changes
+    // the receiver's live RAM config on its own.
+    if (req.url === '/api/gps/save-config' && req.method === 'POST') {
+      try {
+        saveBaseGpsConfig();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

@@ -151,7 +151,10 @@ function zonePolygon(marks, zoneMeters) {
 
 class OnGridWatcher {
   // marks: { committee, pin, windwardGreen, leewardGreen } (all {lat, lon}).
-  // zoneMeters: how far to either side of the line still counts as on-grid.
+  // zoneMeters: how far behind (leeward of) the line still counts as
+  // on-grid - one-sided, not either side: check() rejects anything past
+  // the line on the windward/course side outright (see its own comment),
+  // so this only ever extends into the pre-start area.
   constructor(marks, zoneMeters) {
     const geo = computeGeometry(marks);
     this._toXY = geo.toLocal;

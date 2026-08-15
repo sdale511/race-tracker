@@ -25,7 +25,7 @@ function pruneOldLogs(dir, pattern, maxAgeDays) {
         console.log(`[logRotation] deleted old log file: ${file}`);
       }
     } catch (err) {
-      console.error(`[logRotation] failed to check/delete ${file}:`, err.message);
+      console.error(`[logRotation] prune failed for ${file}:`, err.message);
     }
   }
 }
