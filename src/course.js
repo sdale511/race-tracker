@@ -29,10 +29,10 @@ const FEET_TO_M = 0.3048;
 // black marks sit beyond the green ones, on each end - black windward
 // extends COURSE_LENGTH_M + this beyond leewardGreen, black leeward sits
 // this far on the far side of leewardGreen (away from the start/finish
-// complex). The simulator always races the green marks (see
-// boatAgent.js/simGps.js) - black marks are published for reference only,
-// same as pin/committee/finish are never targeted by the tacking logic
-// directly.
+// complex). Which pair the simulator actually races is configurable per
+// end (SIM_COURSE_MARKS, see config.js/deriveGeometry/getRaceMarks below) -
+// pin/committee/finish are never targeted by the tacking logic directly,
+// regardless.
 const LONG_COURSE_EXTRA_NM = parseFloat(process.env.SIM_LONG_COURSE_EXTRA_NM || '0.25');
 const LONG_COURSE_EXTRA_M = LONG_COURSE_EXTRA_NM * NM_TO_M;
 
@@ -183,6 +183,40 @@ function getStartFraction(slotIndex, geometry) {
   return (boatStartSpacingM / 2 + wrappedSlot * boatStartSpacingM) / startSideLengthM;
 }
 
+// Which windward/leeward mark the simulator actually races - see
+// config.js's sim.courseMarks. Two letters, windward first, each 'G'
+// (green, the short-course mark) or 'B' (black, the long-course mark) - so
+// 'GG' is the plain short course, 'BB' the plain long course, and 'BG'/'GB'
+// mix a long beat on one end with a short one on the other (a real
+// committee-run course with two windward/leeward pairs on the same axis
+// supports exactly these combinations, see getMarks' own comment).
+const COURSE_MARK_CODE_PATTERN = /^[GB]{2}$/;
+
+// Resolves a two-letter code into the actual mark NAMES to race - a
+// separate step from getRaceMarks below so a caller that only needs the
+// names (e.g. boatAgent.js's own log line) doesn't need a full marks object
+// in hand.
+function parseCourseMarks(code) {
+  const normalized = (code || 'GG').toUpperCase();
+  if (!COURSE_MARK_CODE_PATTERN.test(normalized)) {
+    throw new Error(`invalid course mark code "${code}" - must be 2 letters, each G (green) or B (black), e.g. GG/BB/BG/GB`);
+  }
+  return {
+    windwardName: normalized[0] === 'G' ? 'windwardGreen' : 'windwardBlack',
+    leewardName: normalized[1] === 'G' ? 'leewardGreen' : 'leewardBlack',
+  };
+}
+
+// Resolves a two-letter code (see parseCourseMarks above) against an actual
+// marks object into the real windward/leeward mark the simulator should
+// race this run - used by both deriveGeometry (below) and boatAgent.js
+// (which also needs the resolved leeward mark's own lat/lon as
+// SimGpsSource's local-frame origin, see its own comment).
+function getRaceMarks(marks, code) {
+  const { windwardName, leewardName } = parseCourseMarks(code);
+  return { windward: marks[windwardName], leeward: marks[leewardName], windwardName, leewardName };
+}
+
 // Derives the course's actual geometry by measuring the marks themselves,
 // rather than trusting this process's own SIM_COURSE_LENGTH_NM to agree
 // with whatever course was actually published to Redis - marks could have
@@ -191,19 +225,26 @@ function getStartFraction(slotIndex, geometry) {
 // them some other way entirely). Every simulator-side geometry decision
 // (tacking, mark rounding, gate targeting) should follow whatever the marks
 // actually say, not this process's own environment - that's the only way
-// a boat and the marks it's racing against are guaranteed to agree. Always
-// measured off the green marks - the simulator never races the black
-// (long-course) marks, see getMarks' own comment.
-function deriveGeometry(marks) {
-  const courseLengthM = distanceMeters(marks.leewardGreen, marks.windwardGreen);
+// a boat and the marks it's racing against are guaranteed to agree.
+//
+// courseMarks (see parseCourseMarks above) picks WHICH windward/leeward
+// pair to measure - defaults to 'GG' (the plain short course, the old
+// hardcoded behavior) so any existing caller that doesn't pass this keeps
+// today's behavior. Measuring the actual distance/bearing between whichever
+// pair is chosen, rather than assuming COURSE_LENGTH_M/LONG_COURSE_EXTRA_M,
+// is what makes a mixed pair like 'BG' just work: the beat comes out longer
+// on whichever end is actually black, with no separate case needed here.
+function deriveGeometry(marks, courseMarks = 'GG') {
+  const { windward, leeward } = getRaceMarks(marks, courseMarks);
+  const courseLengthM = distanceMeters(leeward, windward);
   // The actual compass direction from leeward to windward - NOT assumed to
   // be true north (0). Only the freshly-generated layout (getMarks above)
   // puts them exactly on a north-south axis; once an operator edits a mark,
   // the real bearing can be anything. simGps.js rotates its whole (locally
   // north-relative) tacking model by this before converting to lat/lon, so
-  // the simulated boat actually sails toward wherever windwardGreen really
-  // is.
-  const courseBearingDeg = bearingDeg(marks.leewardGreen, marks.windwardGreen);
+  // the simulated boat actually sails toward wherever the real windward
+  // mark actually is.
+  const courseBearingDeg = bearingDeg(leeward, windward);
   // Only the pin<->committee distance is still needed here (by
   // getStartFraction, for boat start spacing) - simGps.js measures
   // committee/finish's own true positions directly (see its _toLocal), not
@@ -241,4 +282,6 @@ module.exports = {
   getMarks,
   getStartFraction,
   deriveGeometry,
+  parseCourseMarks,
+  getRaceMarks,
 };

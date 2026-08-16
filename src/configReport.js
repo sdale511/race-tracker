@@ -40,6 +40,7 @@ const sections = [
       { label: 'centerLon', value: config.sim.centerLon, envVar: 'SIM_CENTER_LON', unit: '°' },
       { label: 'packetLossPct', value: config.sim.packetLossPct, envVar: 'SIM_PACKET_LOSS', unit: '%' },
       { label: 'startOnly', value: config.sim.startOnly, envVar: 'SIM_START_ONLY' },
+      { label: 'courseMarks', value: config.sim.courseMarks, envVar: 'SIM_COURSE_MARKS' },
     ],
   },
   {

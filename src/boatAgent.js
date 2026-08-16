@@ -395,14 +395,16 @@ function startGpsSimIfReady() {
   gpsSimStarted = true;
 
   const { SimGpsSource } = require('./simGps');
-  const { deriveGeometry } = require('./course');
+  const { deriveGeometry, getRaceMarks } = require('./course');
 
   // Measured from the marks themselves, not assumed from this process's own
   // SIM_COURSE_LENGTH_NM - the base station is the one authority on course
   // length now (it owns Redis and does the actual clear-and-recompute when
   // that env var changes); this boat just races whatever geometry the marks
-  // it received actually describe.
-  const geometry = deriveGeometry(currentMarks);
+  // it received actually describe, between whichever windward/leeward pair
+  // config.sim.courseMarks picks (default 'GG', the plain short course).
+  const geometry = deriveGeometry(currentMarks, config.sim.courseMarks);
+  const raceMarks = getRaceMarks(currentMarks, config.sim.courseMarks);
 
   // No Redis-assigned sequential start slot anymore (a real rover has no
   // Redis access, and registration-order slot assignment lived there) -
@@ -417,16 +419,19 @@ function startGpsSimIfReady() {
   // implemented, so this is a stand-in either way, not registration order.
   const startSlot = Math.floor(Math.random() * 1000);
 
-  console.log(`[boatAgent] starting simulated GPS, course marks: ${Object.keys(currentMarks).join(', ')}, start slot: ${startSlot}`);
+  console.log(
+    `[boatAgent] starting simulated GPS, course marks: ${Object.keys(currentMarks).join(', ')}, ` +
+      `racing ${raceMarks.windwardName}/${raceMarks.leewardName} (SIM_COURSE_MARKS=${config.sim.courseMarks}), start slot: ${startSlot}`
+  );
 
-  // The green leeward mark *is* the course's center/reference point by
-  // construction (course.js), so it's exactly what SimGpsSource needs.
-  // The simulator always races the green (short-course) marks - never the
-  // black (long-course) ones, which exist only for reference (see
-  // course.js's getMarks comment).
+  // The resolved leeward mark (see raceMarks above, and config.sim.courseMarks)
+  // is the course's center/reference point for this run - SimGpsSource's
+  // whole local tacking frame is built around it being at local (0,0), and
+  // geometry.courseLengthM/courseBearingDeg were measured from this exact
+  // same mark, so the two have to agree on which one that is.
   const gps = new SimGpsSource({
-    centerLat: currentMarks.leewardGreen.lat,
-    centerLon: currentMarks.leewardGreen.lon,
+    centerLat: raceMarks.leeward.lat,
+    centerLon: raceMarks.leeward.lon,
     upwindSpeedKn: config.sim.upwindSpeedKn,
     downwindSpeedKn: config.sim.downwindSpeedKn,
     hz: config.sim.gpsHz,

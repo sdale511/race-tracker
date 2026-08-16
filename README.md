@@ -245,8 +245,9 @@ attached. In this mode:
   windward-leeward course around a configurable center point - beating
   upwind on alternating tacks, running downwind on alternating gybes, with
   randomized leg lengths so no two laps look the same - in place of the real
-  UBX-NAV-PVT parser. Always races the green (short-course) marks - see
-  "Changing the course" below.
+  UBX-NAV-PVT parser. Races whichever windward/leeward mark pair
+  `SIM_COURSE_MARKS` picks (default `GG`, the short course) - see "Changing
+  the course" below.
 - `src/simRadioLink.js` replaces the serial radio link with a shared UDP
   broadcast socket carrying the exact same frames (`src/protocol.js`), so
   the real encode/decode/checksum path is still exercised end to end — just
@@ -264,7 +265,22 @@ SIMULATE=1 npm run base
 SIMULATE=1 BOAT_ID=1 npm run boat
 ```
 For multiple simulated boats, run more `npm run boat` instances with
-different `BOAT_ID` values pointed at the same base station.
+different `BOAT_ID` values pointed at the same base station - or use
+`npm run fleet` (`src/fleetSim.js`) to spawn several at once:
+
+```
+FLEET_SIZE=5 npm run fleet
+```
+
+Spawns `FLEET_SIZE` (default 3) boat processes as one command, each with its
+own sequential `BOAT_ID` (starting from `BOAT_ID_START`, default 1) and its
+own admin dashboard port, output prefixed per boat (`[boat 3] ...`). Each
+boat exits on its own the moment it finishes its laps
+(`SIM_EXIT_ON_FINISH=1`, set automatically for every boat this spawns) -
+`fleetSim` reports the fleet done once the last one exits. `SIMULATE=1` is
+assumed by default (this command's whole purpose is a simulated fleet); any
+other `SIM_*` env var (`SIM_LAP_COUNT`, `SIM_COURSE_MARKS`, `SIM_START_ONLY`,
+...) passes through unchanged to every boat, same as `npm run boat`.
 
 ### Simulated GPS with real radio hardware
 
@@ -306,7 +322,8 @@ broadcast output all work exactly as they would with real hardware.
 | `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8898` / `-118.3821` | Center point of the simulated racecourse - setting either clears any already-published course marks on startup so the new center actually takes effect (see "Changing the course" below), same as `SIM_COURSE_LENGTH_NM` below |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
 | `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect |
-| `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end - reference only, the simulator never races them. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
+| `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
+| `SIM_COURSE_MARKS` | `GG` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `GG`/`BB` for the plain short/long course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
 | `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
@@ -692,10 +709,11 @@ can be called without re-laying anything. `windwardGreen`/`leewardGreen`
 are exactly what a single "windward"/"leeward" mark used to mean in this
 app (same position, same meaning) - `windwardBlack`/`leewardBlack` are new,
 sitting `SIM_LONG_COURSE_EXTRA_NM` (default 0.25nm) further out beyond each
-green mark, on the far side from the start/finish complex. **The simulator
-(`simGps.js`) always races the green marks** - the black ones are published
-for reference only, same as `pin`/`committee`/`finish` are never targeted
-directly by the tacking logic.
+green mark, on the far side from the start/finish complex. **Which pair the
+simulator (`simGps.js`) actually races is `SIM_COURSE_MARKS`** (default
+`GG`, the plain short course - see the env var table above for the other
+three combinations) - `pin`/`committee`/`finish` are never targeted directly
+by the tacking logic regardless.
 
 ```
 npm run clear-course

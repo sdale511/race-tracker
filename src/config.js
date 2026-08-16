@@ -96,6 +96,23 @@ module.exports = {
     // off the line seconds after simulation start, or fighting the sim's
     // own movement to keep it near the line.
     startOnly: process.env.SIM_START_ONLY === '1' || process.env.SIM_START_ONLY === 'true',
+    // Which windward/leeward mark pair the simulated boat actually races -
+    // two letters, windward first, each 'G' (green, short course) or 'B'
+    // (black, long course): 'GG' (default, the plain short course), 'BB'
+    // (plain long course), or a mixed 'BG'/'GB' (see course.js's
+    // parseCourseMarks/deriveGeometry for how a mixed pair's beat length
+    // comes out). Validated eagerly here, not deep inside boatAgent.js's
+    // async marks-received callback, so a typo fails fast at startup with a
+    // clear message instead of surfacing later mid-race.
+    courseMarks: (() => {
+      const raw = (process.env.SIM_COURSE_MARKS || 'GG').toUpperCase();
+      if (!/^[GB]{2}$/.test(raw)) {
+        throw new Error(
+          `SIM_COURSE_MARKS must be 2 letters, each G (green) or B (black) - e.g. GG, BB, BG, GB. Got "${process.env.SIM_COURSE_MARKS}"`
+        );
+      }
+      return raw;
+    })(),
     // How long (seconds) a normal (non-SIM_START_ONLY) simulated race sits
     // stationary at its start position before actually departing upwind -
     // without this, a normal race launches on its very first tick with no
