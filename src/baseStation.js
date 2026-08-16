@@ -711,7 +711,10 @@ function main() {
       // repeat re-affirmation so the log doesn't claim "entered" every time.
       const label = onGridMode === 'offgrid' ? 'left' : wasOnGrid ? 'still on' : 'entered';
       console.log(`[baseStation] boat=${decoded.boatId} ${label} the start grid`);
-      if (config.regattaup.enabled) {
+      // 'offgrid' is still detected and logged above (useful operationally),
+      // but RegattaUp only ever wants to hear about a boat actually being
+      // on-grid, not the transition off it - never queued/sent.
+      if (config.regattaup.enabled && onGridMode !== 'offgrid') {
         const event = {
           boatId: decoded.boatId,
           mode: onGridMode,

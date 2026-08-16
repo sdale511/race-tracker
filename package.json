@@ -6,6 +6,7 @@
   "main": "src/boatAgent.js",
   "scripts": {
     "boat": "node src/boatAgent.js",
+    "fleet": "node src/fleetSim.js",
     "base": "node src/baseStation.js",
     "clear-boats": "node src/clearBoats.js",
     "clear-course": "node src/clearCourse.js",

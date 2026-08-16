@@ -105,6 +105,14 @@ module.exports = {
     // of the same stationary state. 0 disables the dwell (departs
     // immediately, the old behavior).
     prestartDwellS: parseFloat(process.env.SIM_PRESTART_DWELL_S || '15'),
+    // Off by default - a single `npm run boat` session stays alive after
+    // finishing its laps (see boatAgent.js's 'finished' handler) so any
+    // still-pending log uploads get a chance to go out. Set to 1 to instead
+    // exit the process the moment the simulated race ends - what
+    // fleetSim.js wants for every boat it spawns, so a multi-boat run winds
+    // itself down on its own instead of leaving every finished boat's
+    // process sitting there idle.
+    exitOnFinish: process.env.SIM_EXIT_ON_FINISH === '1' || process.env.SIM_EXIT_ON_FINISH === 'true',
   },
 
   // --- GPS (simpleRTK2B LR, ZED-F9P) ---

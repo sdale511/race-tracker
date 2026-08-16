@@ -455,6 +455,11 @@ function startGpsSimIfReady() {
     console.log(`[boatAgent] (sim) completed lap ${lap} ${inGate ? 'through the finish gate' : `OUTSIDE the finish gate (east=${eastM.toFixed(1)}m)`}`)
   );
   gps.on('finished', ({ laps }) => {
+    if (config.sim.exitOnFinish) {
+      console.log(`[boatAgent] finished simulated race after ${laps} lap(s) - exiting (SIM_EXIT_ON_FINISH=1)`);
+      process.exit(0);
+      return;
+    }
     console.log(`[boatAgent] finished simulated race after ${laps} lap(s) - staying alive for pending uploads`);
     // SimGpsSource already stopped its own tick timer before emitting this
     // (see simGps.js), so nothing keeps producing fixes/position frames -
