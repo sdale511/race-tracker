@@ -389,19 +389,28 @@ A failed webhook POST doesn't just get logged and dropped - `src/lapWebhookQueue
 durably records every lap (in a small sqlite file, via `sql.js` - a WASM
 build, so it needs no native compilation on whatever machine or Raspberry Pi
 this runs on) *before* the first send attempt, and only removes it once
-RegattaUp actually accepts it. A background loop retries whatever's still
-queued with capped exponential backoff (2s, 4s, 8s, ... up to
-`REGATTAUP_MAX_BACKOFF_MS`), indefinitely - this also means a lap survives a
-base station restart mid-retry, since the queue is a file on disk, not just
+RegattaUp actually accepts it - this also means a lap survives a base
+station restart mid-retry, since the queue is a file on disk, not just
 in-memory state.
+
+Every lap/on-grid/mark-rounding event is always queued first, never POSTed
+straight away - a single shared loop (same approach as the sister
+`p3-bridge` project's own `PostQueue`) then drains at most one webhook POST
+per `REGATTAUP_POST_INTERVAL_MS` tick, round-robining across all three
+queues combined. Without this, a burst of events arriving close together (a
+full fleet all going on-grid within the same second, or a backlog of failed
+sends all becoming retry-eligible at once) would fire that many concurrent
+requests at RegattaUp with nothing pacing them. A failed send is retried
+with capped exponential backoff (2s, 4s, 8s, ... up to
+`REGATTAUP_MAX_BACKOFF_MS`) on top of that same paced loop, indefinitely.
 
 | Var | Default | Purpose |
 |---|---|---|
 | `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override to point at a mock endpoint for testing |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Set to `1` to skip sending entirely (crossings are still detected and logged) |
 | `REGATTAUP_QUEUE_DB` | `<LOG_DIR>/lap_webhook_queue.sqlite` | Where the retry queue's sqlite file lives |
-| `REGATTAUP_RETRY_INTERVAL_MS` | 15000 | How often the retry loop checks for due-for-retry laps |
-| `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Cap on the exponential backoff between retries for a single lap |
+| `REGATTAUP_POST_INTERVAL_MS` | 500 | How often the shared drain loop attempts one webhook POST, across all three queues combined |
+| `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Cap on the exponential backoff between retries for a single event |
 
 ### Testing the lap -> webhook path
 
@@ -495,7 +504,7 @@ real drift (wind, waves, GPS noise) will re-fire every time it moves
 
 Uses the exact same durable-queue-plus-retry mechanics as laps (see
 "Durable retry queue" above) - `src/onGridWebhookQueue.js`, same
-capped-exponential-backoff loop, same `REGATTAUP_RETRY_INTERVAL_MS`/
+capped-exponential-backoff loop and shared paced drain, same `REGATTAUP_POST_INTERVAL_MS`/
 `REGATTAUP_MAX_BACKOFF_MS` settings - just its own separate sqlite file
 (`REGATTAUP_ONGRID_QUEUE_DB`), since `sql.js` overwrites its whole file on
 every save and two independent queue instances can't safely share one.
@@ -586,8 +595,8 @@ payload shape:
 
 Uses the exact same durable-queue-plus-retry mechanics as laps/on-grid
 (see "Durable retry queue" above) - `src/markRoundingWebhookQueue.js`, same
-capped-exponential-backoff loop, same `REGATTAUP_RETRY_INTERVAL_MS`/
-`REGATTAUP_MAX_BACKOFF_MS` settings, its own separate sqlite file
+capped-exponential-backoff loop and shared paced drain, same
+`REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` settings, its own separate sqlite file
 (`REGATTAUP_MARK_ROUNDING_QUEUE_DB`). Editing any mark from the map (see
 "Editing mark positions from the map" above) clears every boat's
 mark-rounding watchers, same as it already does for finish-line and
@@ -1175,7 +1184,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
-| `REGATTAUP_QUEUE_DB` / `REGATTAUP_RETRY_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_RETRY_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' retry queues too |
+| `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
 | `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
 | `REGATTAUP_ONGRID_QUEUE_DB` | `<LOG_DIR>/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
 | `REGATTAUP_MARK_ROUNDING_ENABLED` | unset | Base station only — set to `1` to turn on mark-rounding webhooks. Off by default, independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |

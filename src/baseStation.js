@@ -52,6 +52,22 @@ for (const method of ['log', 'warn', 'error']) {
   };
 }
 
+// Color-codes the two flavors of RegattaUp webhook problem, so they stand
+// out from the plain console noise around them at a glance: red for a
+// webhook queue that failed to even initialize (nothing for that event type
+// will ever be sent until this is fixed), orange for a single send attempt
+// that failed but is already queued to retry on its own (self-healing, not
+// something that needs immediate attention the way red does). Only applied
+// when stderr is a real terminal - same isTTY gating as gpsLineDirty above,
+// so a piped/redirected log (systemd, a file) never gets raw escape codes
+// embedded in it instead of an actual color.
+function red(text) {
+  return process.stderr.isTTY ? `\x1b[31m${text}\x1b[0m` : text;
+}
+function orange(text) {
+  return process.stderr.isTTY ? `\x1b[38;5;208m${text}\x1b[0m` : text;
+}
+
 // Base station: sits at the committee boat/shore with the matching radio.
 // Decodes incoming frames and fans them out to whatever your race tracking
 // software needs. You haven't picked that software yet, so this ships with
@@ -598,9 +614,8 @@ function main() {
       console.log(`[baseStation] lap webhook queue ready (${queueFileLabel(config.regattaup.queueDbPath)})`);
       for (const lap of bufferedLaps) enqueueLap(lap);
       bufferedLaps = [];
-      setInterval(() => retryQueuedLaps(lapWebhookQueue), config.regattaup.retryIntervalMs);
     } catch (err) {
-      console.error('[regattaup] failed to initialize lap webhook queue:', err.message);
+      console.error(red(`[regattaup] failed to initialize lap webhook queue: ${err.message}`));
     }
   })();
 
@@ -616,9 +631,8 @@ function main() {
       console.log(`[baseStation] on-grid webhook queue ready (${queueFileLabel(config.regattaup.onGridQueueDbPath)})`);
       for (const event of bufferedOnGrid) enqueueOnGrid(event);
       bufferedOnGrid = [];
-      setInterval(() => retryQueuedOnGrid(onGridWebhookQueue), config.regattaup.retryIntervalMs);
     } catch (err) {
-      console.error('[regattaup] failed to initialize on-grid webhook queue:', err.message);
+      console.error(red(`[regattaup] failed to initialize on-grid webhook queue: ${err.message}`));
     }
   })();
 
@@ -639,11 +653,44 @@ function main() {
       console.log(`[baseStation] mark-rounding webhook queue ready (${queueFileLabel(config.regattaup.markRoundingQueueDbPath)})`);
       for (const event of bufferedMarkRoundings) enqueueMarkRounding(event);
       bufferedMarkRoundings = [];
-      setInterval(() => retryQueuedMarkRoundings(markRoundingWebhookQueue), config.regattaup.retryIntervalMs);
     } catch (err) {
-      console.error('[regattaup] failed to initialize mark-rounding webhook queue:', err.message);
+      console.error(red(`[regattaup] failed to initialize mark-rounding webhook queue: ${err.message}`));
     }
   })();
+
+  // Every queued lap/on-grid/mark-rounding event, first attempt or retry
+  // alike, is sent through this single shared loop instead of ever being
+  // POSTed directly from enqueueLap/OnGrid/MarkRounding below - see
+  // config.js's regattaup.postIntervalMs for why (throttling total request
+  // rate to RegattaUp, not per-queue). Round-robins across the three
+  // queues (rather than always draining lap first) so a busy lap queue
+  // can't starve on-grid/mark-rounding sends indefinitely; sends at most
+  // ONE webhook POST per tick, across all queues combined, however many
+  // are actually due (see dueForRetry's own backoff for what "due" means -
+  // this loop only adds a rate ceiling on top of that, it doesn't change
+  // when a given failed send becomes eligible to retry again).
+  const webhookQueues = [
+    { get: () => lapWebhookQueue, send: sendQueuedLap },
+    { get: () => onGridWebhookQueue, send: sendQueuedOnGrid },
+    { get: () => markRoundingWebhookQueue, send: sendQueuedMarkRounding },
+  ];
+  let webhookQueueCursor = 0;
+
+  function drainOneWebhook() {
+    for (let i = 0; i < webhookQueues.length; i++) {
+      const { get, send } = webhookQueues[webhookQueueCursor];
+      webhookQueueCursor = (webhookQueueCursor + 1) % webhookQueues.length;
+      const queue = get();
+      if (!queue) continue;
+      const [row] = queue.dueForRetry(config.regattaup.maxBackoffMs);
+      if (row) {
+        send(queue, row);
+        return;
+      }
+    }
+  }
+
+  setInterval(drainOneWebhook, config.regattaup.postIntervalMs);
 
   // A boat that starts up (or reconnects) after marks already resolved and
   // already broadcast would otherwise wait out a full
@@ -713,8 +760,16 @@ function main() {
       console.log(`[baseStation] boat=${decoded.boatId} ${label} the start grid`);
       // 'offgrid' is still detected and logged above (useful operationally),
       // but RegattaUp only ever wants to hear about a boat actually being
-      // on-grid, not the transition off it - never queued/sent.
-      if (config.regattaup.enabled && onGridMode !== 'offgrid') {
+      // on-grid, not the transition off it - never queued/sent. And even
+      // among 'ongrid' results, only the actual transition INTO the zone
+      // (!wasOnGrid) gets sent - onGridWatcher.check() itself still re-fires
+      // 'ongrid' on every qualifying fix (see its own module comment, and
+      // the "still on" log label above, both unchanged), but repeat
+      // re-affirmations of a state RegattaUp was already told about aren't
+      // worth another webhook call - only a genuine re-entry (a real
+      // 'offgrid' happened first, resetting wasOnGrid to false) counts as
+      // newsworthy again.
+      if (config.regattaup.enabled && onGridMode === 'ongrid' && !wasOnGrid) {
         const event = {
           boatId: decoded.boatId,
           mode: onGridMode,
@@ -744,44 +799,21 @@ function main() {
   });
 
   // Durably records the lap (see lapWebhookQueue.js's module comment for
-  // why) before making the first send attempt.
+  // why) - the actual send happens later, off the shared drainOneWebhook
+  // loop above, not here (see its own comment for why sending is never
+  // done inline at enqueue time).
   function enqueueLap(lap) {
-    const id = lapWebhookQueue.enqueue(lap);
-    sendQueuedLap(lapWebhookQueue, lapWebhookQueue.get(id));
+    lapWebhookQueue.enqueue(lap);
   }
 
-  // Retries whatever's due (see LapWebhookQueue.dueForRetry's backoff) -
-  // covers both a failed immediate attempt and a lap that was enqueued but
-  // never got its first attempt at all (e.g. the process crashed in
-  // between).
-  function retryQueuedLaps(queue) {
-    for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
-      sendQueuedLap(queue, row);
-    }
-  }
-
-  // Same pattern as enqueueLap/retryQueuedLaps above, for on-grid events.
+  // Same pattern as enqueueLap above, for on-grid events.
   function enqueueOnGrid(event) {
-    const id = onGridWebhookQueue.enqueue(event);
-    sendQueuedOnGrid(onGridWebhookQueue, onGridWebhookQueue.get(id));
-  }
-
-  function retryQueuedOnGrid(queue) {
-    for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
-      sendQueuedOnGrid(queue, row);
-    }
+    onGridWebhookQueue.enqueue(event);
   }
 
   // Same pattern again, for mark-rounding events.
   function enqueueMarkRounding(event) {
-    const id = markRoundingWebhookQueue.enqueue(event);
-    sendQueuedMarkRounding(markRoundingWebhookQueue, markRoundingWebhookQueue.get(id));
-  }
-
-  function retryQueuedMarkRoundings(queue) {
-    for (const row of queue.dueForRetry(config.regattaup.maxBackoffMs)) {
-      sendQueuedMarkRounding(queue, row);
-    }
+    markRoundingWebhookQueue.enqueue(event);
   }
 
   function logToConsole(d) {
@@ -1159,8 +1191,7 @@ async function sendQueuedLap(queue, row) {
     console.log(`[regattaup] lap webhook sent for boat=${row.boat_id} lap=${row.lap}`);
   } catch (err) {
     console.error(
-      `[regattaup] webhook failed for boat=${row.boat_id} lap=${row.lap} (attempt ${row.attempts + 1}), will retry:`,
-      err.message
+      orange(`[regattaup] webhook failed for boat=${row.boat_id} lap=${row.lap} (attempt ${row.attempts + 1}), will retry: ${err.message}`)
     );
   }
 }
@@ -1189,8 +1220,7 @@ async function sendQueuedOnGrid(queue, row) {
     console.log(`[regattaup] ${row.mode} webhook sent for boat=${row.boat_id}`);
   } catch (err) {
     console.error(
-      `[regattaup] ${row.mode} webhook failed for boat=${row.boat_id} (attempt ${row.attempts + 1}), will retry:`,
-      err.message
+      orange(`[regattaup] ${row.mode} webhook failed for boat=${row.boat_id} (attempt ${row.attempts + 1}), will retry: ${err.message}`)
     );
   }
 }
@@ -1220,8 +1250,7 @@ async function sendQueuedMarkRounding(queue, row) {
     console.log(`[regattaup] mark webhook sent for boat=${row.boat_id} mark=${row.mark}`);
   } catch (err) {
     console.error(
-      `[regattaup] mark webhook failed for boat=${row.boat_id} mark=${row.mark} (attempt ${row.attempts + 1}), will retry:`,
-      err.message
+      orange(`[regattaup] mark webhook failed for boat=${row.boat_id} mark=${row.mark} (attempt ${row.attempts + 1}), will retry: ${err.message}`)
     );
   }
 }

@@ -315,7 +315,19 @@ module.exports = {
     webhookUrl: process.env.REGATTAUP_WEBHOOK_URL || 'https://regattaup.com/api/functions/mylapsWebhook',
     enabled: process.env.REGATTAUP_WEBHOOK_DISABLED !== '1' && process.env.REGATTAUP_WEBHOOK_DISABLED !== 'true',
     queueDbPath: process.env.REGATTAUP_QUEUE_DB || path.join(logDir, 'lap_webhook_queue.sqlite'),
-    retryIntervalMs: parseInt(process.env.REGATTAUP_RETRY_INTERVAL_MS || '15000', 10),
+    // Every lap/on-grid/mark-rounding event is always queued first (see
+    // baseStation.js's enqueueLap/OnGrid/MarkRounding), never POSTed
+    // straight away - a single shared loop then drains at most one POST
+    // per tick of this interval, across all three queues combined. Without
+    // this, a burst of events arriving close together (a full fleet all
+    // going on-grid within the same second, or a backlog of failed sends
+    // all becoming retry-eligible at once) would fire that many concurrent
+    // requests at RegattaUp with nothing pacing them. Same approach as the
+    // sister p3-bridge project's own PostQueue (500ms default there too).
+    // Replaces the old REGATTAUP_RETRY_INTERVAL_MS, which only paced
+    // re-attempts of already-failed sends - this paces EVERY send,
+    // including each event's very first attempt.
+    postIntervalMs: parseInt(process.env.REGATTAUP_POST_INTERVAL_MS || '500', 10),
     maxBackoffMs: parseInt(process.env.REGATTAUP_MAX_BACKOFF_MS || '300000', 10), // 5 minutes
     // On-grid detection (see onGridWatcher.js): how close a boat has to be
     // to the pin<->committee (start) line, while still between the two

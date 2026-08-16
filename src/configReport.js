@@ -129,7 +129,7 @@ const sections = [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
       { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_DISABLED', inverted: true },
       { label: 'queueDbPath', value: config.regattaup.queueDbPath, envVar: 'REGATTAUP_QUEUE_DB' },
-      { label: 'retryIntervalMs', value: config.regattaup.retryIntervalMs, envVar: 'REGATTAUP_RETRY_INTERVAL_MS', unit: 'ms' },
+      { label: 'postIntervalMs', value: config.regattaup.postIntervalMs, envVar: 'REGATTAUP_POST_INTERVAL_MS', unit: 'ms' },
       { label: 'maxBackoffMs', value: config.regattaup.maxBackoffMs, envVar: 'REGATTAUP_MAX_BACKOFF_MS', unit: 'ms' },
       { label: 'onGridZoneM', value: config.regattaup.onGridZoneM, envVar: 'REGATTAUP_ONGRID_ZONE_M', unit: 'm' },
       { label: 'onGridQueueDbPath', value: config.regattaup.onGridQueueDbPath, envVar: 'REGATTAUP_ONGRID_QUEUE_DB' },
