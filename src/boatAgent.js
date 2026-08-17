@@ -344,15 +344,41 @@ function handlePvt(pvt) {
     }
   }
 
-  if (clearedTxGate) {
-    lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
-    sdLogger.logPvt(pvt);
-    const frame = protocol.encode(config.boatId, pvt);
-    const sent = radio.send(frame);
-    if (sent) roverStats.recordFrameSent();
-    if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
-  }
+  if (clearedTxGate) transmitFix(pvt);
 }
+
+// Actually sends a fix over the radio (real or simulated) and logs it to
+// SD - the second half of handlePvt's own clearedTxGate branch, pulled out
+// so the ping handler below (which transmits the current fix on request,
+// deliberately bypassing the movement gate - see its own comment) can reuse
+// the exact same send/log/stats path rather than duplicating it.
+// lastTxPosition is updated here too, same as a normal gated transmit, so a
+// ping response doesn't leave the NEXT ordinary fix thinking it still needs
+// to cover the same distance from further back than it actually last sent.
+function transmitFix(pvt) {
+  lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
+  sdLogger.logPvt(pvt);
+  const frame = protocol.encode(config.boatId, pvt);
+  const sent = radio.send(frame);
+  if (sent) roverStats.recordFrameSent();
+  if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+}
+
+// Base-triggered "report your current position now" (see protocol.js's
+// encodePing/adminServer.js's "Ping fleet" button) - mainly for a boat
+// that's been sitting stationary since before the base/dashboard was even
+// up: a stationary boat only ever clears the TX_DISTANCE_M gate once (see
+// handlePvt above), so without this the base has no way to learn it's
+// there, on-grid, right now. Responds with whatever lastPvt already is
+// (nothing new to acquire - GPS fixes arrive continuously regardless of
+// whether they're ever transmitted), after a random delay up to
+// config.pingResponseJitterMs so an entire fleet doesn't all key up over
+// each other on the same shared channel the instant they hear the request.
+radio.on('ping', () => {
+  if (!lastPvt) return; // no fix yet at all - nothing to report
+  const delayMs = Math.random() * config.pingResponseJitterMs;
+  setTimeout(() => transmitFix(lastPvt), delayMs);
+});
 
 function openGps() {
   const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {

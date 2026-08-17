@@ -47,6 +47,22 @@ const ONGRID_EDGE_MARGIN_M = 1;
 // before it'd ever look on-grid.
 const HYPOTENUSE_ANGLE_DEG = 40;
 
+// The hypotenuse's own along-line reach (zoneMeters / tan(HYPOTENUSE_ANGLE_DEG),
+// ~11.92m at the 10m default) is a FIXED distance, independent of how long
+// the actual pin<->committee line is - real start lines (tens of meters)
+// are comfortably longer than that, but a short test course
+// (SIM_COURSE_LENGTH_NM well under 1) can have a start line shorter than
+// the hypotenuse's own reach, in which case the uncapped half-plane test
+// below sweeps past pin's own position before ever reaching the zone's
+// leeward edge, excluding the ENTIRE zone - pin end included - not just
+// the committee corner it's meant for. Capped here at
+// COMMITTEE_TRIANGLE_MAX_FRACTION of the line's own actual length,
+// regardless of onGridZoneM/HYPOTENUSE_ANGLE_DEG, so the pin half of the
+// line is always guaranteed clear (matching this file's own stated
+// assumption above that the pin end never needs this treatment) no matter
+// how short the course.
+const COMMITTEE_TRIANGLE_MAX_FRACTION = 0.5;
+
 // Same flat-earth approximation as finishLineWatcher.js - fine at the
 // meter-scale distances a start line and its surrounding zone span.
 function toXY(originLat, originLon, lat, lon) {
@@ -230,13 +246,24 @@ class OnGridWatcher {
   // existing bounds (between pin and committee, within zoneMeters), not
   // anything this method needs to bound on its own. A point exactly at
   // committee is on the line itself (cross=0) - excluded, consistent with
-  // committee being the triangle's own vertex.
+  // committee being the triangle's own vertex. Also capped at
+  // COMMITTEE_TRIANGLE_MAX_FRACTION of the line's own length (see that
+  // constant's own comment) - the half-plane test alone has no notion of
+  // the line's actual finite length, so without this a short enough course
+  // would have the hypotenuse exclude the pin end too, not just committee's
+  // own corner.
   _inCommitteeTriangle(p) {
     const dx = p.x - this.committee.x;
     const dy = p.y - this.committee.y;
     const crossVal = this.hypUx * dy - this.hypUy * dx;
     const sign = Math.sign(crossVal);
-    return sign === 0 || sign === this.excludedSideSign;
+    if (sign !== 0 && sign !== this.excludedSideSign) return false;
+    const pinDx = this.pin.x - this.committee.x;
+    const pinDy = this.pin.y - this.committee.y;
+    const pinLenSq = pinDx * pinDx + pinDy * pinDy;
+    if (pinLenSq === 0) return true; // degenerate: marks on top of each other
+    const t = (dx * pinDx + dy * pinDy) / pinLenSq; // 0=committee, 1=pin
+    return t <= COMMITTEE_TRIANGLE_MAX_FRACTION;
   }
 }
 

@@ -229,6 +229,17 @@ module.exports = {
   // airtime/bandwidth over long range.
   txDistanceM: parseFloat(process.env.TX_DISTANCE_M || '1'),
 
+  // Boat only - how long (max, milliseconds) a boat waits after hearing a
+  // ping request (see protocol.js's encodePing/boatAgent.js's radio.on
+  // ('ping', ...)) before actually transmitting its response - a random
+  // delay drawn fresh per ping, uniform between 0 and this value, so an
+  // entire fleet doesn't all key up over each other on the same shared
+  // channel at the same instant the moment they hear the request. 3s is
+  // generous relative to a single frame's own airtime, cheap even for a
+  // large fleet, and short enough that an operator isn't left waiting long
+  // for the dashboard to reflect a stationary boat's current position.
+  pingResponseJitterMs: parseInt(process.env.PING_RESPONSE_JITTER_MS || '3000', 10),
+
   // How often the base station re-broadcasts the course marks to every boat
   // (base station only) - marks essentially never change mid-race, so this
   // is just a slow heartbeat for boats that missed an earlier broadcast or

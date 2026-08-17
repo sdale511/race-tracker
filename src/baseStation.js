@@ -89,28 +89,24 @@ function orange(text) {
 // has both the marks and every boat's fixes, so it's the only place that
 // can watch for a finish-line crossing.
 
-// Which mark pairs with which "other mark" to define its rounding gate's
-// axis (see markRoundingWatcher.js) - one MarkRoundingWatcher per boat per
-// entry. Green and black windward/leeward marks are colinear on the same
-// axis (see course.js's getMarks), so both windward marks pair with
-// leewardGreen and both leeward marks pair with windwardGreen; which pair
-// is actually near a given boat is just whichever course it's sailing.
+// One MarkRoundingWatcher per boat per entry (see markRoundingWatcher.js -
+// it only needs the mark itself now, no axis/other-mark direction).
 //
-// `outerMark`, where present, is the mark that sits further out on that
-// same axis, beyond `mark` - windwardBlack beyond windwardGreen,
-// leewardBlack beyond leewardGreen (see course.js's own comment: green is
-// always the inner, short-course pair). Only the inner (green) marks have
-// one; windwardBlack/leewardBlack are the outermost marks on the course,
-// nothing sits beyond them to worry about reaching. Used below to cap the
-// green gate's forward extension short of the black mark's own position -
-// see markRoundingWatchersFor's OUTER_MARK_SAFETY_FRACTION comment for why
-// that cap has to hold regardless of how markRoundingExtensionM is
-// configured.
+// `outerMark`, where present, is the mark that sits further out on the
+// same windward/leeward axis, beyond `mark` - windwardBlack beyond
+// windwardGreen, leewardBlack beyond leewardGreen (see course.js's own
+// comment: green is always the inner, short-course pair). Only the inner
+// (green) marks have one; windwardBlack/leewardBlack are the outermost
+// marks on the course, nothing sits beyond them to worry about reaching.
+// Used below to cap the green mark's rounding radius short of the black
+// mark's own position - see markRoundingWatchersFor's
+// OUTER_MARK_SAFETY_FRACTION comment for why that cap has to hold
+// regardless of how markRoundingExtensionM is configured.
 const MARK_ROUNDING_GATES = [
-  { mark: 'windwardGreen', otherMark: 'leewardGreen', outerMark: 'windwardBlack' },
-  { mark: 'windwardBlack', otherMark: 'leewardGreen' },
-  { mark: 'leewardGreen', otherMark: 'windwardGreen', outerMark: 'leewardBlack' },
-  { mark: 'leewardBlack', otherMark: 'windwardGreen' },
+  { mark: 'windwardGreen', outerMark: 'windwardBlack' },
+  { mark: 'windwardBlack' },
+  { mark: 'leewardGreen', outerMark: 'leewardBlack' },
+  { mark: 'leewardBlack' },
 ];
 
 // However markRoundingExtensionM is configured, an inner (green) mark's
@@ -397,6 +393,35 @@ function main() {
       .catch((err) => console.error('[redis] failed to publish on-grid zone:', err.message));
   }
 
+  // Explicit "where is everyone right now" action for the admin dashboard's
+  // "Ping fleet" button (see protocol.js's encodePing/boatAgent.js's own
+  // radio.on('ping', ...) handler) - mainly for a boat that's been sitting
+  // stationary on the start line since before the base/dashboard was even
+  // up: it already sent its one and only frame at that old position (a
+  // stationary boat never clears TX_DISTANCE_M again), so there's otherwise
+  // no way to learn it's actually there, on-grid, right now, without
+  // asking. Works the same way over real radio or SimRadioLink - both just
+  // broadcast, no per-boat addressing at this layer at all (see
+  // simRadioLink.js). Each boat replies after its own random delay (see
+  // config.js's pingResponseJitterMs), not all at once - nothing to
+  // reconcile here on the base side beyond that; replies just arrive as
+  // ordinary frames through the normal radio.on('frame', ...) path above.
+  function pingFleet() {
+    // Clears every boat's on-grid state (not lap counts or mark roundings -
+    // this is deliberately narrower than resetRace above) so whatever
+    // on-grid status comes back in each boat's reply is treated as a fresh
+    // entry (wasOnGrid reads false again) and actually gets sent, rather
+    // than being silently absorbed by the "already told RegattaUp" latch
+    // (see detectRaceEvents' wasOnGrid/dueForResend logic) - the whole
+    // point of an operator explicitly asking "where's everyone right now"
+    // is to hear back about it, not have the answer suppressed by
+    // dedup state from whenever a boat last reported in on its own.
+    onGridWatchers.clear();
+    lastOnGridSentByBoat.clear();
+    radio.broadcast(protocol.encodePing());
+    console.log(`[baseStation] ${new Date().toISOString()} pinged the fleet for current positions`);
+  }
+
   // Lets an operator correct/set a single mark's position from the base's
   // own admin map page (see adminServer.js's renderMap - the "edit marks"
   // column) - e.g. walking out to the actual mark with a phone and
@@ -421,11 +446,44 @@ function main() {
     // for on-grid watchers (pin/committee) and mark-rounding watchers
     // (every windward/leeward mark), regardless of which specific mark was
     // actually edited - simplest to always clear all three.
+    clearRaceWatchers();
+    broadcastMarksNow();
+    return raceMarks;
+  }
+
+  // Every per-boat watcher (finish-line lap count, on-grid state, mark
+  // roundings) lives entirely in memory, keyed by boatId, for as long as
+  // this base station process stays up - there's no Redis-backed reset tied
+  // to starting a new race the way raceMarks itself has. Without clearing
+  // these, re-running a race against a base that was left running from an
+  // earlier one (a practice start, a general recall, back-to-back races in
+  // one session) leaves every boat's watcher latched to wherever the
+  // PREVIOUS race left it - a stale lapCount that makes the new race's
+  // first crossing report as "lap 2" instead of "lap 1", a stale prevPos
+  // from wherever the boat was sitting at the end of the last race that the
+  // new race's very first fix gets compared against, etc. Shared by
+  // setMarkLocation (which already needed exactly this) and resetRace
+  // (below, for an operator explicitly starting a new race without editing
+  // any mark) - one shared implementation so they can't drift apart.
+  function clearRaceWatchers() {
     finishLineWatchers.clear();
     onGridWatchers.clear();
     markRoundingWatchers.clear();
-    broadcastMarksNow();
-    return raceMarks;
+    lastOnGridSentByBoat.clear();
+  }
+
+  // Explicit "start a new race" action for the admin dashboard - clears
+  // every boat's latched watcher state (see clearRaceWatchers above)
+  // without touching the course itself (raceMarks, unlike setMarkLocation,
+  // is left exactly as published - a new race on the same course doesn't
+  // need new marks). lastSeenByBoat is cleared too, so every boat's next
+  // fix looks "new" again and gets an immediate marks re-broadcast
+  // (broadcastMarksNow's own reconnect-heuristic - see its call site in the
+  // frame handler), the same fast-start behavior a genuinely new boat gets,
+  // rather than boats waiting out the full periodic heartbeat.
+  function resetRace() {
+    clearRaceWatchers();
+    lastSeenByBoat.clear();
   }
 
   // Course marks - windward, leeward, and the pin/committee ends of the
@@ -509,6 +567,13 @@ function main() {
       raceMarks = await resolveMarks();
       if (raceMarks) {
         broadcastMarksNow();
+        // Replay whatever arrived too early to be detected live (see
+        // pendingFrames' own comment, above the radio.on('frame') handler) -
+        // through the exact same detectRaceEvents logic a live frame goes
+        // through, so none of it is silently lost just because it happened
+        // to land before this resolved.
+        for (const decoded of pendingFrames) detectRaceEvents(decoded);
+        pendingFrames = [];
       } else {
         // Either a real Redis error (both branches) or, real-hardware mode
         // only, marks just aren't published yet - either way, wait before
@@ -548,6 +613,17 @@ function main() {
   // windwardGreen/leewardGreen (needed for the watcher's own starboard-tack
   // exclusion corridor - see its module comment).
   const onGridWatchers = new Map();
+
+  // How long a boat can sit continuously on-grid before its own latched
+  // "already told RegattaUp" state (see detectRaceEvents' wasOnGrid check
+  // below) auto-releases and lets a fresh 'ongrid' send through again, even
+  // without an intervening 'offgrid' - a periodic re-affirmation rather
+  // than one static fact for however long the boat sits there, but capped
+  // to once every 30s rather than every qualifying fix (which is what this
+  // whole latch exists to avoid - see its own comment).
+  const ONGRID_RESEND_INTERVAL_MS = 30000;
+  const lastOnGridSentByBoat = new Map();
+
   function onGridWatcherFor(boatId) {
     if (!raceMarks || !raceMarks.windwardGreen || !raceMarks.leewardGreen) return null;
     let watcher = onGridWatchers.get(boatId);
@@ -569,13 +645,13 @@ function main() {
     return MARK_ROUNDING_GATES.map((gate) => {
       const key = `${boatId}:${gate.mark}`;
       let watcher = markRoundingWatchers.get(key);
-      if (!watcher && raceMarks[gate.mark] && raceMarks[gate.otherMark]) {
-        let extensionM = config.regattaup.markRoundingExtensionM;
+      if (!watcher && raceMarks[gate.mark]) {
+        let radiusM = config.regattaup.markRoundingExtensionM;
         if (gate.outerMark && raceMarks[gate.outerMark]) {
           const outerDistM = distanceMeters(raceMarks[gate.mark], raceMarks[gate.outerMark]);
-          extensionM = Math.min(extensionM, outerDistM * OUTER_MARK_SAFETY_FRACTION);
+          radiusM = Math.min(radiusM, outerDistM * OUTER_MARK_SAFETY_FRACTION);
         }
-        watcher = new MarkRoundingWatcher(raceMarks[gate.mark], raceMarks[gate.otherMark], extensionM);
+        watcher = new MarkRoundingWatcher(raceMarks[gate.mark], radiusM);
         markRoundingWatchers.set(key, watcher);
       }
       return watcher && { mark: gate.mark, watcher };
@@ -670,21 +746,34 @@ function main() {
   // this loop only adds a rate ceiling on top of that, it doesn't change
   // when a given failed send becomes eligible to retry again).
   const webhookQueues = [
-    { get: () => lapWebhookQueue, send: sendQueuedLap },
-    { get: () => onGridWebhookQueue, send: sendQueuedOnGrid },
-    { get: () => markRoundingWebhookQueue, send: sendQueuedMarkRounding },
+    { get: () => lapWebhookQueue, send: sendQueuedLap, inFlight: new Set() },
+    { get: () => onGridWebhookQueue, send: sendQueuedOnGrid, inFlight: new Set() },
+    { get: () => markRoundingWebhookQueue, send: sendQueuedMarkRounding, inFlight: new Set() },
   ];
   let webhookQueueCursor = 0;
 
   function drainOneWebhook() {
     for (let i = 0; i < webhookQueues.length; i++) {
-      const { get, send } = webhookQueues[webhookQueueCursor];
+      const entry = webhookQueues[webhookQueueCursor];
       webhookQueueCursor = (webhookQueueCursor + 1) % webhookQueues.length;
-      const queue = get();
+      const queue = entry.get();
       if (!queue) continue;
-      const [row] = queue.dueForRetry(config.regattaup.maxBackoffMs);
+      // dueForRetry only looks at attempts/last_attempt_at, both recorded
+      // BEFORE the network call it's timing (see sendQueuedLap/OnGrid/
+      // MarkRounding's own recordAttempt-then-await-fetch order) - a send
+      // slow enough to still be in flight when its own backoff window
+      // elapses would otherwise look "due" again and get picked a second
+      // time, firing a genuinely duplicate webhook call before the first
+      // attempt's response (success or failure) has even come back to
+      // remove/reschedule the row. inFlight is this loop's own record of
+      // which rows already have an attempt outstanding, independent of
+      // what's persisted - excluded here regardless of what dueForRetry
+      // itself thinks, and only cleared once that attempt actually
+      // resolves (see below).
+      const row = queue.dueForRetry(config.regattaup.maxBackoffMs).find((r) => !entry.inFlight.has(r.id));
       if (row) {
-        send(queue, row);
+        entry.inFlight.add(row.id);
+        Promise.resolve(entry.send(queue, row)).finally(() => entry.inFlight.delete(row.id));
         return;
       }
     }
@@ -718,6 +807,35 @@ function main() {
   const BOAT_RECONNECT_GAP_MS = 10000;
   const lastSeenByBoat = new Map();
 
+  // Debounces the "new boat" broadcast above (not the periodic heartbeat,
+  // which already has its own natural cadence) - without this, an entire
+  // fleet starting at once (or all replying to one "Ping fleet" click, see
+  // adminServer.js) each independently looks "new" the instant its own
+  // first frame arrives, firing one broadcast per boat, seconds apart,
+  // when they all needed the exact same marks the very first one already
+  // sent. A boat arriving just outside this window still gets its own
+  // immediate broadcast - this only collapses ones that would otherwise
+  // land within moments of each other.
+  const NEW_BOAT_BROADCAST_DEBOUNCE_MS = 2000;
+  let lastNewBoatBroadcastAt = 0;
+
+  // Frames that arrive before raceMarks has resolved (see resolveMarks'
+  // own async startup loop below) - watcherFor/onGridWatcherFor/
+  // markRoundingWatchersFor all short-circuit to null/[] until raceMarks is
+  // set, which would otherwise silently drop whatever that frame's own
+  // lap/on-grid/mark-rounding state actually was, with no way to detect it
+  // again later. This isn't just a theoretical race: every boat sends a
+  // one-off "marks ping" frame right at its own startup specifically to
+  // elicit an immediate marks broadcast (see boatAgent.js's
+  // sendMarksPing) - deliberately positioned to read as on-grid - and with
+  // a full fleet all starting at once against a real (non-local) Redis,
+  // several of those pings can easily land before this base's own
+  // raceMarks round-trip finishes. Buffered here and replayed through
+  // detectRaceEvents (below) the moment raceMarks becomes available, same
+  // buffer-then-flush pattern already used for the webhook queues
+  // themselves (bufferedLaps/bufferedOnGrid/bufferedMarkRoundings).
+  let pendingFrames = [];
+
   radio.on('frame', (decoded) => {
     stats.recordFrame(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
     logToConsole(decoded);
@@ -728,10 +846,24 @@ function main() {
     const now = Date.now();
     const lastSeen = lastSeenByBoat.get(decoded.boatId);
     if (lastSeen === undefined || now - lastSeen > BOAT_RECONNECT_GAP_MS) {
-      broadcastMarksNow();
+      if (now - lastNewBoatBroadcastAt > NEW_BOAT_BROADCAST_DEBOUNCE_MS) {
+        broadcastMarksNow();
+        lastNewBoatBroadcastAt = now;
+      }
     }
     lastSeenByBoat.set(decoded.boatId, now);
 
+    if (raceMarks) detectRaceEvents(decoded);
+    else pendingFrames.push(decoded);
+  });
+
+  // Lap/on-grid/mark-rounding detection for one already-decoded frame - split
+  // out from the radio.on('frame') handler above so pendingFrames (above) can
+  // replay exactly this same logic for a frame that arrived before raceMarks
+  // was ready, without also re-running the side effects (stats, CSV/Redis
+  // logging, the local UDP re-broadcast) that already happened live when the
+  // frame first arrived.
+  function detectRaceEvents(decoded) {
     const watcher = watcherFor(decoded.boatId);
     const crossing = watcher && watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
     if (crossing) {
@@ -757,25 +889,37 @@ function main() {
       // not just the first one - distinguish the actual entry from a
       // repeat re-affirmation so the log doesn't claim "entered" every time.
       const label = onGridMode === 'offgrid' ? 'left' : wasOnGrid ? 'still on' : 'entered';
-      console.log(`[baseStation] boat=${decoded.boatId} ${label} the start grid`);
-      // 'offgrid' is still detected and logged above (useful operationally),
+      // 'offgrid' is still detected and logged below (useful operationally),
       // but RegattaUp only ever wants to hear about a boat actually being
       // on-grid, not the transition off it - never queued/sent. And even
       // among 'ongrid' results, only the actual transition INTO the zone
-      // (!wasOnGrid) gets sent - onGridWatcher.check() itself still re-fires
-      // 'ongrid' on every qualifying fix (see its own module comment, and
-      // the "still on" log label above, both unchanged), but repeat
-      // re-affirmations of a state RegattaUp was already told about aren't
-      // worth another webhook call - only a genuine re-entry (a real
-      // 'offgrid' happened first, resetting wasOnGrid to false) counts as
-      // newsworthy again.
-      if (config.regattaup.enabled && onGridMode === 'ongrid' && !wasOnGrid) {
+      // (!wasOnGrid) gets sent by default - onGridWatcher.check() itself
+      // still re-fires 'ongrid' on every qualifying fix (see its own module
+      // comment, and the "still on" log label above, both unchanged), but
+      // repeat re-affirmations of a state RegattaUp was already told about
+      // aren't worth another webhook call every single fix. That latch
+      // isn't permanent though: a boat sitting on-grid continuously for
+      // ONGRID_RESEND_INTERVAL_MS (30s) without ever going offgrid still
+      // gets a fresh send, so a long pre-start dwell still reads as "alive"
+      // rather than one static fact from however long ago it first arrived.
+      const lastSent = lastOnGridSentByBoat.get(decoded.boatId);
+      const dueForResend = lastSent !== undefined && Date.now() - lastSent >= ONGRID_RESEND_INTERVAL_MS;
+      // Only meaningful for "still on" - the elapsed time toward the latch
+      // above actually releasing again, so it's visible at a glance whether
+      // a long-dwelling boat is about to get a fresh send or just did.
+      const latchInfo =
+        label === 'still on' && lastSent !== undefined
+          ? ` (${Math.round((Date.now() - lastSent) / 1000)}s / ${ONGRID_RESEND_INTERVAL_MS / 1000}s latch)`
+          : '';
+      console.log(`[baseStation] boat=${decoded.boatId} ${label} the start grid${latchInfo}`);
+      if (config.regattaup.enabled && onGridMode === 'ongrid' && (!wasOnGrid || dueForResend)) {
         const event = {
           boatId: decoded.boatId,
           mode: onGridMode,
           rtcTime: decoded.timestamp * 1000, // ms -> microseconds
           receivedAt: new Date().toISOString(),
         };
+        lastOnGridSentByBoat.set(decoded.boatId, Date.now());
         if (onGridWebhookQueue) enqueueOnGrid(event);
         else bufferedOnGrid.push(event);
       }
@@ -796,7 +940,7 @@ function main() {
         else bufferedMarkRoundings.push(event);
       }
     }
-  });
+  }
 
   // Durably records the lap (see lapWebhookQueue.js's module comment for
   // why) - the actual send happens later, off the shared drainOneWebhook
@@ -1123,6 +1267,8 @@ function main() {
     getStats: getFullStats,
     getPositions: getBoatPositions,
     setMark: setMarkLocation,
+    resetRace,
+    pingFleet,
     getBaseGps: getBaseGpsFix,
     getBaseGpsSurvey: getBaseGpsSurveyStatus,
     setBaseGpsSurveyIn,

@@ -156,4 +156,66 @@ function decodeMarks(buf) {
   return { marks, baseIp, basePort, baseAdminPort };
 }
 
-module.exports = { encode, decode, FRAME_LEN, SYNC, encodeMarks, decodeMarks, MARKS_FRAME_LEN, MARKS_SYNC };
+// Third frame type: base station -> all boats, asking every boat to report
+// its current position right now, regardless of the normal TX_DISTANCE_M
+// movement gate (see boatAgent.js's handlePvt) - for a boat that's been
+// sitting stationary on the start line since before the base/dashboard was
+// even up: it already sent its one and only frame at that old position (a
+// stationary boat never clears the movement gate again - see
+// onGridWatcher.js's own module comment on this), so the base has no way to
+// learn it's actually there, on-grid, right now, without asking. An
+// operator triggers this from the admin dashboard's "Ping fleet" button
+// (see adminServer.js/baseStation.js's pingFleet) - not automatic, so it
+// doesn't add its own recurring airtime cost on top of the normal
+// broadcast/report traffic.
+//
+// No payload beyond a timestamp - the request itself carries no per-boat
+// information, it's the same broadcast every boat hears and responds to
+// independently (each with its own random delay - see boatAgent.js's own
+// handling - so a whole fleet doesn't all key up over each other on the
+// same shared channel at once). A boat's *response* to a ping is just an
+// ordinary position frame (encode/decode above) - there's no separate
+// "pong" frame type, since the payload is identical to any other report.
+//
+// Layout (all little-endian):
+//   [0]    sync byte     0xCC
+//   [1..4] unix time (s) uint32
+//   [5]    checksum      uint8  (sum of bytes 1..4 mod 256)
+
+const PING_SYNC = 0xcc;
+const PING_FRAME_LEN = 6;
+
+function encodePing() {
+  const buf = Buffer.alloc(PING_FRAME_LEN);
+  buf.writeUInt8(PING_SYNC, 0);
+  buf.writeUInt32LE(Math.floor(Date.now() / 1000), 1);
+  let sum = 0;
+  for (let i = 1; i < PING_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, PING_FRAME_LEN - 1);
+  return buf;
+}
+
+// Returns { timestamp } (ms, reconstructed from the whole-second unix time
+// carried on the wire), or null if the buffer isn't a valid ping frame.
+function decodePing(buf) {
+  if (buf.length !== PING_FRAME_LEN || buf[0] !== PING_SYNC) return null;
+  let sum = 0;
+  for (let i = 1; i < PING_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[PING_FRAME_LEN - 1]) return null;
+  return { timestamp: buf.readUInt32LE(1) * 1000 };
+}
+
+module.exports = {
+  encode,
+  decode,
+  FRAME_LEN,
+  SYNC,
+  encodeMarks,
+  decodeMarks,
+  MARKS_FRAME_LEN,
+  MARKS_SYNC,
+  encodePing,
+  decodePing,
+  PING_FRAME_LEN,
+  PING_SYNC,
+};

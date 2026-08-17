@@ -1,47 +1,48 @@
-// Detects when a boat rounds a single course mark (windward or leeward) -
-// unlike the finish line, a mark rounding has no second physical mark to
-// form a gate out of, so the gate is synthesized: extend the line from the
-// *other* mark (leeward, for a windward rounding, and vice versa) straight
-// through this mark by markRoundingExtensionM, and treat that stretch - from
-// just short of the mark out to the extended point beyond it - as a
-// one-shot crossing line, using the exact same segment-intersection test
-// finishLineWatcher.js uses for the finish gate.
+// Detects when a boat rounds a single course mark (windward or leeward).
 //
-// Unlike the finish gate, this doesn't need a direction/side check: the
-// gate segment only exists near/beyond the mark along the course axis (it
-// doesn't extend back down toward the other mark for more than
-// BACK_MARGIN_M), so a boat can only physically cross it by having actually
-// reached the mark - a normal tack while still well short of it never comes
-// near it, since the segment isn't there yet at that point along the axis.
-// That's also why the gate is colinear with the course axis rather than
-// perpendicular to it: a perpendicular gate right at the mark would be
-// crossed by any boat passing close abeam on either tack, mark or no mark.
+// Earlier versions of this file tried to synthesize a "gate" out of one or
+// two straight lines through the mark and detect a rounding as a line
+// crossing - that approach turned out to be fundamentally the wrong shape
+// for the problem. A real rounding's heading sweeps continuously through a
+// wide arc (close-hauled on the approach, through roughly perpendicular
+// during the clearance leg, to a reaching/running angle on departure -
+// confirmed live: about 125 degrees of continuous turn, entirely on ONE
+// side of the course axis, not symmetric across it) - a fixed pair of
+// lines mirrored across the axis can be positioned to catch that sweep
+// for boats turning ONE way around the mark, but a boat that rounds it
+// the OTHER way (which tack it happens to approach on determines this,
+// not something this file - or the course - controls) sweeps through the
+// mirror-image arc instead, on the other side of the axis entirely, and
+// never reaches either line.
 //
-// The gate isn't started exactly AT the mark (0m back) - a boat's fixes
-// only arrive periodically (2Hz by default in SIMULATE mode, less on real
-// hardware), so the specific fix that actually crosses the course axis can
-// legitimately land a couple meters short of the mark's own along-axis
-// position rather than past it, purely from tick granularity, not because
-// the boat didn't round the mark. BACK_MARGIN_M absorbs that without
-// meaningfully loosening "at the mark" - a few meters short of a real mark
-// is still the boat rounding it, not a boat elsewhere on the beat.
+// Instead: track the boat's own cumulative heading change (turning angle,
+// sign-agnostic - a clockwise and a counterclockwise rounding both count)
+// for as long as it stays within roundingRadiusMeters of the mark. A
+// straight-line transit past the mark (e.g. a boat racing the black marks
+// sailing through the green mark's own position on its way to/from the
+// black one - see course.js's SIM_COURSE_MARKS) barely turns at all while
+// passing through that radius - at most one ordinary tack's worth (up to
+// ~2x CLOSE_HAULED_DEG, ~80 degrees in simGps.js's own model) - while an
+// actual rounding turns much further (~125 degrees) before it ever exits
+// the radius again. ROUNDING_MIN_SWEEP_DEG sits between those two figures,
+// with real margin on both sides, and being purely a magnitude of turning
+// (not which lines got crossed, or from which side) it doesn't care which
+// way around the mark the boat actually went.
 const METERS_PER_DEG_LAT = 111320;
-const BACK_MARGIN_M = 10;
 
-// A real rounding isn't always one clean crossing: a boat correcting onto
-// its final tack right at the mark, then peeling into the clearing leg
-// (see simGps.js's own MARK_CLEARANCE_M), can cross the gate line twice
-// within about a second - once on the old tack, once on the new one after
-// a genuine mid-rounding tack change, both real crossings of the same
-// physical rounding, not two separate ones. Confirmed against an actual
-// base station log: two crossings ~1s apart, headings 320 -> 40 -> 90
-// (a real tack change followed by the windward clearing heading).
-// ROUNDING_DEBOUNCE_MS suppresses any further crossing within this long of
-// the last COUNTED one - far longer than that kind of double-crossing
-// takes, far shorter than sailing all the way around the course again for
-// a genuine next-lap rounding of the same mark (multiple minutes even on a
-// short course), so there's no realistic way this coalesces two real,
-// separate roundings into one.
+// How much total heading change, while continuously within
+// roundingRadiusMeters of the mark, counts as an actual rounding rather
+// than a transit that happened to pass close by (see module comment for
+// the ~80deg/~125deg figures this sits between).
+const ROUNDING_MIN_SWEEP_DEG = 100;
+
+// Suppresses a second rounding within this long of the last counted one -
+// e.g. the boat's track grazing the radius boundary and briefly
+// re-entering right after exiting, from real GPS noise or just the
+// tick-rate granularity of when "distance > radius" actually gets
+// observed. Far longer than a real rounding maneuver takes, far shorter
+// than sailing all the way around the course again for a genuine next-lap
+// rounding of the same mark.
 const ROUNDING_DEBOUNCE_MS = 30000;
 
 // Same flat-earth approximation as finishLineWatcher.js/onGridWatcher.js -
@@ -52,74 +53,84 @@ function toXY(originLat, originLon, lat, lon) {
   return { x, y };
 }
 
-function cross(o, a, b) {
-  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-}
-
-// Standard orientation-based test for whether segment p1->p2 crosses
-// segment p3->p4 (not just the infinite lines through them).
-function segmentsIntersect(p1, p2, p3, p4) {
-  const d1 = cross(p3, p4, p1);
-  const d2 = cross(p3, p4, p2);
-  const d3 = cross(p1, p2, p3);
-  const d4 = cross(p1, p2, p4);
-  return (d1 > 0) !== (d2 > 0) && (d3 > 0) !== (d4 > 0);
+// Signed angle (degrees, -180..180) from vector a to vector b - positive
+// for a counterclockwise turn, negative for clockwise, by construction of
+// atan2(cross, dot). This is what makes accumulating turning angle
+// direction-agnostic once summed as absolute values below: a clockwise
+// rounding accumulates a series of negative turnDeg values, a
+// counterclockwise one a series of positive values, and |turnDeg| treats
+// both the same.
+function turnAngleDeg(a, b) {
+  const cross = a.x * b.y - a.y * b.x;
+  const dot = a.x * b.x + a.y * b.y;
+  return (Math.atan2(cross, dot) * 180) / Math.PI;
 }
 
 class MarkRoundingWatcher {
-  // mark: {lat, lon} - the mark being rounded.
-  // otherMark: {lat, lon} - the mark that defines the course axis (leeward
-  // for a windward rounding, windward for a leeward rounding).
-  // extensionMeters: how far past `mark`, continuing along the
-  // otherMark->mark axis, the virtual gate extends.
-  constructor(mark, otherMark, extensionMeters) {
-    const originLat = mark.lat;
-    const originLon = mark.lon;
-    this._toXY = (lat, lon) => toXY(originLat, originLon, lat, lon);
-    this.mark = this._toXY(mark.lat, mark.lon);
-    const other = this._toXY(otherMark.lat, otherMark.lon);
-
-    const dx = this.mark.x - other.x;
-    const dy = this.mark.y - other.y;
-    // Degenerate (mark and otherMark on top of each other) - fall back to
-    // an arbitrary direction rather than dividing by zero. Shouldn't
-    // happen with real course geometry, but an operator editing marks from
-    // the map (see adminServer.js) could momentarily create it.
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len;
-    const uy = dy / len;
-
-    this.gateStart = { x: this.mark.x - ux * BACK_MARGIN_M, y: this.mark.y - uy * BACK_MARGIN_M };
-    this.gateEnd = { x: this.mark.x + ux * extensionMeters, y: this.mark.y + uy * extensionMeters };
+  // mark: {lat, lon} - the mark being rounded. Used as this watcher's own
+  // local origin, purely for measuring distance from it - unlike earlier
+  // versions of this file, no axis/otherMark direction is needed at all,
+  // since turning angle doesn't care which way the course runs.
+  // roundingRadiusMeters: how close to the mark counts as "rounding
+  // range" - the boat's cumulative turning angle is only tracked while
+  // inside this radius.
+  constructor(mark, roundingRadiusMeters) {
+    this._toXY = (lat, lon) => toXY(mark.lat, mark.lon, lat, lon);
+    this.roundingRadiusMeters = roundingRadiusMeters;
 
     this.prevPos = null;
     this.prevTimestamp = null;
+    this.prevMoveVec = null; // direction of the last movement, for the next turnAngleDeg call
+    this.inZone = false;
+    this.sweepDeg = 0;
+    this.enterTime = null;
     this.roundingCount = 0;
     this.lastRoundingTime = null;
   }
 
   // Call with every new fix's lat/lon/timestamp (ms), in order. Returns
-  // { rounding, crossingTime } if this fix completes a rounding - the
-  // boat's path crossed the virtual gate beyond the mark, and it's been at
-  // least ROUNDING_DEBOUNCE_MS since the last counted one (see its own
-  // comment). The very first call never reports a rounding (nothing to
+  // { rounding, crossingTime } once a fix completes a genuine rounding -
+  // the boat has just left roundingRadiusMeters of the mark, having
+  // accumulated at least ROUNDING_MIN_SWEEP_DEG of turning while it was
+  // inside, and it's been at least ROUNDING_DEBOUNCE_MS since the last
+  // counted one. The very first call never reports anything (nothing to
   // compare against yet).
   check(lat, lon, timestamp) {
     const curPos = this._toXY(lat, lon);
     let result = null;
-    if (this.prevPos && segmentsIntersect(this.prevPos, curPos, this.gateStart, this.gateEnd)) {
-      // Interpolate the actual crossing instant between the two bracketing
-      // fixes, same reasoning as finishLineWatcher.js's crossingTime.
-      const d1 = cross(this.gateStart, this.gateEnd, this.prevPos);
-      const d2 = cross(this.gateStart, this.gateEnd, curPos);
-      const t = d1 / (d1 - d2);
-      const crossingTime = this.prevTimestamp + t * (timestamp - this.prevTimestamp);
-      if (this.lastRoundingTime === null || crossingTime - this.lastRoundingTime >= ROUNDING_DEBOUNCE_MS) {
-        this.roundingCount++;
-        this.lastRoundingTime = crossingTime;
-        result = { rounding: this.roundingCount, crossingTime };
+
+    if (this.prevPos) {
+      const moveVec = { x: curPos.x - this.prevPos.x, y: curPos.y - this.prevPos.y };
+      const distFromMark = Math.hypot(curPos.x, curPos.y);
+      const withinRadius = distFromMark <= this.roundingRadiusMeters;
+
+      if (withinRadius) {
+        if (!this.inZone) {
+          // Just entered - nothing to compare this move against yet, that
+          // starts from the NEXT fix onward.
+          this.inZone = true;
+          this.sweepDeg = 0;
+          this.enterTime = timestamp;
+        } else if (this.prevMoveVec) {
+          this.sweepDeg += Math.abs(turnAngleDeg(this.prevMoveVec, moveVec));
+        }
+        this.prevMoveVec = moveVec;
+      } else if (this.inZone) {
+        // Just exited - this is the one moment a rounding can actually be
+        // confirmed (or not, if the sweep never got large enough).
+        if (this.sweepDeg >= ROUNDING_MIN_SWEEP_DEG) {
+          if (this.lastRoundingTime === null || this.enterTime - this.lastRoundingTime >= ROUNDING_DEBOUNCE_MS) {
+            this.roundingCount++;
+            this.lastRoundingTime = this.enterTime;
+            result = { rounding: this.roundingCount, crossingTime: this.enterTime };
+          }
+        }
+        this.inZone = false;
+        this.sweepDeg = 0;
+        this.prevMoveVec = null;
       }
     }
+
     this.prevPos = curPos;
     this.prevTimestamp = timestamp;
     return result;

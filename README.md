@@ -486,11 +486,19 @@ A boat counts as on-grid when it's all of:
   bottom-right corner of the on-grid box, one straight cut. The triangle's
   two legs are the zone's own right edge (straight down from committee,
   length `REGATTAUP_ONGRID_ZONE_M`) and its own bottom edge (length
-  `REGATTAUP_ONGRID_ZONE_M / tan(40°)` - about 11.92m at the 10m default).
-  The mirror-image port-tack case near the pin end doesn't need the
-  equivalent treatment, since a boat approaching there is already excluded
-  by the ordinary "between pin and committee" bound well before it'd ever
-  look on-grid.
+  `REGATTAUP_ONGRID_ZONE_M / tan(40°)` - about 11.92m at the 10m default,
+  capped at `COMMITTEE_TRIANGLE_MAX_FRACTION` (50%) of the actual
+  pin<->committee distance regardless of that math - a real start line
+  (tens of meters) is comfortably longer than 11.92m so this cap never
+  matters in practice, but an aggressively short `SIM_COURSE_LENGTH_NM`
+  test course can have a start line shorter than the hypotenuse's own
+  uncapped reach, in which case it would otherwise sweep past pin's own
+  position and exclude the ENTIRE zone, not just committee's corner - the
+  cap guarantees the pin half of the line always stays on-grid regardless
+  of course length). The mirror-image port-tack case near the pin end
+  doesn't need the equivalent treatment, since a boat approaching there is
+  already excluded by the ordinary "between pin and committee" bound well
+  before it'd ever look on-grid.
 
 POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 
@@ -505,19 +513,31 @@ POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 - `rtcTime` — the fix's own timestamp, converted from milliseconds to
   microseconds
 
-`ongrid` re-fires on **every** incoming fix for as long as the boat stays
-in the zone (not just the moment it enters) - so RegattaUp sees a live
-signal tied to real position updates arriving, rather than one stale
-event for however long the boat sits there. `offgrid` still only fires
-once, on the transition out - there's no reason to keep affirming "still
-not there." Since this rides on actual fixes rather than a wall-clock
-timer, how often it re-fires for a given boat follows `TX_DISTANCE_M`
-(the boat only transmits once it's moved that far - see "Running" above)
-- a boat that's genuinely dead-still (e.g. `SIM_START_ONLY`, which reports
-zero speed) will only send its very first frame and never trigger a
-re-fire at all, since it never clears that gate again. A boat with any
-real drift (wind, waves, GPS noise) will re-fire every time it moves
-`TX_DISTANCE_M`.
+`onGridWatcher.check()` itself still re-fires `'ongrid'` on **every**
+incoming fix for as long as the boat stays in the zone (not just the
+moment it enters), rides on actual fixes rather than a wall-clock timer -
+so how often it re-fires for a given boat follows `TX_DISTANCE_M` (the
+boat only transmits once it's moved that far - see "Running" above), same
+as it always has. What actually gets **sent to the webhook** is throttled
+on top of that, in `baseStation.js`: only the genuine transition into the
+zone triggers a send by default - a repeat `'ongrid'` re-affirmation of a
+state RegattaUp was already told about isn't worth another webhook call
+every single fix. That latch isn't permanent, though: a boat sitting
+on-grid continuously for `ONGRID_RESEND_INTERVAL_MS` (30s, not yet
+exposed as its own env var) without ever going offgrid still gets a fresh
+send, so a long pre-start dwell still reads as "alive" on RegattaUp's end
+rather than one static fact from whenever it first arrived. `offgrid`
+still only fires (and sends) once, on the transition out - there's no
+reason to keep affirming "still not there." A boat that's genuinely
+dead-still (e.g. `SIM_START_ONLY`, which reports zero speed) only ever
+sends its very first frame at all (it never clears `TX_DISTANCE_M` again),
+so in practice it gets exactly one `'ongrid'` send and nothing further
+until pinged (see "Admin dashboard" above, whose "Ping fleet" button also
+clears this same latch) or it actually moves. The console log
+(`[baseStation] boat=N still on the start grid (Ns / 30s latch)`) shows
+how long since the last actual send alongside each "still on"
+re-affirmation, so it's visible at a glance whether a long-dwelling boat
+is about to get a fresh one or just did.
 
 Uses the exact same durable-queue-plus-retry mechanics as laps (see
 "Durable retry queue" above) - `src/onGridWebhookQueue.js`, same
@@ -558,43 +578,47 @@ own switch rather than riding on `REGATTAUP_WEBHOOK_DISABLED` alone
 (both still have to allow it - `REGATTAUP_WEBHOOK_DISABLED=1` still turns
 everything off, laps and on-grid included).
 
-![A virtual gate extends from just behind windwardGreen to well beyond it, along the axis toward leewardGreen; a boat's track loops around the mark and crosses the gate to register a rounding.](docs/mark-rounding.svg)
+![A boat's track loops through a radius around windwardGreen, sweeping through a wide turning angle before exiting - a genuine rounding. A boat transiting past the same mark on a straight tack barely turns at all while inside the same radius.](docs/mark-rounding.svg)
 
 `src/markRoundingWatcher.js`, one instance per boat per mark (windward and
 leeward have no second physical mark between them to form a gate the way
-the finish line does, so it's watched per-mark rather than per-line). The
-gate is synthesized: extend the line from the *other* mark - leeward, for
-a windward rounding, and vice versa - straight through the mark being
-watched by `REGATTAUP_MARK_ROUNDING_EXTENSION_M` (default 50m) beyond it,
-and 10m short of it (a fixed margin, not configurable - absorbs a fix
-landing a couple meters short of the mark's own position purely from
-tick-rate granularity, real GPS included, not because the boat didn't
-round it), and treat that stretch as a one-shot crossing line - the same
-segment-intersection test `finishLineWatcher.js` uses for the finish gate.
+the finish line does, so it's watched per-mark rather than per-line).
+Earlier versions of this tried to synthesize a line (or pair of lines)
+through the mark and detect a rounding as a crossing - that turned out to
+be the wrong shape for the problem: a real rounding's heading sweeps
+through a wide, continuous arc (close-hauled on the approach, through
+roughly perpendicular during the clearance leg, to a reaching/running
+angle on departure - about 125 degrees total), almost entirely on ONE side
+of the course axis, and which side depends on which tack the boat happens
+to approach on - a fixed line (or pair of lines) that catches a rounding
+turning one way around the mark misses one turning the other way entirely.
 
-That gate is deliberately colinear with the course axis (not perpendicular
-to it, and not just "within Xm of the mark" the way on-grid works): since
-it only exists near/beyond the mark along the axis, a normal tack while
-still well short of the mark never comes near it - the segment isn't there
-yet at that point along the course - so it doesn't fire on ordinary
-tacking-through-the-centerline upwind. Only a boat that's actually reached
-the mark can cross it. Watched for all four windward/leeward marks
-(`windwardGreen`/`windwardBlack` against `leewardGreen`, `leewardGreen`/
-`leewardBlack` against `windwardGreen`) regardless of which course
-(green/black) is actually being sailed - whichever pair a boat is nowhere
-near just never fires.
+Instead: track the boat's own cumulative turning angle (sign-agnostic - a
+clockwise and a counterclockwise rounding both count the same way) for as
+long as it stays within `REGATTAUP_MARK_ROUNDING_EXTENSION_M` (default
+50m) of the mark. A boat merely transiting past the mark - e.g. racing the
+black marks (`SIM_COURSE_MARKS=BB`, see "Changing the course" above) and
+sailing straight through the green mark's own position on its way to/from
+the black one - barely turns at all while passing through that radius, at
+most one ordinary tack's worth (up to ~80 degrees in `simGps.js`'s own
+model); an actual rounding turns much further (~125 degrees) before it
+ever exits the radius again. `ROUNDING_MIN_SWEEP_DEG` (100) sits between
+those two figures, with real margin on both sides. Watched for all four
+windward/leeward marks (`windwardGreen`/`windwardBlack`/`leewardGreen`/
+`leewardBlack`) regardless of which course (green/black) is actually being
+sailed - whichever pair a boat is nowhere near just never fires.
 
 However `REGATTAUP_MARK_ROUNDING_EXTENSION_M` is configured, the green
-(inner) marks' gates never reach anywhere near the corresponding black
-(outer) mark - capped to half the actual green<->black distance
-(`OUTER_MARK_SAFETY_FRACTION` in `baseStation.js`), measured fresh off
-the real published marks each time a watcher is built, not assumed from
-`SIM_LONG_COURSE_EXTRA_NM`. Half rather than the full distance leaves a
-solid buffer on both sides, so a boat actually rounding the black mark
-stays clearly clear of the green gate's far end too, rather than the two
-meeting exactly at the boundary. Only applies to the green marks -
+(inner) marks' own rounding radius never reaches anywhere near the
+corresponding black (outer) mark - capped to half the actual
+green<->black distance (`OUTER_MARK_SAFETY_FRACTION` in `baseStation.js`),
+measured fresh off the real published marks each time a watcher is built,
+not assumed from `SIM_LONG_COURSE_EXTRA_NM`. Half rather than the full
+distance leaves a solid buffer on both sides, so a boat actually rounding
+the black mark stays clearly clear of the green radius too, rather than
+the two meeting exactly at the boundary. Only applies to the green marks -
 windwardBlack/leewardBlack are the outermost marks on the course, nothing
-sits beyond them for their own gates to reach.
+sits beyond them for their own radius to reach.
 
 POSTs to the same RegattaUp webhook laps and on-grid use, with its own
 payload shape:
@@ -900,6 +924,41 @@ restart. The durable records are Redis (tracks) and `race-uploads` (log
 files); the dashboard just reflects them plus some things Redis doesn't
 track at all, like radio link quality and upload success/failure counts.
 
+Two dashboard buttons act on the whole fleet at once:
+
+- **Reset race** - clears every boat's latched lap count, on-grid state,
+  and mark-rounding count (`POST /api/reset-race`, `src/baseStation.js`'s
+  `resetRace`). This per-boat state lives entirely in memory for as long as
+  the base station process stays up, with no reset tied to starting a new
+  race the way the published course itself has - without this, re-running a
+  race against a base left running from an earlier one (a practice start, a
+  general recall, back-to-back races in one session) leaves every boat's
+  watcher wherever the previous race left it: a stale lap count that makes
+  the new race's first crossing report as "lap 2," a stale last-known
+  position from wherever the boat was sitting at the end of the last race
+  that the new race's very first fix gets compared against, and so on. The
+  course itself (marks) is left untouched - use this between races on the
+  same course, not `npm run clear-course`.
+- **Ping fleet** - broadcasts a request for every boat to report its
+  current position right now (`POST /api/ping-fleet`, `src/protocol.js`'s
+  `encodePing`, over the same radio/UDP link as everything else). Mainly
+  for a boat that's been sitting stationary since before the base/dashboard
+  was even up: a stationary boat only ever clears the movement-gated
+  `TX_DISTANCE_M` threshold once (see "Lap events -> RegattaUp" above), so
+  without this there's no way to learn it's actually there, on-grid, right
+  now. Each boat waits its own random delay up to `PING_RESPONSE_JITTER_MS`
+  (default 3000, `src/boatAgent.js`'s own `radio.on('ping', ...)` handler)
+  before replying, so a full fleet doesn't all key up over each other on
+  the same shared channel the instant they hear the request - replies
+  trickle in as ordinary position frames over the next few seconds and show
+  up in the Fleet table on this page's own next 5s refresh. Also clears
+  every boat's on-grid state (not lap counts or mark roundings) right
+  before broadcasting, so whatever on-grid status comes back in each
+  reply is treated as a fresh entry and actually sent to RegattaUp, rather
+  than being silently absorbed by the "already told RegattaUp" dedup latch
+  (see "On-grid detection -> RegattaUp" below) - the whole point of asking
+  "where's everyone right now" is to hear back about it.
+
 When `GPS_PORT` is set (see "Recenter on base GPS" below), the dashboard
 also shows a "Base GPS" card - the receiver's ordinary NAV-PVT fix (the
 same message a boat's own rover dashboard is built from), useful mainly as
@@ -1186,6 +1245,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
 | `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
+| `PING_RESPONSE_JITTER_MS` | 3000 | Boat only — max random delay before responding to the base's "Ping fleet" button (see "Admin dashboard" above), so a full fleet doesn't all reply over each other on the same shared channel at once |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 | `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |

@@ -13,6 +13,8 @@ function decodeDatagram(msg) {
   if (frame) return { event: 'frame', decoded: frame };
   const marks = protocol.decodeMarks(msg);
   if (marks) return { event: 'marks', decoded: marks };
+  const ping = protocol.decodePing(msg);
+  if (ping) return { event: 'ping', decoded: ping };
   return null;
 }
 

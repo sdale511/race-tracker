@@ -168,6 +168,22 @@ function getMarks(centerLat, centerLon) {
 // line (cycling positions past that point) instead of overflowing out past
 // committee or even the finish mark.
 //
+// Restricts simulated start slots to the pin half of the line, staying
+// comfortably clear of onGridWatcher.js's own COMMITTEE_TRIANGLE_MAX_FRACTION
+// (0.5, base-station-only - never imported here, this app's boat/sim side
+// has no business reaching into base-only detection internals, so this is
+// an independently-chosen, deliberately smaller value, not a shared
+// constant). That committee-corner exclusion is real and correct - a boat
+// genuinely close to committee IS ambiguous with a finishing boat rounding
+// it - but a simulated boat's start slot is picked at random with no
+// notion of "avoid looking like a finish," so without this, purely by
+// chance, some fraction of simulated boats would start in a position the
+// on-grid detector is SUPPOSED to treat as ambiguous, and never register
+// as on-grid at all - not a detection bug, just bad luck for testing,
+// where the whole point is usually "is the fleet on the line," not
+// exercising the finish-disambiguation edge case.
+const SIM_START_SAFE_MAX_FRACTION = 0.4;
+
 // Returns a 0 (pin) to 1 (committee) FRACTION along the line, not an
 // absolute north/east - unlike windward/leeward (always exactly on
 // simGps.js's own rotated local-north axis, by definition of how that
@@ -179,7 +195,12 @@ function getMarks(centerLat, centerLon) {
 function getStartFraction(slotIndex, geometry) {
   const { startSideLengthM, boatStartSpacingM } = geometry;
   const maxSlots = Math.max(1, Math.floor(startSideLengthM / boatStartSpacingM));
-  const wrappedSlot = slotIndex % maxSlots;
+  // Confined to SIM_START_SAFE_MAX_FRACTION of the line's own slots (see
+  // that constant's own comment) - the modulo wraparound below still maps
+  // any slotIndex onto a real, always-on-grid-safe position, it just never
+  // reaches the committee half of the line at all.
+  const safeMaxSlots = Math.max(1, Math.floor(maxSlots * SIM_START_SAFE_MAX_FRACTION));
+  const wrappedSlot = slotIndex % safeMaxSlots;
   return (boatStartSpacingM / 2 + wrappedSlot * boatStartSpacingM) / startSideLengthM;
 }
 

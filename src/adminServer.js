@@ -435,6 +435,16 @@ function renderDashboard(s) {
       <div class="value">${s.webhook.enabled ? 'on' : 'off'}</div>
       <div class="sub">${s.webhook.queueReady ? 'queue ready' : 'queue initializing'}</div>
     </div>
+    <div class="card">
+      <div class="label">New race</div>
+      <div class="sub">Clears every boat's latched lap/on-grid/mark-rounding state (not the course itself) - use before re-running a race against this same base station.</div>
+      <button type="button" class="card-btn" onclick="resetRace(this)">Reset race</button>
+    </div>
+    <div class="card">
+      <div class="label">Ping fleet</div>
+      <div class="sub">Asks every boat to report its current position now, even a stationary one that's already sent its one and only frame (e.g. sitting on the line since before this dashboard was up). Replies trickle in over the next few seconds.</div>
+      <button type="button" class="card-btn" onclick="pingFleet(this)">Ping fleet</button>
+    </div>
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix)}
     ${renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix)}
@@ -492,6 +502,51 @@ function renderDashboard(s) {
         if (!result.ok) throw new Error(result.error || 'request failed');
         if (andSave) await saveGpsConfigOrThrow();
         setTimeout(() => location.reload(), 800);
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    // Clears every boat's latched race state (see baseStation.js's
+    // resetRace) - confirm() first since it wipes lap counts for the whole
+    // fleet, not just one boat, and there's no undo. Reloads immediately
+    // after (unlike setTmode3Mode above, there's no async hardware poll to
+    // wait on here - the reset is synchronous and already done by the time
+    // the response comes back).
+    async function resetRace(btn) {
+      if (!confirm('Reset race state? This clears every lap count, on-grid state, and mark rounding so far - the course itself is left alone.')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/reset-race', { method: 'POST' });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    // Broadcasts a ping (see baseStation.js's pingFleet) - no confirm()
+    // needed, unlike resetRace/setTmode3Mode above: this has no destructive
+    // side effect, it just asks boats to report in. Replies arrive as
+    // ordinary frames over the next few seconds (each boat's own random
+    // delay - see config.js's pingResponseJitterMs) and show up in the
+    // Fleet table on this page's own next 5s refresh, so there's nothing
+    // for this handler itself to wait on or reflect - just fire the
+    // request and briefly confirm it went out.
+    async function pingFleet(btn) {
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/ping-fleet', { method: 'POST' });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        btn.textContent = 'Pinged - waiting for replies...';
+        setTimeout(() => {
+          btn.textContent = 'Ping fleet';
+          btn.disabled = false;
+        }, 4000);
       } catch (err) {
         alert('Failed: ' + err.message);
         btn.disabled = false;
@@ -1121,6 +1176,8 @@ function startAdminServer({
   getStats,
   getPositions,
   setMark,
+  resetRace,
+  pingFleet,
   getBaseGps,
   getBaseGpsSurvey,
   setBaseGpsSurveyIn,
@@ -1128,6 +1185,42 @@ function startAdminServer({
   saveBaseGpsConfig,
 }) {
   const server = http.createServer(async (req, res) => {
+    // Clears every boat's latched lap/on-grid/mark-rounding watcher state
+    // (see baseStation.js's resetRace) - an explicit "start a new race"
+    // action for the dashboard's own button, distinct from setMark below:
+    // this leaves the course itself untouched, just the per-boat race
+    // state that would otherwise carry over from whatever race last ran
+    // against this same base process.
+    if (req.url === '/api/reset-race' && req.method === 'POST') {
+      try {
+        resetRace();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Broadcasts a ping asking every boat to report its current position
+    // (see baseStation.js's pingFleet/protocol.js's encodePing) - the
+    // dashboard's own "Ping fleet" button. Fire-and-forget from this route's
+    // own perspective: replies trickle in over the next few seconds (each
+    // boat waits its own random delay) as ordinary position frames, picked
+    // up by the ordinary fleet table the next time this page polls/refreshes.
+    if (req.url === '/api/ping-fleet' && req.method === 'POST') {
+      try {
+        pingFleet();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
     if (req.url === '/api/gps/survey/mode' && req.method === 'POST') {
       try {
         const body = await readJsonBody(req);
