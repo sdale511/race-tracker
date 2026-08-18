@@ -48,11 +48,6 @@ const logDir = process.env.LOG_DIR || path.join(__dirname, '..', 'race-logs');
 // to keep in source; credentials are not, so those always come from the
 // environment. See "redis" section below for how REDIS_URL can override this
 // entirely for ad-hoc use.
-// Shared by both the lap webhook and the active-regattas list below, so
-// pointing REGATTAUP_WEBHOOK_URL at a mock endpoint for testing redirects
-// both, rather than needing a second override to match.
-const regattaupBaseUrl = process.env.REGATTAUP_WEBHOOK_URL || 'https://regattaup.com/api/functions/mylapsWebhook';
-
 const REDIS_CONNECTIONS = {
   local: {
     host: '127.0.0.1',
@@ -186,6 +181,17 @@ module.exports = {
     // than a piped/redirected copy (where the in-place escape codes never
     // applied in the first place - see isTTY check).
     logReplace: process.env.GPS_LOG_REPLACE !== '0' && process.env.GPS_LOG_REPLACE !== 'false',
+    // Off by default, boat only (see boatAgent.js's openGps) - logs a
+    // `[rtcm]` line for every UBX-RXM-RTCM message the receiver reports
+    // (RTCM message type, whether it was applied, CRC failures), the only
+    // direct evidence this app can show that correction data is actually
+    // reaching the receiver. Defaults off since UBX-RXM-RTCM is itself off
+    // on the receiver by default too (a separate enable step - see
+    // README's "Wiring notes") - without this flag, turning that message
+    // on for a one-off diagnostic check would otherwise start scrolling
+    // unwanted lines on every ordinary run afterward. Still gated by
+    // logConsole above (GPS_LOG=0 silences this too).
+    logRtcm: process.env.GPS_LOG_RTCM === '1' || process.env.GPS_LOG_RTCM === 'true',
     // Base station only - parameters sent along with a UBX-CFG-TMODE3
     // survey-in request (see adminServer.js's "Start survey-in" button).
     // svinMinDurS is the minimum time the receiver must spend surveying
@@ -339,14 +345,19 @@ module.exports = {
   // mid-retry) gets retried with capped exponential backoff rather than
   // silently dropped.
   regattaup: {
-    webhookUrl: regattaupBaseUrl,
+    webhookUrl: process.env.REGATTAUP_WEBHOOK_URL || 'https://regattaup.com/api/functions/mylapsWebhook',
     enabled: process.env.REGATTAUP_WEBHOOK_DISABLED !== '1' && process.env.REGATTAUP_WEBHOOK_DISABLED !== 'true',
     // Base station only - the admin dashboard's regatta selector (see
     // baseStation.js's refreshActiveRegattas) fetches this list so an
     // operator can pick which regatta this base station is reporting for.
     // No auth, no body - see RegattaUp's own API docs for the response
-    // shape.
-    activeRegattasUrl: new URL('/api/functions/getActiveRegattas', regattaupBaseUrl).href,
+    // shape. Deliberately NOT derived from webhookUrl above - REGATTAUP_
+    // WEBHOOK_URL commonly gets overridden to a mock/staging endpoint for
+    // testing the lap webhook path, and that shouldn't also redirect the
+    // regatta list (real setup data an operator needs to pick from) away
+    // from the real RegattaUp host. Override REGATTAUP_ACTIVE_REGATTAS_URL
+    // explicitly if the regatta list itself needs to be mocked too.
+    activeRegattasUrl: process.env.REGATTAUP_ACTIVE_REGATTAS_URL || 'https://regattaup.com/api/functions/getActiveRegattas',
     // How often that list is refreshed in the background - regattas
     // essentially never change mid-race, so this is just a slow heartbeat
     // (pick up a newly published regatta, notice the selected one has

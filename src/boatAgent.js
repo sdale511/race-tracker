@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
 const config = require('./config');
-const { UbxParser, encodeNavPvt } = require('./ubxParser');
+const { UbxParser, encodeNavPvt, RTCM_MSG_USED_NAMES } = require('./ubxParser');
 const { toGGA } = require('./nmea');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
@@ -404,6 +404,29 @@ function openGps() {
   });
 
   parser.on('nav-pvt', handlePvt);
+
+  // The only direct evidence this app can show that RTCM corrections are
+  // actually reaching the receiver - that link runs over the module's own
+  // onboard correction radio, entirely separate hardware from GPS_PORT/
+  // RADIO_PORT (see README's "Wiring notes"), so this app has no other way
+  // to see it. Requires two separate opt-ins before anything shows up
+  // here: UBX-RXM-RTCM enabled as an output on this same UART on the
+  // receiver itself (see ubxParser.js's own comment - off by default there
+  // too, so seeing nothing doesn't by itself mean no corrections are
+  // arriving, only that this message hasn't been turned on to report it),
+  // and GPS_LOG_RTCM=1 here (see config.js - off by default so a one-off
+  // diagnostic enable on the receiver doesn't also start scrolling
+  // unwanted lines on every ordinary run afterward). crcFailed is a real
+  // problem (a corrupted correction, dropped); msgUsed='not used' on its
+  // own isn't - plenty of message types (e.g. a constellation you're not
+  // tracking) are legitimately ignored.
+  parser.on('rxm-rtcm', (msg) => {
+    if (!config.gps.logConsole || !config.gps.logRtcm) return;
+    const used = RTCM_MSG_USED_NAMES[msg.msgUsed] || msg.msgUsed;
+    const line = `[rtcm] type=${msg.msgType} station=${msg.refStation} used=${used}${msg.crcFailed ? ' CRC-FAILED' : ''}`;
+    if (msg.crcFailed) console.warn(line);
+    else console.log(line);
+  });
 }
 
 // True once the simulated GPS has actually started, so a mark broadcast

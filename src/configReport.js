@@ -58,6 +58,7 @@ const sections = [
       { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud' },
       { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG' },
       { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE' },
+      { label: 'logRtcm', value: config.gps.logRtcm, envVar: 'GPS_LOG_RTCM' },
       { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's' },
       { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm' },
     ],
@@ -128,7 +129,7 @@ const sections = [
     rows: [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
       { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_DISABLED', inverted: true },
-      { label: 'activeRegattasUrl', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
+      { label: 'activeRegattasUrl', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_ACTIVE_REGATTAS_URL' },
       {
         label: 'activeRegattasRefreshIntervalMs',
         value: config.regattaup.activeRegattasRefreshIntervalMs,

@@ -19,10 +19,13 @@ const ID_NAV_SVIN = 0x3b;
 const CLASS_CFG = 0x06;
 const ID_CFG_TMODE3 = 0x71;
 const ID_CFG_CFG = 0x09;
+const CLASS_RXM = 0x02;
+const ID_RXM_RTCM = 0x32;
 const PVT_LENGTH = 92;
 const SVIN_LENGTH = 40;
 const TMODE3_LENGTH = 40;
 const CFG_CFG_LENGTH = 13;
+const RXM_RTCM_LENGTH = 8;
 
 // WGS84 ellipsoid constants, for converting the ECEF position NAV-SVIN
 // reports (survey-in works in ECEF, not lat/lon) into something the admin
@@ -240,6 +243,9 @@ class UbxParser extends EventEmitter {
         } else if (msgClass === CLASS_CFG && msgId === ID_CFG_TMODE3 && length === TMODE3_LENGTH) {
           const payload = frame.slice(6, 6 + length);
           this.emit('cfg-tmode3', this._decodeTmode3(payload));
+        } else if (msgClass === CLASS_RXM && msgId === ID_RXM_RTCM && length === RXM_RTCM_LENGTH) {
+          const payload = frame.slice(6, 6 + length);
+          this.emit('rxm-rtcm', this._decodeRxmRtcm(payload));
         }
       } else {
         this.emit('checksum-error');
@@ -355,9 +361,30 @@ class UbxParser extends EventEmitter {
     }
     return result;
   }
+
+  // Reported once per incoming RTCM3 message the receiver's radio link
+  // actually decodes - the only direct evidence (short of a scope on the
+  // correction radio itself) that RTCM is arriving at all, since that link
+  // is entirely separate hardware this app otherwise never touches (see
+  // README's "Wiring notes"). msgUsed only reflects whether the receiver
+  // could apply it (e.g. an as-yet-unneeded message type isn't a problem;
+  // crcFailed is), not whether the overall correction stream is healthy -
+  // see boatAgent.js's own rxm-rtcm handler for what actually gets logged.
+  _decodeRxmRtcm(p) {
+    const flags = p.readUInt8(1);
+    return {
+      crcFailed: !!(flags & 0x01),
+      msgUsed: (flags >> 1) & 0x03, // 0 unknown, 1 not used, 2 used
+      subType: p.readUInt16LE(2), // only meaningful for RTCM message type 4072
+      refStation: p.readUInt16LE(4),
+      msgType: p.readUInt16LE(6), // the actual RTCM3 message type, e.g. 1005, 1077
+      timestamp: Date.now(),
+    };
+  }
 }
 
 const TMODE3_MODE_NAMES = { 0: 'disabled', 1: 'survey-in', 2: 'fixed' };
+const RTCM_MSG_USED_NAMES = { 0: 'unknown', 1: 'not used', 2: 'used' };
 
 module.exports = {
   UbxParser,
@@ -370,6 +397,7 @@ module.exports = {
   encodeNavPvt,
   ecefToLla,
   TMODE3_MODE_NAMES,
+  RTCM_MSG_USED_NAMES,
   CLASS_CFG,
   ID_CFG_TMODE3,
 };

@@ -136,6 +136,21 @@ normally used for RTCM3 correction data between your RTK base and this
 rover, not for the position telemetry this app sends. Nothing here touches
 that link.
 
+That said, if you want visibility into whether corrections are actually
+arriving, enable `UBX-RXM-RTCM` as an output on the same UART/baud this app
+already reads (`GPS_PORT`/`GPS_BAUD`) and set `GPS_LOG_RTCM=1` (off by
+default - see "Tuning knobs" below):
+```
+ubxtool -f /dev/ttyAMA0 -s <baud> -P 27.11 -z CFG-MSGOUT-UBX_RXM_RTCM_UART1,1,7
+```
+Watch for `[rtcm]` lines (`type=1077 station=0 used=used`, etc.) alongside
+the `[gps]` ones - `type` is the RTCM3 message type, `used=not used` on its
+own is normal (plenty of message types are legitimately ignored, e.g. a
+constellation you're not tracking), but `CRC-FAILED` means a correction
+actually arrived corrupted and got dropped. Seeing nothing here doesn't by
+itself mean no corrections are arriving - only that this message hasn't
+been turned on yet to report it.
+
 ### Base station: enabling the survey-in status card (optional)
 
 If the base's admin dashboard's "Base GPS survey-in" card (see "Admin
@@ -1236,6 +1251,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`); the base only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
 | `GPS_LOG` | unset (on) | Both roles — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. Every fix is logged, not just ones that clear `TX_DISTANCE_M` — the console is a live "is this thing still getting fixes" view, independent of what's actually sent over radio/written to SD. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
 | `GPS_LOG_REPLACE` | unset (on) | Both roles — when watching a real interactive terminal (not piped/redirected, e.g. to a file or `systemd`/journald), each fix overwrites the same console line instead of scrolling, so a stationary boat/base doesn't flood the screen. On the boat, a fix that actually clears `TX_DISTANCE_M` (a real radio send) still commits to scrollback instead of being overwritten. Set to `0` to always scroll instead (one line per logged fix) — e.g. if something else is tailing/grepping this process's own terminal output directly, where overwritten lines would never actually appear to it |
+| `GPS_LOG_RTCM` | unset (off) | Boat only — set to `1` to log a `[rtcm]` line for every `UBX-RXM-RTCM` message the receiver reports (RTCM message type, whether it was applied, CRC failures) — see "Wiring notes" above. Also requires `UBX-RXM-RTCM` to be enabled as an output on the receiver itself, a separate one-time step |
 | `GPS_SVIN_MIN_DUR_S` | 60 | Base station only — minimum duration (seconds) the base GPS must spend surveying before the "Start survey-in" dashboard button's request can complete, regardless of how quickly the accuracy estimate converges — see "Admin dashboard" above |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | Base station only — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
@@ -1259,8 +1275,9 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
 | `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
 | `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
-| `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above. The active-regattas list (see "Admin dashboard" above) is fetched from `/api/functions/getActiveRegattas` on this same host, so pointing this at a mock endpoint for testing redirects both |
+| `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above. Independent of `REGATTAUP_ACTIVE_REGATTAS_URL` below — overriding this to a mock/staging endpoint for testing does NOT also redirect the active-regattas list |
 | `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
+| `REGATTAUP_ACTIVE_REGATTAS_URL` | `https://regattaup.com/api/functions/getActiveRegattas` | Base station only — where the admin dashboard's regatta selector (see "Admin dashboard" above) fetches the active/future regatta list. Override only if you need to mock the regatta list itself for testing — see `REGATTAUP_WEBHOOK_URL` above |
 | `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` | 300000 (5 min) | Base station only — how often the admin dashboard's active-regattas list is refreshed in the background, see "Admin dashboard" above |
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
 | `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |

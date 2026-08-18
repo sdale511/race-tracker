@@ -255,10 +255,14 @@ function main() {
           // connection is still visually distinguishable from a live one
           // that just hasn't moved - the clock keeps ticking either way.
           const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
+          // No diffSoln/carrSoln here (unlike boatAgent.js's own [gps] line)
+          // - those describe whether *this* receiver is consuming
+          // corrections, which is meaningless for a base: it's the source
+          // of corrections, not a consumer, so those fields just sit at
+          // false/0 regardless of whether the base is actually working.
           const line =
             `[baseGps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
-            `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
-            `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
+            `fixType=${pvt.fixType} numSV=${pvt.numSV} hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
           // Same isTTY/logReplace guard as boatAgent.js - piped/redirected
           // output (a log file, systemd/journald) falls through to a plain
           // scrolling console.log, since the in-place escape codes would
