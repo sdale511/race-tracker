@@ -48,6 +48,11 @@ const logDir = process.env.LOG_DIR || path.join(__dirname, '..', 'race-logs');
 // to keep in source; credentials are not, so those always come from the
 // environment. See "redis" section below for how REDIS_URL can override this
 // entirely for ad-hoc use.
+// Shared by both the lap webhook and the active-regattas list below, so
+// pointing REGATTAUP_WEBHOOK_URL at a mock endpoint for testing redirects
+// both, rather than needing a second override to match.
+const regattaupBaseUrl = process.env.REGATTAUP_WEBHOOK_URL || 'https://regattaup.com/api/functions/mylapsWebhook';
+
 const REDIS_CONNECTIONS = {
   local: {
     host: '127.0.0.1',
@@ -167,25 +172,19 @@ module.exports = {
     // once you've confirmed a good fix and don't want it scrolling by
     // during an actual race.
     logConsole: process.env.GPS_LOG !== '0' && process.env.GPS_LOG !== 'false',
-    // Off by default - boat only (see boatAgent.js's handlePvt). GPS fixes
-    // can arrive at 1-10Hz; with this off, the console (like the SD log
-    // and radio TX) only shows the ones that actually cleared
-    // TX_DISTANCE_M, not the full raw stream. Set GPS_LOG_ALL=1 to log
-    // every fix regardless of movement - useful for closely watching RTK
-    // convergence bench-side, noisy the rest of the time.
-    logAll: process.env.GPS_LOG_ALL === '1' || process.env.GPS_LOG_ALL === 'true',
     // On by default, and only actually matters when stdout is a real
     // terminal (see boatAgent.js's handlePvt and baseStation.js's
     // openBaseGps) - that's when a fix overwrites the same console line
-    // instead of scrolling: on the boat, only fixes that haven't cleared
-    // TX_DISTANCE_M (with logAll on); on the base, every fix, since a
-    // stationary reference GPS has no equivalent "moved enough to be
-    // worth its own line" distinction to fall back on. Set
-    // GPS_LOG_REPLACE=0 to always scroll (one line per logged fix)
-    // instead, e.g. if something downstream is tailing/grepping this
-    // process's own terminal output directly rather than a piped/redirected
-    // copy (where the in-place escape codes never applied in the first
-    // place - see isTTY check).
+    // instead of scrolling. Both boat and base show every fix this way
+    // (not gated by TX_DISTANCE_M - that gate is only about what's worth
+    // transmitting/recording, not what's worth watching), except a boat
+    // fix that actually clears TX_DISTANCE_M, which commits to scrollback
+    // instead of being overwritten, since that's a real event (a radio
+    // send) worth keeping. Set GPS_LOG_REPLACE=0 to always scroll (one
+    // line per logged fix) instead, e.g. if something downstream is
+    // tailing/grepping this process's own terminal output directly rather
+    // than a piped/redirected copy (where the in-place escape codes never
+    // applied in the first place - see isTTY check).
     logReplace: process.env.GPS_LOG_REPLACE !== '0' && process.env.GPS_LOG_REPLACE !== 'false',
     // Base station only - parameters sent along with a UBX-CFG-TMODE3
     // survey-in request (see adminServer.js's "Start survey-in" button).
@@ -340,8 +339,19 @@ module.exports = {
   // mid-retry) gets retried with capped exponential backoff rather than
   // silently dropped.
   regattaup: {
-    webhookUrl: process.env.REGATTAUP_WEBHOOK_URL || 'https://regattaup.com/api/functions/mylapsWebhook',
+    webhookUrl: regattaupBaseUrl,
     enabled: process.env.REGATTAUP_WEBHOOK_DISABLED !== '1' && process.env.REGATTAUP_WEBHOOK_DISABLED !== 'true',
+    // Base station only - the admin dashboard's regatta selector (see
+    // baseStation.js's refreshActiveRegattas) fetches this list so an
+    // operator can pick which regatta this base station is reporting for.
+    // No auth, no body - see RegattaUp's own API docs for the response
+    // shape.
+    activeRegattasUrl: new URL('/api/functions/getActiveRegattas', regattaupBaseUrl).href,
+    // How often that list is refreshed in the background - regattas
+    // essentially never change mid-race, so this is just a slow heartbeat
+    // (pick up a newly published regatta, notice the selected one has
+    // ended) rather than a tight sync loop.
+    activeRegattasRefreshIntervalMs: parseInt(process.env.REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS || '300000', 10), // 5 minutes
     queueDbPath: process.env.REGATTAUP_QUEUE_DB || path.join(logDir, 'lap_webhook_queue.sqlite'),
     // Every lap/on-grid/mark-rounding event is always queued first (see
     // baseStation.js's enqueueLap/OnGrid/MarkRounding), never POSTed

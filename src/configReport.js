@@ -57,7 +57,6 @@ const sections = [
       { label: 'port', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX' },
       { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud' },
       { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG' },
-      { label: 'logAll', value: config.gps.logAll, envVar: 'GPS_LOG_ALL' },
       { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE' },
       { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's' },
       { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm' },
@@ -129,6 +128,13 @@ const sections = [
     rows: [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
       { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_DISABLED', inverted: true },
+      { label: 'activeRegattasUrl', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
+      {
+        label: 'activeRegattasRefreshIntervalMs',
+        value: config.regattaup.activeRegattasRefreshIntervalMs,
+        envVar: 'REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS',
+        unit: 'ms',
+      },
       { label: 'queueDbPath', value: config.regattaup.queueDbPath, envVar: 'REGATTAUP_QUEUE_DB' },
       { label: 'postIntervalMs', value: config.regattaup.postIntervalMs, envVar: 'REGATTAUP_POST_INTERVAL_MS', unit: 'ms' },
       { label: 'maxBackoffMs', value: config.regattaup.maxBackoffMs, envVar: 'REGATTAUP_MAX_BACKOFF_MS', unit: 'ms' },

@@ -10,6 +10,14 @@ const config = require('./config');
 // tell "actively out there" from "was here earlier, gone quiet."
 const ONLINE_THRESHOLD_MS = 60000;
 
+// Regatta name/venue (unlike everything else this dashboard renders) come
+// from an external HTTP response (RegattaUp's getActiveRegattas), not this
+// app's own GPS/radio decoding - escape before interpolating into HTML so a
+// regatta name can't inject markup/script into the dashboard.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function fixQualityText(f) {
   if (f.carrSoln === 2) return 'RTK fixed';
   if (f.carrSoln === 1) return 'RTK float';
@@ -375,6 +383,15 @@ function renderDashboard(s) {
     background: #0f1216; color: #e6e9ef; font-size: 13px; font-variant-numeric: tabular-nums;
   }
   .manual-input::placeholder { color: #5a6270; }
+  .regatta-card { grid-column: span 2; }
+  .regatta-select {
+    width: 100%; margin-top: 10px; padding: 7px 10px; border-radius: 6px; border: 1px solid #262c36;
+    background: #0f1216; color: #e6e9ef; font-size: 13px;
+  }
+  .regatta-warning {
+    margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+    background: #3a2a0f; border: 1px solid #6b4a12; color: #f2b84b;
+  }
 </style>
 </head>
 <body>
@@ -435,10 +452,22 @@ function renderDashboard(s) {
       <div class="value">${s.webhook.enabled ? 'on' : 'off'}</div>
       <div class="sub">${s.webhook.queueReady ? 'queue ready' : 'queue initializing'}</div>
     </div>
-    <div class="card">
-      <div class="label">New race</div>
-      <div class="sub">Clears every boat's latched lap/on-grid/mark-rounding state (not the course itself) - use before re-running a race against this same base station.</div>
-      <button type="button" class="card-btn" onclick="resetRace(this)">Reset race</button>
+    <div class="card regatta-card">
+      <div class="label">Regatta</div>
+      ${
+        s.regatta.selected
+          ? `<div class="sub">Reporting for <strong>${escapeHtml(s.regatta.selected.name)}</strong> - ${escapeHtml(s.regatta.selected.venue)} (through ${escapeHtml(s.regatta.selected.end_date)})</div>`
+          : `<div class="regatta-warning">No regatta selected - pick one below before racing, so laps/on-grid/mark events report against the right event.</div>`
+      }
+      <select class="regatta-select" id="regatta-select" onchange="selectRegatta(this)">
+        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
+        ${s.regatta.regattas
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)} (${escapeHtml(r.start_date)} to ${escapeHtml(r.end_date)})</option>`
+          )
+          .join('')}
+      </select>
     </div>
     <div class="card">
       <div class="label">Ping fleet</div>
@@ -508,28 +537,32 @@ function renderDashboard(s) {
       }
     }
 
-    // Clears every boat's latched race state (see baseStation.js's
-    // resetRace) - confirm() first since it wipes lap counts for the whole
-    // fleet, not just one boat, and there's no undo. Reloads immediately
-    // after (unlike setTmode3Mode above, there's no async hardware poll to
-    // wait on here - the reset is synchronous and already done by the time
-    // the response comes back).
-    async function resetRace(btn) {
-      if (!confirm('Reset race state? This clears every lap count, on-grid state, and mark rounding so far - the course itself is left alone.')) return;
-      btn.disabled = true;
+    // Persists the operator's regatta choice (see baseStation.js's
+    // selectRegatta) - no confirm(), just picking which of possibly several
+    // concurrent RegattaUp regattas this base station reports events
+    // against. Reloads so the "Reporting for ..." line and the warning
+    // banner both reflect the new selection.
+    async function selectRegatta(select) {
+      const id = select.value;
+      if (!id) return;
+      select.disabled = true;
       try {
-        const res = await fetch('/api/reset-race', { method: 'POST' });
+        const res = await fetch('/api/regattas/selected', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        });
         const result = await res.json();
         if (!result.ok) throw new Error(result.error || 'request failed');
         location.reload();
       } catch (err) {
         alert('Failed: ' + err.message);
-        btn.disabled = false;
+        select.disabled = false;
       }
     }
 
     // Broadcasts a ping (see baseStation.js's pingFleet) - no confirm()
-    // needed, unlike resetRace/setTmode3Mode above: this has no destructive
+    // needed, unlike setTmode3Mode above: this has no destructive
     // side effect, it just asks boats to report in. Replies arrive as
     // ordinary frames over the next few seconds (each boat's own random
     // delay - see config.js's pingResponseJitterMs) and show up in the
@@ -1123,12 +1156,12 @@ function renderMap(s) {
 </html>`;
 }
 
-// Reads and JSON-parses a request body - only the mark-editing POST route
-// below needs this, everything else on this server is GET/no-body, so
-// this doesn't need to be anything fancier than accumulate-then-parse.
-// Capped well above any real {lat, lon} payload's size so a malformed or
-// hostile client can't hold the connection open buffering an unbounded
-// body.
+// Reads and JSON-parses a request body - only the mark-editing and
+// regatta-select POST routes need this, everything else on this server is
+// GET/no-body, so this doesn't need to be anything fancier than
+// accumulate-then-parse. Capped well above any real payload's size so a
+// malformed or hostile client can't hold the connection open buffering an
+// unbounded body.
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -1170,14 +1203,18 @@ function readJsonBody(req) {
 // progress/result - also null when no base GPS is configured.
 // setBaseGpsSurveyIn/setBaseGpsFixed (see baseStation.js) switch that same
 // GPS module's TMODE3 mode - unlike setMark, this is base-only (no rover
-// equivalent), so it doesn't need setMark's CORS handling.
+// equivalent), so it doesn't need setMark's CORS handling. selectRegatta
+// (see baseStation.js's selectRegatta) persists which RegattaUp regatta
+// this base station reports events against - the dashboard's own regatta
+// list/selection comes bundled in getStats' own s.regatta, not a separate
+// callback, since it's cheap in-memory state, not a live query.
 function startAdminServer({
   port,
   getStats,
   getPositions,
   setMark,
-  resetRace,
   pingFleet,
+  selectRegatta,
   getBaseGps,
   getBaseGpsSurvey,
   setBaseGpsSurveyIn,
@@ -1185,15 +1222,14 @@ function startAdminServer({
   saveBaseGpsConfig,
 }) {
   const server = http.createServer(async (req, res) => {
-    // Clears every boat's latched lap/on-grid/mark-rounding watcher state
-    // (see baseStation.js's resetRace) - an explicit "start a new race"
-    // action for the dashboard's own button, distinct from setMark below:
-    // this leaves the course itself untouched, just the per-boat race
-    // state that would otherwise carry over from whatever race last ran
-    // against this same base process.
-    if (req.url === '/api/reset-race' && req.method === 'POST') {
+    // Persists which RegattaUp regatta this base station is reporting for
+    // (see baseStation.js's selectRegatta) - the dashboard's own regatta
+    // select. id is looked up against the last-fetched active-regattas
+    // list server-side, not trusted as-is - see selectRegatta's own comment.
+    if (req.url === '/api/regattas/selected' && req.method === 'POST') {
       try {
-        resetRace();
+        const body = await readJsonBody(req);
+        await selectRegatta(body.id);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

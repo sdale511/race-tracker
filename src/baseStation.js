@@ -407,10 +407,10 @@ function main() {
   // reconcile here on the base side beyond that; replies just arrive as
   // ordinary frames through the normal radio.on('frame', ...) path above.
   function pingFleet() {
-    // Clears every boat's on-grid state (not lap counts or mark roundings -
-    // this is deliberately narrower than resetRace above) so whatever
-    // on-grid status comes back in each boat's reply is treated as a fresh
-    // entry (wasOnGrid reads false again) and actually gets sent, rather
+    // Clears every boat's on-grid state (not lap counts or mark roundings)
+    // so whatever on-grid status comes back in each boat's reply is
+    // treated as a fresh entry (wasOnGrid reads false again) and actually
+    // gets sent, rather
     // than being silently absorbed by the "already told RegattaUp" latch
     // (see detectRaceEvents' wasOnGrid/dueForResend logic) - the whole
     // point of an operator explicitly asking "where's everyone right now"
@@ -420,6 +420,75 @@ function main() {
     lastOnGridSentByBoat.clear();
     radio.broadcast(protocol.encodePing());
     console.log(`[baseStation] ${new Date().toISOString()} pinged the fleet for current positions`);
+  }
+
+  // The regatta this base station is currently reporting for is an
+  // operator choice, not something this process can infer on its own - a
+  // base has no other way to know which of possibly several concurrent
+  // RegattaUp regattas it's actually sitting at. `activeRegattas` is just
+  // an in-memory cache of the last successful fetch, refreshed on the
+  // interval below; the actual selection lives in Redis (see
+  // redisStore.js's setSelectedRegatta) so it survives a base restart.
+  let activeRegattas = [];
+
+  function regattaHasEnded(regatta) {
+    // end_date is a bare 'YYYY-MM-DD' (no time component) - treat the
+    // regatta as still current through the end of that day rather than its
+    // very first instant, so a race still running late on its last
+    // scheduled day isn't flagged as ended out from under the operator.
+    return new Date(`${regatta.end_date}T23:59:59`).getTime() < Date.now();
+  }
+
+  // Fetches the current active/future regatta list from RegattaUp (see
+  // config.js's activeRegattasUrl) and, while at it, checks whether the
+  // currently selected regatta (if any) has passed its own end_date - not
+  // whether it's still in RegattaUp's own "active" list, since a regatta
+  // can legitimately drop out of that list before its end_date arrives
+  // (see redisStore.js's setSelectedRegatta comment) and this base should
+  // keep reporting for it right up until the date itself passes. Called
+  // once at startup and on a periodic timer (see the interval below) -
+  // errors are logged and swallowed, same as the other best-effort
+  // background refreshes in this file, so a transient RegattaUp/network
+  // hiccup doesn't crash the base station.
+  async function refreshActiveRegattas() {
+    try {
+      const res = await fetch(config.regattaup.activeRegattasUrl, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      activeRegattas = Array.isArray(body.regattas) ? body.regattas : [];
+      console.log(
+        `[baseStation] ${new Date().toISOString()} fetched ${activeRegattas.length} active/future regatta(s) from ${config.regattaup.activeRegattasUrl}`
+      );
+    } catch (err) {
+      console.error(`[baseStation] failed to refresh active regattas from ${config.regattaup.activeRegattasUrl}:`, err.message);
+    }
+
+    const selected = await redisStore.getSelectedRegatta();
+    if (selected && regattaHasEnded(selected)) {
+      await redisStore.clearSelectedRegatta();
+      console.warn(
+        `[baseStation] selected regatta "${selected.name}" ended ${selected.end_date} - cleared, please pick another one on the admin dashboard`
+      );
+    }
+  }
+
+  // What the admin dashboard's regatta card actually renders - the cached
+  // list plus whichever one (if any) is currently persisted in Redis.
+  async function getRegattaStatus() {
+    return { regattas: activeRegattas, selected: await redisStore.getSelectedRegatta() };
+  }
+
+  // Called from the admin dashboard's regatta select (see adminServer.js) -
+  // looks the id up in the last-fetched list (not blindly trusted from the
+  // client) so a stale/tampered id can't get persisted, then saves the
+  // whole regatta object, not just its id (see redisStore.js's
+  // setSelectedRegatta comment for why).
+  async function selectRegatta(id) {
+    const regatta = activeRegattas.find((r) => r.id === id);
+    if (!regatta) throw new Error('unknown regatta id - refresh the list and try again');
+    await redisStore.setSelectedRegatta(regatta);
+    console.log(`[baseStation] regatta selected: "${regatta.name}" (${regatta.venue})`);
+    return regatta;
   }
 
   // Lets an operator correct/set a single mark's position from the base's
@@ -453,37 +522,15 @@ function main() {
 
   // Every per-boat watcher (finish-line lap count, on-grid state, mark
   // roundings) lives entirely in memory, keyed by boatId, for as long as
-  // this base station process stays up - there's no Redis-backed reset tied
-  // to starting a new race the way raceMarks itself has. Without clearing
-  // these, re-running a race against a base that was left running from an
-  // earlier one (a practice start, a general recall, back-to-back races in
-  // one session) leaves every boat's watcher latched to wherever the
-  // PREVIOUS race left it - a stale lapCount that makes the new race's
-  // first crossing report as "lap 2" instead of "lap 1", a stale prevPos
-  // from wherever the boat was sitting at the end of the last race that the
-  // new race's very first fix gets compared against, etc. Shared by
-  // setMarkLocation (which already needed exactly this) and resetRace
-  // (below, for an operator explicitly starting a new race without editing
-  // any mark) - one shared implementation so they can't drift apart.
+  // this base station process stays up. Cleared whenever a mark is edited
+  // from the map (see setMarkLocation, the only caller) - existing watchers
+  // cached the old mark position, so they'd otherwise keep using stale gate
+  // geometry for the rest of the race.
   function clearRaceWatchers() {
     finishLineWatchers.clear();
     onGridWatchers.clear();
     markRoundingWatchers.clear();
     lastOnGridSentByBoat.clear();
-  }
-
-  // Explicit "start a new race" action for the admin dashboard - clears
-  // every boat's latched watcher state (see clearRaceWatchers above)
-  // without touching the course itself (raceMarks, unlike setMarkLocation,
-  // is left exactly as published - a new race on the same course doesn't
-  // need new marks). lastSeenByBoat is cleared too, so every boat's next
-  // fix looks "new" again and gets an immediate marks re-broadcast
-  // (broadcastMarksNow's own reconnect-heuristic - see its call site in the
-  // frame handler), the same fast-start behavior a genuinely new boat gets,
-  // rather than boats waiting out the full periodic heartbeat.
-  function resetRace() {
-    clearRaceWatchers();
-    lastSeenByBoat.clear();
   }
 
   // Course marks - windward, leeward, and the pin/committee ends of the
@@ -592,6 +639,18 @@ function main() {
   // one above (powered on late, brief radio dropout) - see
   // broadcastMarksNow()'s comment.
   setInterval(broadcastMarksNow, config.marksBroadcastIntervalMs);
+
+  // Same idea as the marks resolution above, for the regatta list/selection
+  // instead of the course - fetch once at startup (also picks up an
+  // already-expired selection left over from a previous run) and keep
+  // refreshing on a slow heartbeat (see refreshActiveRegattas' own comment).
+  refreshActiveRegattas().then(async () => {
+    const selected = await redisStore.getSelectedRegatta();
+    if (!selected) {
+      console.warn('[baseStation] no regatta selected - pick one on the admin dashboard before racing');
+    }
+  });
+  setInterval(refreshActiveRegattas, config.regattaup.activeRegattasRefreshIntervalMs);
 
   // One FinishLineWatcher per boat (each needs its own independent
   // crossing-state and lap counter), built lazily the first time a given
@@ -1080,6 +1139,7 @@ function main() {
         enabled: config.regattaup.enabled,
         queueReady: !!lapWebhookQueue,
       },
+      regatta: await getRegattaStatus(),
     };
   }
 
@@ -1267,8 +1327,8 @@ function main() {
     getStats: getFullStats,
     getPositions: getBoatPositions,
     setMark: setMarkLocation,
-    resetRace,
     pingFleet,
+    selectRegatta,
     getBaseGps: getBaseGpsFix,
     getBaseGpsSurvey: getBaseGpsSurveyStatus,
     setBaseGpsSurveyIn,

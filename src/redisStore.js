@@ -263,6 +263,29 @@ class RedisStore {
     return existingKeys;
   }
 
+  // Which regatta (from RegattaUp's own getActiveRegattas list - see
+  // baseStation.js) this base station is currently reporting for - a
+  // single key (`regatta:selected`), the whole regatta object as JSON, not
+  // just its id. Storing the full object (not just the id) means the
+  // end-date expiry check in baseStation.js can run without a live
+  // RegattaUp call, and survives that regatta later dropping out of
+  // RegattaUp's own "active" list before its own end_date arrives.
+  async setSelectedRegatta(regatta) {
+    await this.ready;
+    await this.client.set('regatta:selected', JSON.stringify(regatta));
+  }
+
+  async getSelectedRegatta() {
+    await this.ready;
+    const raw = await this.client.get('regatta:selected');
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  async clearSelectedRegatta() {
+    await this.ready;
+    await this.client.del('regatta:selected');
+  }
+
   // For the admin dashboard's connection indicator - ioredis's own
   // connection state machine, exposed here rather than reaching into
   // .client directly from outside this class.
