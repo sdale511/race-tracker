@@ -421,6 +421,7 @@ function openGps() {
   // own isn't - plenty of message types (e.g. a constellation you're not
   // tracking) are legitimately ignored.
   parser.on('rxm-rtcm', (msg) => {
+    roverStats.recordRtcm(msg);
     if (!config.gps.logConsole || !config.gps.logRtcm) return;
     const used = RTCM_MSG_USED_NAMES[msg.msgUsed] || msg.msgUsed;
     const line = `[rtcm] type=${msg.msgType} station=${msg.refStation} used=${used}${msg.crcFailed ? ' CRC-FAILED' : ''}`;

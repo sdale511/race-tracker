@@ -389,13 +389,11 @@ module.exports = {
     onGridQueueDbPath: process.env.REGATTAUP_ONGRID_QUEUE_DB || path.join(logDir, 'ongrid_webhook_queue.sqlite'),
     // Mark-rounding detection (see markRoundingWatcher.js): reports a
     // 'mark' webhook whenever a boat crosses the virtual gate extending
-    // markRoundingExtensionM beyond a windward/leeward mark. Off by
-    // default (REGATTAUP_MARK_ROUNDING_ENABLED=1 to turn on) - unlike laps
-    // and on-grid, this is a new event type RegattaUp's endpoint hasn't
-    // necessarily been confirmed to handle yet, so it stays opt-in
-    // independent of the overall REGATTAUP_WEBHOOK_DISABLED switch (which
-    // still gates it too - both must be satisfied for it to send).
-    markRoundingEnabled: process.env.REGATTAUP_MARK_ROUNDING_ENABLED === '1' || process.env.REGATTAUP_MARK_ROUNDING_ENABLED === 'true',
+    // markRoundingExtensionM beyond a windward/leeward mark. On by default,
+    // same as laps and on-grid - set REGATTAUP_MARK_ROUNDING_ENABLED=0 to
+    // turn it off, independent of the overall REGATTAUP_WEBHOOK_DISABLED
+    // switch (which still gates it too - both must allow it for it to send).
+    markRoundingEnabled: process.env.REGATTAUP_MARK_ROUNDING_ENABLED !== '0' && process.env.REGATTAUP_MARK_ROUNDING_ENABLED !== 'false',
     // Generous by default - there's no real downside to a longer gate (see
     // markRoundingWatcher.js's module comment: it only extends *along the
     // course axis*, so it stays far too short to be crossed by ordinary

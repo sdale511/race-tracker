@@ -89,7 +89,18 @@ function renderDashboard(s) {
     <div class="card">
       <div class="label">Fix quality</div>
       <div class="value">${fix ? (fix.carrSoln === 2 ? 'RTK fixed' : fix.carrSoln === 1 ? 'RTK float' : fix.gnssFixOk ? 'GPS' : 'no fix') : '—'}</div>
-      <div class="sub">${fix ? `${fix.numSV} sats, ${(fix.hAccMm / 1000).toFixed(2)}m acc` : ''}</div>
+      <div class="sub">${fix ? `diffSoln=${fix.diffSoln} carrSoln=${fix.carrSoln} numSV=${fix.numSV} hAcc=${(fix.hAccMm / 1000).toFixed(2)}m` : ''}</div>
+    </div>
+    <div class="card">
+      <div class="label">RTK corrections</div>
+      <div class="value">${s.rtcm.count.toLocaleString()}</div>
+      <div class="sub">${
+        s.rtcm.count > 0
+          ? `last type ${s.rtcm.lastMsgType}, ${formatAgo(s.rtcm.lastReceivedAt)}${
+              s.rtcm.crcFailures ? ` &middot; ${s.rtcm.crcFailures} CRC failure${s.rtcm.crcFailures === 1 ? '' : 's'}` : ''
+            }`
+          : 'none received yet - see README "Wiring notes" (GPS_LOG_RTCM=1 for more detail)'
+      }</div>
     </div>
     <div class="card">
       <div class="label">Course</div>

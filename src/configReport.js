@@ -145,6 +145,7 @@ const sections = [
         label: 'markRoundingEnabled',
         value: config.regattaup.markRoundingEnabled,
         envVar: 'REGATTAUP_MARK_ROUNDING_ENABLED',
+        inverted: true,
       },
       {
         label: 'markRoundingExtensionM',

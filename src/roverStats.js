@@ -19,6 +19,11 @@ let uploadBytesTotal = 0;
 let lastUploadAt = null;
 let lastHealthCheckOkAt = null;
 
+let rtcmCount = 0;
+let rtcmCrcFailures = 0;
+let lastRtcmAt = null;
+let lastRtcmMsgType = null;
+
 function recordFrameSent() {
   framesSent++;
 }
@@ -57,6 +62,17 @@ function recordHealthCheckOk() {
   lastHealthCheckOkAt = Date.now();
 }
 
+// msg: the same object emitted by ubxParser.js's 'rxm-rtcm' event. Tracked
+// independent of GPS_LOG_RTCM (see boatAgent.js's openGps) - that flag only
+// gates the console line, not whether the rover dashboard's own RTK
+// corrections card sees this at all.
+function recordRtcm(msg) {
+  rtcmCount++;
+  if (msg.crcFailed) rtcmCrcFailures++;
+  lastRtcmAt = Date.now();
+  lastRtcmMsgType = msg.msgType;
+}
+
 function snapshot() {
   return {
     startedAt,
@@ -72,6 +88,12 @@ function snapshot() {
       lastUploadAt,
       lastHealthCheckOkAt,
     },
+    rtcm: {
+      count: rtcmCount,
+      crcFailures: rtcmCrcFailures,
+      lastReceivedAt: lastRtcmAt,
+      lastMsgType: lastRtcmMsgType,
+    },
   };
 }
 
@@ -84,5 +106,6 @@ module.exports = {
   recordUploadSuccess,
   recordUploadFailure,
   recordHealthCheckOk,
+  recordRtcm,
   snapshot,
 };

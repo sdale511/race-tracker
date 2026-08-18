@@ -136,10 +136,48 @@ normally used for RTCM3 correction data between your RTK base and this
 rover, not for the position telemetry this app sends. Nothing here touches
 that link.
 
-That said, if you want visibility into whether corrections are actually
-arriving, enable `UBX-RXM-RTCM` as an output on the same UART/baud this app
-already reads (`GPS_PORT`/`GPS_BAUD`) and set `GPS_LOG_RTCM=1` (off by
-default - see "Tuning knobs" below):
+### Base station: enabling RTCM3 output (one-time)
+
+Don't assume a board "ships ready to go" actually has every RTCM3 message
+enabled - `TMODE3` (fixed/survey-in position mode, set from this app's own
+admin dashboard) and RTCM3 *output* are two entirely separate config groups
+on the receiver. Setting a fixed position only controls what position gets
+*used* in any RTCM3 messages the receiver happens to send - it doesn't turn
+sending them on. Some kits ship with only `1005` (station coordinates)
+enabled and no actual observation messages, which looks identical to "it's
+locked and working" on this app's own dashboard while the rover receives
+nothing usable.
+
+Check/enable directly on the base, on whichever UART its correction radio
+is wired to (`UART2` on the simpleRTK2B LR - its onboard LoRa radio is
+wired internally to UART2 on the PCB, not something you'd have jumpered
+yourself, but it's the same interface as far as this config goes):
+```
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1005_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1077_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1087_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1097_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1127_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1230_UART2,1,7
+```
+`1005` is the station coordinates message (the one message that actually
+depends on the fixed position); `1077`/`1087`/`1097`/`1127` are the MSM7
+observation messages (GPS/GLONASS/Galileo/BeiDou respectively - the actual
+correction content) and `1230` is GLONASS's code-phase biases, needed
+alongside `1087` for a healthy GLONASS solution. Only enable the
+constellations you're actually tracking - an unused one being off isn't a
+problem (see the rover's own `[rtcm]` logging below for how to tell "not
+used because not needed" apart from a real failure). The trailing `,7`
+saves to flash immediately, same convention as the NAV-PVT setup above; a
+bare `,1` writes to RAM only, useful for testing a change before
+committing it.
+
+If you want visibility into whether corrections are actually arriving on
+the rover side once this is set, enable `UBX-RXM-RTCM` as an output on the
+same UART/baud this app already reads (`GPS_PORT`/`GPS_BAUD`) and set
+`GPS_LOG_RTCM=1` (off by default - see "Tuning knobs" below). The rover's
+own admin dashboard also has an "RTK corrections" card that tracks this
+independent of that console flag - see "Admin dashboard" below.
 ```
 ubxtool -f /dev/ttyAMA0 -s <baud> -P 27.11 -z CFG-MSGOUT-UBX_RXM_RTCM_UART1,1,7
 ```
@@ -586,12 +624,13 @@ immediately.
 
 ## Mark-rounding detection -> RegattaUp
 
-Off by default - set `REGATTAUP_MARK_ROUNDING_ENABLED=1` to turn it on.
-Unlike laps and on-grid, this is a new event type RegattaUp's webhook
-endpoint hasn't necessarily been confirmed to accept yet, so it has its
-own switch rather than riding on `REGATTAUP_WEBHOOK_DISABLED` alone
-(both still have to allow it - `REGATTAUP_WEBHOOK_DISABLED=1` still turns
-everything off, laps and on-grid included).
+On by default, same as laps and on-grid - set
+`REGATTAUP_MARK_ROUNDING_ENABLED=0` to turn it off on its own. It has its
+own switch separate from `REGATTAUP_WEBHOOK_DISABLED` (both still have to
+allow it - `REGATTAUP_WEBHOOK_DISABLED=1` still turns everything off, laps
+and on-grid included) since this was a newer event type than the other two
+and needed its own way to disable independently while RegattaUp's webhook
+endpoint support for it was still being confirmed.
 
 ![A boat's track loops through a radius around windwardGreen, sweeping through a wide turning angle before exiting - a genuine rounding. A boat transiting past the same mark on a straight tack barely turns at all while inside the same radius.](docs/mark-rounding.svg)
 
@@ -1209,8 +1248,13 @@ one shared source for both.
 Each boat also runs its own matching dashboard (`src/roverAdminServer.js`,
 default port 8092, same as the base - `http://<boat-ip>:8092`), scoped to
 that one boat: last fix and quality (RTK fixed/float/GPS/no fix, sat
-count, accuracy), whether the course has been received, frames sent,
-whether the base is currently reachable, and its own upload history. It
+count, accuracy), an "RTK corrections" card (how many `UBX-RXM-RTCM`
+messages the receiver's reported, the most recent message type, and any
+CRC failures - see "Wiring notes" above for enabling that message; reads
+"none received yet" whether that's because no corrections are arriving or
+because the message just hasn't been turned on), whether the course has
+been received, frames sent, whether the base is currently reachable, and
+its own upload history. It
 has its own `GET /map` too - same course view as the base's, but since
 this one is scoped to a single boat, it also plots that boat's own last
 known position (a solid dot once a fix has come in within the last 10s,
@@ -1282,7 +1326,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
 | `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
 | `REGATTAUP_ONGRID_QUEUE_DB` | `<LOG_DIR>/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
-| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset | Base station only — set to `1` to turn on mark-rounding webhooks. Off by default, independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
+| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base station only — set to `0` to turn off mark-rounding webhooks. On by default, same as laps and on-grid; independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base station only — how far (meters) beyond each windward/leeward mark, along the course axis, the virtual rounding gate extends — capped to half the distance to the corresponding outer (black) mark regardless of this setting — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `<LOG_DIR>/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
 | `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
