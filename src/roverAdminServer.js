@@ -5,6 +5,26 @@ const { renderConfigPage } = require('./configReport');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
+function fixQualityText(f) {
+  if (f.carrSoln === 2) return 'RTK fixed';
+  if (f.carrSoln === 1) return 'RTK float';
+  if (f.gnssFixOk) return 'GPS';
+  return 'No fix';
+}
+
+// Dilution of precision - how much the current satellite geometry is
+// amplifying measurement error, independent of hAcc/vAcc. Same rough bands
+// as adminServer.js's own copy (duplicated rather than imported, same as
+// buildCourseInfoHtml below): under 2 is about as good as GPS geometry
+// gets, 2-5 is normal good-sky conditions, 5-10 a partially obstructed
+// view, above 10 treat the fix with real suspicion.
+function dopQualityText(dop) {
+  if (dop < 2) return 'excellent';
+  if (dop < 5) return 'good';
+  if (dop < 10) return 'fair';
+  return 'poor';
+}
+
 // Renders the boat's own dashboard server-side from one stats snapshot (see
 // boatAgent.js's getRoverStats) - the boat-side counterpart to
 // adminServer.js's renderDashboard, but there's only ever one boat here, so
@@ -47,6 +67,10 @@ function renderDashboard(s) {
   .card .label { color: #8b94a3; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
   .card .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .card .sub { color: #8b94a3; font-size: 12px; margin-top: 4px; }
+  .stat-rows { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+  .stat-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+  .stat-row .name { flex-shrink: 0; color: #8b94a3; }
+  .stat-row .val { color: #e6e9ef; font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; }
   .marks-card { grid-column: span 2; }
   .marks-mini { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
   .marks-mini .mark-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
@@ -84,22 +108,44 @@ function renderDashboard(s) {
     <div class="card">
       <div class="label">Last fix</div>
       <div class="value">${formatAgo(fix ? fix.timestamp : null)}</div>
-      <div class="sub">${fix ? `${fix.lat.toFixed(6)}, ${fix.lon.toFixed(6)}` : 'no fix yet'}</div>
+      <div class="stat-rows">${
+        fix
+          ? [
+              { label: 'Position', value: `${fix.lat.toFixed(6)}, ${fix.lon.toFixed(6)}` },
+              fix.hMSLMm != null
+                ? {
+                    label: 'Altitude',
+                    value: `${(fix.hMSLMm / 1000).toFixed(2)}m MSL${fix.heightMm != null ? ` / ${(fix.heightMm / 1000).toFixed(2)}m ellipsoid` : ''}`,
+                  }
+                : null,
+              fix.gSpeedMmS != null ? { label: 'Speed', value: `${((fix.gSpeedMmS / 1000 / 1852) * 3600).toFixed(1)}kn` } : null,
+              fix.headMotDeg != null && fix.gSpeedMmS > 0 ? { label: 'Heading', value: `${fix.headMotDeg.toFixed(0)}&deg;` } : null,
+            ]
+              .filter(Boolean)
+              .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+              .join('')
+          : '<div class="stat-row"><span class="name">no fix yet</span></div>'
+      }</div>
     </div>
     <div class="card">
       <div class="label">Fix quality</div>
-      <div class="value">${fix ? (fix.carrSoln === 2 ? 'RTK fixed' : fix.carrSoln === 1 ? 'RTK float' : fix.gnssFixOk ? 'GPS' : 'no fix') : '—'}</div>
-      <div class="sub">${fix ? `diffSoln=${fix.diffSoln} carrSoln=${fix.carrSoln} numSV=${fix.numSV} hAcc=${(fix.hAccMm / 1000).toFixed(2)}m` : ''}</div>
-    </div>
-    <div class="card">
-      <div class="label">RTK corrections</div>
-      <div class="value">${s.rtcm.count.toLocaleString()}</div>
-      <div class="sub">${
-        s.rtcm.count > 0
-          ? `last type ${s.rtcm.lastMsgType}, ${formatAgo(s.rtcm.lastReceivedAt)}${
-              s.rtcm.crcFailures ? ` &middot; ${s.rtcm.crcFailures} CRC failure${s.rtcm.crcFailures === 1 ? '' : 's'}` : ''
-            }`
-          : 'none received yet - see README "Wiring notes" (GPS_LOG_RTCM=1 for more detail)'
+      <div class="value">${fix ? fixQualityText(fix) : '—'}</div>
+      <div class="stat-rows">${
+        fix
+          ? [
+              { label: 'diffSoln', value: `${fix.diffSoln}` },
+              { label: 'carrSoln', value: `${fix.carrSoln}` },
+              { label: 'Satellites', value: `${fix.numSV}` },
+              {
+                label: 'Accuracy',
+                value: `&plusmn;${(fix.hAccMm / 1000).toFixed(2)}m horiz${fix.vAccMm != null ? ` / &plusmn;${(fix.vAccMm / 1000).toFixed(2)}m vert` : ''}`,
+              },
+              fix.pDOP != null ? { label: 'DOP', value: `${fix.pDOP.toFixed(2)} (${dopQualityText(fix.pDOP)})` } : null,
+            ]
+              .filter(Boolean)
+              .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+              .join('')
+          : ''
       }</div>
     </div>
     <div class="card">

@@ -175,9 +175,10 @@ committing it.
 If you want visibility into whether corrections are actually arriving on
 the rover side once this is set, enable `UBX-RXM-RTCM` as an output on the
 same UART/baud this app already reads (`GPS_PORT`/`GPS_BAUD`) and set
-`GPS_LOG_RTCM=1` (off by default - see "Tuning knobs" below). The rover's
-own admin dashboard also has an "RTK corrections" card that tracks this
-independent of that console flag - see "Admin dashboard" below.
+`GPS_LOG_RTCM=1` (off by default - see "Tuning knobs" below). Message
+counts and CRC failures are still tracked internally regardless of that
+flag (visible via the rover's own `GET /api/stats`) - the console `[rtcm]`
+line is just the quickest way to watch it live.
 ```
 ubxtool -f /dev/ttyAMA0 -s <baud> -P 27.11 -z CFG-MSGOUT-UBX_RXM_RTCM_UART1,1,7
 ```
@@ -1247,14 +1248,12 @@ one shared source for both.
 
 Each boat also runs its own matching dashboard (`src/roverAdminServer.js`,
 default port 8092, same as the base - `http://<boat-ip>:8092`), scoped to
-that one boat: last fix and quality (RTK fixed/float/GPS/no fix, sat
-count, accuracy), an "RTK corrections" card (how many `UBX-RXM-RTCM`
-messages the receiver's reported, the most recent message type, and any
-CRC failures - see "Wiring notes" above for enabling that message; reads
-"none received yet" whether that's because no corrections are arriving or
-because the message just hasn't been turned on), whether the course has
-been received, frames sent, whether the base is currently reachable, and
-its own upload history. It
+that one boat: a "Last fix" card (position, altitude, speed, heading) and
+a "Fix quality" card (RTK fixed/float/GPS/no fix, `diffSoln`/`carrSoln`,
+satellite count, horizontal/vertical accuracy, DOP), both in the same
+row-per-field format as the base's own "Base GPS" card, plus whether the
+course has been received, frames sent, whether the base is currently
+reachable, and its own upload history. It
 has its own `GET /map` too - same course view as the base's, but since
 this one is scoped to a single boat, it also plots that boat's own last
 known position (a solid dot once a fix has come in within the last 10s,
