@@ -148,15 +148,13 @@ function renderDashboard(s) {
           : ''
       }</div>
     </div>
-    <div class="card">
-      <div class="label">Course</div>
-      <div class="value">${s.currentMarks ? 'known' : 'waiting'}</div>
-      <div class="sub">${s.marksReceivedCount} broadcasts received, last ${formatAgo(s.lastMarksReceivedAt)}</div>
-    </div>
     ${
       s.currentMarks
         ? `<div class="card marks-card">
       <div class="label">Course marks</div>
+      <div class="sub">last update ${
+        s.lastMarksReceivedAt == null ? 'unknown' : `${Math.floor((Date.now() - s.lastMarksReceivedAt) / 1000)}s ago`
+      }</div>
       <div class="marks-mini">
         ${MARK_NAMES.map((name) => {
           const m = s.currentMarks[name];
@@ -164,7 +162,11 @@ function renderDashboard(s) {
         }).join('')}
       </div>
     </div>`
-        : ''
+        : `<div class="card">
+      <div class="label">Course marks</div>
+      <div class="value">waiting</div>
+      <div class="sub">no course broadcast received yet</div>
+    </div>`
     }
     <div class="card">
       <div class="label">Frames sent</div>
