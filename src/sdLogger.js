@@ -43,16 +43,24 @@ class SdLogger {
     this.logDir = logDir;
     this.boatId = boatId;
     this.chunkMinutes = chunkMinutes;
+    this.retentionDays = retentionDays;
     this.currentChunk = null;
     this.filePath = null;
     fs.mkdirSync(logDir, { recursive: true });
     pruneOldLogs(logDir, /^boat\d+_.*\.csv$/, retentionDays);
   }
 
-  // Only touches the filesystem (existsSync/writeFileSync) when the chunk
-  // bucket actually changes, not on every fix - GPS fixes can arrive at up
-  // to 10Hz, and re-stat-ing the same file on every single one would be
-  // wasteful SD card I/O for no benefit.
+  // Only touches the filesystem (existsSync/writeFileSync/pruneOldLogs)
+  // when the chunk bucket actually changes, not on every fix - GPS fixes
+  // can arrive at up to 10Hz, and re-stat-ing the same file on every single
+  // one would be wasteful SD card I/O for no benefit. Pruning here (not
+  // just once in the constructor above) matters for how this actually
+  // runs in production: under systemd's Restart=always (see
+  // install-boat-service.sh), this process is meant to stay up for a whole
+  // season, not just one run - without a prune on every chunk rollover,
+  // old CSVs past retentionDays would only ever get cleaned up on a crash/
+  // restart, silently defeating LOG_RETENTION_DAYS for as long as the
+  // service keeps running cleanly.
   _fileFor(timestamp) {
     const chunk = chunkBucket(timestamp, this.chunkMinutes);
     if (chunk === this.currentChunk) return this.filePath;
@@ -65,6 +73,10 @@ class SdLogger {
         'timestamp_iso,lat,lon,height_m,speed_kn,heading_deg,fix_type,diff_soln,carr_soln,num_sv,h_acc_m\n'
       );
     }
+    // Every chunk rollover, not just when this particular chunk's file
+    // happens to be new - a resumed-after-restart process re-entering an
+    // already-existing chunk should still get the periodic prune below.
+    pruneOldLogs(this.logDir, /^boat\d+_.*\.csv$/, this.retentionDays);
     return this.filePath;
   }
 

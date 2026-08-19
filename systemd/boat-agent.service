@@ -11,6 +11,7 @@ Type=simple
 User=jycadmin
 WorkingDirectory=/home/jycadmin/race-tracker
 Environment=BOAT_ID=1
+Environment=GPS_LOG=0
 ExecStart=/usr/bin/node src/boatAgent.js
 Restart=always
 RestartSec=3

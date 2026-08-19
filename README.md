@@ -291,14 +291,18 @@ sudo ./install-boat-service.sh <BOAT_ID>
 ```
 Generates and installs the `boat-agent` systemd unit (`systemd/boat-agent.service`
 is kept as a static reference of what it produces, not something to copy by
-hand) with this boat's `BOAT_ID` baked in, enables it, and starts it.
-Nothing else is overridden - `config.js`'s own defaults (see "Tuning
-knobs" below) are correct for a normal install; edit the generated unit
-directly if a given Pi genuinely needs `GPS_PORT`/`RADIO_PORT`/etc.
-overridden. Safe to re-run any time `BOAT_ID` needs to change - it
-regenerates the unit and restarts the service to pick it up.
-`journalctl -u boat-agent -f` follows the logs, and `systemctl status
-boat-agent` / `sudo systemctl restart boat-agent` work as usual.
+hand) with this boat's `BOAT_ID` baked in, enables it, and starts it. Also
+sets `GPS_LOG=0`, unlike the interactive `npm run boat` default - under
+systemd stdout isn't a TTY, so the console line's in-place-overwrite never
+applies and every GPS fix would otherwise become its own permanent journal
+entry. Nothing else is overridden - `config.js`'s own defaults (see
+"Tuning knobs" below) are correct for a normal install; edit the generated
+unit directly if a given Pi genuinely needs `GPS_PORT`/`RADIO_PORT`/etc.
+overridden, or `GPS_LOG` back on for a one-off diagnostic session. Safe to
+re-run any time `BOAT_ID` needs to change - it regenerates the unit and
+restarts the service to pick it up. `journalctl -u boat-agent -f` follows
+the logs, and `systemctl status boat-agent` / `sudo systemctl restart
+boat-agent` work as usual.
 
 ## Simulation mode (no hardware)
 

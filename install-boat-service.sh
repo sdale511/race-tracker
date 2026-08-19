@@ -8,9 +8,15 @@ set -euo pipefail
 # LOG_DIR, ...) is left unset here on purpose - config.js's own defaults are
 # correct for a normal install, see README.md's "Tuning knobs" if a given
 # Pi actually needs one overridden (edit the generated unit directly, or
-# export it before running `npm run boat` by hand instead). Safe to re-run:
-# a second run with a different BOAT_ID regenerates the unit and restarts
-# the service to pick it up.
+# export it before running `npm run boat` by hand instead).
+#
+# GPS_LOG=0 is the one exception - it's on by default for an interactive
+# `npm run boat` session, but under systemd stdout isn't a TTY, so the
+# console line's in-place-overwrite never kicks in and every single GPS fix
+# becomes its own permanent journal entry instead - noisy and pointless
+# without a terminal watching it live. Safe to re-run: a second run with a
+# different BOAT_ID regenerates the unit and restarts the service to pick
+# it up.
 #
 # Usage:
 #   sudo ./install-boat-service.sh <BOAT_ID>
@@ -65,6 +71,7 @@ Type=simple
 User=$SERVICE_USER
 WorkingDirectory=$REPO_DIR
 Environment=BOAT_ID=$BOAT_ID
+Environment=GPS_LOG=0
 ExecStart=$NODE_BIN $REPO_DIR/src/boatAgent.js
 Restart=always
 RestartSec=3
