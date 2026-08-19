@@ -556,6 +556,7 @@ function getRoverStats() {
     pendingCount: countPending(config.logDir, config.boatId, config.logChunkMinutes),
     baseIp: baseAddress ? baseAddress.ip : null,
     adminPort: baseAddress ? baseAddress.adminPort : null,
+    baseUploadPort: baseAddress ? baseAddress.port : null,
   };
 }
 

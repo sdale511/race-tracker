@@ -174,9 +174,26 @@ function renderDashboard(s) {
       <div class="sub">${s.radio.syncErrors} sync errors received</div>
     </div>
     <div class="card">
-      <div class="label">Base reachable</div>
-      <div class="value">${baseReachable ? 'yes' : 'no'}</div>
-      <div class="sub">last check ok ${formatAgo(s.upload.lastHealthCheckOkAt)}</div>
+      <div class="label">Base station</div>
+      <div class="value">${s.baseIp ? (baseReachable ? 'reachable' : 'unreachable') : 'not discovered'}</div>
+      <div class="stat-rows">${
+        s.baseIp
+          ? [
+              { label: 'Address', value: s.baseIp },
+              s.adminPort
+                ? {
+                    label: 'Dashboard',
+                    value: `<a href="http://${s.baseIp}:${s.adminPort}/" target="_blank" rel="noopener">${s.baseIp}:${s.adminPort} &#8599;</a>`,
+                  }
+                : null,
+              s.baseUploadPort ? { label: 'Upload port', value: s.baseUploadPort } : null,
+              { label: 'Last check ok', value: formatAgo(s.upload.lastHealthCheckOkAt) },
+            ]
+              .filter(Boolean)
+              .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+              .join('')
+          : '<div class="stat-row"><span class="name">learned from the course marks broadcast - waiting to hear one</span></div>'
+      }</div>
     </div>
     <div class="card">
       <div class="label">Pending uploads</div>

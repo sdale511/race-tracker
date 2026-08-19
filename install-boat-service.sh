@@ -87,7 +87,7 @@ systemctl restart "$SERVICE_NAME"
 echo
 echo "boat-agent installed and running as BOAT_ID=$BOAT_ID (user $SERVICE_USER, $REPO_DIR)."
 echo "  status:  systemctl status $SERVICE_NAME"
-echo "  logs:    journalctl -u $SERVICE_NAME -f"
-echo "  restart: sudo systemctl restart $SERVICE_NAME"
+echo "  logs:    ./boat-logs.sh   (or: journalctl -u $SERVICE_NAME -f)"
+echo "  restart: sudo ./boat-restart.sh   (or: sudo systemctl restart $SERVICE_NAME)"
 echo
 echo "To change BOAT_ID later, just re-run this script."

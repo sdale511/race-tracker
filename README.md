@@ -300,9 +300,24 @@ entry. Nothing else is overridden - `config.js`'s own defaults (see
 unit directly if a given Pi genuinely needs `GPS_PORT`/`RADIO_PORT`/etc.
 overridden, or `GPS_LOG` back on for a one-off diagnostic session. Safe to
 re-run any time `BOAT_ID` needs to change - it regenerates the unit and
-restarts the service to pick it up. `journalctl -u boat-agent -f` follows
-the logs, and `systemctl status boat-agent` / `sudo systemctl restart
-boat-agent` work as usual.
+restarts the service to pick it up. `./boat-logs.sh` (shorthand for
+`journalctl -u boat-agent -f`, extra args pass through) follows the logs,
+`sudo ./boat-restart.sh` (shorthand for `sudo systemctl restart
+boat-agent`, then prints status) restarts it, and `systemctl status
+boat-agent` works as usual too.
+
+Setting the boat's WiFi (so it can reach the base for log uploads - see
+"Log upload over WiFi" below) from the command line, no desktop needed:
+```
+sudo ./set-wifi.sh "<SSID>" "<PASSWORD>"
+```
+Prefers `raspi-config`'s own non-interactive helper (adapts to whichever
+network backend this OS image actually uses), falling back to `nmcli`
+directly if `raspi-config` isn't installed. Leave `PASSWORD` off (or
+blank at the prompt) for an open network. If the Pi won't associate with
+anything afterward, it may not have a WiFi country code set yet - `sudo
+raspi-config nonint do_wifi_country <CC>` fixes that (a one-time thing,
+not per-network, so this script doesn't set it).
 
 ## Simulation mode (no hardware)
 
@@ -1265,8 +1280,10 @@ that one boat: a "Last fix" card (position, altitude, speed, heading) and
 a "Fix quality" card (RTK fixed/float/GPS/no fix, `diffSoln`/`carrSoln`,
 satellite count, horizontal/vertical accuracy, DOP), both in the same
 row-per-field format as the base's own "Base GPS" card, plus whether the
-course has been received, frames sent, whether the base is currently
-reachable, and its own upload history. It
+course has been received, frames sent, a "Base station" card (address,
+dashboard link, upload port, and last successful health check - "not
+discovered" until the first course marks broadcast, since that's how a
+boat learns the base's address at all), and its own upload history. It
 has its own `GET /map` too - same course view as the base's, but since
 this one is scoped to a single boat, it also plots that boat's own last
 known position (a solid dot once a fix has come in within the last 10s,

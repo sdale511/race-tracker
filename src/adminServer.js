@@ -5,9 +5,10 @@ const { renderConfigPage } = require('./configReport');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
-// A boat is "online" if we've heard a position frame from it recently - a
-// looser threshold than any single TX_DISTANCE_M-driven gap, just enough to
-// tell "actively out there" from "was here earlier, gone quiet."
+// A boat is "online" if we've heard from it recently, by radio or by its
+// own WiFi health check (see renderDashboard's lastActivity) - a looser
+// threshold than any single TX_DISTANCE_M-driven gap, just enough to tell
+// "actively out there" from "was here earlier, gone quiet."
 const ONLINE_THRESHOLD_MS = 60000;
 
 // Regatta name/venue (unlike everything else this dashboard renders) come
@@ -257,26 +258,51 @@ function renderManualFixedPositionCard(survey, fix) {
 // templating setup for what's fundamentally a page that reloads its data
 // every few seconds anyway.
 function renderDashboard(s) {
-  // Most recently seen first, so an active fleet naturally floats to the
-  // top instead of being scattered through however boat IDs happen to be
-  // numbered. Boats never heard from this session (lastSeen null - e.g.
-  // known only via the on-disk upload-history scan, see
-  // baseStation.js's uploadDirBaseline) sink to the bottom, ordered by
-  // boat ID among themselves for a stable, predictable position.
+  // Active fleet at the top, so it naturally floats above however boat IDs
+  // happen to be numbered. "Active" is the more recent of lastSeen (an
+  // actual radio position frame) and pendingReportedAt (the boat's own
+  // periodic WiFi health check, see uploadServer.js's recordPending) - not
+  // lastSeen alone, since a stationary boat only ever clears
+  // TX_DISTANCE_M's movement gate once (see config.js) and then
+  // legitimately has nothing new to radio back for as long as it doesn't
+  // move, even though it's still very much alive and phoning home over
+  // WiFi every UPLOAD_CHECK_INTERVAL_MS.
+  //
+  // Sorted into three tiers (online / seen-but-not-online / never seen)
+  // rather than by exact recency, with boat ID as the tie-break *within*
+  // each tier - deliberately coarse. This page reloads every 5s, and a
+  // fleet of boats pinging in every ~15s over WiFi alone would otherwise
+  // have rows constantly swapping places from sub-threshold timing noise
+  // (boat A at 3s vs boat B at 4s flipping to 9s vs 8s a moment later) -
+  // noise an operator glancing at a live table shouldn't have to parse.
+  // Same ONLINE_THRESHOLD_MS boundary as the per-row dot below, so a
+  // boat's tier and its dot color always agree.
+  const lastActivity = (b) => Math.max(b.lastSeen || 0, b.pendingReportedAt || 0) || null;
+  const activityTier = (b) => {
+    const activity = lastActivity(b);
+    if (activity == null) return 2; // never seen
+    return Date.now() - activity < ONLINE_THRESHOLD_MS ? 0 : 1; // online / stale
+  };
   const boatIds = Object.keys(s.boats).sort((a, b) => {
-    const aSeen = s.boats[a].lastSeen;
-    const bSeen = s.boats[b].lastSeen;
-    if (aSeen == null && bSeen == null) return Number(a) - Number(b);
-    if (aSeen == null) return 1;
-    if (bSeen == null) return -1;
-    return bSeen - aSeen;
+    const tierDiff = activityTier(s.boats[a]) - activityTier(s.boats[b]);
+    if (tierDiff !== 0) return tierDiff;
+    return Number(a) - Number(b);
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (s.boats[id].pending || 0), 0);
 
   const boatRows = boatIds
     .map((id) => {
       const b = s.boats[id];
-      const online = b.lastSeen && Date.now() - b.lastSeen < ONLINE_THRESHOLD_MS;
+      // Same combined signal as the sort above - a stationary boat still
+      // phoning home over WiFi shouldn't show as offline just because it
+      // has nothing new to say over radio.
+      const activity = lastActivity(b);
+      const online = activity && Date.now() - activity < ONLINE_THRESHOLD_MS;
+      // Flags when WiFi (not radio) is what's actually current, so "Last
+      // seen: just now" on a boat that hasn't moved in 20 minutes reads as
+      // expected instead of surprising - see the sort comment above for why
+      // that's normal for a stationary boat.
+      const viaWifi = b.pendingReportedAt != null && (b.lastSeen == null || b.pendingReportedAt > b.lastSeen);
       const tracks = (s.redis && s.redis.tracksByBoat && s.redis.tracksByBoat[id]) || 0;
       const laps = s.lapCounts[id] || 0;
       // The boat's own rover dashboard (see roverAdminServer.js) - IP and
@@ -304,7 +330,7 @@ function renderDashboard(s) {
       return `
         <tr>
           <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}</td>
-          <td>${formatAgo(b.lastSeen)}</td>
+          <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
           <td>${tracks.toLocaleString()}</td>
           <td>${laps}</td>
           <td>${b.upload.successes} / ${b.upload.attempts} <span class="muted">(${pct(b.upload.successes, b.upload.attempts)})</span></td>
@@ -358,6 +384,11 @@ function renderDashboard(s) {
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #262c36; border-radius: 10px; overflow: hidden; }
   th, td { text-align: left; padding: 10px 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  /* Fixed width on "Last seen" - its text length varies a lot ("just now"
+     vs "21m ago (WiFi)" vs "23h 59m ago") as time passes between the
+     page's own 5s refreshes; without this the whole table visibly
+     reflows every refresh even when no row actually changed. */
+  th:nth-child(2), td:nth-child(2) { min-width: 150px; }
   th { color: #8b94a3; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid #262c36; }
   tr:not(:last-child) td { border-bottom: 1px solid #1c222b; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
