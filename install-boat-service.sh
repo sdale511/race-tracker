@@ -3,21 +3,20 @@ set -euo pipefail
 
 # Installs (or updates) the boat agent as a systemd service on this Pi -
 # same unit systemd/boat-agent.service already shipped as a static
-# example, generated here instead so BOAT_ID (and, if needed, the other
-# per-Pi settings that already varied in that file - GPS_PORT, RADIO_PORT,
-# etc.) can be set without hand-editing a unit file. Safe to re-run: a
-# second run with a different BOAT_ID regenerates the unit and restarts
+# example, generated here instead so BOAT_ID can be set without hand-
+# editing a unit file. Everything else this app reads (GPS_PORT, RADIO_PORT,
+# LOG_DIR, ...) is left unset here on purpose - config.js's own defaults are
+# correct for a normal install, see README.md's "Tuning knobs" if a given
+# Pi actually needs one overridden (edit the generated unit directly, or
+# export it before running `npm run boat` by hand instead). Safe to re-run:
+# a second run with a different BOAT_ID regenerates the unit and restarts
 # the service to pick it up.
 #
 # Usage:
 #   sudo ./install-boat-service.sh <BOAT_ID>
-#   sudo BOAT_ID=3 GPS_PORT=/dev/ttyACM1 ./install-boat-service.sh
 #
-# Any of the same env vars config.js reads (see README.md's "Tuning
-# knobs") can be exported before running this to override the defaults
-# below - e.g. GPS_PORT/RADIO_PORT differ by Pi depending on what a given
-# device enumerates as. Only BOAT_ID has no fallback: every boat has to
-# actually be told apart, so this refuses to silently default it.
+# BOAT_ID has no fallback: every boat has to actually be told apart, so
+# this refuses to silently default it.
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: installing a systemd unit needs root - run with sudo" >&2
@@ -25,7 +24,11 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fixed rather than derived from where this script happens to be invoked
+# from - this is where the repo actually lives on the boat Pi's own disk,
+# and the generated unit needs that same fixed path regardless of what
+# directory `sudo ./install-boat-service.sh` was run from.
+REPO_DIR="/home/jycadmin/race-tracker"
 SERVICE_NAME="boat-agent"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
@@ -39,30 +42,17 @@ if ! [[ "$BOAT_ID" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Everything else - same values systemd/boat-agent.service's static example
-# already used, overridable by exporting the same var before running this
-# (e.g. `sudo GPS_PORT=/dev/ttyACM1 -E ./install-boat-service.sh 3`, -E so
-# sudo preserves the exported var).
-GPS_PORT="${GPS_PORT:-/dev/ttyACM0}"
-GPS_BAUD="${GPS_BAUD:-38400}"
-RADIO_PORT="${RADIO_PORT:-/dev/ttyUSB0}"
-RADIO_BAUD="${RADIO_BAUD:-115200}"
-TX_DISTANCE_M="${TX_DISTANCE_M:-1}"
-LOG_DIR="${LOG_DIR:-/home/pi/race-logs}"
-
-# Runs as whoever actually owns the checked-out repo, so LOG_DIR/
-# node_modules don't end up root-owned - the user who invoked sudo,
-# falling back to "pi" (this project's usual Pi username) if that's unset.
-SERVICE_USER="${SUDO_USER:-pi}"
+# Runs as whoever actually owns the checked-out repo, so anything the app
+# writes (race-logs/, node_modules/) doesn't end up root-owned - the user
+# who invoked sudo, falling back to "jycadmin" (who owns REPO_DIR above)
+# if that's unset.
+SERVICE_USER="${SUDO_USER:-jycadmin}"
 
 NODE_BIN="$(command -v node || echo /usr/bin/node)"
 
-mkdir -p "$LOG_DIR"
-chown "$SERVICE_USER" "$LOG_DIR"
-
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+if [ ! -d "$REPO_DIR/node_modules" ]; then
   echo "node_modules missing - running npm install as $SERVICE_USER..."
-  sudo -u "$SERVICE_USER" npm --prefix "$SCRIPT_DIR" install
+  sudo -u "$SERVICE_USER" npm --prefix "$REPO_DIR" install
 fi
 
 cat > "$SERVICE_FILE" <<EOF
@@ -73,19 +63,11 @@ After=network.target
 [Service]
 Type=simple
 User=$SERVICE_USER
-WorkingDirectory=$SCRIPT_DIR
-Environment=GPS_PORT=$GPS_PORT
-Environment=GPS_BAUD=$GPS_BAUD
-Environment=RADIO_PORT=$RADIO_PORT
-Environment=RADIO_BAUD=$RADIO_BAUD
+WorkingDirectory=$REPO_DIR
 Environment=BOAT_ID=$BOAT_ID
-Environment=TX_DISTANCE_M=$TX_DISTANCE_M
-Environment=LOG_DIR=$LOG_DIR
-ExecStart=$NODE_BIN $SCRIPT_DIR/src/boatAgent.js
+ExecStart=$NODE_BIN $REPO_DIR/src/boatAgent.js
 Restart=always
 RestartSec=3
-StandardOutput=append:$LOG_DIR/boat-agent.log
-StandardError=append:$LOG_DIR/boat-agent.log
 
 [Install]
 WantedBy=multi-user.target
@@ -96,10 +78,9 @@ systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
 echo
-echo "boat-agent installed and running as BOAT_ID=$BOAT_ID (user $SERVICE_USER, $SCRIPT_DIR)."
+echo "boat-agent installed and running as BOAT_ID=$BOAT_ID (user $SERVICE_USER, $REPO_DIR)."
 echo "  status:  systemctl status $SERVICE_NAME"
-echo "  logs:    tail -f $LOG_DIR/boat-agent.log"
+echo "  logs:    journalctl -u $SERVICE_NAME -f"
 echo "  restart: sudo systemctl restart $SERVICE_NAME"
 echo
-echo "To change BOAT_ID (or any of GPS_PORT/GPS_BAUD/RADIO_PORT/RADIO_BAUD/"
-echo "TX_DISTANCE_M/LOG_DIR) later, just re-run this script."
+echo "To change BOAT_ID later, just re-run this script."

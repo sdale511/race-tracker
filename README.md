@@ -291,14 +291,13 @@ sudo ./install-boat-service.sh <BOAT_ID>
 ```
 Generates and installs the `boat-agent` systemd unit (`systemd/boat-agent.service`
 is kept as a static reference of what it produces, not something to copy by
-hand) with this boat's `BOAT_ID` baked in, enables it, and starts it -
-`GPS_PORT`/`GPS_BAUD`/`RADIO_PORT`/`RADIO_BAUD`/`TX_DISTANCE_M`/`LOG_DIR`
-default to the same values that file already used, overridable by
-exporting the same var before running it (e.g.
-`sudo GPS_PORT=/dev/ttyACM1 -E ./install-boat-service.sh 3`). Safe to
-re-run any time a setting needs to change - it regenerates the unit and
-restarts the service to pick it up. Logs go to
-`<LOG_DIR>/boat-agent.log` (`tail -f` it), and `systemctl status
+hand) with this boat's `BOAT_ID` baked in, enables it, and starts it.
+Nothing else is overridden - `config.js`'s own defaults (see "Tuning
+knobs" below) are correct for a normal install; edit the generated unit
+directly if a given Pi genuinely needs `GPS_PORT`/`RADIO_PORT`/etc.
+overridden. Safe to re-run any time `BOAT_ID` needs to change - it
+regenerates the unit and restarts the service to pick it up.
+`journalctl -u boat-agent -f` follows the logs, and `systemctl status
 boat-agent` / `sudo systemctl restart boat-agent` work as usual.
 
 ## Simulation mode (no hardware)

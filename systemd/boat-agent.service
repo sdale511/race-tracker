@@ -1,27 +1,19 @@
 # Static reference example, not meant to be copied by hand - install-boat-
-# service.sh (repo root) generates this same unit with BOAT_ID (and, if
-# needed, GPS_PORT/RADIO_PORT/etc.) actually set for this Pi, then installs
-# it. Kept here mainly to show what that script produces.
+# service.sh (repo root) generates this same unit with BOAT_ID actually set
+# for this Pi, then installs it. Kept here mainly to show what that script
+# produces.
 [Unit]
 Description=Race Tracker Boat Agent
 After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/race-tracker
-Environment=GPS_PORT=/dev/ttyACM0
-Environment=GPS_BAUD=38400
-Environment=RADIO_PORT=/dev/ttyUSB0
-Environment=RADIO_BAUD=115200
+User=jycadmin
+WorkingDirectory=/home/jycadmin/race-tracker
 Environment=BOAT_ID=1
-Environment=TX_DISTANCE_M=1
-Environment=LOG_DIR=/home/pi/race-logs
 ExecStart=/usr/bin/node src/boatAgent.js
 Restart=always
 RestartSec=3
-StandardOutput=append:/home/pi/race-logs/boat-agent.log
-StandardError=append:/home/pi/race-logs/boat-agent.log
 
 [Install]
 WantedBy=multi-user.target
