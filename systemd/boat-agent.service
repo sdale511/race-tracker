@@ -1,3 +1,7 @@
+# Static reference example, not meant to be copied by hand - install-boat-
+# service.sh (repo root) generates this same unit with BOAT_ID (and, if
+# needed, GPS_PORT/RADIO_PORT/etc.) actually set for this Pi, then installs
+# it. Kept here mainly to show what that script produces.
 [Unit]
 Description=Race Tracker Boat Agent
 After=network.target
