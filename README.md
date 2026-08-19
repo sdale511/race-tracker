@@ -615,7 +615,13 @@ dead-still (e.g. `SIM_START_ONLY`, which reports zero speed) only ever
 sends its very first frame at all (it never clears `TX_DISTANCE_M` again),
 so in practice it gets exactly one `'ongrid'` send and nothing further
 until pinged (see "Admin dashboard" above, whose "Ping fleet" button also
-clears this same latch) or it actually moves. The console log
+clears this same latch), it actually moves, or it reconnects - the same
+"this boat looks like it just (re)started" detection that triggers an
+immediate marks re-broadcast (`BOAT_RECONNECT_GAP_MS`, 10s gap since its
+last frame) also clears this one boat's latch, so restarting a simulated
+boat or fleet with a reused `BOAT_ID` doesn't inherit stale on-grid state
+from the previous run and silently swallow its first genuine entry. The
+console log
 (`[baseStation] boat=N still on the start grid (Ns / 30s latch)`) shows
 how long since the last actual send alongside each "still on"
 re-affirmation, so it's visible at a glance whether a long-dwelling boat

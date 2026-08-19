@@ -913,6 +913,19 @@ function main() {
         broadcastMarksNow();
         lastNewBoatBroadcastAt = now;
       }
+      // Same "looks like it just (re)started" signal as the marks
+      // re-broadcast above, also used to clear this one boat's on-grid
+      // latch (see onGridWatcherFor/lastOnGridSentByBoat, and pingFleet's
+      // own comment for why the latch exists at all) - without this, a
+      // simulator restarted with the same boatId inherits whatever
+      // wasOnGrid/lastSent state this base still has cached from the
+      // previous run, and its very first genuine on-grid entry gets
+      // silently absorbed as a "still on"/already-told-RegattaUp
+      // re-affirmation instead of sent. Scoped to just this boatId (not
+      // pingFleet's whole-fleet clear), since only this one boat is
+      // actually restarting.
+      onGridWatchers.delete(decoded.boatId);
+      lastOnGridSentByBoat.delete(decoded.boatId);
     }
     lastSeenByBoat.set(decoded.boatId, now);
 
