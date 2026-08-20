@@ -2,6 +2,7 @@ const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
+const { renderConsoleLogPage } = require('./consoleLogPage');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
@@ -100,6 +101,7 @@ function renderDashboard(s) {
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; refreshes every 5s
     &nbsp;·&nbsp; <a href="/config">config</a>
+    &nbsp;·&nbsp; <a href="/console">console</a>
     ${s.currentMarks || fix ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
     ${s.baseIp ? `&nbsp;·&nbsp; <a href="http://${s.baseIp}:${s.adminPort}/" target="_blank" rel="noopener">base dashboard ↗</a>` : ''}
   </div>
@@ -771,6 +773,17 @@ function startRoverAdminServer({ port, getStats, getPosition }) {
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(renderConfigPage());
+      return;
+    }
+
+    // Last logBuffer.MAX_LINES (100) lines of this boat's own console
+    // output - works the same whether this is an interactive `npm run
+    // boat` session or a systemd service (where stdout goes straight to
+    // the journal, not something this app could otherwise re-read itself -
+    // see logBuffer's own comment).
+    if (req.url === '/console') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(renderConsoleLogPage(`boat ${getStats().boatId} console`));
       return;
     }
 

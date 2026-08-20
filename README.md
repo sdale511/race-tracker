@@ -1280,6 +1280,18 @@ or `.env`, with overridden rows called out - the same data
 needing to shell into the Pi to check it. `src/configReport.js` is the
 one shared source for both.
 
+Both also have a "console" link (`GET /console`, `src/consoleLogPage.js`)
+showing the last 100 lines this process has logged, refreshing every 5s -
+works the same whether it's an interactive session or running as a
+systemd service, where stdout goes straight to the journal (see
+`install-boat-service.sh`) rather than something this app could otherwise
+re-read itself. `src/logBuffer.js` is a small in-memory ring buffer fed
+from the same `console.log`/`warn`/`error` wrapper each process already
+has (originally added just to keep the in-place GPS line from getting
+scribbled on), so it captures everything either process logs without
+needing every call site updated - nothing here is persisted, it resets on
+restart same as the rest of the in-memory stats these dashboards show.
+
 Each boat also runs its own matching dashboard (`src/roverAdminServer.js`,
 default port 8092, same as the base - `http://<boat-ip>:8092`), scoped to
 that one boat: a "Last fix" card (position, altitude, speed, heading) and

@@ -2,6 +2,7 @@ const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
+const { renderConsoleLogPage } = require('./consoleLogPage');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
@@ -433,6 +434,7 @@ function renderDashboard(s) {
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
     &nbsp;·&nbsp; refreshes every 5s
     &nbsp;·&nbsp; <a href="/config">config</a>
+    &nbsp;·&nbsp; <a href="/console">console</a>
     ${s.course ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
   </div>
 
@@ -1426,6 +1428,17 @@ function startAdminServer({
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(renderConfigPage());
+      return;
+    }
+
+    // Last logBuffer.MAX_LINES (100) lines of this process's own console
+    // output - works the same whether this is an interactive `npm run
+    // base` session or a systemd service (where stdout goes straight to
+    // the journal, not something this app could otherwise re-read itself -
+    // see logBuffer's own comment).
+    if (req.url === '/console') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(renderConsoleLogPage('base station console'));
       return;
     }
 

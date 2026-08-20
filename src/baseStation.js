@@ -29,6 +29,8 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+const util = require('util');
+const logBuffer = require('./logBuffer');
 
 // True while the cursor is sitting mid-line after an in-place base-GPS log
 // overwrite (see openBaseGps's nav-pvt handler below) - any *other* log
@@ -40,6 +42,10 @@ const dgram = require('dgram');
 // them, including ones added later. Same mechanism as boatAgent.js's own
 // gpsLineDirty - kept as a separate copy, not a shared import, since each
 // file's console output is its own process/terminal, nothing to share.
+// Same choke point also feeds logBuffer (see its own comment) - every line
+// this process ever logs passes through here exactly once, so it's the
+// one place that can capture them all for the admin dashboard's "Console"
+// page without auditing every call site a second time.
 let gpsLineDirty = false;
 for (const method of ['log', 'warn', 'error']) {
   const original = console[method].bind(console);
@@ -49,6 +55,7 @@ for (const method of ['log', 'warn', 'error']) {
       gpsLineDirty = false;
     }
     original(...args);
+    logBuffer.push(util.format(...args));
   };
 }
 

@@ -3,7 +3,9 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+const util = require('util');
 const config = require('./config');
+const logBuffer = require('./logBuffer');
 const { UbxParser, encodeNavPvt, RTCM_MSG_USED_NAMES } = require('./ubxParser');
 const { toGGA } = require('./nmea');
 const { RadioLink } = require('./radioLink');
@@ -23,7 +25,11 @@ const roverStats = require('./roverStats');
 // every module it pulls in - radioLink, uploadClient, roverStats, ...) is
 // the only way to catch all of them, including ones added later. warn/
 // error are included too, not just log - stdout and stderr both render to
-// the same physical terminal, so either can land on that dirty line.
+// the same physical terminal, so either can land on that dirty line. Same
+// choke point also feeds logBuffer (see its own comment) - every line this
+// process ever logs passes through here exactly once, so it's the one
+// place that can capture them all for the rover dashboard's "Console" page
+// without auditing every call site a second time.
 let gpsLineDirty = false;
 for (const method of ['log', 'warn', 'error']) {
   const original = console[method].bind(console);
@@ -33,6 +39,7 @@ for (const method of ['log', 'warn', 'error']) {
       gpsLineDirty = false;
     }
     original(...args);
+    logBuffer.push(util.format(...args));
   };
 }
 
