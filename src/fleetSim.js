@@ -84,7 +84,12 @@ for (let i = 0; i < FLEET_SIZE; i++) {
 
   const child = spawn('node', [boatAgentPath], {
     env: { ...baseEnv, BOAT_ID: String(boatId), ADMIN_PORT: String(adminPort), SIM_EXIT_ON_FINISH: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // 'ipc' (4th slot) lets this process forward the operator's own
+    // "start the race" signal (SIM_HOLD_FOR_START's spacebar press, read
+    // below - this process is the one with the real terminal, none of its
+    // children have their own TTY stdin) to every boat via child.send() -
+    // see the HOLD_FOR_START block below.
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   children.push(child);
 
@@ -102,12 +107,90 @@ for (let i = 0; i < FLEET_SIZE; i++) {
   });
 }
 
-// Ctrl+C stops the fleet as a whole rather than leaving orphaned boats
-// racing on their own with nothing watching them - each child gets its own
-// SIGINT, same as if it had been started by hand in its own terminal (see
+// SIM_HOLD_FOR_START holds every boat at its start position (see
+// simGps.js's holdForStart/release()) until told to actually start racing -
+// this process is the one with the real terminal (every child's own stdin
+// is 'ignore' above), so it's the one that reads the operator's spacebar
+// and forwards a single 'start-race' IPC message to each boat's own
+// SIM_HOLD_FOR_START listener (see boatAgent.js) over the 'ipc' channel set
+// up above. On by default - mirrors config.js's own default-on check
+// (opted out with SIM_HOLD_FOR_START=0/false), not the old opt-in one.
+const HOLD_FOR_START = baseEnv.SIM_HOLD_FOR_START !== '0' && baseEnv.SIM_HOLD_FOR_START !== 'false';
+if (HOLD_FOR_START) {
+  if (process.stdin.isTTY) {
+    console.log(`[fleetSim] ${FLEET_SIZE} boat(s) will hold at the grid; press SPACE here once ready to start the race`);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    let started = false;
+
+    // Each boat notifies this process ('on-grid', see boatAgent.js) once it
+    // has actually reached its start position - tracked so the prompt below
+    // can announce the whole fleet ready, rather than the operator having to
+    // guess from N boats' worth of interleaved, prefixed log lines.
+    let boatsOnGrid = 0;
+    for (const child of children) {
+      child.on('message', (msg) => {
+        if (msg !== 'on-grid') return;
+        boatsOnGrid++;
+        if (boatsOnGrid === FLEET_SIZE && !started) {
+          console.log(`\n[fleetSim] *** all ${FLEET_SIZE} boat(s) are on the grid - press SPACE to start the race! ***\n`);
+        }
+      });
+    }
+
+    // The prompt above is easy to miss under N boats' worth of scrolling GPS
+    // output - repeats a reminder on a slow timer until actually released,
+    // so it doesn't get lost.
+    const reminderIntervalId = setInterval(() => {
+      if (!started && boatsOnGrid > 0) {
+        console.log(
+          `[fleetSim] *** ${boatsOnGrid}/${FLEET_SIZE} boat(s) on the grid - press SPACE to start the race ***`
+        );
+      }
+    }, 15000);
+
+    process.stdin.on('data', (data) => {
+      if (data.includes(0x03)) {
+        // Ctrl+C - raw mode intercepts this before it ever becomes a real
+        // SIGINT, so re-raise it by hand to reach the ordinary SIGINT
+        // handler below (which stops every boat, same as always).
+        clearInterval(reminderIntervalId);
+        process.stdin.setRawMode(false);
+        process.kill(process.pid, 'SIGINT');
+        return;
+      }
+      if (started || !data.includes(0x20)) return;
+      started = true;
+      clearInterval(reminderIntervalId);
+      process.stdin.setRawMode(false);
+      console.log('[fleetSim] SPACE pressed - starting the race');
+      for (const child of children) {
+        if (child.connected) child.send('start-race');
+      }
+    });
+  } else {
+    console.warn(
+      '[fleetSim] SIM_HOLD_FOR_START is on but stdin is not a TTY - nothing can send the start signal, boats will hold at the grid forever'
+    );
+  }
+}
+
+// Stops the fleet as a whole rather than leaving orphaned boats racing on
+// their own with nothing watching them - each child gets its own SIGINT,
+// same as if it had been started by hand in its own terminal (see
 // boatAgent.js's own SIGINT handler), and this process waits for the
-// 'exit' handlers above to fire before it exits itself.
-process.on('SIGINT', () => {
-  console.log('\n[fleetSim] SIGINT received - stopping all boats');
+// 'exit' handlers above to fire before it exits itself. Handles SIGTERM the
+// same way as SIGINT (Ctrl+C), not just SIGINT alone - `kill <pid>` (no
+// signal named) and most process managers' "stop" both send SIGTERM by
+// default, and without a handler for it Node's default action is to just
+// exit THIS process immediately, leaving every already-spawned boat process
+// running (and holding its own radio/admin/log-upload ports) with nothing
+// left watching it - regardless of whether SIM_HOLD_FOR_START ever actually
+// released them.
+function shutdown(signal) {
+  if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
+  console.log(`\n[fleetSim] ${signal} received - stopping all boats`);
   for (const child of children) child.kill('SIGINT');
-});
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

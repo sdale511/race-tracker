@@ -176,6 +176,7 @@ class SimGpsSource extends EventEmitter {
     geometry,
     startOnly,
     prestartDwellS,
+    holdForStart,
     pin,
     committee,
     finish,
@@ -186,12 +187,20 @@ class SimGpsSource extends EventEmitter {
     // See _tick() - when true, every other field this constructor sets up
     // (phase, side, leg targets, lap counting, ...) is simply never read.
     this.startOnly = !!startOnly;
+    // Like startOnly, but releasable (see release() below) instead of
+    // permanent - the boat holds at its start position until something
+    // outside this class calls release(), rather than either a fixed timer
+    // (prestartDwellS) or forever. Takes priority over prestartDwellS: the
+    // whole point of a manual hold is not departing on a timer.
+    this.holdForStart = !this.startOnly && !!holdForStart;
     // How many seconds of _tick() calls remain before the boat actually
     // starts moving - see _tick()'s own comment. Meaningless (and unused)
     // when startOnly is set, which dwells forever via its own separate
-    // path; defaults to 0 (no dwell, departs immediately) if omitted, so
-    // existing callers that don't pass this keep today's behavior.
-    this.dwellRemainingS = this.startOnly ? 0 : Math.max(0, prestartDwellS || 0);
+    // path; Infinity when holdForStart is set, since only an explicit
+    // release() call (never a countdown) should end that hold; defaults to
+    // 0 (no dwell, departs immediately) if omitted, so existing callers
+    // that don't pass this keep today's behavior.
+    this.dwellRemainingS = this.startOnly ? 0 : this.holdForStart ? Infinity : Math.max(0, prestartDwellS || 0);
     this.courseLengthM = geometry.courseLengthM;
     // Everything below (phase/tacking/leg targets/gate checks) works
     // entirely in this local, course-relative frame - "north" always means
@@ -276,6 +285,16 @@ class SimGpsSource extends EventEmitter {
 
   stop() {
     clearInterval(this._timer);
+  }
+
+  // Ends a holdForStart hold, letting the boat depart on its very next
+  // tick - called once, from outside, in response to the operator's own
+  // "start the race" signal (see boatAgent.js). A no-op under startOnly
+  // (which never departs, by design) or once already racing/finished, so a
+  // stray extra call can't do anything unexpected.
+  release() {
+    if (this.startOnly) return;
+    this.dwellRemainingS = 0;
   }
 
   // The (north, east) point the boat is currently steering toward: the
@@ -605,6 +624,11 @@ class SimGpsSource extends EventEmitter {
   // Sits at the current position, emitting a fresh but otherwise stationary
   // fix - shared by startOnly's permanent dwell and the prestart dwell
   // below, which is the same thing for a limited time instead of forever.
+  // `stationary: true` lets boatAgent.js's own console logging (handlePvt)
+  // recognize a repeated, no-new-information fix and stop scrolling it -
+  // at full SIM_GPS_HZ, a fleet of several boats all dwelling at once
+  // floods the terminal with lines that never actually change, easily
+  // burying a one-line SIM_HOLD_FOR_START prompt within a second or two.
   _emitStationaryFix() {
     const { lat, lon } = this._toLatLon(this.north, this.east);
     this.emit('nav-pvt', {
@@ -620,6 +644,7 @@ class SimGpsSource extends EventEmitter {
       gSpeedMmS: 0,
       headMotDeg: 0,
       timestamp: Date.now(),
+      stationary: true,
     });
   }
 

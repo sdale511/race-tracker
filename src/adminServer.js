@@ -328,10 +328,17 @@ function renderDashboard(s) {
         b.filesOnDisk != null
           ? `${b.filesOnDisk} <span class="muted">(last ${formatAgo(b.lastUploadOnDisk)})</span>`
           : '<span class="muted">—</span>';
+      // The actual radio-frame arrival rate at THIS base, not the boat's own
+      // onboard GPS_HZ - see stats.js's fixHz for why those normally
+      // differ (TX_DISTANCE_M gates what's ever transmitted). '—' both
+      // before any frame has arrived and for a stationary boat that
+      // legitimately has nothing new to send right now.
+      const fixRate = b.fixHz != null ? `${b.fixHz.toFixed(1)} Hz` : '<span class="muted">—</span>';
       return `
         <tr>
           <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}</td>
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
+          <td>${fixRate}</td>
           <td>${tracks.toLocaleString()}</td>
           <td>${laps}</td>
           <td>${b.upload.successes} / ${b.upload.attempts} <span class="muted">(${pct(b.upload.successes, b.upload.attempts)})</span></td>
@@ -519,7 +526,7 @@ function renderDashboard(s) {
         ? '<div class="card empty">No boats heard from yet.</div>'
         : `<table>
       <thead>
-        <tr><th>Boat</th><th>Last seen</th><th>Tracks</th><th>Laps</th><th>Uploads this session</th><th>Pending</th><th>Bytes sent (session)</th><th>Files on disk (all-time)</th><th>Rover dashboard</th></tr>
+        <tr><th>Boat</th><th>Last seen</th><th>Fix rate</th><th>Tracks</th><th>Laps</th><th>Uploads this session</th><th>Pending</th><th>Bytes sent (session)</th><th>Files on disk (all-time)</th><th>Rover dashboard</th></tr>
       </thead>
       <tbody>${boatRows}</tbody>
     </table>`

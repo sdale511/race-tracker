@@ -310,14 +310,19 @@ Setting the boat's WiFi (so it can reach the base for log uploads - see
 "Log upload over WiFi" below) from the command line, no desktop needed:
 ```
 sudo ./set-wifi.sh "<SSID>" "<PASSWORD>"
+sudo ./set-wifi.sh                     # adds every default network (JYC RC, Rustybit, Bondi-Van, JYC Outer)
 ```
 Prefers `raspi-config`'s own non-interactive helper (adapts to whichever
 network backend this OS image actually uses), falling back to `nmcli`
 directly if `raspi-config` isn't installed. Leave `PASSWORD` off (or
-blank at the prompt) for an open network. If the Pi won't associate with
-anything afterward, it may not have a WiFi country code set yet - `sudo
-raspi-config nonint do_wifi_country <CC>` fixes that (a one-time thing,
-not per-network, so this script doesn't set it).
+blank at the prompt) for an open network. Only ever adds/updates the one
+network profile given - existing saved networks are left alone, so
+running it again for a different SSID (e.g. a shop/home network alongside
+the boat's usual RC one) just adds that as another one, not a
+replacement. If the Pi won't associate with anything afterward, it may
+not have a WiFi country code set yet - `sudo raspi-config nonint
+do_wifi_country <CC>` fixes that (a one-time thing, not per-network, so
+this script doesn't set it).
 
 ## Simulation mode (no hardware)
 
@@ -364,6 +369,32 @@ assumed by default (this command's whole purpose is a simulated fleet); any
 other `SIM_*` env var (`SIM_LAP_COUNT`, `SIM_COURSE_MARKS`, `SIM_START_ONLY`,
 ...) passes through unchanged to every boat, same as `npm run boat`.
 
+Ctrl+C in the fleet's own terminal always stops every boat cleanly, whether
+it's still holding for the start signal or already racing. Killing the
+fleet by PID instead (`kill <pid>`, or a process manager's "stop") also
+works - but only if that PID is `fleetSim`'s own `node` process. `npm run
+fleet`'s outer `npm` wrapper process does **not** reliably forward that
+signal down to the actual script, so killing *npm's* PID can leave every
+spawned boat running with nothing left watching them. Target the real
+process instead - `pkill -f 'src/fleetSim.js'`, or find its PID with `pgrep
+-f 'src/fleetSim.js'` - or just use Ctrl+C.
+
+By default (`SIM_HOLD_FOR_START=1`), the whole fleet gets on the grid and
+holds there, so the race committee can actually start the race server-side
+before any boat departs:
+
+```
+FLEET_SIZE=5 npm run fleet
+```
+
+Every boat sits at its start position once it's on the grid; once they're
+all ready, press SPACE in this same terminal to start the race - `fleetSim`
+forwards the signal to every boat it spawned. (Works the same way on a
+single standalone boat too: `SIMULATE=1 BOAT_ID=1 npm run boat`, pressing
+SPACE in that boat's own terminal.) Set `SIM_HOLD_FOR_START=0` to skip the
+hold entirely and go back to every boat auto-departing after
+`SIM_PRESTART_DWELL_S` seconds, no keypress needed.
+
 ### Simulated GPS with real radio hardware
 
 `SIMULATE_GPS=1` fakes just the GPS track, while using the real radio on
@@ -409,6 +440,7 @@ broadcast output all work exactly as they would with real hardware.
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
 | `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
+| `SIM_HOLD_FOR_START` | `1` (on) | Holds every simulated boat at its start position indefinitely - like `SIM_START_ONLY`, but releasable instead of permanent, and overrides `SIM_PRESTART_DWELL_S`'s timer. Gets a whole fleet on the grid and lets the race committee actually start the race server-side before any boat departs: press SPACE in the terminal running `npm run boat` (standalone) or `npm run fleet` (forwarded to every boat it spawned) once everyone's ready. Set to `0` to go back to the old auto-departing-after-`SIM_PRESTART_DWELL_S` behavior |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
 but the `boat` process itself keeps running rather than exiting - so its
@@ -648,14 +680,16 @@ SIM_START_ONLY=1 SIMULATE=1 BOAT_ID=1 npm run boat
 ```
 
 An ordinary (non-`SIM_START_ONLY`) simulated race also sits at its start
-position for `SIM_PRESTART_DWELL_S` seconds (default 15) before actually
-departing, rather than launching upwind on its very first tick - without
-that dwell, on-grid never gets a real window to observe: the boat's very
-first transmitted fix would already reflect a full tick of movement past
-the line, and whether that lands inside or outside the zone is basically
-down to luck (initial tack side, timing), not something worth relying on
-for testing. Set `SIM_PRESTART_DWELL_S=0` to go back to departing
-immediately.
+position before actually departing, rather than launching upwind on its
+very first tick - without that dwell, on-grid never gets a real window to
+observe: the boat's very first transmitted fix would already reflect a
+full tick of movement past the line, and whether that lands inside or
+outside the zone is basically down to luck (initial tack side, timing), not
+something worth relying on for testing. By default (`SIM_HOLD_FOR_START=1`
+- see "Simulation mode" above) that dwell is indefinite, released by a
+SPACE press once you're ready to test the actual start; set
+`SIM_HOLD_FOR_START=0` to depart automatically instead, after
+`SIM_PRESTART_DWELL_S` seconds (default 15, `0` departs immediately).
 
 ## Mark-rounding detection -> RegattaUp
 

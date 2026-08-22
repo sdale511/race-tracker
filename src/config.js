@@ -122,6 +122,18 @@ module.exports = {
     // of the same stationary state. 0 disables the dwell (departs
     // immediately, the old behavior).
     prestartDwellS: parseFloat(process.env.SIM_PRESTART_DWELL_S || '15'),
+    // On by default - holds every simulated boat at its start position
+    // indefinitely (like SIM_START_ONLY, but releasable) until told to
+    // actually start racing: a spacebar press in whichever terminal owns
+    // the operator's keyboard (npm run boat's own terminal when run
+    // standalone, or npm run fleet's terminal, which forwards the press to
+    // every boat it spawned - see boatAgent.js/fleetSim.js). Overrides
+    // prestartDwellS (which auto-departs after a fixed time) - the whole
+    // point here is a manual release instead of a timer, so the boat gets
+    // all sailors/boats on the grid before the race committee actually
+    // starts the race server-side. Set SIM_HOLD_FOR_START=0 to go back to
+    // the old auto-departing-after-prestartDwellS behavior.
+    holdForStart: process.env.SIM_HOLD_FOR_START !== '0' && process.env.SIM_HOLD_FOR_START !== 'false',
     // Off by default - a single `npm run boat` session stays alive after
     // finishing its laps (see boatAgent.js's 'finished' handler) so any
     // still-pending log uploads get a chance to go out. Set to 1 to instead

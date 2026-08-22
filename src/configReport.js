@@ -40,6 +40,8 @@ const sections = [
       { label: 'centerLon', value: config.sim.centerLon, envVar: 'SIM_CENTER_LON', unit: '°' },
       { label: 'packetLossPct', value: config.sim.packetLossPct, envVar: 'SIM_PACKET_LOSS', unit: '%' },
       { label: 'startOnly', value: config.sim.startOnly, envVar: 'SIM_START_ONLY' },
+      { label: 'prestartDwellS', value: config.sim.prestartDwellS, envVar: 'SIM_PRESTART_DWELL_S', unit: 's' },
+      { label: 'holdForStart', value: config.sim.holdForStart, envVar: 'SIM_HOLD_FOR_START' },
       { label: 'courseMarks', value: config.sim.courseMarks, envVar: 'SIM_COURSE_MARKS' },
     ],
   },

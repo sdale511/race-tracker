@@ -18,6 +18,15 @@ let uploadBytesTotal = 0;
 
 const boatLastSeen = new Map(); // boatId -> timestamp of last position frame
 const boatLastPosition = new Map(); // boatId -> {lat, lon} of last position frame - in-memory only, see recordFrame
+// boatId -> recent frame-receipt timestamps, trimmed to the last
+// FIX_RATE_WINDOW_MS on every recordFrame call - see fixHz() below.
+const boatFrameTimes = new Map();
+// How far back to look when computing each boat's live fix rate (fixHz) -
+// long enough to smooth over ordinary per-fix jitter (network/OS
+// scheduling), short enough that a real change (a radio dropout, a boat
+// sitting still under TX_DISTANCE_M's movement gate) shows up within a few
+// seconds rather than lingering on stale history.
+const FIX_RATE_WINDOW_MS = 10000;
 const boatPending = new Map(); // boatId -> { pending, reportedAt } - self-reported by the rover, see uploadClient.js
 const boatUploadStats = new Map(); // boatId -> { attempts, successes, failures, bytes }
 const boatIp = new Map(); // boatId -> LAN IP, learned from its own upload/health-check requests
@@ -54,8 +63,34 @@ function normalizeBoatId(boatId) {
 function recordFrame(boatId, position) {
   framesReceived++;
   const id = normalizeBoatId(boatId);
-  boatLastSeen.set(id, Date.now());
+  const now = Date.now();
+  boatLastSeen.set(id, now);
   if (position) boatLastPosition.set(id, position);
+
+  let times = boatFrameTimes.get(id);
+  if (!times) {
+    times = [];
+    boatFrameTimes.set(id, times);
+  }
+  times.push(now);
+  const cutoff = now - FIX_RATE_WINDOW_MS;
+  while (times.length && times[0] < cutoff) times.shift();
+}
+
+// The actual rate frames from this boat are arriving AT THE BASE, measured
+// from the real gaps between the last few receipt timestamps in the window
+// above - deliberately NOT the boat's own onboard GPS_HZ/SIM_GPS_HZ. Every
+// fix is gated by TX_DISTANCE_M before boatAgent.js ever transmits it (see
+// its handlePvt), so what actually arrives here is normally lower than the
+// raw onboard rate, and legitimately drops toward 0 for a stationary or
+// slow-moving boat - that's expected, not a radio problem. null until at
+// least two frames have landed inside the window (one alone has no
+// interval to measure a rate from).
+function fixHz(boatId) {
+  const times = boatFrameTimes.get(normalizeBoatId(boatId));
+  if (!times || times.length < 2) return null;
+  const spanS = (times[times.length - 1] - times[0]) / 1000;
+  return spanS > 0 ? (times.length - 1) / spanS : null;
 }
 
 function recordSyncError() {
@@ -114,6 +149,7 @@ function snapshot() {
     boats[boatId] = {
       lastSeen: boatLastSeen.get(boatId) || null,
       lastPosition: boatLastPosition.get(boatId) || null,
+      fixHz: fixHz(boatId),
       upload,
       pending: pendingInfo ? pendingInfo.pending : null,
       pendingReportedAt: pendingInfo ? pendingInfo.reportedAt : null,

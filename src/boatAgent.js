@@ -291,6 +291,12 @@ if (config.upload.enabled) {
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastPvt = null;
+// True once a dwelling/holding fix (pvt.stationary - see simGps.js's
+// _emitStationaryFix) has already been logged to the console once, so
+// handlePvt's own logging block below (see suppressRepeatStationary) knows
+// every following one until movement resumes is a pure repeat, not new
+// information.
+let stationaryLineLogged = false;
 
 function handlePvt(pvt) {
   lastPvt = pvt;
@@ -315,15 +321,6 @@ function handlePvt(pvt) {
   // which stay gated on TX_DISTANCE_M since that's about what's actually
   // worth transmitting/recording, not what's worth watching.
   if (config.gps.logConsole) {
-    // Timestamp included mainly for the in-place overwrite mode below - a
-    // stationary boat can otherwise repeat the exact same line forever,
-    // which looks indistinguishable from a frozen/dead connection. The
-    // clock visibly ticking is what proves it's still live.
-    const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
-    const line =
-      `[gps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
-      `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
-      `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
     // In-place overwriting only ever applies when stdout is a real
     // interactive terminal - piped to a file or captured by
     // systemd/journald, `\x1b[2K\r` would just write raw control characters
@@ -332,23 +329,52 @@ function handlePvt(pvt) {
     // opts out of it entirely (always scroll instead) - same guard as
     // baseStation.js's openBaseGps.
     const inPlaceMode = config.gps.logReplace && process.stdout.isTTY;
-    if (inPlaceMode && !clearedTxGate) {
-      // Noise between the fixes that matter - overwrite the same
-      // terminal line instead of scrolling at the full 1-10Hz GPS rate.
-      // `\x1b[2K\r` clears whatever's on the line first so a shorter new
-      // line never leaves stale trailing characters from a longer one.
-      // gpsLineDirty stays true - see the console wrapper above, which is
-      // what stops some *other* log call from landing on this same line.
-      process.stdout.write(`\x1b[2K\r${line}`);
-      gpsLineDirty = true;
-    } else if (inPlaceMode) {
-      // A real event (cleared the gate) while in TTY full-logging mode -
-      // clear any pending in-place line first, then commit this one to
-      // scrollback with a trailing newline.
-      process.stdout.write(`\x1b[2K\r${line}\n`);
-      gpsLineDirty = false;
-    } else {
-      console.log(line);
+
+    // A dwelling/holding boat (SIM_HOLD_FOR_START, SIM_PRESTART_DWELL_S,
+    // SIM_START_ONLY) emits the exact same fix every tick - inPlaceMode
+    // already handles that fine for a standalone boat's own real terminal
+    // (overwrites in place, never scrolls), but a fleet child piped through
+    // fleetSim.js never qualifies for that, so without this it scrolls a
+    // full line per fix at the full SIM_GPS_HZ rate for every boat, purely
+    // repeating information nothing about which has changed - across a
+    // several-boat fleet that floods the shared terminal fast enough to
+    // bury anything else printed in the same window (like the
+    // SIM_HOLD_FOR_START prompt) within a second or two. Logs the first
+    // stationary fix (so it's still clear the boat reached the grid and is
+    // holding), then stays silent until it's next NOT stationary - which
+    // logs normally and makes the transition back to racing obvious on its
+    // own, no separate "race started" message needed here.
+    const suppressRepeatStationary = pvt.stationary && !inPlaceMode && stationaryLineLogged;
+    stationaryLineLogged = !!pvt.stationary;
+
+    if (!suppressRepeatStationary) {
+      // Timestamp included mainly for the in-place overwrite mode below - a
+      // stationary boat can otherwise repeat the exact same line forever,
+      // which looks indistinguishable from a frozen/dead connection. The
+      // clock visibly ticking is what proves it's still live.
+      const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
+      const line =
+        `[gps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+        `fixType=${pvt.fixType} diffSoln=${pvt.diffSoln} carrSoln=${pvt.carrSoln} numSV=${pvt.numSV} ` +
+        `hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
+      if (inPlaceMode && !clearedTxGate) {
+        // Noise between the fixes that matter - overwrite the same
+        // terminal line instead of scrolling at the full 1-10Hz GPS rate.
+        // `\x1b[2K\r` clears whatever's on the line first so a shorter new
+        // line never leaves stale trailing characters from a longer one.
+        // gpsLineDirty stays true - see the console wrapper above, which is
+        // what stops some *other* log call from landing on this same line.
+        process.stdout.write(`\x1b[2K\r${line}`);
+        gpsLineDirty = true;
+      } else if (inPlaceMode) {
+        // A real event (cleared the gate) while in TTY full-logging mode -
+        // clear any pending in-place line first, then commit this one to
+        // scrollback with a trailing newline.
+        process.stdout.write(`\x1b[2K\r${line}\n`);
+        gpsLineDirty = false;
+      } else {
+        console.log(line);
+      }
     }
   }
 
@@ -442,6 +468,81 @@ function openGps() {
 // doesn't try to start a second one.
 let gpsSimStarted = false;
 
+// The live SimGpsSource, once created (see startGpsSimIfReady below) - kept
+// so releaseHold() (SIM_HOLD_FOR_START's spacebar/IPC handler, set up
+// further down) has something to call release() on. Stays null the whole
+// run under any other mode (real GPS, or SIMULATE_GPS before marks arrive).
+let simGpsSource = null;
+
+// True once the operator's "start the race" signal has actually arrived
+// (see releaseHold below) - the signal can beat marks reception (a fast
+// spacebar press right after this process starts), so this is checked
+// again once simGpsSource actually exists, rather than assuming the signal
+// only ever arrives after the boat is already on the grid.
+let holdReleased = false;
+
+// SIM_HOLD_FOR_START's actual release - called either from this process's
+// own stdin (a standalone `npm run boat`, which owns the terminal directly)
+// or from an IPC 'start-race' message forwarded by fleetSim.js (which owns
+// the terminal instead, when this boat was spawned as part of a fleet -
+// see fleetSim.js's own keypress handling). Idempotent, since either path
+// could in principle fire more than once.
+function releaseHold() {
+  holdReleased = true;
+  if (simGpsSource) simGpsSource.release();
+}
+
+if (config.sim.holdForStart) {
+  console.log('[boatAgent] SIM_HOLD_FOR_START=1 - will hold at the start position once on the grid, waiting for the start signal');
+  // Fleet child: process.send only exists when this process was spawned
+  // with an 'ipc' stdio channel (see fleetSim.js), which is how the
+  // operator's spacebar press in the fleet's own terminal reaches every
+  // boat it spawned - none of them have their own TTY stdin to read
+  // directly (fleetSim spawns them with stdin 'ignore').
+  if (typeof process.send === 'function') {
+    process.on('message', (msg) => {
+      if (msg === 'start-race') releaseHold();
+    });
+  }
+  // Standalone boat: this process owns the terminal itself, so it reads
+  // the operator's spacebar directly instead of waiting on an IPC message
+  // nothing would ever send.
+  if (process.stdin.isTTY) {
+    console.log('[boatAgent] press SPACE in this terminal to start the race');
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    // The one-time message above is easy to miss once GPS fix lines start
+    // scrolling (or, in-place-overwrite mode, aren't scrolling at all - see
+    // handlePvt's gpsLineDirty) - repeats a louder reminder on a slow timer
+    // until actually released, only once the boat has actually reached the
+    // grid (gpsSimStarted), so it doesn't nag before there's anything to
+    // start yet. Cleared the moment SPACE lands - see the 'data' handler
+    // below and the SIGINT handler at the bottom of this file.
+    const reminderIntervalId = setInterval(() => {
+      if (gpsSimStarted && !holdReleased) {
+        console.log('[boatAgent] *** on the grid - press SPACE to start the race ***');
+      }
+    }, 15000);
+    process.stdin.on('data', (data) => {
+      if (data.includes(0x03)) {
+        // Ctrl+C - raw mode intercepts this before the terminal driver ever
+        // turns it into a real SIGINT, so it's re-raised by hand here to
+        // reach the ordinary SIGINT shutdown handler at the bottom of this
+        // file (which also restores normal stdin mode - see there).
+        clearInterval(reminderIntervalId);
+        process.kill(process.pid, 'SIGINT');
+        return;
+      }
+      if (data.includes(0x20) && !holdReleased) {
+        console.log('[boatAgent] SPACE pressed - starting the race');
+        clearInterval(reminderIntervalId);
+        process.stdin.setRawMode(false);
+        releaseHold();
+      }
+    });
+  }
+}
+
 // Starts the simulated GPS as soon as marks are actually known - either
 // immediately (a persisted copy was already on disk from a previous run) or
 // whenever the first broadcast arrives (see radio.on('marks', ...) above).
@@ -498,6 +599,7 @@ function startGpsSimIfReady() {
     geometry,
     startOnly: config.sim.startOnly,
     prestartDwellS: config.sim.prestartDwellS,
+    holdForStart: config.sim.holdForStart,
     // The start/finish line logic needs the REAL pin/committee/finish
     // positions, not just geometry's scalar distances - see simGps.js's
     // own comment on why (an edited windward mark rotates the beat axis
@@ -506,6 +608,21 @@ function startGpsSimIfReady() {
     committee: currentMarks.committee,
     finish: currentMarks.finish,
   });
+  simGpsSource = gps;
+  // The operator's start signal may have already arrived before this boat
+  // even reached the grid (marks can take a moment - see freshMarksReceived
+  // above) - releaseHold() only recorded that as holdReleased until there
+  // was an actual SimGpsSource to call release() on, so catch up on it now.
+  if (holdReleased) gps.release();
+  if (config.sim.holdForStart && !holdReleased) {
+    console.log('[boatAgent] on the grid, holding for the start signal');
+    // Fleet child: lets fleetSim.js (the process actually watching for the
+    // operator's spacebar - see its own 'message' handling) track how many
+    // of the boats it spawned have actually reached the grid, so it can
+    // prompt "press SPACE" once the whole fleet - not just this one boat -
+    // is ready, instead of guessing from elapsed time.
+    if (typeof process.send === 'function') process.send('on-grid');
+  }
   gps.on('nav-pvt', handlePvt);
   // Diagnostic only - the sim's own internal lap counting, used to decide
   // when the simulated race ends and to report whether it stayed inside
@@ -593,7 +710,19 @@ setInterval(() => {
   if (!lastPvt) console.log('[boatAgent] waiting for first GPS fix...');
 }, 10000);
 
-process.on('SIGINT', () => {
+// Handles SIGTERM the same as SIGINT (Ctrl+C), not just SIGINT alone -
+// fleetSim.js sends this process SIGINT when stopping the fleet (see its
+// own shutdown()), but this boat could also be killed directly - `kill
+// <pid>` with no signal named, or a process manager's "stop" - which
+// defaults to SIGTERM, not SIGINT. Without a handler for it, Node's default
+// action for SIGTERM is an immediate exit that skips this same cleanup.
+function shutdown() {
+  // Only ever set true above (SIM_HOLD_FOR_START's own TTY handler) -
+  // restores the terminal to normal input mode before exiting, so the
+  // shell isn't left swallowing keystrokes raw after this process is gone.
+  if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
   console.log('\n[boatAgent] shutting down');
   process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
