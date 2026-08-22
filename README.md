@@ -310,19 +310,25 @@ Setting the boat's WiFi (so it can reach the base for log uploads - see
 "Log upload over WiFi" below) from the command line, no desktop needed:
 ```
 sudo ./set-wifi.sh "<SSID>" "<PASSWORD>"
-sudo ./set-wifi.sh                     # adds every default network (JYC RC, Rustybit, Bondi-Van, JYC Outer)
+sudo ./set-wifi.sh                     # saves every default network (JYC RC, Rustybit, Bondi-Van, JYC Outer)
+./set-wifi.sh -list                    # lists saved networks (no sudo needed)
 ```
-Prefers `raspi-config`'s own non-interactive helper (adapts to whichever
-network backend this OS image actually uses), falling back to `nmcli`
-directly if `raspi-config` isn't installed. Leave `PASSWORD` off (or
-blank at the prompt) for an open network. Only ever adds/updates the one
-network profile given - existing saved networks are left alone, so
-running it again for a different SSID (e.g. a shop/home network alongside
-the boat's usual RC one) just adds that as another one, not a
-replacement. If the Pi won't associate with anything afterward, it may
-not have a WiFi country code set yet - `sudo raspi-config nonint
-do_wifi_country <CC>` fixes that (a one-time thing, not per-network, so
-this script doesn't set it).
+Prefers `nmcli` (NetworkManager, current Raspberry Pi OS's own backend) to
+*save* the credentials as a connection profile rather than connect right
+now - the network does **not** need to be in range for this (NetworkManager
+auto-joins a saved profile itself the moment that SSID actually comes into
+range), so a no-argument run saves every default network in one pass even
+if the Pi isn't near most of them yet. Falls back to `raspi-config`'s own
+helper only if `nmcli` isn't installed (an older, non-NetworkManager Pi OS
+image), which saves to `wpa_supplicant.conf` directly - likewise
+range-independent. Leave `PASSWORD` off (or blank at the prompt) for an
+open network. Only ever adds/updates the network profile(s) given -
+existing saved networks are left alone, so running it again for a
+different SSID (e.g. a shop/home network alongside the boat's usual RC
+one) just adds that as another one, not a replacement. If the Pi won't
+associate with anything afterward, it may not have a WiFi country code
+set yet - `sudo raspi-config nonint do_wifi_country <CC>` fixes that (a
+one-time thing, not per-network, so this script doesn't set it).
 
 ## Simulation mode (no hardware)
 
