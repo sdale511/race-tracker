@@ -644,6 +644,11 @@ class SimGpsSource extends EventEmitter {
       gSpeedMmS: 0,
       headMotDeg: 0,
       timestamp: Date.now(),
+      // Real GPS hardware's timestamp is now GPS-derived, not local-clock
+      // (see ubxParser.js's own comment) - receivedAt is the field
+      // staleness checks actually want, so the simulator emits both, same
+      // shape as a real fix.
+      receivedAt: Date.now(),
       stationary: true,
     });
   }
@@ -902,6 +907,11 @@ class SimGpsSource extends EventEmitter {
       gSpeedMmS: Math.round(speedMS * 1000),
       headMotDeg: headingDeg,
       timestamp: Date.now(),
+      // Real GPS hardware's timestamp is now GPS-derived, not local-clock
+      // (see ubxParser.js's own comment) - receivedAt is the field
+      // staleness checks actually want, so the simulator emits both, same
+      // shape as a real fix.
+      receivedAt: Date.now(),
     });
 
     if (this.finishCoastRemainingM != null && this.finishCoastRemainingM <= 0) {

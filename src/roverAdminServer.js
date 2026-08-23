@@ -32,7 +32,11 @@ function dopQualityText(dop) {
 // this is a single detail view rather than a fleet table.
 function renderDashboard(s) {
   const fix = s.lastFix;
-  const fixAgeMs = fix ? Date.now() - fix.timestamp : null;
+  // receivedAt (this Pi's own local-clock receipt time), not timestamp
+  // (the fix's own GPS-derived time, which can legitimately diverge from
+  // this Pi's clock - see ubxParser.js) - staleness is a question about
+  // locally-measured elapsed time, not the fix's absolute clock.
+  const fixAgeMs = fix ? Date.now() - fix.receivedAt : null;
   // Stale if the boat hasn't produced a new fix in a while - catches a GPS
   // that's stopped responding even though the process itself is still up.
   const fixStale = fixAgeMs == null || fixAgeMs > 10000;
@@ -256,7 +260,8 @@ function buildCourseInfoHtml(marks) {
 
 function renderMap(s) {
   const fix = s.lastFix;
-  const fixAgeMs = fix ? Date.now() - fix.timestamp : null;
+  // receivedAt, not timestamp - see renderDashboard's own comment above.
+  const fixAgeMs = fix ? Date.now() - fix.receivedAt : null;
   const fixStale = fixAgeMs == null || fixAgeMs > 10000;
 
   if (!s.currentMarks && !fix) {
@@ -547,7 +552,7 @@ function renderMap(s) {
         boatGpsReadout.textContent =
           pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6) + ' (' + fixQualityText(pos) + ', ±' + (pos.hAccMm / 1000).toFixed(2) + 'm)';
       }
-      const ageMs = Date.now() - pos.timestamp;
+      const ageMs = Date.now() - pos.receivedAt;
       const stale = ageMs > 10000;
       const ageS = Math.floor(ageMs / 1000);
       const ageText = ageS < 5 ? 'just now' : ageS + 's ago';

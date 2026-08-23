@@ -270,6 +270,20 @@ class UbxParser extends EventEmitter {
     const flags = p.readUInt8(21);
     const carrSoln = (flags >> 6) & 0x03; // 0=none 1=float 2=fixed
     const validFlags = p.readUInt8(11);
+    const utcValid = !!(validFlags & 0x01) && !!(validFlags & 0x02);
+    const utcYear = p.readUInt16LE(4);
+    const utcMonth = p.readUInt8(6);
+    const utcDay = p.readUInt8(7);
+    const utcHour = p.readUInt8(8);
+    const utcMin = p.readUInt8(9);
+    const utcSec = p.readUInt8(10);
+    // Signed nanosecond offset from the whole utcSec above (range roughly
+    // -1e9..1e9 - utcSec is sometimes rounded to the nearest second, with
+    // nano compensating negative to land back on the true instant), the
+    // same whole+fractional split UBX uses throughout (see splitHP above).
+    // This is what gives `timestamp` below real sub-second precision
+    // instead of snapping to whichever integer second utcSec reports.
+    const nanoOfSec = p.readInt32LE(16);
     return {
       fixType: p.readUInt8(20),          // 0 no fix, 2 2D, 3 3D
       gnssFixOk: !!(flags & 0x01),
@@ -293,14 +307,43 @@ class UbxParser extends EventEmitter {
       // fix at all. Only trustworthy once both validDate and validTime
       // flags are set (bits 0/1 of the valid byte); until then the
       // date/time fields below may just be the receiver's power-on default.
-      utcValid: !!(validFlags & 0x01) && !!(validFlags & 0x02),
-      utcYear: p.readUInt16LE(4),
-      utcMonth: p.readUInt8(6),
-      utcDay: p.readUInt8(7),
-      utcHour: p.readUInt8(8),
-      utcMin: p.readUInt8(9),
-      utcSec: p.readUInt8(10),
-      timestamp: Date.now(),
+      utcValid,
+      utcYear,
+      utcMonth,
+      utcDay,
+      utcHour,
+      utcMin,
+      utcSec,
+      // The receiver's own GPS-derived time, NOT this Pi's local system
+      // clock - GPS time is a shared, globally-accurate reference with no
+      // per-device drift, which matters once multiple boats' fixes get
+      // compared against each other (finish-line crossing order, mark-
+      // rounding order, the race map's shared timeline - see
+      // finishLineWatcher.js/markRoundingWatcher.js and redisStore.js's
+      // track score). Two Pis a few minutes apart on their own unsynced
+      // local clocks - common enough at a remote venue with no internet to
+      // NTP against - would otherwise silently corrupt every one of those
+      // cross-boat comparisons even though each boat's own fixes stay
+      // internally self-consistent. Only trustworthy once utcValid is set
+      // (see above); before the receiver achieves a time lock (a handful
+      // of fixes right after cold start), its date/time fields are
+      // undefined power-on defaults, so this falls back to Date.now() for
+      // exactly those early fixes rather than emitting a garbage
+      // timestamp - see receivedAt below for the Pi's own local-clock
+      // receipt time, unaffected either way, which is what fix-staleness
+      // checks (is this process still hearing from the GPS at all) should
+      // use instead of this field.
+      timestamp: utcValid
+        ? Math.round(Date.UTC(utcYear, utcMonth - 1, utcDay, utcHour, utcMin, utcSec) + nanoOfSec / 1e6)
+        : Date.now(),
+      // This Pi's own local-clock time when this fix was decoded -
+      // deliberately separate from timestamp above (which is GPS-derived
+      // and can legitimately diverge from this Pi's own clock). Elapsed-
+      // time/staleness checks (roverAdminServer.js's "last fix Ns ago")
+      // need THIS, not timestamp - they're asking "has this process
+      // stopped hearing from the GPS," a question about locally-measured
+      // duration, not about the fix's own absolute clock.
+      receivedAt: Date.now(),
     };
   }
 

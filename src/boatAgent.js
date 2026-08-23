@@ -695,6 +695,7 @@ function getPosition() {
         lat: lastPvt.lat,
         lon: lastPvt.lon,
         timestamp: lastPvt.timestamp,
+        receivedAt: lastPvt.receivedAt,
         carrSoln: lastPvt.carrSoln,
         gnssFixOk: lastPvt.gnssFixOk,
         numSV: lastPvt.numSV,
