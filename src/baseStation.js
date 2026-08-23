@@ -689,9 +689,15 @@ function main() {
   // below) auto-releases and lets a fresh 'ongrid' send through again, even
   // without an intervening 'offgrid' - a periodic re-affirmation rather
   // than one static fact for however long the boat sits there, but capped
-  // to once every 30s rather than every qualifying fix (which is what this
-  // whole latch exists to avoid - see its own comment).
-  const ONGRID_RESEND_INTERVAL_MS = 30000;
+  // to once every 10s rather than every qualifying fix (which is what this
+  // whole latch exists to avoid - see its own comment). Also the retry
+  // cadence for a dropped webhook: mylapsWebhook's own realtime-notification
+  // write can silently fail under a large fleet's grid-on burst even though
+  // the actual present_racer_ids write succeeds (see regatta-up's
+  // mylapsWebhook/entry.ts) - a shorter latch means this boat's next
+  // re-affirmation retries sooner instead of leaving a dropped notification
+  // to sit for up to 30s.
+  const ONGRID_RESEND_INTERVAL_MS = 10000;
   const lastOnGridSentByBoat = new Map();
 
   function onGridWatcherFor(boatId) {
