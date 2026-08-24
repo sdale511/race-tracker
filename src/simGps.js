@@ -87,6 +87,15 @@ const PENDING_LINE_OFFSET_M = 2;
 // line and keeps some way on rather than stopping dead exactly at it.
 const FINISH_COAST_M = 20;
 
+// After crossing the finish line with MORE laps still to go, the boat keeps
+// sailing straight on whatever tack it was already on for a random distance
+// in this range before _startNewLeg() picks the new tack toward the
+// windward mark - same "real boat doesn't stop dead at the line" idea as
+// FINISH_COAST_M, just for a mid-race crossing instead of the final one, so
+// the boat doesn't snap-tack right at the gate every lap.
+const LAP_COAST_MIN_M = 15;
+const LAP_COAST_MAX_M = 40;
+
 // Fake GPS source for hardware-free testing: emits synthetic fixes in the
 // same shape UbxParser emits from real hardware (see ubxParser.js
 // _decodePvt), so boatAgent doesn't need to know the difference.
@@ -272,6 +281,7 @@ class SimGpsSource extends EventEmitter {
     this.lapTarget = lapCount;
     this.crossedLineThisLeg = true;
     this.finishCoastRemainingM = null; // set once the final lap's crossing is detected, see _tick()
+    this.lapCoastRemainingM = null; // set once a non-final lap's crossing is detected, see _tick()
 
     // Leg/target setup is irrelevant in startOnly mode - _tick() below
     // never reads any of it, so skip it entirely rather than run setup for
@@ -702,7 +712,7 @@ class SimGpsSource extends EventEmitter {
     // crossing (the tacking angle is exactly known, so there's no reason
     // this shouldn't land precisely).
     const distM =
-      this.finishCoastRemainingM == null && this.clearingHeadingDeg == null
+      this.finishCoastRemainingM == null && this.lapCoastRemainingM == null && this.clearingHeadingDeg == null
         ? Math.min(rawDistM, this.legRemainingM)
         : rawDistM;
     const headingRad = (headingDeg * Math.PI) / 180;
@@ -719,6 +729,18 @@ class SimGpsSource extends EventEmitter {
       // after finishing than an instant stop. No mark/leg/clearing logic
       // applies anymore, just this countdown.
       this.finishCoastRemainingM -= distM;
+    } else if (this.lapCoastRemainingM != null) {
+      // More laps to go, coasting on the current tack after the crossing
+      // (see the crossing check below) - once the coast distance is used
+      // up, _startNewLeg() picks the actual new tack toward the windward
+      // mark. Same no-mark/leg/clearing-logic-applies idea as the finish
+      // coast above, just resuming normal tacking afterward instead of
+      // stopping.
+      this.lapCoastRemainingM -= distM;
+      if (this.lapCoastRemainingM <= 0) {
+        this.lapCoastRemainingM = null;
+        this._startNewLeg();
+      }
     } else if (this.clearingHeadingDeg != null) {
       // Mid clearing leg - a mark rounding (heading frozen due east/west,
       // clearingDirection +1/-1) or (see clearingIsLineCross) heading up to
@@ -818,10 +840,15 @@ class SimGpsSource extends EventEmitter {
           // another leg toward the windward mark.
           this.finishCoastRemainingM = FINISH_COAST_M;
         } else {
-          // The target just changed (start/finish line -> the mark) -
-          // recompute this leg now instead of continuing on a heading aimed
-          // at the old target for however much of it happens to remain.
-          this._startNewLeg();
+          // More laps to go. Don't immediately recompute toward the
+          // windward mark - legRemainingM is already ~0 here (this leg's
+          // target WAS the gate it just reached), so without this the very
+          // next tick's legRemainingM<=0 check would call _startNewLeg()
+          // anyway, effectively forcing a tack right at the line every lap.
+          // Coast on the current tack for a bit first instead, same idea as
+          // FINISH_COAST_M for the final crossing - see _tick()'s handling
+          // of lapCoastRemainingM below.
+          this.lapCoastRemainingM = randRange(LAP_COAST_MIN_M, LAP_COAST_MAX_M);
         }
       } else {
         // Would cross the line, but outside the finish gate (the start
