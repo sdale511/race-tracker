@@ -180,7 +180,7 @@ class SimGpsSource extends EventEmitter {
     upwindSpeedKn,
     downwindSpeedKn,
     hz,
-    startSlot,
+    startFrac,
     lapCount,
     geometry,
     startOnly,
@@ -248,22 +248,24 @@ class SimGpsSource extends EventEmitter {
     // Position relative to the leeward mark, which sits at the configured
     // center point (SIM_CENTER_LAT/LON). Boats start spread out along the
     // start/finish line (see course.js), not at a mark - startOnly keeps
-    // this same per-slot spread (still useful to see multiple simulated
+    // this same per-boat spread (still useful to see multiple simulated
     // boats sitting at their own distinct positions along the line, e.g.
     // testing a fleet start) rather than collapsing every boat onto the
-    // same point. `startSlot` is a 0-based registration-order slot (see
-    // redisStore.getOrAssignStartSlot), not the boat's own ID/sail number.
+    // same point. `startFrac` (0-1) is this boat's own index/fleetSize when
+    // spawned as part of a fleet (even spacing), or a random draw when
+    // running standalone (see boatAgent.js) - not the boat's own ID/sail
+    // number.
     //
     // Interpolated against the TRUE local pin/committee positions (not a
     // simple east offset - see course.js's getStartFraction), so every
-    // slot lands along the real pin<->committee line regardless of
+    // boat lands along the real pin<->committee line regardless of
     // whether that line happens to be perpendicular to the beat axis -
     // then pulled PENDING_LINE_OFFSET_M leeward (south, in this local
     // frame) of it, not left sitting exactly on top of the line (see that
     // constant's own comment).
-    const startFrac = getStartFraction(startSlot, geometry);
-    this.north = this.pinLocal.north + startFrac * (this.committeeLocal.north - this.pinLocal.north) - PENDING_LINE_OFFSET_M;
-    this.east = this.pinLocal.east + startFrac * (this.committeeLocal.east - this.pinLocal.east);
+    const startLineFrac = getStartFraction(startFrac);
+    this.north = this.pinLocal.north + startLineFrac * (this.committeeLocal.north - this.pinLocal.north) - PENDING_LINE_OFFSET_M;
+    this.east = this.pinLocal.east + startLineFrac * (this.committeeLocal.east - this.pinLocal.east);
     this.phase = 'upwind'; // 'upwind' (beating) | 'downwind' (running)
     this.side = Math.random() < 0.5 ? 1 : -1;
     this.timeSinceManeuverS = 999;
@@ -652,7 +654,12 @@ class SimGpsSource extends EventEmitter {
       heightMm: 5000,
       hAccMm: 15,
       gSpeedMmS: 0,
-      headMotDeg: 0,
+      // A real stationary GPS fix genuinely can't derive heading from zero
+      // speed, but for display this should still show the direction the
+      // boat's actually oriented - its own assigned close-hauled tack (same
+      // _heading() used once it actually starts sailing), not due north for
+      // every boat regardless of which way it's really facing on the line.
+      headMotDeg: this._heading(),
       timestamp: Date.now(),
       // Real GPS hardware's timestamp is now GPS-derived, not local-clock
       // (see ubxParser.js's own comment) - receivedAt is the field

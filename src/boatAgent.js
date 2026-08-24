@@ -565,22 +565,27 @@ function startGpsSimIfReady() {
   const geometry = deriveGeometry(currentMarks, config.sim.courseMarks);
   const raceMarks = getRaceMarks(currentMarks, config.sim.courseMarks);
 
-  // No Redis-assigned sequential start slot anymore (a real rover has no
-  // Redis access, and registration-order slot assignment lived there) -
-  // and not the boat's own ID either, which would put this boat at the
-  // exact same spot on the line every single run, back to back, real
-  // testing usually wants a start position that actually varies (a fresh
-  // random draw each time this boat process starts, i.e. once per
-  // simulated race - startGpsSimIfReady only ever runs once per process).
-  // getStartFraction's existing modulo wraparound maps any integer onto a
-  // real slot on the line, so the draw doesn't need to know maxSlots
-  // itself - a real per-boat start slot assigned by the base isn't
-  // implemented, so this is a stand-in either way, not registration order.
-  const startSlot = Math.floor(Math.random() * 1000);
+  // fleetSim.js sets SIM_START_SLOT/SIM_FLEET_SIZE when this boat is part of
+  // a spawned fleet - even spacing (this boat's index out of the whole
+  // fleet) so the line fills up predictably instead of clustering wherever
+  // chance happens to land a batch of independent random draws (that's just
+  // how randomness works over a small fleet, not a bug - see course.js's
+  // own getStartFraction, which still owns confining this to the line's
+  // safe pin-half zone regardless of which of these two picks the fraction).
+  // Falls back to a random draw when running standalone (no fleet context -
+  // a lone boat has nothing to space evenly against), varying each run
+  // rather than the boat's own ID, which would put it at the exact same
+  // spot every single time.
+  const simFleetSize = Number(process.env.SIM_FLEET_SIZE);
+  const simStartSlot = Number(process.env.SIM_START_SLOT);
+  const startFrac =
+    Number.isInteger(simFleetSize) && simFleetSize > 0 && Number.isInteger(simStartSlot)
+      ? simStartSlot / simFleetSize
+      : Math.random();
 
   console.log(
     `[boatAgent] starting simulated GPS, course marks: ${Object.keys(currentMarks).join(', ')}, ` +
-      `racing ${raceMarks.windwardName}/${raceMarks.leewardName} (SIM_COURSE_MARKS=${config.sim.courseMarks}), start slot: ${startSlot}`
+      `racing ${raceMarks.windwardName}/${raceMarks.leewardName} (SIM_COURSE_MARKS=${config.sim.courseMarks}), start frac: ${startFrac.toFixed(3)}`
   );
 
   // The resolved leeward mark (see raceMarks above, and config.sim.courseMarks)
@@ -594,7 +599,7 @@ function startGpsSimIfReady() {
     upwindSpeedKn: config.sim.upwindSpeedKn,
     downwindSpeedKn: config.sim.downwindSpeedKn,
     hz: config.sim.gpsHz,
-    startSlot,
+    startFrac,
     lapCount: config.sim.lapCount,
     geometry,
     startOnly: config.sim.startOnly,

@@ -83,7 +83,20 @@ for (let i = 0; i < FLEET_SIZE; i++) {
   const prefix = `[boat ${boatId}] `;
 
   const child = spawn('node', [boatAgentPath], {
-    env: { ...baseEnv, BOAT_ID: String(boatId), ADMIN_PORT: String(adminPort), SIM_EXIT_ON_FINISH: '1' },
+    // SIM_START_SLOT/SIM_FLEET_SIZE let boatAgent.js space this boat evenly
+    // along the start line (index/fleetSize) instead of an independent
+    // random draw - random placement across the whole fleet looks clustered
+    // by chance far more often than it looks evenly spread (that's just how
+    // randomness works, not a bug), and this process already knows both the
+    // total fleet size and each child's own index for free.
+    env: {
+      ...baseEnv,
+      BOAT_ID: String(boatId),
+      ADMIN_PORT: String(adminPort),
+      SIM_EXIT_ON_FINISH: '1',
+      SIM_START_SLOT: String(i),
+      SIM_FLEET_SIZE: String(FLEET_SIZE),
+    },
     // 'ipc' (4th slot) lets this process forward the operator's own
     // "start the race" signal (SIM_HOLD_FOR_START's spacebar press, read
     // below - this process is the one with the real terminal, none of its

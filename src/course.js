@@ -151,38 +151,16 @@ function getMarks(centerLat, centerLon) {
   };
 }
 
-// Where start slot `slotIndex` (0-based, assigned by registration order via
-// redisStore.getOrAssignStartSlot() - NOT the boat's own ID/sail number,
-// which could be any value like 51 or 52 and isn't a small sequential
-// count) lines up on the start side (pin <-> committee), spaced
-// geometry.boatStartSpacingM apart. Shifted inward by half a spacing
-// increment so slot 0 starts strictly between the two ends, not sitting
-// exactly on top of the pin mark itself.
-//
-// The slot index itself is registration order since Redis was first asked
-// (getOrAssignStartSlot's counter), not "how many boats are racing right
-// now" - it only ever grows, so over a long test session with many
-// different throwaway boat IDs it can climb well past how many actually
-// fit on the line. Wrapped via modulo the number of spacing increments the
-// start side actually holds, so a boat always lands somewhere on the real
-// line (cycling positions past that point) instead of overflowing out past
-// committee or even the finish mark.
-//
-// Restricts simulated start slots to the pin half of the line, staying
-// comfortably clear of onGridWatcher.js's own COMMITTEE_TRIANGLE_MAX_FRACTION
-// (0.5, base-station-only - never imported here, this app's boat/sim side
-// has no business reaching into base-only detection internals, so this is
-// an independently-chosen, deliberately smaller value, not a shared
-// constant). That committee-corner exclusion is real and correct - a boat
-// genuinely close to committee IS ambiguous with a finishing boat rounding
-// it - but a simulated boat's start slot is picked at random with no
-// notion of "avoid looking like a finish," so without this, purely by
-// chance, some fraction of simulated boats would start in a position the
-// on-grid detector is SUPPOSED to treat as ambiguous, and never register
-// as on-grid at all - not a detection bug, just bad luck for testing,
-// where the whole point is usually "is the fleet on the line," not
-// exercising the finish-disambiguation edge case.
-const SIM_START_SAFE_MAX_FRACTION = 0.4;
+// How much of the pin<->committee line simulated boats can spread across.
+// Used to be capped at 0.4 (the pin half) specifically to stay clear of
+// onGridWatcher.js's own COMMITTEE_TRIANGLE_MAX_FRACTION (0.5, base-station-
+// only ambiguous-with-a-finishing-boat zone) - real test lines can be short
+// (tens of meters), and confining a large simulated fleet to less than half
+// of that got genuinely cramped. Using the full line trades that off
+// deliberately: a fraction of simulated boats landing in the ambiguous
+// corner and not registering as on-grid is an accepted rare cost of testing
+// with the full line available, not a detection bug.
+const SIM_START_SAFE_MAX_FRACTION = 1;
 
 // Returns a 0 (pin) to 1 (committee) FRACTION along the line, not an
 // absolute north/east - unlike windward/leeward (always exactly on
@@ -192,16 +170,19 @@ const SIM_START_SAFE_MAX_FRACTION = 0.4;
 // anywhere. simGps.js interpolates this fraction against pin/committee's
 // own true local positions (each independently measured, not assumed),
 // so a boat's start position stays correct regardless.
-function getStartFraction(slotIndex, geometry) {
-  const { startSideLengthM, boatStartSpacingM } = geometry;
-  const maxSlots = Math.max(1, Math.floor(startSideLengthM / boatStartSpacingM));
-  // Confined to SIM_START_SAFE_MAX_FRACTION of the line's own slots (see
-  // that constant's own comment) - the modulo wraparound below still maps
-  // any slotIndex onto a real, always-on-grid-safe position, it just never
-  // reaches the committee half of the line at all.
-  const safeMaxSlots = Math.max(1, Math.floor(maxSlots * SIM_START_SAFE_MAX_FRACTION));
-  const wrappedSlot = slotIndex % safeMaxSlots;
-  return (boatStartSpacingM / 2 + wrappedSlot * boatStartSpacingM) / startSideLengthM;
+//
+// frac (0-1) is boatAgent.js's own call: this boat's index/fleetSize when
+// spawned as part of a fleet (even spacing across the whole fleet, no
+// collision risk at all) or a random draw when running standalone - either
+// way, purely a fraction-of-safe-zone by the time it reaches here, this
+// function's only job is confining it to that zone. An earlier version
+// instead took a raw slot number and quantized it into a small fixed count
+// of discrete, realistically-spaced (25ft) positions - fine for a couple of
+// boats, but a larger simulated fleet (fleetSim.js routinely runs 20-30)
+// wrapped around and landed many boats on an EXACT duplicate of an earlier
+// boat's position, not just visually close.
+function getStartFraction(frac) {
+  return frac * SIM_START_SAFE_MAX_FRACTION;
 }
 
 // Which windward/leeward mark the simulator actually races - see
