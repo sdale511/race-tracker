@@ -324,6 +324,7 @@ class SimGpsSource extends EventEmitter {
     this.clearingHeadingDeg = null; // set mid-mark-rounding (due east/west) or mid-line-clear (headed up), see _tick()
     this.clearingDirection = null; // +1 (clearing east) or -1 (clearing west) - which way clearingTargetEastM is being approached from
     this.clearingIsLineCross = false; // true when clearingHeadingDeg is clearing the start/finish strip, not a mark
+    this.clearingSegmentPassedKey = null; // which passedStartSide/passedFinishSide/passedMiddleSection this clear is for, see where it's set
     this.steeringDirect = false; // true once close enough to the gate/a mark to steer directly at it instead of a fixed-angle tack, see _startNewLeg()
     // Freezes the heading during finishCoastRemainingM/lapCoastRemainingM
     // (coast straight after a gate crossing) when that crossing happened
@@ -912,8 +913,19 @@ class SimGpsSource extends EventEmitter {
         this.clearingHeadingDeg = null;
         if (this.clearingIsLineCross) {
           this.clearingIsLineCross = false;
-          this.crossedLineThisLeg = true; // doesn't count a lap, just marks the crossing handled
-          this._startNewLeg();
+          // Only THIS segment is actually behind the boat now - not
+          // necessarily the whole start/finish complex (see this leg's own
+          // comment on clearingSegmentPassedKey). Same "only fully done
+          // once every segment is passed" rule as the clean-pass case
+          // above; if another segment is still pending, leave
+          // crossedLineThisLeg false and keep sailing the current tack so
+          // the downwind check re-fires once it's reached.
+          this[this.clearingSegmentPassedKey] = true;
+          this.clearingSegmentPassedKey = null;
+          if (this._pendingStripTriggerNorths().length === 0) {
+            this.crossedLineThisLeg = true; // doesn't count a lap, just marks the crossing handled
+            this._startNewLeg();
+          }
         } else {
           this.phase = this.phase === 'upwind' ? 'downwind' : 'upwind';
           this.crossedLineThisLeg = false; // approaching the line again next
@@ -1144,6 +1156,15 @@ class SimGpsSource extends EventEmitter {
         this.clearingTargetEastM =
           this.clearingDirection === 1 ? seg.bLocal.east + DOWNWIND_CLEAR_MARGIN_M : seg.aLocal.east - DOWNWIND_CLEAR_MARGIN_M;
         this.clearingIsLineCross = true;
+        // Remembered so the clearing-leg completion handler (_tick()'s
+        // clearingHeadingDeg!=null branch, a later tick) knows which
+        // segment this particular clear was for - it needs to mark THIS
+        // one passed, not assume the whole complex is behind the boat (see
+        // that handler's own comment on why unconditionally finishing
+        // there was a real bug: a boat clearing e.g. the CS<->CF gap could
+        // sail straight through a still-pending pin<->CS or CF<->finish
+        // segment right after, with no check left to catch it).
+        this.clearingSegmentPassedKey = seg.passedKey;
         this.timeSinceManeuverS = 0;
       } else {
         this.north = seg.triggerNorth;
