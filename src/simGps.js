@@ -70,6 +70,22 @@ const DOWNWIND_CLEAR_MARGIN_M = 15;
 // when heading the opposite direction).
 const MARK_CLEARANCE_M = 5;
 
+// How far off the mark's own longitude (east=0 in this file's local frame)
+// the boat can be when it reaches the mark's latitude and still have the
+// fixed-direction MARK_CLEARANCE_M leg above correctly round it. The
+// precision two-tack solve (_startNewLeg's needsPrecisionTarget) is what's
+// supposed to converge the boat onto east=0 by then, but it's still an
+// idealized straight-line solve against a tick-based simulation with
+// heading jitter and maneuver-recovery speed loss - if actual accumulated
+// error leaves the boat further off than this when north reaches the
+// threshold, blindly clearing MARK_CLEARANCE_M in the mark's fixed
+// direction wouldn't actually pass anywhere near it (or would round it on
+// the wrong side entirely) - a real sailor who isn't going to make the mark
+// on their current tack heads up on it instead of arriving wide. See the
+// hard check in _tick() below, mirroring the same roll-back-and-redirect
+// pattern already used for the finish gate/downwind strip crossings.
+const MARK_ROUNDING_SAFE_EAST_M = MARK_CLEARANCE_M * 2;
+
 // How far leeward (behind, not on top of) the pin<->committee line a boat's
 // starting/pending position sits - a boat genuinely queuing for the start
 // stands off the line a little, not straddling it exactly, and it gives
@@ -794,18 +810,45 @@ class SimGpsSource extends EventEmitter {
         }
       }
     } else if (this.phase === 'upwind' && this.north >= this.courseLengthM) {
-      // Reached the windward mark's latitude - clear it heading due east
-      // (see MARK_CLEARANCE_M above) before actually rounding.
-      this.clearingHeadingDeg = 90;
-      this.clearingDirection = 1;
-      this.clearingTargetEastM = MARK_CLEARANCE_M;
-      this.timeSinceManeuverS = 0;
+      // Reached the windward mark's latitude - but only actually round it if
+      // the boat is close enough to the mark's own longitude (east=0) for
+      // the fixed clearing leg below to correctly pass it (see
+      // MARK_ROUNDING_SAFE_EAST_M). Not close enough means this tack was
+      // never going to make the mark - roll back to the pre-tick position
+      // (still short of the mark's latitude) and re-run _startNewLeg(),
+      // whose own precision two-tack solve picks a corrective tack from the
+      // boat's actual current position, same as heading up to lay a mark
+      // instead of arriving wide of it. Same roll-back-and-redirect pattern
+      // as the finish gate/downwind strip crossings below, applied to marks.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.courseLengthM);
+      if (Math.abs(crossingEast) > MARK_ROUNDING_SAFE_EAST_M) {
+        this.north = prevNorth;
+        this.east = prevEast;
+        this._startNewLeg();
+      } else {
+        // Clear it heading due east (see MARK_CLEARANCE_M above) before
+        // actually rounding.
+        this.clearingHeadingDeg = 90;
+        this.clearingDirection = 1;
+        this.clearingTargetEastM = MARK_CLEARANCE_M;
+        this.timeSinceManeuverS = 0;
+      }
     } else if (this.phase === 'downwind' && this.north <= 0) {
-      // Reached the leeward mark's latitude - clear it heading due west.
-      this.clearingHeadingDeg = 270;
-      this.clearingDirection = -1;
-      this.clearingTargetEastM = -MARK_CLEARANCE_M;
-      this.timeSinceManeuverS = 0;
+      // Reached the leeward mark's latitude - same safe-approach check as
+      // the windward mark above, mirrored for this phase's own clearing
+      // direction.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, 0);
+      if (Math.abs(crossingEast) > MARK_ROUNDING_SAFE_EAST_M) {
+        this.north = prevNorth;
+        this.east = prevEast;
+        this._startNewLeg();
+      } else {
+        // Clear it heading due west.
+        this.clearingHeadingDeg = 270;
+        this.clearingDirection = -1;
+        this.clearingTargetEastM = -MARK_CLEARANCE_M;
+        this.timeSinceManeuverS = 0;
+      }
     } else if (this.legRemainingM <= 0) {
       this._startNewLeg(); // tack or gybe
     }
