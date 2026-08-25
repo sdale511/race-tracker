@@ -614,6 +614,13 @@ function startGpsSimIfReady() {
     finish: currentMarks.finish,
   });
   simGpsSource = gps;
+  // Listener attached (and the real starting position emitted through it -
+  // see emitInitialFixIfDwelling's own comment on why this can't happen
+  // inside the constructor itself) before the 'on-grid' IPC message below,
+  // so fleetSim.js's fleet-wide "on-grid" count never runs ahead of this
+  // boat's actual position having been transmitted at least once.
+  gps.on('nav-pvt', handlePvt);
+  gps.emitInitialFixIfDwelling();
   // The operator's start signal may have already arrived before this boat
   // even reached the grid (marks can take a moment - see freshMarksReceived
   // above) - releaseHold() only recorded that as holdReleased until there
@@ -628,7 +635,6 @@ function startGpsSimIfReady() {
     // is ready, instead of guessing from elapsed time.
     if (typeof process.send === 'function') process.send('on-grid');
   }
-  gps.on('nav-pvt', handlePvt);
   // Diagnostic only - the sim's own internal lap counting, used to decide
   // when the simulated race ends and to report whether it stayed inside
   // the gate for tuning purposes. Actual lap *reporting* (to the base

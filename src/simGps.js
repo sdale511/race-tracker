@@ -295,6 +295,29 @@ class SimGpsSource extends EventEmitter {
     this._timer = setInterval(() => this._tick(), this.intervalMs);
   }
 
+  // Emits the real, correct starting position immediately rather than
+  // waiting for the first setInterval tick above (which by definition
+  // doesn't fire until a full intervalMs later, e.g. up to a second at
+  // 1Hz). boatAgent.js reports 'on-grid' to fleetSim.js the instant the
+  // constructor returns - with 30 boats' timers not perfectly synchronized,
+  // whichever one's first tick happens to land last would otherwise show
+  // "on-grid" in the simulator's own count while still transmitting its
+  // pre-marks placeholder position (the marks-ping midpoint sent before
+  // this boat ever had a real fix to report) on the map. Only meaningful
+  // for the dwelling/stationary paths - a boat that starts racing
+  // immediately gets its first real tick from the interval exactly as
+  // before, so there's no risk of double-applying movement.
+  //
+  // Deliberately a separate method the CALLER invokes, not folded into the
+  // constructor itself: gps.on('nav-pvt', handlePvt) is only attached after
+  // `new SimGpsSource(...)` returns (see boatAgent.js), so emitting from
+  // inside the constructor would fire with zero listeners attached yet and
+  // be silently lost - same class of bug this method exists to fix, just
+  // moved earlier instead of solved.
+  emitInitialFixIfDwelling() {
+    if (this.startOnly || this.dwellRemainingS > 0) this._emitStationaryFix();
+  }
+
   stop() {
     clearInterval(this._timer);
   }
