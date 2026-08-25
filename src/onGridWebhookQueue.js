@@ -22,12 +22,20 @@ class OnGridWebhookQueue {
         boat_id INTEGER NOT NULL,
         mode TEXT NOT NULL,
         rtc_time INTEGER NOT NULL,
+        strength INTEGER,
         received_at TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         last_attempt_at INTEGER,
         created_at INTEGER NOT NULL
       )
     `);
+    // CREATE TABLE IF NOT EXISTS is a no-op against a queue file saved
+    // before `strength` was added to this schema - migrate it in place so
+    // a base station restarting against an already-running deployment's
+    // queue file picks up the new column instead of silently keeping the
+    // old one (and every enqueue() below failing on the extra bind param).
+    const hasStrength = queue._rows('PRAGMA table_info(pending_ongrid)').some((col) => col.name === 'strength');
+    if (!hasStrength) queue.db.run('ALTER TABLE pending_ongrid ADD COLUMN strength INTEGER');
     queue._save();
     return queue;
   }
@@ -52,14 +60,11 @@ class OnGridWebhookQueue {
 
   // mode: 'ongrid' or 'offgrid'. Returns the new row's id, for
   // recordAttempt/remove to reference.
-  enqueue({ boatId, mode, rtcTime, receivedAt }) {
-    this.db.run(`INSERT INTO pending_ongrid (boat_id, mode, rtc_time, received_at, created_at) VALUES (?, ?, ?, ?, ?)`, [
-      boatId,
-      mode,
-      rtcTime,
-      receivedAt,
-      Date.now(),
-    ]);
+  enqueue({ boatId, mode, rtcTime, strength, receivedAt }) {
+    this.db.run(
+      `INSERT INTO pending_ongrid (boat_id, mode, rtc_time, strength, received_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [boatId, mode, rtcTime, strength ?? null, receivedAt, Date.now()]
+    );
     const [{ id }] = this._rows('SELECT last_insert_rowid() AS id');
     this._save();
     return id;

@@ -499,7 +499,7 @@ sequenceDiagram
 
   W->>Q: enqueue(event)
   loop every postIntervalMs (500ms)
-    Q->>H: POST { decoded: { tranCode, rtcTime }, mode? }
+    Q->>H: POST { mode, decoded: { tranCode, rtcTime, strength } }
     H->>R: match tranCode in class_entries
     alt race + racer found
       H->>E: create record
@@ -518,12 +518,12 @@ sequenceDiagram
         <div class="panel">
           <div class="panel-title">Lap payload</div>
           <pre class="json">{
+  <span class="k">"mode"</span>: <span class="s">"lap"</span>,
   <span class="k">"decoded"</span>: {
     <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
     <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>,
     <span class="k">"strength"</span>: <span class="n">2</span>
-  },
-  <span class="k">"receivedAt"</span>: <span class="s">"2026-08-25T…Z"</span>
+  }
 }</pre>
         </div>
         <div class="panel">
@@ -532,7 +532,8 @@ sequenceDiagram
   <span class="k">"mode"</span>: <span class="s">"ongrid"</span>,
   <span class="k">"decoded"</span>: {
     <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
-    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>
+    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>,
+    <span class="k">"strength"</span>: <span class="n">2</span>
   }
 }</pre>
         </div>
@@ -543,12 +544,14 @@ sequenceDiagram
   <span class="k">"mark"</span>: <span class="s">"windwardGreen"</span>,
   <span class="k">"decoded"</span>: {
     <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
-    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>
+    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>,
+    <span class="k">"strength"</span>: <span class="n">2</span>
   }
 }</pre>
         </div>
       </div>
       <div class="note">⏱ <div><b>rtcTime is microseconds.</b> The lap's own GPS-derived crossing time, converted from the watcher's millisecond timestamp (<code class="mono">crossingTime * 1000</code>) — not when the webhook happened to fire.</div></div>
+      <div class="note">🔗 <div><b>mode is always explicit.</b> All three event types send <code class="mono">mode</code> and <code class="mono">decoded.strength</code> - none of race-tracker's own payloads distinguish an event type by a field's absence. The receiver still treats a missing <code class="mono">mode</code> as <code class="mono">'lap'</code>, since this same endpoint also accepts hits from real MyLaps decoder hardware, which has no concept of mode at all.</div></div>
     </section>
 
     <!-- ============ REGATTAUP ============ -->

@@ -1056,6 +1056,7 @@ function main() {
           boatId: decoded.boatId,
           mode: onGridMode,
           rtcTime: decoded.timestamp * 1000, // ms -> microseconds
+          strength: decoded.carrSoln,
           receivedAt: new Date().toISOString(),
         };
         lastOnGridSentByBoat.set(decoded.boatId, Date.now());
@@ -1073,6 +1074,7 @@ function main() {
           boatId: decoded.boatId,
           mark,
           rtcTime: rounding.crossingTime * 1000, // ms -> microseconds
+          strength: decoded.carrSoln,
           receivedAt: new Date().toISOString(),
         };
         if (markRoundingWebhookQueue) enqueueMarkRounding(event);
@@ -1450,21 +1452,26 @@ function main() {
 // Counts the lap with RegattaUp (see https://regattaup.com) - boatId is
 // supplied as tranCode (matched against the transponder code configured for
 // that boat's class entry there), and the lap's own timestamp becomes
-// rtcTime (already stored in the queue as microseconds). Every attempt
-// (success or failure) is recorded on the row so dueForRetry's backoff
-// stays accurate; the row is only removed once RegattaUp actually accepts
-// it - a failure just leaves it queued for the next retry, logged but not
-// thrown further, matching this app's "a webhook hiccup shouldn't affect
-// any other output" philosophy elsewhere.
+// rtcTime (already stored in the queue as microseconds). `mode: 'lap'` is
+// sent explicitly even though the webhook already defaults to it when the
+// field is missing entirely (real third-party MyLaps hardware has no
+// concept of mode and will never send one) - explicit here just means our
+// own three event types (lap/ongrid/mark) are never distinguished by
+// *absence* of a field, only by its value. Every attempt (success or
+// failure) is recorded on the row so dueForRetry's backoff stays accurate;
+// the row is only removed once RegattaUp actually accepts it - a failure
+// just leaves it queued for the next retry, logged but not thrown further,
+// matching this app's "a webhook hiccup shouldn't affect any other output"
+// philosophy elsewhere.
 async function sendQueuedLap(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
+    mode: 'lap',
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,
       strength: row.strength,
     },
-    receivedAt: row.received_at,
   };
   try {
     const res = await fetch(config.regattaup.webhookUrl, {
@@ -1483,9 +1490,10 @@ async function sendQueuedLap(queue, row) {
 }
 
 // Tells RegattaUp a boat is (still) on the grid or has left it (see
-// onGridWatcher.js) - same tranCode/rtcTime conventions as sendQueuedLap
-// above, and the exact same retry/removal semantics, just posting to the
-// same webhook URL with `mode` instead of a lap number.
+// onGridWatcher.js) - same tranCode/rtcTime/strength conventions as
+// sendQueuedLap above (see its own comment on why mode is always explicit),
+// and the exact same retry/removal semantics, just with `mode` set to
+// 'ongrid'/'offgrid' instead of 'lap'.
 async function sendQueuedOnGrid(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
@@ -1493,6 +1501,7 @@ async function sendQueuedOnGrid(queue, row) {
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,
+      strength: row.strength,
     },
   };
   try {
@@ -1512,9 +1521,9 @@ async function sendQueuedOnGrid(queue, row) {
 }
 
 // Tells RegattaUp a boat rounded a mark (see markRoundingWatcher.js) - same
-// tranCode/rtcTime conventions and retry/removal semantics as
-// sendQueuedOnGrid above, posting to the same webhook URL with mode 'mark'
-// and which mark (row.mark, e.g. 'windwardGreen') was rounded.
+// tranCode/rtcTime/strength conventions and retry/removal semantics as
+// sendQueuedOnGrid above, with `mode: 'mark'` and which mark (row.mark, e.g.
+// 'windwardGreen') was rounded.
 async function sendQueuedMarkRounding(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
@@ -1523,6 +1532,7 @@ async function sendQueuedMarkRounding(queue, row) {
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,
+      strength: row.strength,
     },
   };
   try {
