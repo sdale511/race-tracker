@@ -480,33 +480,50 @@ class SimGpsSource extends EventEmitter {
     // real sailor means by "laying the mark" - so no separate layline
     // detection is needed, this solve already produces it.
     const closeEnough = needsPrecisionTarget && dNorth <= this.targetLegM * 2.5 * northPerM;
-    // Close enough to whatever's being targeted (the finish gate, or - once
-    // crossedLineThisLeg - a mark) to just steer directly at it for the
-    // rest of the approach, instead of solving for a fixed-angle tack
-    // length - the same thing a real sailor means by "laying the mark,"
-    // adjusting their exact heading on the final approach rather than
-    // picking a tack and hoping the length is right. Recomputed every tick
-    // in _tick() (see this.steeringDirect there), so it self-corrects
-    // continuously and always converges - no fixed-length tack to get cut
-    // short, and so nothing for _tick()'s own gate/mark reject-and-retry
-    // hard checks to actually need to reject in practice.
-    //
-    // This replaced an exact two-tack solve (pick a tack length that lands
-    // precisely on target at the fixed close-hauled/run angle) that
-    // predated this fix and is why it existed at all: close enough that
-    // dNorth is small but the needed dEast correction is still large, the
-    // solve had no clean answer and fell back to "take the correcting side,
-    // full tack length" - a real, substantial leg, but one _tick()'s own
-    // reject-and-retry (see the gate/mark crossing checks) would cut off on
-    // its very first tick's worth of movement, since the boat was already
-    // sitting right at the threshold when that fallback tack was chosen.
-    // Every retry recomputed from that same rolled-back position, chose the
-    // same fallback tack, got cut off the same way - a permanent stall
-    // (confirmed live for both the gate and marks), not the "genuinely
-    // closing the gap each retry" the old fallback's own comment assumed.
-    // Steering directly at the target has no tack length to cut off in the
-    // first place, so there's nothing left to get stuck in.
     if (closeEnough) {
+      // Exact two-tack solve: side-1 for Lminus sailed first, then side+1
+      // for Lplus, lands precisely on target (verified: for fixed angle
+      // theta, (Lplus+Lminus)*cos(theta) covers dNorth and
+      // (Lplus-Lminus)*sin(theta) covers dEastCorrected). Lminus~0 is
+      // exactly "on the layline already" - a single final tack (Lplus) at
+      // the normal angle reaches the target with no correction needed, the
+      // same thing a real sailor means by "laying the mark." Below that
+      // threshold, steer straight at the target instead of setting up a
+      // literal near-zero-length leg (see steeringDirect below).
+      const S = dNorth / northPerM;
+      const Diff = dEastCorrected / Math.sin(maxAngleRad);
+      const Lplus = (S + Diff) / 2;
+      const Lminus = (S - Diff) / 2;
+      const NEAR_ZERO_M = Math.min(this.targetLegM * 0.01, 2);
+
+      if (Lminus > NEAR_ZERO_M && Lplus > NEAR_ZERO_M) {
+        // Not on the layline yet - sail the corrective tack now, sized so
+        // exactly Lplus is left after it (by construction, precisely one
+        // more tack from landing on target - the layline, not a guess).
+        // An ordinary, bounded _setLeg() - _tick()'s legRemainingM<=0 check
+        // calls _startNewLeg() again once it completes, which finds
+        // Lminus~0 next time and switches to steering straight in from
+        // there, with no pinch at all since that's now the normal angle.
+        this._setLeg(-1, Lminus);
+        return;
+      }
+
+      // Either already on the layline (Lminus/Lplus ~0 - the common case)
+      // or the correction needed exceeds what two tacks can cover within
+      // dNorth (Lminus or Lplus negative - rare, only when closeEnough's
+      // own distance threshold was reached with an unusually large
+      // cross-track error still outstanding). Either way, steer straight
+      // at the target now: on the layline this is the normal angle, no
+      // pinch; the rare oversized-correction case is a geometry-forced
+      // minimum necessary to actually reach it, not avoidable by more
+      // tacking (there isn't room left for another tack regardless of
+      // technique) - recomputed every tick in _tick() (see
+      // this.steeringDirect there), so it self-corrects continuously and
+      // always converges. This is also the safety net an earlier, simpler
+      // version of this fix relied on for the ENTIRE close-enough case,
+      // not just these two - unconditional unclamped steering never
+      // stalls, but pinches far more than necessary; the two-tack solve
+      // above is what actually eliminates pinching for the normal case.
       this.steeringDirect = true;
       this.legRemainingM = Infinity;
       // Doesn't go through _setLeg() (no fixed tack to set up), which is
@@ -606,10 +623,16 @@ class SimGpsSource extends EventEmitter {
   // Straight-line compass bearing (0=N, clockwise) from the boat's current
   // position to whatever it's currently targeting (the finish gate, or a
   // mark) - used only while this.steeringDirect is true (see
-  // _startNewLeg()'s closeEnough branch), recomputed fresh every tick so it
-  // self-corrects continuously as position changes, rather than committing
-  // to a single heading computed once and potentially drifting off as
-  // small per-tick errors accumulate.
+  // _startNewLeg()'s two-tack solve, which only turns this on once already
+  // on the layline or when the correction genuinely can't wait for another
+  // tack). No clamping here: an earlier version clamped this bearing to the
+  // sailing envelope instead of gating when steeringDirect turns on -
+  // reverted, since clamping breaks the property that makes this
+  // stall-free. Unclamped, the boat converges on north AND east
+  // simultaneously by definition (pointed exactly at the target); clamped,
+  // it can reach the target's latitude while still meaningfully off to one
+  // side, right back into the same reject-and-retry stall this whole
+  // mechanism exists to avoid.
   _headingToTarget() {
     const { targetNorth, targetEastM } = this._targetWaypoint();
     const dNorth = targetNorth - this.north;
@@ -847,16 +870,28 @@ class SimGpsSource extends EventEmitter {
       this.clearingHeadingDeg == null &&
       this.phase === 'upwind' &&
       !this.crossedLineThisLeg &&
-      this.north > this.committeeLocal.north
+      this.north > this.gateCenterLocal.north
     ) {
-      // Interpolated east position at the exact moment north crossed
-      // committee's own true north level, not just wherever this tick's
-      // discrete step happened to land - at a short SIM_COURSE_LENGTH_NM
-      // the finish gate can be narrower than a single tick's own travel
-      // distance, so checking the post-step position directly would
-      // report "missed the gate" even when the true crossing point was
-      // well inside it.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.committeeLocal.north);
+      // Interpolated east position at the exact moment north crossed the
+      // SAME gateCenterLocal.north _targetWaypoint() steers at - not
+      // committeeLocal.north, which this used to check against despite the
+      // boat sailing toward gateCenterLocal instead (a real, structural
+      // mismatch whenever committee and finish aren't at exactly the same
+      // north, which independently-edited marks routinely aren't - the
+      // boat could be steering perfectly at gateCenterLocal and still get
+      // rejected every single time, since the crossing was being evaluated
+      // at a different latitude than the one it was actually aiming for.
+      // Confirmed live: a boat can get stuck oscillating between the same
+      // two positions forever, never crossing, since rolling back to
+      // exactly where it started and recomputing steeringDirect's heading
+      // from there deterministically reproduces the exact same rejected
+      // attempt every time - not a precision problem steering better could
+      // ever fix, a reference-point mismatch no amount of precision could).
+      // Not just checking the post-tick position directly - at a short
+      // SIM_COURSE_LENGTH_NM the finish gate can be narrower than a single
+      // tick's own travel distance, so that would report "missed the gate"
+      // even when the true crossing point was well inside it.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.gateCenterLocal.north);
       // Projected onto the TRUE committeeLocal<->finishLocal segment
       // (projectFraction), not an assumed scalar bound - see the
       // constructor's comment on why pin/committee/finish can't be
@@ -864,25 +899,27 @@ class SimGpsSource extends EventEmitter {
       // independently. This is also what actually matters for the base
       // station's own lap detection (finishLineWatcher.js, watching the
       // boat's real transmitted fixes) to agree with what the simulator
-      // itself thinks happened - since _targetWaypoint() now steers at
-      // this exact same gateCenterLocal, the boat's real sailed path
-      // should actually reach it, not just be checked against it after
-      // the fact.
-      const t = projectFraction(this.committeeLocal, this.finishLocal, { north: this.committeeLocal.north, east: crossingEast });
+      // itself thinks happened.
+      const t = projectFraction(this.committeeLocal, this.finishLocal, { north: this.gateCenterLocal.north, east: crossingEast });
       const inGate = t >= 0 && t <= 1;
       if (inGate) {
-        this.north = this.committeeLocal.north;
+        this.north = this.gateCenterLocal.north;
         this.east = crossingEast;
         // Freeze the heading for the coast below (see coastHeadingDeg's own
-        // comment) before crossedLineThisLeg flips - _headingToTarget()
-        // needs to still see the gate as the target here, capturing the
-        // heading that was actually just used to reach it, not the heading
-        // toward the NEW target (the windward mark) that flag switches to
-        // on the very next line. Only needed when that heading was actually
-        // computed by steering directly (ordinary fixed-angle tacking
-        // already continues correctly on its own - see the field's comment
-        // in the constructor).
-        if (this.steeringDirect) this.coastHeadingDeg = this._headingToTarget();
+        // comment) using headingDeg - the actual heading this very tick's
+        // movement just sailed on, computed above BEFORE this snap to the
+        // gate's exact position - not a fresh _headingToTarget() call here,
+        // which would recompute the bearing to the gate center from a
+        // position that's now essentially ON it (dNorth/dEast both near
+        // zero, an inherently unstable calculation - the gate center's own
+        // north can differ slightly from the exact crossing point's, which
+        // was enough to occasionally produce a bearing pointing backward,
+        // sending the boat in reverse during what's supposed to be a
+        // straight coast past the line). Only needed when that heading was
+        // actually computed by steering directly (ordinary fixed-angle
+        // tacking already continues correctly on its own - see the field's
+        // comment in the constructor).
+        if (this.steeringDirect) this.coastHeadingDeg = headingDeg;
         this.steeringDirect = false;
         this.crossedLineThisLeg = true;
         this.lapsCompleted++;
@@ -906,15 +943,24 @@ class SimGpsSource extends EventEmitter {
         // Would cross the line, but outside the finish gate (the start
         // side, or beyond either mark) - not a valid finish. Roll back to
         // the pre-tick position (still short of the line) rather than
-        // commit to this crossing, and re-aim: crossedLineThisLeg is still
-        // false and the phase is still upwind, so _startNewLeg()'s existing
-        // gate-targeting precision math (see needsPrecisionTarget) is
-        // exactly the right corrective action here - same mechanism
-        // already steering every upwind approach, just re-run from a
-        // position close enough that it should converge cleanly.
+        // commit to this crossing.
         this.north = prevNorth;
         this.east = prevEast;
-        this._startNewLeg();
+        // Forces guaranteed convergence directly rather than calling
+        // _startNewLeg() (which would re-run the normal two-tack solve and
+        // could pick the same corrective tack again - exactly what led to
+        // this rejected crossing in the first place, recomputing the same
+        // answer from essentially the same position and getting cut off
+        // the same way every retry, a permanent stall, confirmed live).
+        // This path should be rare - the two-tack solve's own corrective
+        // tack is sized to reach the layline without overshooting past the
+        // threshold, so the normal approach shouldn't reach here at all -
+        // so the pinch this can require is an acceptable, bounded recovery
+        // cost for a case that shouldn't come up often, not the normal
+        // sailing behavior.
+        this.steeringDirect = true;
+        this.legRemainingM = Infinity;
+        this.coastHeadingDeg = null;
       }
     } else if (
       this.finishCoastRemainingM == null &&
