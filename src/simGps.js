@@ -70,22 +70,6 @@ const DOWNWIND_CLEAR_MARGIN_M = 15;
 // when heading the opposite direction).
 const MARK_CLEARANCE_M = 5;
 
-// How far off the mark's own longitude (east=0 in this file's local frame)
-// the boat can be when it reaches the mark's latitude and still have the
-// fixed-direction MARK_CLEARANCE_M leg above correctly round it. The
-// precision two-tack solve (_startNewLeg's needsPrecisionTarget) is what's
-// supposed to converge the boat onto east=0 by then, but it's still an
-// idealized straight-line solve against a tick-based simulation with
-// heading jitter and maneuver-recovery speed loss - if actual accumulated
-// error leaves the boat further off than this when north reaches the
-// threshold, blindly clearing MARK_CLEARANCE_M in the mark's fixed
-// direction wouldn't actually pass anywhere near it (or would round it on
-// the wrong side entirely) - a real sailor who isn't going to make the mark
-// on their current tack heads up on it instead of arriving wide. See the
-// hard check in _tick() below, mirroring the same roll-back-and-redirect
-// pattern already used for the finish gate/downwind strip crossings.
-const MARK_ROUNDING_SAFE_EAST_M = MARK_CLEARANCE_M * 2;
-
 // How far leeward (behind, not on top of) the pin<->committee line a boat's
 // starting/pending position sits - a boat genuinely queuing for the start
 // stands off the line a little, not straddling it exactly, and it gives
@@ -288,6 +272,21 @@ class SimGpsSource extends EventEmitter {
     this.clearingHeadingDeg = null; // set mid-mark-rounding (due east/west) or mid-line-clear (headed up), see _tick()
     this.clearingDirection = null; // +1 (clearing east) or -1 (clearing west) - which way clearingTargetEastM is being approached from
     this.clearingIsLineCross = false; // true when clearingHeadingDeg is clearing the start/finish strip, not a mark
+    this.steeringDirect = false; // true once close enough to the gate/a mark to steer directly at it instead of a fixed-angle tack, see _startNewLeg()
+    // Freezes the heading during finishCoastRemainingM/lapCoastRemainingM
+    // (coast straight after a gate crossing) when that crossing happened
+    // while steeringDirect - normally coasting "just keeps working" because
+    // _heading()'s fixed-angle formula only depends on phase/side/jitter,
+    // none of which change until the next real _setLeg() call, so it
+    // naturally keeps reproducing the same value with no explicit freeze
+    // needed. steeringDirect has no such fixed inputs (its heading is
+    // continuously recomputed toward whatever's currently being targeted),
+    // so without this, "coasting" would keep steering toward the NEW target
+    // that crossedLineThisLeg switches to the instant the gate is crossed
+    // (the windward mark) instead of actually going straight. Set right at
+    // the crossing (see _tick()) and cleared by _setLeg() once real tacking
+    // resumes.
+    this.coastHeadingDeg = null;
 
     // A lap completes when the boat crosses the start/finish line heading
     // upwind, through the finish gate (see _tick()). Once lapCount laps are
@@ -375,13 +374,17 @@ class SimGpsSource extends EventEmitter {
 
   // Sets up a leg on a specific tack/gybe, always at the FULL close-hauled/
   // run angle for the phase (never softened) - `jitterDeg` adds a small
-  // per-tack heading wobble for visual variety on free legs, and is 0 for
-  // the exact-solve precision legs, where it would throw off the math.
+  // per-tack heading wobble for visual variety on free legs. Every real
+  // tack goes through here, so it's also where steeringDirect/
+  // coastHeadingDeg (see the constructor's own comments) get cleared -
+  // ordinary fixed-angle tacking is resuming, so neither should linger.
   _setLeg(side, lengthM, jitterDeg = 0) {
     this.side = side;
     this.headingJitterDeg = jitterDeg;
     this.legRemainingM = Math.max(1, lengthM);
     this.timeSinceManeuverS = 0;
+    this.steeringDirect = false;
+    this.coastHeadingDeg = null;
   }
 
   // Starts the next tack/gybe. The boat always sails at the full
@@ -477,67 +480,42 @@ class SimGpsSource extends EventEmitter {
     // real sailor means by "laying the mark" - so no separate layline
     // detection is needed, this solve already produces it.
     const closeEnough = needsPrecisionTarget && dNorth <= this.targetLegM * 2.5 * northPerM;
+    // Close enough to whatever's being targeted (the finish gate, or - once
+    // crossedLineThisLeg - a mark) to just steer directly at it for the
+    // rest of the approach, instead of solving for a fixed-angle tack
+    // length - the same thing a real sailor means by "laying the mark,"
+    // adjusting their exact heading on the final approach rather than
+    // picking a tack and hoping the length is right. Recomputed every tick
+    // in _tick() (see this.steeringDirect there), so it self-corrects
+    // continuously and always converges - no fixed-length tack to get cut
+    // short, and so nothing for _tick()'s own gate/mark reject-and-retry
+    // hard checks to actually need to reject in practice.
+    //
+    // This replaced an exact two-tack solve (pick a tack length that lands
+    // precisely on target at the fixed close-hauled/run angle) that
+    // predated this fix and is why it existed at all: close enough that
+    // dNorth is small but the needed dEast correction is still large, the
+    // solve had no clean answer and fell back to "take the correcting side,
+    // full tack length" - a real, substantial leg, but one _tick()'s own
+    // reject-and-retry (see the gate/mark crossing checks) would cut off on
+    // its very first tick's worth of movement, since the boat was already
+    // sitting right at the threshold when that fallback tack was chosen.
+    // Every retry recomputed from that same rolled-back position, chose the
+    // same fallback tack, got cut off the same way - a permanent stall
+    // (confirmed live for both the gate and marks), not the "genuinely
+    // closing the gap each retry" the old fallback's own comment assumed.
+    // Steering directly at the target has no tack length to cut off in the
+    // first place, so there's nothing left to get stuck in.
     if (closeEnough) {
-      const S = dNorth / northPerM;
-      const Diff = dEastCorrected / Math.sin(maxAngleRad);
-      const Lplus = (S + Diff) / 2;
-      const Lminus = (S - Diff) / 2;
-      // A tack this short isn't worth a separate leg of its own - below
-      // this, skip straight to sailing the other (longer) tack in full,
-      // rather than a near-instant leg that would immediately re-trigger
-      // another _startNewLeg() call. Scaled to the course (not a fixed
-      // distance) for the same reason course.js scales the start/finish
-      // line's own width - a fixed value stops being "negligible" once the
-      // whole course shrinks enough - but capped at 2m absolute regardless
-      // of course length: the tacking angle is exactly known, so anything
-      // above a couple meters is a real, visible correction actually worth
-      // sailing, not noise to approximate away. This used to be 5% of
-      // targetLegM (4-5m on a typical course) - large enough to regularly
-      // discard a real tack's worth of lateral correction, which is
-      // exactly why the finish gate crossing was landing meters off instead
-      // of exactly on target.
-      const NEAR_ZERO_M = Math.min(this.targetLegM * 0.01, 2);
-
-      if (Lplus >= -NEAR_ZERO_M && Lminus >= -NEAR_ZERO_M) {
-        if (Lminus <= NEAR_ZERO_M) {
-          this._setLeg(1, Math.max(Lplus, 1));
-        } else if (Lplus <= NEAR_ZERO_M) {
-          this._setLeg(-1, Math.max(Lminus, 1));
-        } else {
-          this._setLeg(-1, Lminus);
-        }
-        return;
-      }
-
-      // Close enough to be trying to converge, but the needed correction
-      // still exceeds what's reachable in a clean two-tack solve at this
-      // angle - always take the correcting side at full angle, so this
-      // makes real progress across possibly several legs. Monotonic (never
-      // picks the "wrong" side for variety), so this reliably shrinks the
-      // error leg over leg until the exact solve above becomes reachable.
-      const correctingSide = dEastCorrected >= 0 ? 1 : -1;
-      // Already guaranteed positive and proportional to targetLegM (which
-      // itself scales with the course length) - no separate floor needed;
-      // a fixed one (e.g. 50m) would force tacks longer than intended once
-      // targetLegM itself gets small (a short SIM_COURSE_LENGTH_NM course).
-      //
-      // Deliberately NOT capped short of the crossing threshold (this used
-      // to cap at 0.8x the remaining north distance, to "leave room for
-      // more legs" rather than risk sailing through) - that reasoning
-      // predates _tick()'s upwind crossing check actually rejecting and
-      // retrying an out-of-gate crossing (see there): capping this tack
-      // short means EVERY retry after a rejected crossing recomputes from
-      // the same, only-partially-corrected position, making the same small
-      // amount of progress each time - which, if dNorth is already small
-      // enough that even a capped tack overshoots it, never converges at
-      // all (an infinite retry loop, confirmed live: the boat can get
-      // stuck alternating between the same two positions forever). Running
-      // this tack its full natural length instead means a rejected
-      // crossing's retry starts from a position that's already absorbed
-      // this whole tack's worth of correction, not a truncated fraction of
-      // it - genuinely closing the gap each retry instead of repeating it.
-      const lengthM = randRange(this.targetLegM * (1 - LEG_JITTER_FRAC), this.targetLegM * (1 + LEG_JITTER_FRAC));
-      this._setLeg(correctingSide, lengthM);
+      this.steeringDirect = true;
+      this.legRemainingM = Infinity;
+      // Doesn't go through _setLeg() (no fixed tack to set up), which is
+      // where coastHeadingDeg normally gets cleared - if _startNewLeg() is
+      // called again while a stale one is still set (e.g. re-entering this
+      // branch right after a coast ends), it would otherwise keep
+      // overriding steeringDirect's own fresh heading with the old frozen
+      // one via _tick()'s priority chain.
+      this.coastHeadingDeg = null;
       return;
     }
 
@@ -623,6 +601,20 @@ class SimGpsSource extends EventEmitter {
     const baseDeg = this.phase === 'upwind' ? WIND_FROM_DEG : (WIND_FROM_DEG + 180) % 360;
     const angleDeg = this.phase === 'upwind' ? CLOSE_HAULED_DEG : RUN_DEG;
     return (((baseDeg + this.side * angleDeg + this.headingJitterDeg) % 360) + 360) % 360;
+  }
+
+  // Straight-line compass bearing (0=N, clockwise) from the boat's current
+  // position to whatever it's currently targeting (the finish gate, or a
+  // mark) - used only while this.steeringDirect is true (see
+  // _startNewLeg()'s closeEnough branch), recomputed fresh every tick so it
+  // self-corrects continuously as position changes, rather than committing
+  // to a single heading computed once and potentially drifting off as
+  // small per-tick errors accumulate.
+  _headingToTarget() {
+    const { targetNorth, targetEastM } = this._targetWaypoint();
+    const dNorth = targetNorth - this.north;
+    const dEast = targetEastM - this.east;
+    return (((Math.atan2(dEast, dNorth) * 180) / Math.PI) + 360) % 360;
   }
 
   // Converts a local (course-relative, "north"=toward windwardGreen)
@@ -744,7 +736,8 @@ class SimGpsSource extends EventEmitter {
     const nominalSpeedMS = this.phase === 'upwind' ? this.upwindSpeedMS : this.downwindSpeedMS;
     const speedMS = nominalSpeedMS * speedFrac;
 
-    const headingDeg = this.clearingHeadingDeg ?? this._heading();
+    const headingDeg =
+      this.clearingHeadingDeg ?? this.coastHeadingDeg ?? (this.steeringDirect ? this._headingToTarget() : this._heading());
     const rawDistM = speedMS * dt;
     // Clamped to the leg's own remaining length, but only during normal
     // tack/gybe progress - not mid-clearing or coasting to a stop, where
@@ -810,45 +803,20 @@ class SimGpsSource extends EventEmitter {
         }
       }
     } else if (this.phase === 'upwind' && this.north >= this.courseLengthM) {
-      // Reached the windward mark's latitude - but only actually round it if
-      // the boat is close enough to the mark's own longitude (east=0) for
-      // the fixed clearing leg below to correctly pass it (see
-      // MARK_ROUNDING_SAFE_EAST_M). Not close enough means this tack was
-      // never going to make the mark - roll back to the pre-tick position
-      // (still short of the mark's latitude) and re-run _startNewLeg(),
-      // whose own precision two-tack solve picks a corrective tack from the
-      // boat's actual current position, same as heading up to lay a mark
-      // instead of arriving wide of it. Same roll-back-and-redirect pattern
-      // as the finish gate/downwind strip crossings below, applied to marks.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.courseLengthM);
-      if (Math.abs(crossingEast) > MARK_ROUNDING_SAFE_EAST_M) {
-        this.north = prevNorth;
-        this.east = prevEast;
-        this._startNewLeg();
-      } else {
-        // Clear it heading due east (see MARK_CLEARANCE_M above) before
-        // actually rounding.
-        this.clearingHeadingDeg = 90;
-        this.clearingDirection = 1;
-        this.clearingTargetEastM = MARK_CLEARANCE_M;
-        this.timeSinceManeuverS = 0;
-      }
+      // Reached the windward mark's latitude - clear it heading due east
+      // (see MARK_CLEARANCE_M above) before actually rounding.
+      this.steeringDirect = false;
+      this.clearingHeadingDeg = 90;
+      this.clearingDirection = 1;
+      this.clearingTargetEastM = MARK_CLEARANCE_M;
+      this.timeSinceManeuverS = 0;
     } else if (this.phase === 'downwind' && this.north <= 0) {
-      // Reached the leeward mark's latitude - same safe-approach check as
-      // the windward mark above, mirrored for this phase's own clearing
-      // direction.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, 0);
-      if (Math.abs(crossingEast) > MARK_ROUNDING_SAFE_EAST_M) {
-        this.north = prevNorth;
-        this.east = prevEast;
-        this._startNewLeg();
-      } else {
-        // Clear it heading due west.
-        this.clearingHeadingDeg = 270;
-        this.clearingDirection = -1;
-        this.clearingTargetEastM = -MARK_CLEARANCE_M;
-        this.timeSinceManeuverS = 0;
-      }
+      // Reached the leeward mark's latitude - clear it heading due west.
+      this.steeringDirect = false;
+      this.clearingHeadingDeg = 270;
+      this.clearingDirection = -1;
+      this.clearingTargetEastM = -MARK_CLEARANCE_M;
+      this.timeSinceManeuverS = 0;
     } else if (this.legRemainingM <= 0) {
       this._startNewLeg(); // tack or gybe
     }
@@ -905,6 +873,17 @@ class SimGpsSource extends EventEmitter {
       if (inGate) {
         this.north = this.committeeLocal.north;
         this.east = crossingEast;
+        // Freeze the heading for the coast below (see coastHeadingDeg's own
+        // comment) before crossedLineThisLeg flips - _headingToTarget()
+        // needs to still see the gate as the target here, capturing the
+        // heading that was actually just used to reach it, not the heading
+        // toward the NEW target (the windward mark) that flag switches to
+        // on the very next line. Only needed when that heading was actually
+        // computed by steering directly (ordinary fixed-angle tacking
+        // already continues correctly on its own - see the field's comment
+        // in the constructor).
+        if (this.steeringDirect) this.coastHeadingDeg = this._headingToTarget();
+        this.steeringDirect = false;
         this.crossedLineThisLeg = true;
         this.lapsCompleted++;
         this.emit('lap', { lap: this.lapsCompleted, inGate: true, eastM: crossingEast });
