@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Race Telemetry Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #eef1f5;
+    --surface: #ffffff;
+    --surface-2: #e4e9ef;
+    --border: #ccd4de;
+    --ink: #17202b;
+    --ink-muted: #526075;
+    --ink-faint: #8493a6;
+    --accent: #b9791e;
+    --accent-ink: #6e480f;
+    --accent-soft: #f4e3c8;
+    --accent2: #1f8e93;
+    --accent2-ink: #0f5457;
+    --accent2-soft: #d3ecec;
+    --good: #2f8f4e;
+    --warn: #b9791e;
+    --crit: #b8402f;
+    --code-bg: #f4f6f9;
+    --shadow: 0 1px 2px rgba(23,32,43,0.06), 0 8px 24px rgba(23,32,43,0.08);
+    --mermaid-line: #526075;
+    --mermaid-node-bg: #ffffff;
+    --mermaid-node-border: #ccd4de;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1319;
+      --surface: #141c24;
+      --surface-2: #1b2530;
+      --border: #2a3744;
+      --ink: #e6ecf2;
+      --ink-muted: #9fb0c0;
+      --ink-faint: #66788c;
+      --accent: #dba851;
+      --accent-ink: #f1cd94;
+      --accent-soft: #2e2412;
+      --accent2: #4fc3c9;
+      --accent2-ink: #9fe3e6;
+      --accent2-soft: #10292a;
+      --good: #4cb975;
+      --warn: #dba851;
+      --crit: #e0705c;
+      --code-bg: #101820;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 28px rgba(0,0,0,0.4);
+      --mermaid-line: #9fb0c0;
+      --mermaid-node-bg: #141c24;
+      --mermaid-node-border: #2a3744;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1319;
+    --surface: #141c24;
+    --surface-2: #1b2530;
+    --border: #2a3744;
+    --ink: #e6ecf2;
+    --ink-muted: #9fb0c0;
+    --ink-faint: #66788c;
+    --accent: #dba851;
+    --accent-ink: #f1cd94;
+    --accent-soft: #2e2412;
+    --accent2: #4fc3c9;
+    --accent2-ink: #9fe3e6;
+    --accent2-soft: #10292a;
+    --good: #4cb975;
+    --warn: #dba851;
+    --crit: #e0705c;
+    --code-bg: #101820;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 28px rgba(0,0,0,0.4);
+    --mermaid-line: #9fb0c0;
+    --mermaid-node-bg: #141c24;
+    --mermaid-node-border: #2a3744;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.6;
+  }
+  ::selection { background: var(--accent-soft); color: var(--accent-ink); }
+
+  a { color: var(--accent2-ink); }
+
+  h1, h2, h3, h4 { font-family: "Big Shoulders Display", "Arial Narrow", sans-serif; text-transform: uppercase; text-wrap: balance; color: var(--ink); letter-spacing: 0.01em; margin: 0; }
+  code, pre, .mono { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", monospace; }
+
+  .shell { display: grid; grid-template-columns: 232px minmax(0,1fr); max-width: 1220px; margin: 0 auto; }
+
+  /* ---------- Nav ---------- */
+  nav.toc {
+    position: sticky; top: 0; align-self: start; height: 100vh;
+    overflow-y: auto; padding: 28px 18px 40px 28px;
+    border-right: 1px solid var(--border);
+  }
+  .toc-brand { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .toc-brand .mark { color: var(--accent); font-family: "IBM Plex Mono"; font-size: 13px; font-weight: 600; }
+  .toc-brand .name { font-size: 15px; font-weight: 700; font-family: "IBM Plex Sans"; letter-spacing: -0.01em; color: var(--ink); }
+  .toc-sub { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 26px; font-family: "IBM Plex Mono"; }
+  .toc ol { list-style: none; margin: 0; padding: 0; counter-reset: stage; }
+  .toc li { margin: 0; }
+  .toc a {
+    counter-increment: stage;
+    display: flex; gap: 10px; align-items: baseline;
+    text-decoration: none; color: var(--ink-muted);
+    font-size: 13px; padding: 7px 0; border-left: 2px solid transparent;
+    padding-left: 10px; margin-left: -12px; transition: color .12s, border-color .12s;
+  }
+  .toc a:hover { color: var(--ink); }
+  .toc a::before {
+    content: counter(stage, decimal-leading-zero);
+    font-family: "IBM Plex Mono"; font-size: 11px; color: var(--accent);
+    font-weight: 600;
+  }
+  .toc a.active { color: var(--ink); border-left-color: var(--accent); font-weight: 600; }
+  .toc .divider { height: 1px; background: var(--border); margin: 18px 0; }
+  .toc .subhead { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); margin: 0 0 6px; font-family: "IBM Plex Mono"; }
+
+  /* ---------- Main ---------- */
+  main { padding: 44px 48px 120px; min-width: 0; }
+
+  header.doc-head { margin-bottom: 40px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: "IBM Plex Mono"; font-size: 11.5px; letter-spacing: .09em;
+    color: var(--accent2-ink); text-transform: uppercase; margin-bottom: 14px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); }
+  header.doc-head h1 { font-size: 44px; line-height: 1.02; font-weight: 800; }
+  header.doc-head .dek { color: var(--ink-muted); font-size: 16px; max-width: 62ch; margin-top: 14px; }
+  .doc-meta { display: flex; gap: 22px; margin-top: 22px; font-family: "IBM Plex Mono"; font-size: 12px; color: var(--ink-faint); flex-wrap: wrap; }
+  .doc-meta b { color: var(--ink-muted); font-weight: 500; }
+
+  section.stage { padding: 56px 0; border-top: 1px solid var(--border); scroll-margin-top: 20px; }
+  section.stage:first-of-type { border-top: none; }
+  .stage-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 8px; }
+  .stage-num { font-family: "IBM Plex Mono"; color: var(--accent); font-weight: 600; font-size: 15px; }
+  .stage-head h2 { font-size: 28px; font-weight: 700; }
+  .stage-file { font-family: "IBM Plex Mono"; font-size: 12px; color: var(--ink-faint); margin: 4px 0 22px; }
+  .stage-file code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--ink-muted); }
+  .stage p.lead { color: var(--ink-muted); max-width: 74ch; margin: 0 0 24px; }
+
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow); padding: 22px 24px; margin: 22px 0;
+  }
+  .panel h3, .panel-title { font-family: "IBM Plex Mono"; text-transform: uppercase; font-size: 11.5px; letter-spacing: .08em; color: var(--ink-faint); font-weight: 600; margin: 0 0 16px; }
+
+  .diagram-wrap { overflow-x: auto; }
+  .diagram-wrap pre.mermaid { margin: 0; display: flex; justify-content: center; min-width: max-content; }
+
+  /* ---------- data tables ---------- */
+  table.data { width: 100%; border-collapse: collapse; font-size: 13.2px; }
+  table.data caption { text-align: left; font-family: "IBM Plex Mono"; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 12px; font-weight: 600; }
+  table.data th {
+    text-align: left; font-family: "IBM Plex Mono"; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint);
+    border-bottom: 1px solid var(--border); padding: 8px 12px;
+  }
+  table.data td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--ink-muted); }
+  table.data tr:last-child td { border-bottom: none; }
+  table.data td.field, table.data td code { color: var(--ink); font-family: "IBM Plex Mono"; font-size: 12.6px; }
+  table.data td.type { font-family: "IBM Plex Mono"; font-size: 12px; color: var(--accent2-ink); white-space: nowrap; }
+  .tbl-scroll { overflow-x: auto; }
+
+  /* byte-layout diagram */
+  .byte-diagram { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 18px; }
+  .byte-row { display: flex; gap: 3px; }
+  .byte-cell {
+    flex: 0 0 auto; min-width: 34px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+    font-family: "IBM Plex Mono"; font-size: 10.5px; color: var(--ink-faint);
+  }
+  .field-strip { display: flex; gap: 3px; margin-bottom: 3px; }
+  .field-block {
+    flex: 0 0 auto; border-radius: 5px; padding: 6px 8px; font-family: "IBM Plex Mono";
+    font-size: 11px; color: var(--accent-ink); background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    min-width: 34px; line-height: 1.25;
+  }
+  .field-block.alt { color: var(--accent2-ink); background: var(--accent2-soft); border-color: color-mix(in srgb, var(--accent2) 35%, var(--border)); }
+  .byte-legend { display: flex; gap: 18px; margin-top: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-faint); font-family: "IBM Plex Mono"; }
+  .byte-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .byte-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  /* JSON payload blocks */
+  pre.json { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; font-size: 12.6px; line-height: 1.55; margin: 0; }
+  pre.json .k { color: var(--accent2-ink); }
+  pre.json .s { color: var(--good); }
+  pre.json .n { color: var(--accent-ink); }
+  pre.json .c { color: var(--ink-faint); font-style: italic; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; font-family: "IBM Plex Mono";
+    font-size: 11px; padding: 3px 9px; border-radius: 20px; font-weight: 600;
+    border: 1px solid var(--border); color: var(--ink-muted); background: var(--surface-2);
+  }
+  .chip.rover { color: var(--accent-ink); background: var(--accent-soft); border-color: transparent; }
+  .chip.base { color: var(--accent2-ink); background: var(--accent2-soft); border-color: transparent; }
+  .chip.cloud { color: var(--ink); background: var(--surface-2); }
+
+  .note {
+    display: flex; gap: 10px; padding: 12px 14px; border-radius: 8px;
+    background: var(--surface-2); border: 1px solid var(--border); font-size: 13px; color: var(--ink-muted);
+    margin: 18px 0;
+  }
+  .note b { color: var(--ink); }
+
+  .path-badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+
+  footer { padding: 40px 0 10px; color: var(--ink-faint); font-size: 12px; font-family: "IBM Plex Mono"; border-top: 1px solid var(--border); margin-top: 20px; }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+    main { padding: 32px 20px 80px; }
+    header.doc-head h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <nav class="toc" aria-label="Table of contents">
+    <div class="toc-brand"><span class="mark">▲▲</span><span class="name">Telemetry Pipeline</span></div>
+    <div class="toc-sub">race-tracker → regatta-up</div>
+    <ol>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#rover">Rover</a></li>
+      <li><a href="#radio">Radio protocol</a></li>
+      <li><a href="#base">Base station</a></li>
+      <li><a href="#queues">Webhook queues</a></li>
+      <li><a href="#regattaup">RegattaUp entities</a></li>
+      <li><a href="#frontend">Frontend read path</a></li>
+    </ol>
+    <div class="divider"></div>
+    <div class="subhead">Reference</div>
+    <ol style="counter-reset: none;">
+      <li><a href="#redis-schema" style="padding-left:10px;">Redis key schema</a></li>
+      <li><a href="#entity-fields" style="padding-left:10px;">Entity fields</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="doc-head">
+      <div class="eyebrow"><span class="dot"></span>Internal reference · live pipeline</div>
+      <h1>Race Telemetry Pipeline</h1>
+      <p class="dek">How one GPS fix travels from a boat's rover unit, over radio, through the base station's event detection, into RegattaUp's webhook and entities, and back out to the race map — with every wire format and record shape along the way.</p>
+      <div class="doc-meta">
+        <span><b>Repos</b> race-tracker · regatta-up</span>
+        <span><b>Transport</b> LoRa radio / UDP (sim) → HTTPS webhook</span>
+        <span><b>Store</b> Redis (live) + Base44 entities (durable)</span>
+      </div>
+    </header>
+
+    <!-- ============ OVERVIEW ============ -->
+    <section class="stage" id="overview">
+      <div class="stage-head"><span class="stage-num">§0</span><h2>End-to-end overview</h2></div>
+      <p class="lead">Five hops turn a raw GPS fix into a scored lap on the race map. The rover only ever knows its own position and whatever course marks the base last told it; the base is the one place position data, event detection, and the RegattaUp connection all meet.</p>
+
+      <div class="panel">
+        <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart TB
+  classDef rover fill:#f4e3c8,stroke:#b9791e,color:#6e480f
+  classDef base fill:#d3ecec,stroke:#1f8e93,color:#0f5457
+  classDef store fill:#eef1f5,stroke:#ccd4de,color:#17202b
+  classDef cloud fill:#ffffff,stroke:#17202b,color:#17202b,stroke-width:2px
+
+  GPS["u-blox GPS<br/>or SimGpsSource"]:::rover --> RV["boatAgent.js<br/>(rover)"]:::rover
+  RV -- "position frame · 23B" --> RADIO{{Radio link}}
+  RADIO -- decode --> BS["baseStation.js"]:::base
+  BS --> REDIS[("Redis<br/>tracks · marks · course")]:::store
+  BS --> SD[("SD card CSV<br/>+ upload archive")]:::store
+  BS --> WATCH["Finish · On-grid · Mark<br/>watchers"]:::base
+  WATCH --> Q[("SQLite queues<br/>lap · ongrid · mark")]:::store
+  Q -- "POST JSON" --> HOOK["mylapsWebhook<br/>(base44 function)"]:::cloud
+  HOOK --> ENT[("Race · Racer · LapCompletion<br/>MarkRounding · MyLapsTag")]:::store
+  BS -- "marks frame · broadcast" --> RV
+  ENT --> API["getRaceTracks ·<br/>getActiveRegattas"]:::cloud
+  REDIS --> API
+  API --> MAP["RaceMap3D<br/>(browser)"]:::cloud
+
+  class GPS,RV rover
+  class BS,WATCH base
+  class REDIS,SD,Q,ENT store
+  class HOOK,API,MAP cloud
+</pre>
+        </div>
+        <div class="byte-legend" style="margin-top:18px;">
+          <span><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>Rover process</span>
+          <span><i style="background:var(--accent2-soft);border:1px solid var(--accent2)"></i>Base station</span>
+          <span><i style="background:var(--mermaid-node-bg);border:1px solid var(--mermaid-node-border)"></i>Storage / cloud function</span>
+        </div>
+      </div>
+
+      <div class="note">📡 <div><b>Two independent loops.</b> Position frames flow rover→base continuously at up to <code class="mono">SIM_GPS_HZ</code>; course marks flow base→rover on a slow heartbeat (<code class="mono">MARKS_BROADCAST_INTERVAL_MS</code>, 60s default) plus on-demand whenever they change. Neither loop blocks the other — a rover that's never heard marks still transmits its own position.</div>
+      </div>
+    </section>
+
+    <!-- ============ ROVER ============ -->
+    <section class="stage" id="rover">
+      <div class="stage-head"><span class="stage-num">§1</span><h2>Rover</h2><span class="chip rover">boatAgent.js</span></div>
+      <p class="stage-file">One process per boat — <code>src/boatAgent.js</code>, GPS source is either real hardware (<code>ubxParser.js</code>) or <code>simGps.js</code> under <code>SIMULATE=1</code>.</p>
+      <p class="lead">Every fix is logged locally regardless of radio conditions; only fixes that clear <code class="mono">TX_DISTANCE_M</code> since the last transmitted one are actually sent — a stopped boat doesn't re-key the channel every tick.</p>
+
+      <div class="panel">
+        <div class="panel-title">Fix handling sequence</div>
+        <div class="diagram-wrap">
+<pre class="mermaid">
+sequenceDiagram
+  participant G as GPS module
+  participant B as boatAgent.js
+  participant SD as SD card (CSV)
+  participant R as Radio
+
+  G->>B: nav-pvt fix (lat, lon, speed, heading)
+  B->>B: roverStats.recordFix()
+  alt moved &ge; TX_DISTANCE_M since last send
+    B->>SD: append fix to chunked CSV log
+    B->>R: protocol.encode(boatId, fix)
+    R--)R: 23-byte frame over LoRa / UDP
+  else hasn't moved enough
+    B->>B: log locally only, nothing transmitted
+  end
+</pre>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Boot sequence</div>
+          <table class="data">
+            <tr><td class="field">1</td><td>Load last-known marks from disk (if any)</td></tr>
+            <tr><td class="field">2</td><td>Send <code>sendMarksPing()</code> — placeholder fix at the pin↔committeeStart midpoint, retried every 3s</td></tr>
+            <tr><td class="field">3</td><td>Receive <code>marks</code> frame from base → <code>freshMarksReceived = true</code>, stop pinging</td></tr>
+            <tr><td class="field">4</td><td>Start GPS source (real or <code>SimGpsSource</code>), attach <code>nav-pvt</code> listener</td></tr>
+            <tr><td class="field">5</td><td>Emit real starting fix, then send <code>on-grid</code> IPC (fleet sim only)</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">nav-pvt fix shape</div>
+          <pre class="json"><span class="c">// what the GPS source emits, real or simulated</span>
+{
+  <span class="k">"lat"</span>: <span class="n">40.898118</span>, <span class="k">"lon"</span>: <span class="n">-118.382154</span>,
+  <span class="k">"gSpeedMmS"</span>: <span class="n">2314</span>, <span class="k">"headMotDeg"</span>: <span class="n">41.2</span>,
+  <span class="k">"gnssFixOk"</span>: <span class="s">true</span>, <span class="k">"carrSoln"</span>: <span class="n">2</span>,
+  <span class="k">"numSV"</span>: <span class="n">14</span>, <span class="k">"fixType"</span>: <span class="n">3</span>,
+  <span class="k">"timestamp"</span>: <span class="n">1735142260297</span>,
+  <span class="k">"receivedAt"</span>: <span class="n">1735142260297</span>
+}</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RADIO ============ -->
+    <section class="stage" id="radio">
+      <div class="stage-head"><span class="stage-num">§2</span><h2>Radio protocol</h2><span class="chip base">protocol.js</span></div>
+      <p class="lead">Three fixed-length frame types share one channel, told apart by a leading sync byte before either side needs to know how many bytes to expect. Every frame ends in a mod-256 checksum over its own body.</p>
+
+      <div class="path-badge-row">
+        <span class="chip rover">rover → base</span><span class="chip">position · 0xAA</span>
+        <span class="chip base">base → rover</span><span class="chip">marks · 0xBB</span>
+        <span class="chip base">base → rover</span><span class="chip">ping · 0xCC</span>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Position frame — 23 bytes</div>
+        <div class="byte-diagram">
+          <div class="field-strip">
+            <div class="field-block" style="flex-basis:34px;">sync</div>
+            <div class="field-block alt" style="flex-basis:34px;">boat</div>
+            <div class="field-block" style="flex-basis:145px;">unix time (s + ms)</div>
+            <div class="field-block alt" style="flex-basis:145px;">lat ×1e7</div>
+            <div class="field-block" style="flex-basis:145px;">lon ×1e7</div>
+            <div class="field-block alt" style="flex-basis:75px;">speed</div>
+            <div class="field-block" style="flex-basis:75px;">hdg</div>
+            <div class="field-block alt" style="flex-basis:34px;">status</div>
+            <div class="field-block" style="flex-basis:34px;">rsv</div>
+            <div class="field-block alt" style="flex-basis:34px;">sum</div>
+          </div>
+        </div>
+        <div class="tbl-scroll">
+          <table class="data">
+            <tr><th>Offset</th><th>Field</th><th>Type</th><th>Notes</th></tr>
+            <tr><td class="field">0</td><td>sync</td><td class="type">uint8</td><td><code>0xAA</code></td></tr>
+            <tr><td class="field">1</td><td>boatId</td><td class="type">uint8</td><td></td></tr>
+            <tr><td class="field">2–5</td><td>unix time</td><td class="type">uint32 LE</td><td>whole seconds</td></tr>
+            <tr><td class="field">6–7</td><td>ms within second</td><td class="type">uint16 LE</td><td>0–999, gives full ms precision without a 64-bit field</td></tr>
+            <tr><td class="field">8–11</td><td>lat</td><td class="type">int32 LE</td><td>degrees × 1e7</td></tr>
+            <tr><td class="field">12–15</td><td>lon</td><td class="type">int32 LE</td><td>degrees × 1e7</td></tr>
+            <tr><td class="field">16–17</td><td>speed</td><td class="type">uint16 LE</td><td>knots × 10</td></tr>
+            <tr><td class="field">18–19</td><td>heading</td><td class="type">uint16 LE</td><td>degrees × 10</td></tr>
+            <tr><td class="field">20</td><td>status</td><td class="type">uint8</td><td>bit0 fixOk · bits1–2 carrSoln · bits3–7 numSV</td></tr>
+            <tr><td class="field">21</td><td>reserved</td><td class="type">uint8</td><td>spare</td></tr>
+            <tr><td class="field">22</td><td>checksum</td><td class="type">uint8</td><td>sum of bytes 1–21 mod 256</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Marks frame — 1 + 8×N + 9 bytes</div>
+          <p style="color:var(--ink-muted); font-size:13px; margin:0 0 14px;">Sync <code class="mono">0xBB</code>, then one <code class="mono">{lat, lon}</code> pair per course mark in <code class="mono">MARK_NAMES</code> order (8 marks today), then the base's own upload/admin address so a rover can link back without guessing.</p>
+          <table class="data">
+            <tr><th>Segment</th><th>Bytes</th></tr>
+            <tr><td class="field">8 × mark {lat,lon}</td><td>8 marks × 8B = 64</td></tr>
+            <tr><td class="field">base IP</td><td>4 (one octet each)</td></tr>
+            <tr><td class="field">upload port</td><td>2</td></tr>
+            <tr><td class="field">admin port</td><td>2</td></tr>
+            <tr><td class="field">checksum</td><td>1</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Ping frame — 6 bytes</div>
+          <p style="color:var(--ink-muted); font-size:13px; margin:0 0 14px;">"Ping fleet" admin action — asks every boat to report right now, ignoring the movement gate. No per-boat payload; each boat replies with an ordinary position frame after its own random jitter.</p>
+          <table class="data">
+            <tr><th>Offset</th><th>Field</th><th>Type</th></tr>
+            <tr><td class="field">0</td><td>sync</td><td class="type">uint8 · 0xCC</td></tr>
+            <tr><td class="field">1–4</td><td>unix time</td><td class="type">uint32 LE</td></tr>
+            <tr><td class="field">5</td><td>checksum</td><td class="type">uint8</td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ BASE ============ -->
+    <section class="stage" id="base">
+      <div class="stage-head"><span class="stage-num">§3</span><h2>Base station</h2><span class="chip base">baseStation.js</span></div>
+      <p class="lead">Every decoded frame fans out to five independent consumers — recording position never waits on event detection, and a RegattaUp outage never blocks the live track.</p>
+
+      <div class="panel">
+        <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  F["decoded frame"] --> C1[("CSV log")]
+  F --> C2[("Redis: recordFix<br/>boat:&lt;id&gt;:track, all:track")]
+  F --> C3["UDP broadcast<br/>(local dashboards)"]
+  F --> W1["FinishLineWatcher<br/>.check(lat, lon, t)"]
+  F --> W2["OnGridWatcher<br/>.check(lat, lon)"]
+  F --> W3["MarkRoundingWatcher<br/>.check(lat, lon, t)"]
+  W1 -- "crossing found" --> Q1[("lap queue")]
+  W2 -- "ongrid / offgrid" --> Q2[("on-grid queue")]
+  W3 -- "gate crossed" --> Q3[("mark queue")]
+</pre>
+        </div>
+      </div>
+
+      <div class="grid-3">
+        <div class="panel">
+          <div class="panel-title">FinishLineWatcher</div>
+          <p style="font-size:13px; color:var(--ink-muted); margin:0;">One instance per boat, keyed by boatId. Compares each new fix's segment against <code class="mono">committeeFinish↔finish</code> using orientation tests — reports a lap only on a genuine upwind crossing, independent of the simulator's own lap count.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-title">OnGridWatcher</div>
+          <p style="font-size:13px; color:var(--ink-muted); margin:0;">Is this boat behind the <code class="mono">pin↔committeeStart</code> line, within <code class="mono">onGridZoneM</code>? Re-fires <code class="mono">ongrid</code> on every qualifying fix; <code class="mono">offgrid</code> once on exit.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-title">MarkRoundingWatcher</div>
+          <p style="font-size:13px; color:var(--ink-muted); margin:0;">One per boat per gate (windward/leeward × green/black). Fires when a boat crosses the virtual gate extending <code class="mono">markRoundingExtensionM</code> beyond a mark.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ QUEUES ============ -->
+    <section class="stage" id="queues">
+      <div class="stage-head"><span class="stage-num">§4</span><h2>Webhook queues → RegattaUp</h2><span class="chip base">*WebhookQueue.js</span></div>
+      <p class="lead">Three SQLite-backed queues (lap / on-grid / mark-rounding) share one paced send loop — a burst of events (a whole fleet going on-grid at once) never fires that many concurrent requests. Every attempt is recorded for backoff; a row is only removed once RegattaUp actually accepts it.</p>
+
+      <div class="panel">
+        <div class="diagram-wrap">
+<pre class="mermaid">
+sequenceDiagram
+  participant W as Watcher
+  participant Q as SQLite queue
+  participant H as mylapsWebhook
+  participant R as Racer / Race
+  participant E as LapCompletion /<br/>MarkRounding
+
+  W->>Q: enqueue(event)
+  loop every postIntervalMs (500ms)
+    Q->>H: POST { decoded: { tranCode, rtcTime }, mode? }
+    H->>R: match tranCode in class_entries
+    alt race + racer found
+      H->>E: create record
+      H-->>Q: 200 OK
+      Q->>Q: remove row
+    else no match / error
+      H-->>Q: non-200
+      Q->>Q: recordAttempt(), retry with backoff (max 5m)
+    end
+  end
+</pre>
+        </div>
+      </div>
+
+      <div class="grid-3">
+        <div class="panel">
+          <div class="panel-title">Lap payload</div>
+          <pre class="json">{
+  <span class="k">"decoded"</span>: {
+    <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
+    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>,
+    <span class="k">"strength"</span>: <span class="n">2</span>
+  },
+  <span class="k">"receivedAt"</span>: <span class="s">"2026-08-25T…Z"</span>
+}</pre>
+        </div>
+        <div class="panel">
+          <div class="panel-title">On-grid payload</div>
+          <pre class="json">{
+  <span class="k">"mode"</span>: <span class="s">"ongrid"</span>,
+  <span class="k">"decoded"</span>: {
+    <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
+    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>
+  }
+}</pre>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Mark-rounding payload</div>
+          <pre class="json">{
+  <span class="k">"mode"</span>: <span class="s">"mark"</span>,
+  <span class="k">"mark"</span>: <span class="s">"windwardGreen"</span>,
+  <span class="k">"decoded"</span>: {
+    <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
+    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>
+  }
+}</pre>
+        </div>
+      </div>
+      <div class="note">⏱ <div><b>rtcTime is microseconds.</b> The lap's own GPS-derived crossing time, converted from the watcher's millisecond timestamp (<code class="mono">crossingTime * 1000</code>) — not when the webhook happened to fire.</div></div>
+    </section>
+
+    <!-- ============ REGATTAUP ============ -->
+    <section class="stage" id="regattaup">
+      <div class="stage-head"><span class="stage-num">§5</span><h2>RegattaUp — mylapsWebhook</h2><span class="chip cloud">base44/functions</span></div>
+      <p class="lead">Every event resolves <code class="mono">tranCode</code> against <code class="mono">Racer.class_entries[].code</code> for the active regatta, then branches on <code class="mono">mode</code>. One record is written regardless of outcome — the raw transponder log.</p>
+
+      <div class="panel">
+        <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart TB
+  IN["POST payload"] --> MATCH{"tranCode matches a<br/>racer's class_entries?"}
+  MATCH -- no --> LOG1["MyLapsTag.create<br/>skip_reason set"]
+  MATCH -- yes --> MODE{mode}
+  MODE -- "lap (default)" --> RACE1{"Race.status<br/>active | finishing?"}
+  RACE1 -- yes --> DEDUPE{"&ge;10s since<br/>racer's last lap?"}
+  DEDUPE -- yes --> LAP["LapCompletion.create<br/>position_in_lap, position_change,<br/>time_behind computed"]
+  DEDUPE -- no --> SKIP1["skipped: duplicate"]
+  RACE1 -- no --> PRAC["LapCompletion.create<br/>race_id: 'practice'"]
+  MODE -- "ongrid / offgrid" --> RACE2{"Race.status<br/>ongrid | active | finishing?"}
+  RACE2 -- "ongrid, yes" --> GRID["present_racer_ids += racer<br/>+ Redis ongrid:&lt;raceId&gt; set"]
+  RACE2 -- "offgrid" --> LOGONLY["logged only, no state change"]
+  MODE -- mark --> RACE3{"Race.status<br/>active | finishing?"}
+  RACE3 -- yes --> MARK["MarkRounding.create<br/>lap_number, position computed"]
+  LAP --> LOG2["MyLapsTag.create<br/>lap_created: true"]
+  GRID --> LOG2
+  MARK --> LOG2
+</pre>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Scoring computed per lap</div>
+          <table class="data">
+            <tr><td class="field">position_in_lap</td><td>rank by <code class="mono">completion_time</code> among same-lap finishers</td></tr>
+            <tr><td class="field">position_change</td><td>vs. prior lap's <code class="mono">position_in_lap</code> (or grid order, lap 1)</td></tr>
+            <tr><td class="field">time_behind</td><td>seconds behind the boat immediately ahead</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Guard conditions (lap mode)</div>
+          <table class="data">
+            <tr><td class="field">finish window</td><td>skip if past <code class="mono">race.finish_flag_dropped_at</code></td></tr>
+            <tr><td class="field">fixed-lap cap</td><td>skip if <code class="mono">lapNumber &gt; race.number_of_laps</code></td></tr>
+            <tr><td class="field">no active race</td><td>falls back to a <code class="mono">'practice'</code> lap, not dropped</td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FRONTEND ============ -->
+    <section class="stage" id="frontend">
+      <div class="stage-head"><span class="stage-num">§6</span><h2>Frontend read path</h2><span class="chip cloud">RaceMap3D.jsx</span></div>
+      <p class="lead">The map never talks to the base station directly — it polls two read-only functions that go straight to Redis for anything live (positions, marks, the on-grid polygon) and to entities for anything scored (laps, mark roundings, regatta metadata).</p>
+
+      <div class="panel">
+        <div class="diagram-wrap">
+<pre class="mermaid">
+sequenceDiagram
+  participant M as RaceMap3D
+  participant GT as getRaceTracks
+  participant GA as getActiveRegattas
+  participant RD as Redis
+  participant EN as Entities
+
+  M->>GA: POST {} (no auth)
+  GA->>EN: Regatta.filter(end_date &ge; today)
+  GA-->>M: { regattas: [...] }
+  loop polling
+    M->>GT: POST { boat_id?, after }
+    GT->>RD: zrangebyscore boat:*:track / all:track
+    GT->>RD: SCAN mark:*, GET course
+    GT-->>M: { points, marks, course, boatMap, lastPositions }
+  end
+  M->>EN: getMarkRoundings({ race_id })
+  EN-->>M: MarkRounding[]
+</pre>
+        </div>
+      </div>
+
+      <table class="data">
+        <caption>getRaceTracks track point (normalized)</caption>
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="field">boatId</td><td class="type">string</td><td></td></tr>
+        <tr><td class="field">lat, lon</td><td class="type">number</td><td></td></tr>
+        <tr><td class="field">timestamp</td><td class="type">number (ms)</td><td>the zset score</td></tr>
+        <tr><td class="field">speedKnots</td><td class="type">number</td><td></td></tr>
+        <tr><td class="field">headingDeg, gnssFixOk, carrSoln, numSV</td><td class="type">—</td><td>present only when the stored point used the compact encoding</td></tr>
+      </table>
+    </section>
+
+    <!-- ============ REFERENCE ============ -->
+    <section class="stage" id="redis-schema">
+      <div class="stage-head"><span class="stage-num">§R1</span><h2>Redis key schema</h2></div>
+      <div class="tbl-scroll">
+        <table class="data">
+          <tr><th>Key</th><th>Type</th><th>Written by</th><th>Purpose</th></tr>
+          <tr><td class="field"><code>boat:&lt;id&gt;:track</code></td><td class="type">zset</td><td>base station</td><td>one boat's fix history, scored by GPS timestamp</td></tr>
+          <tr><td class="field"><code>all:track</code></td><td class="type">zset</td><td>base station</td><td>every boat's fixes, for a fleet-wide time-window replay</td></tr>
+          <tr><td class="field"><code>boats:known</code></td><td class="type">set</td><td>base station</td><td>every boatId ever recorded</td></tr>
+          <tr><td class="field"><code>mark:&lt;name&gt;</code></td><td class="type">hash</td><td>base station</td><td>one course mark's <code>{lat, lon}</code>, one key per <code>MARK_NAMES</code> entry</td></tr>
+          <tr><td class="field"><code>course:on_grid_zone</code></td><td class="type">string (JSON)</td><td>base station</td><td>the on-grid detection polygon, for drawing without re-deriving it</td></tr>
+          <tr><td class="field"><code>regatta:selected</code></td><td class="type">string (JSON)</td><td>base station</td><td>which RegattaUp regatta this base reports events for</td></tr>
+          <tr><td class="field"><code>boats:start_slots</code></td><td class="type">hash</td><td>base station</td><td>boatId → assigned start-grid slot</td></tr>
+          <tr><td class="field"><code>ongrid:&lt;raceId&gt;</code></td><td class="type">set</td><td>mylapsWebhook</td><td>racer ids currently on-grid for that race</td></tr>
+          <tr><td class="field"><code>boatmap</code></td><td class="type">hash</td><td>getRaceTracks</td><td>transponder code → <code>{boat_number, name, class, racer_id}</code>, 1hr TTL</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="stage" id="entity-fields">
+      <div class="stage-head"><span class="stage-num">§R2</span><h2>RegattaUp entity fields</h2></div>
+      <p class="lead">Base44 entities relevant to this pipeline specifically — not the full schema, just what shows up between the webhook and the map.</p>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Race</div>
+          <table class="data">
+            <tr><td class="field">status</td><td class="type">enum</td></tr>
+            <tr><td class="field">race_format</td><td class="type">'fixed_lap' | timed</td></tr>
+            <tr><td class="field">number_of_laps</td><td class="type">number</td></tr>
+            <tr><td class="field">present_racer_ids</td><td class="type">string[]</td></tr>
+            <tr><td class="field">finish_flag_dropped_at</td><td class="type">datetime</td></tr>
+            <tr><td class="field">started_at, time_limit_minutes</td><td class="type">—</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Racer</div>
+          <table class="data">
+            <tr><td class="field">regatta_id</td><td class="type">string</td></tr>
+            <tr><td class="field">first_name, last_name</td><td class="type">string</td></tr>
+            <tr><td class="field">class_entries[]</td><td class="type">{code, boat_number, class}</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">LapCompletion</div>
+          <table class="data">
+            <tr><td class="field">race_id, racer_id, lap_number</td><td class="type">—</td></tr>
+            <tr><td class="field">completion_time</td><td class="type">datetime</td></tr>
+            <tr><td class="field">position_in_lap, position_change</td><td class="type">number</td></tr>
+            <tr><td class="field">status</td><td class="type">completed|finished|DNF|DNS</td></tr>
+            <tr><td class="field">source</td><td class="type">transcode | practice</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">MarkRounding</div>
+          <table class="data">
+            <tr><td class="field">race_id, racer_id, mark_name</td><td class="type">—</td></tr>
+            <tr><td class="field">lap_number, position</td><td class="type">number</td></tr>
+            <tr><td class="field">completion_time</td><td class="type">datetime</td></tr>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">MyLapsTag — the raw transponder log, written on every event regardless of match</div>
+        <table class="data">
+          <tr><td class="field">tran_code, transponder, passing_number</td><td class="type">—</td></tr>
+          <tr><td class="field">timestamp, rtc_time, strength, hits, dec_id</td><td class="type">—</td></tr>
+          <tr><td class="field">raw_event</td><td class="type">the full posted payload, unmodified</td></tr>
+          <tr><td class="field">lap_created, skip_reason, race_note</td><td class="type">outcome of this specific event</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <footer>race-tracker/src → regatta-up/base44/functions · generated reference, not an API contract</footer>
+  </main>
+</div>
+
+<script type="module">
+  // This copy is meant to be opened directly (a plain file:// double-click,
+  // or served as a static file) rather than through a platform that
+  // renders <pre class="mermaid"> natively - so, unlike the published
+  // artifact this was authored alongside, it loads and initializes
+  // mermaid.js itself.
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  const dark =
+    document.documentElement.getAttribute('data-theme') === 'dark' ||
+    (document.documentElement.getAttribute('data-theme') !== 'light' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: dark ? 'dark' : 'base',
+    fontFamily: '"IBM Plex Mono", monospace',
+    flowchart: { curve: 'basis' },
+  });
+</script>
+<script>
+  // Scroll-spy for the left nav.
+  const links = Array.from(document.querySelectorAll('nav.toc a'));
+  const targets = links.map((a) => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const io = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const link = links.find((a) => a.getAttribute('href') === '#' + entry.target.id);
+        if (!link) return;
+        if (entry.isIntersecting) {
+          links.forEach((a) => a.classList.remove('active'));
+          link.classList.add('active');
+        }
+      });
+    },
+    { rootMargin: '-10% 0px -70% 0px' }
+  );
+  targets.forEach((t) => io.observe(t));
+</script>
+</body>
+</html>
