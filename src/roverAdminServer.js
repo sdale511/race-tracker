@@ -238,6 +238,10 @@ function renderDashboard(s) {
 // actually read them - not from this boat's own live position, which would
 // make every reading shift as the boat moves. Same as adminServer.js's own
 // copy - see its comment for why this file doesn't import that one instead.
+// Each row carries a data-marks attribute (one mark name, or two comma-
+// separated) so the map page's own script can zoom to it on click - one
+// name zooms straight to that mark, two fits both into view (a line, not a
+// single point). Same as adminServer.js's own copy.
 function buildCourseInfoHtml(marks) {
   const startLineM = distanceMeters(marks.pin, marks.committeeStart);
   const startLineBearing = bearingDeg(marks.committeeStart, marks.pin);
@@ -247,13 +251,13 @@ function buildCourseInfoHtml(marks) {
     .map((name) => {
       const label = name[0].toUpperCase() + name.slice(1);
       const bearing = bearingDeg(marks.committeeStart, marks[name]);
-      return `<div class="course-info-row"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
+      return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
   return `<div class="course-info-card">
     <div class="course-info-title">Course</div>
-    <div class="course-info-row"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
-    <div class="course-info-row"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    <div class="course-info-row zoomable" data-marks="pin,committeeStart"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
+    <div class="course-info-row zoomable" data-marks="committeeFinish,finish"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
     ${headingRows}
   </div>`;
 }
@@ -395,6 +399,10 @@ function renderMap(s) {
   .course-info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; padding: 4px 0; font-size: 13px; }
   .course-info-row .label { color: #8a94a3; }
   .course-info-row .value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* Rows with a data-marks attribute (see buildCourseInfoHtml) zoom the map
+     to that mark/line on click - same as adminServer.js's own copy. */
+  .course-info-row.zoomable { cursor: pointer; border-radius: 6px; margin: 0 -6px; padding: 4px 6px; }
+  .course-info-row.zoomable:hover { background: #f1f3f6; }
 
   /* Edit mode - see the matching block in adminServer.js's renderMap for
      the overall design (a map area that shrinks for a column of "set
@@ -510,6 +518,25 @@ function renderMap(s) {
     const map = L.map('map', { zoomControl: false, maxZoom: 22 });
     L.control.zoom({ position: 'topright' }).addTo(map);
     let boatMarker = null;
+
+    // Course-info card rows (see buildCourseInfoHtml's own comment on
+    // data-marks) zoom the map to the mark(s) they're describing on click -
+    // same as adminServer.js's own copy. courseMarks is null when no course
+    // is published yet, in which case there are no .zoomable rows to wire up.
+    const courseMarks = ${marks ? JSON.stringify(marks) : 'null'};
+    const COURSE_INFO_ZOOM = 19;
+    document.querySelectorAll('.course-info-row.zoomable').forEach((row) => {
+      const names = row.dataset.marks.split(',');
+      row.addEventListener('click', () => {
+        if (names.length === 1) {
+          const m = courseMarks[names[0]];
+          map.setView([m.lat, m.lon], Math.max(map.getZoom(), COURSE_INFO_ZOOM));
+        } else {
+          const points = names.map((name) => [courseMarks[name].lat, courseMarks[name].lon]);
+          map.fitBounds(points, { padding: [80, 80], maxZoom: COURSE_INFO_ZOOM });
+        }
+      });
+    });
     // Kept live by refreshBoat() below, used by the edit column's
     // "Recenter on boat GPS" button (see the canEditMarks block further
     // down) - initialized from the server-rendered fix so it's usable

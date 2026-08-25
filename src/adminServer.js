@@ -687,6 +687,12 @@ function renderDashboard(s) {
 // committee boat), matching how an operator standing there would actually
 // read them - not from the boat's own live position, which would make
 // every reading shift as the boat moves.
+// Each row carries a data-marks attribute (one mark name, or two comma-
+// separated) so the map page's own script (see renderMap's client-side
+// script below) can zoom to it on click - one name zooms straight to that
+// mark, two fits both into view (a line, not a single point). Built here
+// rather than guessed client-side from the label text, so the click target
+// can never drift out of sync with what the row is actually showing.
 function buildCourseInfoHtml(marks) {
   const startLineM = distanceMeters(marks.pin, marks.committeeStart);
   const startLineBearing = bearingDeg(marks.committeeStart, marks.pin);
@@ -696,13 +702,13 @@ function buildCourseInfoHtml(marks) {
     .map((name) => {
       const label = name[0].toUpperCase() + name.slice(1);
       const bearing = bearingDeg(marks.committeeStart, marks[name]);
-      return `<div class="course-info-row"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
+      return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
   return `<div class="course-info-card">
     <div class="course-info-title">Course</div>
-    <div class="course-info-row"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
-    <div class="course-info-row"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    <div class="course-info-row zoomable" data-marks="pin,committeeStart"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
+    <div class="course-info-row zoomable" data-marks="committeeFinish,finish"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
     ${headingRows}
   </div>`;
 }
@@ -831,6 +837,12 @@ function renderMap(s) {
   .course-info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; padding: 4px 0; font-size: 13px; }
   .course-info-row .label { color: #8a94a3; }
   .course-info-row .value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* Rows with a data-marks attribute (see buildCourseInfoHtml) zoom the map
+     to that mark/line on click - a subtle rounded-highlight hover is the
+     only affordance, matching this card's own plain/paper-card look rather
+     than looking like a button. */
+  .course-info-row.zoomable { cursor: pointer; border-radius: 6px; margin: 0 -6px; padding: 4px 6px; }
+  .course-info-row.zoomable:hover { background: #f1f3f6; }
 
   /* Edit mode: a map area that shrinks to make room for a column of
      "set this mark here" buttons, plus a crosshair fixed at the exact
@@ -930,6 +942,27 @@ function renderMap(s) {
     const map = L.map('map', { zoomControl: false, maxZoom: 22 });
     L.control.zoom({ position: 'topright' }).addTo(map);
     const boatMarkers = {};
+
+    // Course-info card rows (see buildCourseInfoHtml's own comment on
+    // data-marks) zoom the map to the mark(s) they're describing on click -
+    // one name zooms straight in on that mark, two (a line) fits both into
+    // view. courseMarks is the same marks object the rest of this page's
+    // markers/lines were built from, just handed to the client this once so
+    // this lookup doesn't need its own separate route.
+    const courseMarks = ${JSON.stringify(marks)};
+    const COURSE_INFO_ZOOM = 19; // close enough to make out a single mark clearly, short of maxNativeZoom's soft upscaling
+    document.querySelectorAll('.course-info-row.zoomable').forEach((row) => {
+      const names = row.dataset.marks.split(',');
+      row.addEventListener('click', () => {
+        if (names.length === 1) {
+          const m = courseMarks[names[0]];
+          map.setView([m.lat, m.lon], Math.max(map.getZoom(), COURSE_INFO_ZOOM));
+        } else {
+          const points = names.map((name) => [courseMarks[name].lat, courseMarks[name].lon]);
+          map.fitBounds(points, { padding: [80, 80], maxZoom: COURSE_INFO_ZOOM });
+        }
+      });
+    });
     // Satellite imagery, not a street/vector basemap - these courses are
     // typically raced on a dry lake bed (Black Rock Desert-style playa)
     // with no roads or buildings for a vector basemap to draw, which made
