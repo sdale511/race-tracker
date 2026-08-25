@@ -712,8 +712,16 @@ function getPosition() {
 startRoverAdminServer({ port: myAdminPort, getStats: getRoverStats, getPosition });
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
+// Under fleetSim.js, report through IPC instead of logging directly - a
+// whole fleet (20-30 boats routinely) all starting at once otherwise means
+// every boat's own copy of this exact message scrolls by independently
+// every 10s, drowning out anything useful. fleetSim.js aggregates these into
+// one combined line (see its own 'waiting-for-fix' handler). Standalone (no
+// parent to aggregate for it) still logs directly, same as always.
 setInterval(() => {
-  if (!lastPvt) console.log('[boatAgent] waiting for first GPS fix...');
+  if (lastPvt) return;
+  if (typeof process.send === 'function') process.send('waiting-for-fix');
+  else console.log('[boatAgent] waiting for first GPS fix...');
 }, 10000);
 
 // Handles SIGTERM the same as SIGINT (Ctrl+C), not just SIGINT alone -

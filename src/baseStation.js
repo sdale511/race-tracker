@@ -895,6 +895,17 @@ function main() {
   const NEW_BOAT_BROADCAST_DEBOUNCE_MS = 2000;
   let lastNewBoatBroadcastAt = 0;
 
+  // If new boats keep arriving faster than the debounce window clears (a
+  // large fleet all starting within the same couple seconds - see
+  // fleetSim.js), strictly waiting out the full 2s means whichever boats
+  // piled up during it all sit idle a bit longer than they need to. Once
+  // this many have queued up since the last broadcast, force one through
+  // immediately instead - a pile-up this size means real, currently-
+  // connecting boats are accumulating, not just debounce noise from one or
+  // two boats arriving moments apart.
+  const NEW_BOAT_FORCE_BROADCAST_THRESHOLD = 5;
+  let newBoatsSinceLastBroadcast = 0;
+
   // Frames that arrive before raceMarks has resolved (see resolveMarks'
   // own async startup loop below) - watcherFor/onGridWatcherFor/
   // markRoundingWatchersFor all short-circuit to null/[] until raceMarks is
@@ -922,9 +933,14 @@ function main() {
     const now = Date.now();
     const lastSeen = lastSeenByBoat.get(decoded.boatId);
     if (lastSeen === undefined || now - lastSeen > BOAT_RECONNECT_GAP_MS) {
-      if (now - lastNewBoatBroadcastAt > NEW_BOAT_BROADCAST_DEBOUNCE_MS) {
+      newBoatsSinceLastBroadcast++;
+      if (
+        now - lastNewBoatBroadcastAt > NEW_BOAT_BROADCAST_DEBOUNCE_MS ||
+        newBoatsSinceLastBroadcast >= NEW_BOAT_FORCE_BROADCAST_THRESHOLD
+      ) {
         broadcastMarksNow();
         lastNewBoatBroadcastAt = now;
+        newBoatsSinceLastBroadcast = 0;
       }
       // Same "looks like it just (re)started" signal as the marks
       // re-broadcast above, also used to clear this one boat's on-grid

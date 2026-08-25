@@ -120,6 +120,34 @@ for (let i = 0; i < FLEET_SIZE; i++) {
   });
 }
 
+// Aggregates each boat's "still waiting for a GPS fix" heartbeat (see
+// boatAgent.js) into one combined line instead of the whole fleet's worth of
+// identical per-boat messages scrolling by independently - unconditional
+// (not just under SIM_HOLD_FOR_START below), since every boat waits on
+// marks/its first fix regardless of whether the fleet holds at the grid
+// afterward. Stops itself once every boat that ever reported waiting has
+// gone quiet (gotten its fix), rather than running for the rest of the
+// process's life.
+const boatsWaitingForFix = new Set();
+let sawAnyWaitingForFix = false;
+for (const child of children) {
+  child.on('message', (msg) => {
+    if (msg === 'waiting-for-fix') {
+      boatsWaitingForFix.add(child.pid);
+      sawAnyWaitingForFix = true;
+    } else if (msg === 'on-grid') {
+      boatsWaitingForFix.delete(child.pid);
+    }
+  });
+}
+const waitingForFixIntervalId = setInterval(() => {
+  if (boatsWaitingForFix.size > 0) {
+    console.log(`[fleetSim] ${boatsWaitingForFix.size}/${FLEET_SIZE} boat(s) still waiting for a GPS fix`);
+  } else if (sawAnyWaitingForFix) {
+    clearInterval(waitingForFixIntervalId);
+  }
+}, 10000);
+
 // SIM_HOLD_FOR_START holds every boat at its start position (see
 // simGps.js's holdForStart/release()) until told to actually start racing -
 // this process is the one with the real terminal (every child's own stdin
