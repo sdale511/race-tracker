@@ -31,15 +31,39 @@ const FEET_TO_M = 0.3048;
 // this far on the far side of leewardGreen (away from the start/finish
 // complex). Which pair the simulator actually races is configurable per
 // end (SIM_COURSE_MARKS, see config.js/deriveGeometry/getRaceMarks below) -
-// pin/committee/finish are never targeted by the tacking logic directly,
-// regardless.
+// pin/committeeStart/committeeFinish/finish are never targeted by the
+// tacking logic directly, regardless.
 const LONG_COURSE_EXTRA_NM = parseFloat(process.env.SIM_LONG_COURSE_EXTRA_NM || '0.25');
 const LONG_COURSE_EXTRA_M = LONG_COURSE_EXTRA_NM * NM_TO_M;
+
+// The start/finish complex used to be a single "committee" mark shared by
+// both lines (pin<->committee for the start, committee<->finish for the
+// finish gate) - split into committeeStart/committeeFinish so a real
+// operator can run the two lines from separate committee boats, at
+// different positions entirely, not just two ends of the same physical
+// line. Defaults to 0 (both offsets zero, committeeFinish lands exactly on
+// the old committee position) so an unconfigured course still lays out
+// exactly as before. North is toward windwardGreen, east is
+// perpendicular to that (same local axes as everywhere else in this file) -
+// not a distance+bearing pair, so a caller can independently nudge the
+// finish complex up/down the course or side to side without the two
+// interacting.
+const FINISH_OFFSET_NORTH_M = parseFloat(process.env.SIM_FINISH_OFFSET_NORTH_M || '0');
+const FINISH_OFFSET_EAST_M = parseFloat(process.env.SIM_FINISH_OFFSET_EAST_M || '0');
 
 // Canonical mark list/order - shared by redisStore.js (Redis key names),
 // protocol.js (the base's mark-broadcast radio frame), and getMarks() below,
 // so there's exactly one place that says what marks exist and in what order.
-const MARK_NAMES = ['windwardGreen', 'windwardBlack', 'leewardGreen', 'leewardBlack', 'pin', 'committee', 'finish'];
+const MARK_NAMES = [
+  'windwardGreen',
+  'windwardBlack',
+  'leewardGreen',
+  'leewardBlack',
+  'pin',
+  'committeeStart',
+  'committeeFinish',
+  'finish',
+];
 
 // Fixed per-mark colors, shared between the base and rover admin
 // dashboards' map pages (adminServer.js, roverAdminServer.js) so markers
@@ -54,7 +78,8 @@ const MARK_COLORS = {
   leewardGreen: '#3fb950',
   leewardBlack: '#000000',
   pin: '#e3b341',
-  committee: '#bc8cff',
+  committeeStart: '#bc8cff',
+  committeeFinish: '#a371f7',
   finish: '#58a6ff',
 };
 
@@ -66,13 +91,15 @@ function markStroke(name) {
   return name.endsWith('Black') ? '#e6e9ef' : MARK_COLORS[name];
 }
 
-// The start/finish complex sits halfway between the windward/leeward marks,
-// with the committee boat in the middle of two separate sides (perpendicular
-// to the course axis, east-west) - the usual reason a committee runs two
-// lines: starts and finishes don't cross paths at the same line.
-//   - "start side": pin <-> committee, boats start spread out along this.
-//   - "finish side": committee <-> finish, boats must cross through this
-//     gate each lap to have it count (see simGps.js).
+// The start/finish complex sits halfway up the windward/leeward marks by
+// default, with two independent committee boats (committeeStart,
+// committeeFinish) instead of one shared mark - the usual reason a
+// committee runs two lines: starts and finishes don't cross paths at the
+// same line, and a real operator may run them from two entirely different
+// boats/positions, not just two ends of one physical line.
+//   - "start side": pin <-> committeeStart, boats start spread out along this.
+//   - "finish side": committeeFinish <-> finish, boats must cross through
+//     this gate each lap to have it count (see simGps.js).
 //
 // These are expressed as fractions of COURSE_LENGTH_M (matching their real
 // 200ft/180ft/25ft proportions at the canonical 1nm course) rather than
@@ -135,39 +162,45 @@ function compassDir(bearingDegrees) {
 // so SIM_CENTER_LAT/LON keeps meaning exactly what it always has. Green
 // windward is COURSE_LENGTH_M due north of it (the short course); black
 // windward/leeward extend LONG_COURSE_EXTRA_M further out on each end (the
-// long course), on the same north-south axis. `committee` sits on that
-// same axis at the start/finish complex's position (halfway up the green
-// course); `pin` is START_SIDE_LENGTH_M to its west (the start side),
-// `finish` is FINISH_SIDE_LENGTH_M to its east (the finish side).
+// long course), on the same north-south axis. `committeeStart` sits on that
+// same axis at the start line's position (halfway up the green course, by
+// default); `pin` is START_SIDE_LENGTH_M to its west. `committeeFinish`
+// sits FINISH_OFFSET_NORTH_M/FINISH_OFFSET_EAST_M away from committeeStart
+// (0,0 by default, i.e. the same spot) - `finish` is FINISH_SIDE_LENGTH_M
+// further east of *that*, so the whole finish gate moves as a unit when the
+// finish complex is offset from the start complex, rather than the gate's
+// own width changing.
 function getMarks(centerLat, centerLon) {
+  const finishLineNorthM = START_LINE_NORTH_M + FINISH_OFFSET_NORTH_M;
   return {
     leewardGreen: offsetToLatLon(centerLat, centerLon, { north: 0, east: 0 }),
     leewardBlack: offsetToLatLon(centerLat, centerLon, { north: -LONG_COURSE_EXTRA_M, east: 0 }),
     windwardGreen: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M, east: 0 }),
     windwardBlack: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M + LONG_COURSE_EXTRA_M, east: 0 }),
-    committee: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: 0 }),
+    committeeStart: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: 0 }),
     pin: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: -START_SIDE_LENGTH_M }),
-    finish: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: FINISH_SIDE_LENGTH_M }),
+    committeeFinish: offsetToLatLon(centerLat, centerLon, { north: finishLineNorthM, east: FINISH_OFFSET_EAST_M }),
+    finish: offsetToLatLon(centerLat, centerLon, { north: finishLineNorthM, east: FINISH_OFFSET_EAST_M + FINISH_SIDE_LENGTH_M }),
   };
 }
 
-// How much of the pin<->committee line simulated boats can spread across.
-// Used to be capped at 0.4 (the pin half) specifically to stay clear of
-// onGridWatcher.js's own COMMITTEE_TRIANGLE_MAX_FRACTION (0.5, base-station-
-// only ambiguous-with-a-finishing-boat zone) - real test lines can be short
-// (tens of meters), and confining a large simulated fleet to less than half
-// of that got genuinely cramped. Using the full line trades that off
-// deliberately: a fraction of simulated boats landing in the ambiguous
-// corner and not registering as on-grid is an accepted rare cost of testing
-// with the full line available, not a detection bug.
+// How much of the pin<->committeeStart line simulated boats can spread
+// across. Used to be capped at 0.4 (the pin half) specifically to stay
+// clear of onGridWatcher.js's own COMMITTEE_TRIANGLE_MAX_FRACTION (0.5,
+// base-station-only ambiguous-with-a-finishing-boat zone) - back when a
+// single shared committee mark meant a boat queuing near it could look like
+// one finishing. Now that start and finish each have their own mark, that
+// specific ambiguity is gone by construction, but the fraction stays at 1
+// (full line) regardless - real test lines can be short (tens of meters),
+// and a large simulated fleet needs the room.
 const SIM_START_SAFE_MAX_FRACTION = 1;
 
-// Returns a 0 (pin) to 1 (committee) FRACTION along the line, not an
+// Returns a 0 (pin) to 1 (committeeStart) FRACTION along the line, not an
 // absolute north/east - unlike windward/leeward (always exactly on
 // simGps.js's own rotated local-north axis, by definition of how that
-// rotation is derived), pin/committee can be edited independently of the
-// beat axis (see adminServer.js's "edit marks" column) and end up
-// anywhere. simGps.js interpolates this fraction against pin/committee's
+// rotation is derived), pin/committeeStart can be edited independently of
+// the beat axis (see adminServer.js's "edit marks" column) and end up
+// anywhere. simGps.js interpolates this fraction against pin/committeeStart's
 // own true local positions (each independently measured, not assumed),
 // so a boat's start position stays correct regardless.
 //
@@ -247,13 +280,13 @@ function deriveGeometry(marks, courseMarks = 'GG') {
   // the simulated boat actually sails toward wherever the real windward
   // mark actually is.
   const courseBearingDeg = bearingDeg(leeward, windward);
-  // Only the pin<->committee distance is still needed here (by
+  // Only the pin<->committeeStart distance is still needed here (by
   // getStartFraction, for boat start spacing) - simGps.js measures
-  // committee/finish's own true positions directly (see its _toLocal), not
-  // via a scalar distance/assumed-perpendicular-offset from this file, so
-  // there's no longer a startLineNorthM/finishSideLengthM this module needs
-  // to hand it.
-  const startSideLengthM = distanceMeters(marks.committee, marks.pin);
+  // committeeStart/committeeFinish/finish's own true positions directly
+  // (see its _toLocal), not via a scalar distance/assumed-perpendicular-
+  // offset from this file, so there's no longer a startLineNorthM/
+  // finishSideLengthM this module needs to hand it.
+  const startSideLengthM = distanceMeters(marks.committeeStart, marks.pin);
   // Boat-to-boat start spacing isn't a mark - keep it proportional to the
   // measured course length (same ratio as getMarks uses when first
   // defining a course), so it still makes sense at whatever scale the

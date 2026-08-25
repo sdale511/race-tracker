@@ -391,7 +391,7 @@ module.exports = {
     postIntervalMs: parseInt(process.env.REGATTAUP_POST_INTERVAL_MS || '500', 10),
     maxBackoffMs: parseInt(process.env.REGATTAUP_MAX_BACKOFF_MS || '300000', 10), // 5 minutes
     // On-grid detection (see onGridWatcher.js): how close a boat has to be
-    // to the pin<->committee (start) line, while still between the two
+    // to the pin<->committeeStart (start) line, while still between the two
     // marks, to count as "on-grid" - an ongrid/offgrid webhook fires on
     // each transition. Same enabled/retry/backoff settings as laps above
     // (REGATTAUP_WEBHOOK_DISABLED also disables this), but its own queue

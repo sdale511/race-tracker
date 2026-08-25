@@ -26,34 +26,41 @@ function projectFraction(a, b, p) {
 // with whatever course was actually published to Redis (published earlier,
 // by a different process, possibly at a different length), and every
 // tacking/rounding/gate decision below needs to follow whatever the marks
-// actually say, not this process's own environment. pin/committee/finish's
-// own true positions (see the constructor) are measured the same way, for
-// the same reason.
+// actually say, not this process's own environment. pin/committeeStart/
+// committeeFinish/finish's own true positions (see the constructor) are
+// measured the same way, for the same reason.
 //
 // Upwind crossings of the start/finish line must pass through the finish
-// gate (committee <-> finish, on the east side of the rhumb line - see
-// course.js) to count a lap - never the start side, never beyond either
-// mark. Aiming for the gate's center (see _targetWaypoint()) is what
+// gate (committeeFinish <-> finish, on the east side of the rhumb line -
+// see course.js) to count a lap - never the start side, never beyond
+// either mark. Aiming for the gate's center (see _targetWaypoint()) is what
 // usually gets it there, but it's also hard-enforced: a crossing found to
 // land outside the gate is never committed to (see _tick()'s upwind
 // crossing check) - the tick rolls back to the last known-good position and
 // re-aims instead of reporting a fix on the wrong side of the line.
 //
 // Downwind crossings can go anywhere EXCEPT through the start side (pin <->
-// committee) or finish side (committee <-> finish) - those two occupy the
-// whole strip from pin to finish with no gap between them, so "anywhere
-// else" means crossing outside that strip entirely. There's no requirement
-// to be near either mark - the target (see _targetWaypoint()) is picked
-// dynamically off whichever side of the strip the boat's current position
-// already sits on, so the boat clears past the nearest edge of the strip
-// rather than converging toward a fixed point next to a mark. Also
-// hard-enforced the same way as the upwind gate above - a crossing found to
-// land inside the strip is rolled back rather than committed to, see
-// _tick()'s downwind crossing check.
-// DOWNWIND_CLEAR_MARGIN_M pushes the clearing target just past the strip's
-// edge so the crossing is a clean pass rather than a graze - no more margin
-// than that is needed, since the only actual requirement is not sailing
-// through the strip.
+// committeeStart), the finish side (committeeFinish <-> finish), or the gap
+// directly between the two committee boats (committeeStart <->
+// committeeFinish - not a legal way through the complex either). These used
+// to reduce to one continuous strip from pin to finish, no gap, back when a
+// single committee mark anchored both start and finish (the middle segment
+// was zero-length) - now that committeeStart/committeeFinish can sit at
+// different positions entirely (see course.js's FINISH_OFFSET_NORTH_M/
+// FINISH_OFFSET_EAST_M), all three are independent segments, each checked
+// against its own threshold as the boat reaches it (see _tick()'s downwind
+// crossing check and passedStartSide/passedFinishSide/passedMiddleSection
+// below) - there's no requirement to be near either mark otherwise. The
+// target (see _targetWaypoint()) is picked dynamically off whichever side
+// of a segment the boat's current position already sits on, so the boat
+// clears past the nearest edge rather than converging toward a fixed point
+// next to a mark. Also hard-enforced the same way as the upwind gate above
+// - a crossing found to land inside any of the three segments is rolled
+// back rather than committed to.
+// DOWNWIND_CLEAR_MARGIN_M pushes the clearing target just past the
+// segment's edge so the crossing is a clean pass rather than a graze - no
+// more margin than that is needed, since the only actual requirement is not
+// sailing through the segment.
 const DOWNWIND_CLEAR_MARGIN_M = 15;
 
 // Once the boat reaches a mark's latitude (ordinary north/leeward
@@ -70,10 +77,19 @@ const DOWNWIND_CLEAR_MARGIN_M = 15;
 // when heading the opposite direction).
 const MARK_CLEARANCE_M = 5;
 
-// How far leeward (behind, not on top of) the pin<->committee line a boat's
-// starting/pending position sits - a boat genuinely queuing for the start
-// stands off the line a little, not straddling it exactly, and it gives
-// on-grid detection (see onGridWatcher.js) real margin against the
+// Confines each boat's own randomized finish-gate crossing point (see the
+// constructor's gateTargetLocal) to comfortably inside both ends of the
+// committeeFinish<->finish segment, not the literal edges - same concern as
+// course.js's SIM_START_SAFE_MAX_FRACTION for the start line, staying off
+// both edges since this is the finish gate specifically, not the whole
+// start/finish complex.
+const GATE_CROSS_SAFE_MIN_FRAC = 0.15;
+const GATE_CROSS_SAFE_MAX_FRAC = 0.85;
+
+// How far leeward (behind, not on top of) the pin<->committeeStart line a
+// boat's starting/pending position sits - a boat genuinely queuing for the
+// start stands off the line a little, not straddling it exactly, and it
+// gives on-grid detection (see onGridWatcher.js) real margin against the
 // leeward-side check's own ONGRID_EDGE_MARGIN_M (1m): a boat placed
 // *exactly* on the line has zero headroom against any small numerical
 // difference between this file's own lat/lon math (offsetToLatLon, a
@@ -163,15 +179,18 @@ class SimGpsSource extends EventEmitter {
   // caller, not assumed from this process's own SIM_COURSE_LENGTH_NM (see
   // module comment above).
   //
-  // pin/committee/finish: the REAL lat/lon of the start/finish complex.
-  // windward/leeward always sit exactly on this file's own local north
-  // axis, by definition of how courseBearingDeg is derived (the leeward
-  // -> windward bearing) - but pin/committee/finish are NOT guaranteed to,
-  // since an operator can drag any mark independently of any other (see
-  // adminServer.js's "edit marks" column). Their true position in this
-  // local frame has to be measured (see _toLocal below), not assumed to
-  // sit at some fixed offset perpendicular to the beat axis - otherwise an
-  // edited windward mark rotates the beat axis right out from under a
+  // pin/committeeStart/committeeFinish/finish: the REAL lat/lon of the
+  // start/finish complex. windward/leeward always sit exactly on this
+  // file's own local north axis, by definition of how courseBearingDeg is
+  // derived (the leeward -> windward bearing) - but pin/committeeStart/
+  // committeeFinish/finish are NOT guaranteed to, since an operator can
+  // drag any mark independently of any other (see adminServer.js's "edit
+  // marks" column), and committeeStart/committeeFinish in particular can
+  // now be entirely different positions by design (see course.js's
+  // FINISH_OFFSET_NORTH_M/FINISH_OFFSET_EAST_M). Their true position in
+  // this local frame has to be measured (see _toLocal below), not assumed
+  // to sit at some fixed offset perpendicular to the beat axis - otherwise
+  // an edited windward mark rotates the beat axis right out from under a
   // *stationary* real finish line, and the boat stops crossing it
   // entirely (the bug this whole approach exists to avoid).
   constructor({
@@ -187,7 +206,8 @@ class SimGpsSource extends EventEmitter {
     prestartDwellS,
     holdForStart,
     pin,
-    committee,
+    committeeStart,
+    committeeFinish,
     finish,
   }) {
     super();
@@ -220,21 +240,45 @@ class SimGpsSource extends EventEmitter {
     // north/east offset right before it becomes an actual lat/lon fix.
     this.courseBearingDeg = geometry.courseBearingDeg;
 
-    // pin/committee/finish's TRUE position in this same local frame -
-    // their real offset from leewardGreen, rotated by -courseBearingDeg
-    // (the inverse of _toLatLon's own rotation). At courseBearingDeg=0
-    // (unedited layout) this reduces to exactly the old assumed values
-    // (committee at local (startLineNorthM, 0), etc.) - it's a
-    // generalization, not a behavior change, for the common case.
+    // pin/committeeStart/committeeFinish/finish's TRUE position in this
+    // same local frame - their real offset from leewardGreen, rotated by
+    // -courseBearingDeg (the inverse of _toLatLon's own rotation). At
+    // courseBearingDeg=0 (unedited layout) this reduces to exactly the old
+    // assumed values (committeeStart/committeeFinish at local
+    // (startLineNorthM, 0), etc.) - it's a generalization, not a behavior
+    // change, for the common case.
     this.pinLocal = this._toLocal(pin.lat, pin.lon);
-    this.committeeLocal = this._toLocal(committee.lat, committee.lon);
+    this.committeeStartLocal = this._toLocal(committeeStart.lat, committeeStart.lon);
+    this.committeeFinishLocal = this._toLocal(committeeFinish.lat, committeeFinish.lon);
     this.finishLocal = this._toLocal(finish.lat, finish.lon);
-    // The gate's actual center - what the boat steers toward on its final
-    // upwind approach (see _targetWaypoint()), replacing the old assumed
-    // "(startLineNorthM, finishSideLengthM/2)" point.
-    this.gateCenterLocal = {
-      north: (this.committeeLocal.north + this.finishLocal.north) / 2,
-      east: (this.committeeLocal.east + this.finishLocal.east) / 2,
+    // Which of the three downwind strip segments (see the module comment)
+    // this boat has already sailed cleanly past this leg - reset every
+    // time it enters a new downwind leg (see the mark-rounding handler in
+    // _tick()). Only meaningful downwind; the upwind gate check only ever
+    // cares about the finish side (gateTargetLocal below). The third
+    // segment, committeeStart<->committeeFinish, is the gap BETWEEN the two
+    // committee boats themselves - now that they aren't necessarily the
+    // same point, a boat could otherwise cut straight between them without
+    // ever crossing either actual line, which isn't a legal way through the
+    // complex.
+    this.passedStartSide = false;
+    this.passedFinishSide = false;
+    this.passedMiddleSection = false;
+    // Where THIS boat steers toward on its final upwind approach (see
+    // _targetWaypoint()) - a random point along the committeeFinish<->finish
+    // segment, not always the exact center. Drawn once per boat (like
+    // speedFactor below), not per-crossing, so the same boat crosses in
+    // roughly the same spot every lap rather than a different one each
+    // time - real boats have some individual consistency in where they
+    // cross too, it's not independently random every lap. Confined to
+    // GATE_CROSS_SAFE_MIN_FRAC..GATE_CROSS_SAFE_MAX_FRAC (comfortably
+    // inside both ends) rather than the full 0..1 range - a fleet
+    // literally converging on the exact midpoint every lap looked like a
+    // funnel.
+    const gateCrossFrac = randRange(GATE_CROSS_SAFE_MIN_FRAC, GATE_CROSS_SAFE_MAX_FRAC);
+    this.gateTargetLocal = {
+      north: this.committeeFinishLocal.north + gateCrossFrac * (this.finishLocal.north - this.committeeFinishLocal.north),
+      east: this.committeeFinishLocal.east + gateCrossFrac * (this.finishLocal.east - this.committeeFinishLocal.east),
     };
 
     // Each boat has its own fixed "speed personality" (+/-10%, drawn once,
@@ -256,16 +300,17 @@ class SimGpsSource extends EventEmitter {
     // running standalone (see boatAgent.js) - not the boat's own ID/sail
     // number.
     //
-    // Interpolated against the TRUE local pin/committee positions (not a
-    // simple east offset - see course.js's getStartFraction), so every
-    // boat lands along the real pin<->committee line regardless of
+    // Interpolated against the TRUE local pin/committeeStart positions (not
+    // a simple east offset - see course.js's getStartFraction), so every
+    // boat lands along the real pin<->committeeStart line regardless of
     // whether that line happens to be perpendicular to the beat axis -
     // then pulled PENDING_LINE_OFFSET_M leeward (south, in this local
     // frame) of it, not left sitting exactly on top of the line (see that
     // constant's own comment).
     const startLineFrac = getStartFraction(startFrac);
-    this.north = this.pinLocal.north + startLineFrac * (this.committeeLocal.north - this.pinLocal.north) - PENDING_LINE_OFFSET_M;
-    this.east = this.pinLocal.east + startLineFrac * (this.committeeLocal.east - this.pinLocal.east);
+    this.north =
+      this.pinLocal.north + startLineFrac * (this.committeeStartLocal.north - this.pinLocal.north) - PENDING_LINE_OFFSET_M;
+    this.east = this.pinLocal.east + startLineFrac * (this.committeeStartLocal.east - this.pinLocal.east);
     this.phase = 'upwind'; // 'upwind' (beating) | 'downwind' (running)
     this.side = Math.random() < 0.5 ? 1 : -1;
     this.timeSinceManeuverS = 999;
@@ -362,12 +407,15 @@ class SimGpsSource extends EventEmitter {
   _targetWaypoint() {
     if (!this.crossedLineThisLeg) {
       // Upwind aims at the gate's TRUE center (both north and east - see
-      // gateCenterLocal); downwind keeps the old plain rhumb-line bias
-      // (east=0), just measured against committeeLocal's own true north
-      // instead of an assumed scalar.
+      // gateTargetLocal); downwind keeps the old plain rhumb-line bias
+      // (east=0), just measured against whichever downwind strip segment
+      // is further north (encountered first while descending) instead of
+      // an assumed scalar - a loose directional bias only (no precision
+      // convergence applies downwind, see needsPrecisionTarget below), so
+      // it doesn't need to be exact.
       return this.phase === 'upwind'
-        ? { targetNorth: this.gateCenterLocal.north, targetEastM: this.gateCenterLocal.east }
-        : { targetNorth: this.committeeLocal.north, targetEastM: 0 };
+        ? { targetNorth: this.gateTargetLocal.north, targetEastM: this.gateTargetLocal.east }
+        : { targetNorth: Math.max(this.committeeStartLocal.north, this.committeeFinishLocal.north), targetEastM: 0 };
     }
     return { targetNorth: this.phase === 'upwind' ? this.courseLengthM : 0, targetEastM: 0 };
   }
@@ -557,16 +605,18 @@ class SimGpsSource extends EventEmitter {
     // check in _tick() still exists as a last-resort safety net, but
     // shouldn't normally need to fire once this is in place).
     if (this.phase === 'downwind' && !this.crossedLineThisLeg) {
-      const projected = this._projectedCrossingEast(side);
-      const wouldViolate = this._inLocalStrip(this.committeeLocal.north, projected);
-      if (wouldViolate) {
-        const otherProjected = this._projectedCrossingEast(-side);
-        const otherViolates = this._inLocalStrip(this.committeeLocal.north, otherProjected);
-        if (!otherViolates) side = -side;
-        // If both tacks project into the strip (only possible very close
-        // to the line with little room left to redirect), leave side as
-        // chosen above - the reactive check in _tick() is the fallback.
-      }
+      // Check against every downwind strip segment this boat hasn't
+      // already sailed cleanly past this leg (see passedStartSide/
+      // passedFinishSide) - start and finish can now sit at different
+      // norths (see the module comment), so a tack that clears one segment
+      // can still run through the other.
+      const pendingNorths = this._pendingStripTriggerNorths();
+      const violatesAt = (s) => pendingNorths.some((n) => this._inLocalStrip(n, this._projectedCrossingEast(s, n)));
+      if (violatesAt(side) && !violatesAt(-side)) side = -side;
+      // If both tacks violate at least one pending segment (only possible
+      // very close to the line with little room left to redirect), leave
+      // side as chosen above - the reactive check in _tick() is the
+      // fallback.
     }
 
     // See the comment on the equivalent line above - already positive and
@@ -575,17 +625,20 @@ class SimGpsSource extends EventEmitter {
     this._setLeg(side, legM, randRange(-HEADING_JITTER_DEG, HEADING_JITTER_DEG));
   }
 
-  // Where the boat would cross the start/finish line's latitude if it kept
+  // Where the boat would cross the given target latitude if it kept
   // sailing the given side/tack (at the phase's full fixed angle, no
   // heading jitter) all the way there from its current position - used to
   // decide, before actually committing to a tack, whether it needs to be
-  // avoided because it would carry the boat through the forbidden strip
-  // (see the downwind pre-crossing check in _startNewLeg()).
-  _projectedCrossingEast(side) {
+  // avoided because it would carry the boat through a forbidden strip
+  // segment (see the downwind pre-crossing check in _startNewLeg()).
+  // targetNorth is whichever strip segment's own threshold is being
+  // checked (see _pendingStripTriggerNorths()) - the two can differ now
+  // that committeeStart/committeeFinish aren't guaranteed the same north.
+  _projectedCrossingEast(side, targetNorth) {
     const maxAngleDeg = this.phase === 'upwind' ? CLOSE_HAULED_DEG : RUN_DEG;
     const baseDeg = this.phase === 'upwind' ? WIND_FROM_DEG : (WIND_FROM_DEG + 180) % 360;
     const headingRad = (((baseDeg + side * maxAngleDeg) % 360) * Math.PI) / 180;
-    const dNorth = this.committeeLocal.north - this.north;
+    const dNorth = targetNorth - this.north;
     const distance = dNorth / Math.cos(headingRad);
     return this.east + distance * Math.sin(headingRad);
   }
@@ -657,12 +710,12 @@ class SimGpsSource extends EventEmitter {
   }
 
   // Inverse of _toLatLon (rotates by -courseBearingDeg instead of
-  // +courseBearingDeg) - converts a REAL lat/lon (pin/committee/finish)
-  // into this file's own local frame, so the start/finish complex's true
-  // position can be compared directly against the boat's own north/east,
-  // instead of assuming it sits at some fixed offset from the beat axis
-  // (see the constructor's own comment on why that assumption breaks once
-  // marks are edited independently).
+  // +courseBearingDeg) - converts a REAL lat/lon (pin/committeeStart/
+  // committeeFinish/finish) into this file's own local frame, so the
+  // start/finish complex's true position can be compared directly against
+  // the boat's own north/east, instead of assuming it sits at some fixed
+  // offset from the beat axis (see the constructor's own comment on why
+  // that assumption breaks once marks are edited independently).
   _toLocal(lat, lon) {
     const realNorth = (lat - this.centerLat) * METERS_PER_DEG_LAT;
     const realEast = (lon - this.centerLon) * METERS_PER_DEG_LAT * Math.cos((this.centerLat * Math.PI) / 180);
@@ -673,18 +726,55 @@ class SimGpsSource extends EventEmitter {
     };
   }
 
-  // Is local point (north, east) within the forbidden start/finish strip -
-  // pinLocal<->committeeLocal (start side) or committeeLocal<->finishLocal
-  // (finish side), the two together spanning pin to finish with no gap
-  // (see module comment). Projects onto each in turn (projectFraction) and
-  // accepts either landing in [0,1] - not assumed to be one straight
+  // Is local point (north, east) within any of the three forbidden
+  // start/finish strip segments - pinLocal<->committeeStartLocal (start
+  // side), committeeFinishLocal<->finishLocal (finish side), or
+  // committeeStartLocal<->committeeFinishLocal (the gap between the two
+  // committee boats themselves - not a legal way through the complex
+  // either, see the constructor's own comment). These used to be one
+  // single continuous strip (no gap) when a single committee mark anchored
+  // both start and finish; now they're independent segments, possibly at
+  // different norths (see module comment) - checked independently here
+  // regardless, same as before. Projects onto each in turn (projectFraction)
+  // and accepts any landing in [0,1] - not assumed to be one straight
   // horizontal segment the way the old scalar bounds check was, since pin/
-  // committee/finish aren't guaranteed collinear once edited independently.
+  // committeeStart/committeeFinish/finish aren't guaranteed collinear once
+  // edited independently.
   _inLocalStrip(north, east) {
     const p = { north, east };
-    const tStart = projectFraction(this.pinLocal, this.committeeLocal, p);
-    const tFinish = projectFraction(this.committeeLocal, this.finishLocal, p);
-    return (tStart >= 0 && tStart <= 1) || (tFinish >= 0 && tFinish <= 1);
+    const tStart = projectFraction(this.pinLocal, this.committeeStartLocal, p);
+    const tFinish = projectFraction(this.committeeFinishLocal, this.finishLocal, p);
+    const tMiddle = projectFraction(this.committeeStartLocal, this.committeeFinishLocal, p);
+    return (tStart >= 0 && tStart <= 1) || (tFinish >= 0 && tFinish <= 1) || (tMiddle >= 0 && tMiddle <= 1);
+  }
+
+  // The committeeStart<->committeeFinish segment's own trigger north -
+  // unlike the start/finish segments (where pin sits at roughly the same
+  // north as committeeStart, and finish at roughly the same north as
+  // committeeFinish, by construction of a gate laid perpendicular to the
+  // course axis), this segment directly connects the two committee marks,
+  // which can be at ANY two norths relative to each other. Using the
+  // larger of the two as the trigger means the check activates once the
+  // boat has descended past at least the nearer end of the segment -
+  // whichever end that turns out to be, the actual violation test
+  // (_inLocalStrip, a plain projection) is exact regardless of the
+  // segment's orientation; this only picks when to bother running it.
+  _middleSectionTriggerNorth() {
+    return Math.max(this.committeeStartLocal.north, this.committeeFinishLocal.north);
+  }
+
+  // Which downwind strip segment(s) this boat still needs to check for a
+  // violation this leg, as their own trigger norths - the segment(s) it
+  // hasn't already sailed cleanly past (see passedStartSide/
+  // passedFinishSide/passedMiddleSection, cleared each time a new downwind
+  // leg starts). All three are checked independently since none are
+  // guaranteed the same north (see module comment).
+  _pendingStripTriggerNorths() {
+    const norths = [];
+    if (!this.passedStartSide) norths.push(this.committeeStartLocal.north);
+    if (!this.passedFinishSide) norths.push(this.committeeFinishLocal.north);
+    if (!this.passedMiddleSection) norths.push(this._middleSectionTriggerNorth());
+    return norths;
   }
 
   // Sits at the current position, emitting a fresh but otherwise stationary
@@ -820,6 +910,12 @@ class SimGpsSource extends EventEmitter {
         } else {
           this.phase = this.phase === 'upwind' ? 'downwind' : 'upwind';
           this.crossedLineThisLeg = false; // approaching the line again next
+          // Only meaningful downwind (see _pendingStripTriggerNorths), but
+          // harmless to reset unconditionally here rather than special-case
+          // which direction this rounding just started.
+          this.passedStartSide = false;
+          this.passedFinishSide = false;
+          this.passedMiddleSection = false;
           this.justRoundedMark = true; // force a starboard-rounding departure tack
           this._setLegTarget();
           this._startNewLeg();
@@ -870,40 +966,44 @@ class SimGpsSource extends EventEmitter {
       this.clearingHeadingDeg == null &&
       this.phase === 'upwind' &&
       !this.crossedLineThisLeg &&
-      this.north > this.gateCenterLocal.north
+      this.north > this.gateTargetLocal.north
     ) {
       // Interpolated east position at the exact moment north crossed the
-      // SAME gateCenterLocal.north _targetWaypoint() steers at - not
-      // committeeLocal.north, which this used to check against despite the
-      // boat sailing toward gateCenterLocal instead (a real, structural
-      // mismatch whenever committee and finish aren't at exactly the same
-      // north, which independently-edited marks routinely aren't - the
-      // boat could be steering perfectly at gateCenterLocal and still get
-      // rejected every single time, since the crossing was being evaluated
-      // at a different latitude than the one it was actually aiming for.
-      // Confirmed live: a boat can get stuck oscillating between the same
-      // two positions forever, never crossing, since rolling back to
-      // exactly where it started and recomputing steeringDirect's heading
-      // from there deterministically reproduces the exact same rejected
-      // attempt every time - not a precision problem steering better could
-      // ever fix, a reference-point mismatch no amount of precision could).
+      // SAME gateTargetLocal.north _targetWaypoint() steers at - not
+      // committeeFinishLocal.north, which this used to check against
+      // despite the boat sailing toward gateTargetLocal instead (a real,
+      // structural mismatch whenever committeeFinish and finish aren't at
+      // exactly the same north, which independently-edited marks routinely
+      // aren't - the boat could be steering perfectly at gateTargetLocal
+      // and still get rejected every single time, since the crossing was
+      // being evaluated at a different latitude than the one it was
+      // actually aiming for. Confirmed live: a boat can get stuck
+      // oscillating between the same two positions forever, never
+      // crossing, since rolling back to exactly where it started and
+      // recomputing steeringDirect's heading from there deterministically
+      // reproduces the exact same rejected attempt every time - not a
+      // precision problem steering better could ever fix, a
+      // reference-point mismatch no amount of precision could).
       // Not just checking the post-tick position directly - at a short
       // SIM_COURSE_LENGTH_NM the finish gate can be narrower than a single
       // tick's own travel distance, so that would report "missed the gate"
       // even when the true crossing point was well inside it.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.gateCenterLocal.north);
-      // Projected onto the TRUE committeeLocal<->finishLocal segment
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.gateTargetLocal.north);
+      // Projected onto the TRUE committeeFinishLocal<->finishLocal segment
       // (projectFraction), not an assumed scalar bound - see the
-      // constructor's comment on why pin/committee/finish can't be
-      // assumed to sit at simple offsets from the beat axis once edited
-      // independently. This is also what actually matters for the base
-      // station's own lap detection (finishLineWatcher.js, watching the
-      // boat's real transmitted fixes) to agree with what the simulator
-      // itself thinks happened.
-      const t = projectFraction(this.committeeLocal, this.finishLocal, { north: this.gateCenterLocal.north, east: crossingEast });
+      // constructor's comment on why pin/committeeStart/committeeFinish/
+      // finish can't be assumed to sit at simple offsets from the beat
+      // axis once edited independently. This is also what actually matters
+      // for the base station's own lap detection (finishLineWatcher.js,
+      // watching the boat's real transmitted fixes) to agree with what the
+      // simulator itself thinks happened.
+      const t = projectFraction(this.committeeFinishLocal, this.finishLocal, {
+        north: this.gateTargetLocal.north,
+        east: crossingEast,
+      });
       const inGate = t >= 0 && t <= 1;
       if (inGate) {
-        this.north = this.gateCenterLocal.north;
+        this.north = this.gateTargetLocal.north;
         this.east = crossingEast;
         // Freeze the heading for the coast below (see coastHeadingDeg's own
         // comment) using headingDeg - the actual heading this very tick's
@@ -967,11 +1067,42 @@ class SimGpsSource extends EventEmitter {
       this.clearingHeadingDeg == null &&
       this.phase === 'downwind' &&
       !this.crossedLineThisLeg &&
-      this.north < this.committeeLocal.north
+      this._pendingStripTriggerNorths().some((n) => this.north < n)
     ) {
-      // Same interpolation as the upwind gate check above.
-      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, this.committeeLocal.north);
-      const inStrip = this._inLocalStrip(this.committeeLocal.north, crossingEast);
+      // Start side (pin<->committeeStartLocal) and finish side
+      // (committeeFinishLocal<->finishLocal) can now sit at different
+      // norths (committeeFinish may be offset from committeeStart - see
+      // course.js) - no longer one continuous strip at a single latitude,
+      // so each side gets its own independent crossing check at its own
+      // threshold (see module comment). Whichever is further north is
+      // reached first while descending - sorted so `segments[0]` below is
+      // always that one; the tick truncates its movement to that segment's
+      // own crossing point (same "don't overshoot past a precisely-checked
+      // point" idea as every other line-related event in this file), and
+      // marks it passed (passedStartSide/passedFinishSide) so a later tick
+      // picks up the OTHER segment once the boat actually reaches it,
+      // rather than assuming both happen the same tick.
+      const segments = [
+        { aLocal: this.pinLocal, bLocal: this.committeeStartLocal, triggerNorth: this.committeeStartLocal.north, passedKey: 'passedStartSide' },
+        { aLocal: this.committeeFinishLocal, bLocal: this.finishLocal, triggerNorth: this.committeeFinishLocal.north, passedKey: 'passedFinishSide' },
+        // The gap between the two committee boats themselves - not a legal
+        // way through the complex either (see the constructor's own
+        // comment on passedMiddleSection).
+        {
+          aLocal: this.committeeStartLocal,
+          bLocal: this.committeeFinishLocal,
+          triggerNorth: this._middleSectionTriggerNorth(),
+          passedKey: 'passedMiddleSection',
+        },
+      ]
+        .filter((s) => !this[s.passedKey] && this.north < s.triggerNorth)
+        .sort((a, b) => b.triggerNorth - a.triggerNorth);
+      const seg = segments[0];
+
+      // Same interpolation as the upwind gate check above, just at this
+      // segment's own threshold north instead of a single shared one.
+      const crossingEast = interpolateEastAt(prevNorth, prevEast, this.north, this.east, seg.triggerNorth);
+      const inStrip = this._inLocalStrip(seg.triggerNorth, crossingEast);
       if (inStrip) {
         // Avoiding the strip is a hard requirement - the crossing point
         // itself is inside it, so it can't be committed to even as a
@@ -985,17 +1116,17 @@ class SimGpsSource extends EventEmitter {
         // Free-tacking wasn't aiming for a particular spot here (there's no
         // reason to be near either mark downwind), so it can occasionally
         // land inside the forbidden strip by chance - clear it by heading
-        // up toward whichever edge is nearer (evaluated against the
-        // violating crossing point, not the rolled-back position, since
-        // that's where the boat was actually headed): a real,
-        // wider-than-normal angle off dead downwind (more lateral speed,
-        // but still making some forward progress, not frozen sideways like
-        // a mark rounding) that bears away back to the normal run angle the
-        // instant it's clear (handled above, same as any other tack/gybe
-        // transition).
-        const distToFinishSide = this.finishLocal.east - crossingEast;
-        const distToStartSide = crossingEast - this.pinLocal.east;
-        this.clearingDirection = distToFinishSide <= distToStartSide ? 1 : -1;
+        // up toward whichever edge of THIS segment is nearer (evaluated
+        // against the violating crossing point, not the rolled-back
+        // position, since that's where the boat was actually headed): a
+        // real, wider-than-normal angle off dead downwind (more lateral
+        // speed, but still making some forward progress, not frozen
+        // sideways like a mark rounding) that bears away back to the
+        // normal run angle the instant it's clear (handled above, same as
+        // any other tack/gybe transition).
+        const distToBSide = seg.bLocal.east - crossingEast;
+        const distToASide = crossingEast - seg.aLocal.east;
+        this.clearingDirection = distToBSide <= distToASide ? 1 : -1;
         // sin(180+x) = -sin(x) - a lean off the downwind base heading (180)
         // moves east/west opposite of the same lean off the upwind base
         // (0), so clearingDirection needs a flipped sign here to still mean
@@ -1004,16 +1135,23 @@ class SimGpsSource extends EventEmitter {
         const downwindBaseDeg = (WIND_FROM_DEG + 180) % 360;
         this.clearingHeadingDeg = (downwindBaseDeg - this.clearingDirection * DOWNWIND_CLEAR_HEAD_UP_DEG + 360) % 360;
         this.clearingTargetEastM =
-          this.clearingDirection === 1
-            ? this.finishLocal.east + DOWNWIND_CLEAR_MARGIN_M
-            : this.pinLocal.east - DOWNWIND_CLEAR_MARGIN_M;
+          this.clearingDirection === 1 ? seg.bLocal.east + DOWNWIND_CLEAR_MARGIN_M : seg.aLocal.east - DOWNWIND_CLEAR_MARGIN_M;
         this.clearingIsLineCross = true;
         this.timeSinceManeuverS = 0;
       } else {
-        this.north = this.committeeLocal.north;
+        this.north = seg.triggerNorth;
         this.east = crossingEast;
-        this.crossedLineThisLeg = true; // doesn't count a lap, just marks the crossing handled
-        this._startNewLeg();
+        this[seg.passedKey] = true;
+        // Only fully past the start/finish complex (and thus done checking
+        // for this leg) once EVERY segment has been cleared - if the other
+        // one is still ahead (still unpassed), stay in this phase without
+        // calling _startNewLeg(), so the boat just keeps sailing its
+        // current tack and this check naturally re-fires once it reaches
+        // the remaining segment's own threshold on a later tick.
+        if (this._pendingStripTriggerNorths().length === 0) {
+          this.crossedLineThisLeg = true; // doesn't count a lap, just marks the crossing handled
+          this._startNewLeg();
+        }
       }
     }
 

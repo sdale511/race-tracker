@@ -498,6 +498,16 @@ function main() {
     const regatta = activeRegattas.find((r) => r.id === id);
     if (!regatta) throw new Error('unknown regatta id - refresh the list and try again');
     await redisStore.setSelectedRegatta(regatta);
+    // A newly-selected regatta is a new race starting - every per-boat
+    // watcher (lap count, on-grid state, mark roundings) is keyed only by
+    // boatId, not by regatta, and lives for as long as this process stays
+    // up (see clearRaceWatchers' own comment). Without this, a boat ID
+    // reused for the new regatta would inherit whatever lapCount/prevPos
+    // its watcher was left at from whatever the PREVIOUS regatta last did
+    // with that same boat - a stale crossing reference that can register a
+    // spurious "lap" the moment this boat's very first fix of the new race
+    // arrives, well before anyone actually crosses anything.
+    clearRaceWatchers();
     console.log(`[baseStation] regatta selected: "${regatta.name}" (${regatta.venue})`);
     return regatta;
   }
@@ -518,12 +528,12 @@ function main() {
     const pos = { lat, lon };
     await redisStore.setMark(name, pos);
     raceMarks[name] = pos;
-    // Existing finish-line watchers cached committee/finish's position at
-    // whatever it was when a given boat's first fix arrived (see
-    // watcherFor below) - clear so every boat's watcher rebuilds fresh
+    // Existing finish-line watchers cached committeeFinish/finish's
+    // position at whatever it was when a given boat's first fix arrived
+    // (see watcherFor below) - clear so every boat's watcher rebuilds fresh
     // from the corrected marks on its next fix, rather than silently
     // keeping stale gate geometry for the rest of the race. Same reasoning
-    // for on-grid watchers (pin/committee) and mark-rounding watchers
+    // for on-grid watchers (pin/committeeStart) and mark-rounding watchers
     // (every windward/leeward mark), regardless of which specific mark was
     // actually edited - simplest to always clear all three.
     clearRaceWatchers();
@@ -533,10 +543,18 @@ function main() {
 
   // Every per-boat watcher (finish-line lap count, on-grid state, mark
   // roundings) lives entirely in memory, keyed by boatId, for as long as
-  // this base station process stays up. Cleared whenever a mark is edited
-  // from the map (see setMarkLocation, the only caller) - existing watchers
-  // cached the old mark position, so they'd otherwise keep using stale gate
-  // geometry for the rest of the race.
+  // this base station process stays up - nothing about a boatId is
+  // race-scoped on its own, so without an explicit reset a boat's watcher
+  // (its lapCount, its last-known prevPos for crossing detection, ...)
+  // just carries straight over from whatever race/test last used that same
+  // boatId. Cleared whenever a mark is edited from the map (see
+  // setMarkLocation, the only other caller - existing watchers cached the
+  // old mark position, so they'd otherwise keep using stale gate geometry
+  // for the rest of the race) AND whenever a different regatta is selected
+  // (see selectRegatta below) - selecting a regatta is this app's own
+  // signal that a new race is starting, the same base station process
+  // often outliving several of them across a day of testing/racing with
+  // the same boat IDs reused each time.
   function clearRaceWatchers() {
     finishLineWatchers.clear();
     onGridWatchers.clear();
@@ -544,15 +562,16 @@ function main() {
     lastOnGridSentByBoat.clear();
   }
 
-  // Course marks - windward, leeward, and the pin/committee ends of the
-  // start/finish line (same geometry the simulator uses, see course.js). In
-  // SIMULATE mode, computes+publishes them if missing (whichever process -
-  // this one, or a boat simulator - asks Redis first defines the course for
-  // everyone after it); for real hardware, only reads whatever a race
-  // operator has actually published (getMarks(), not getOrCreateMarks() -
-  // this app has no business inventing a real course). Either way, once
-  // committee+finish are known, raceMarks below is what builds a
-  // FinishLineWatcher per boat.
+  // Course marks - windward, leeward, and the pin/committeeStart ends of
+  // the start line plus committeeFinish/finish for the finish gate (same
+  // geometry the simulator uses, see course.js). In SIMULATE mode,
+  // computes+publishes them if missing (whichever process - this one, or a
+  // boat simulator - asks Redis first defines the course for everyone
+  // after it); for real hardware, only reads whatever a race operator has
+  // actually published (getMarks(), not getOrCreateMarks() - this app has
+  // no business inventing a real course). Either way, once committeeFinish
+  // +finish are known, raceMarks below is what builds a FinishLineWatcher
+  // per boat.
   let raceMarks = null;
 
   async function resolveMarks() {
@@ -602,7 +621,7 @@ function main() {
     } else {
       try {
         const marks = await redisStore.getMarks();
-        if (marks.committee && marks.finish) {
+        if (marks.committeeFinish && marks.finish) {
           console.log('[baseStation] finish line resolved (Redis) - lap crossings will be reported');
           return marks;
         }
@@ -679,7 +698,7 @@ function main() {
 
   // One OnGridWatcher per boat, same lazy-build-per-boat pattern as
   // finishLineWatchers above (see onGridWatcher.js) - independent in/out
-  // state per boat, built once raceMarks has pin/committee/finish AND
+  // state per boat, built once raceMarks has pin/committeeStart AND
   // windwardGreen/leewardGreen (needed for the watcher's own starboard-tack
   // exclusion corridor - see its module comment).
   const onGridWatchers = new Map();
@@ -1404,7 +1423,7 @@ function main() {
       : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_DISABLED=1)'
   );
   if (config.regattaup.enabled) {
-    console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m behind the pin<->committee line`);
+    console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m behind the pin<->committeeStart line`);
     console.log(
       config.regattaup.markRoundingEnabled
         ? `[baseStation] mark roundings post to RegattaUp (gate extends ${config.regattaup.markRoundingExtensionM}m beyond each mark)`

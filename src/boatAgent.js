@@ -121,7 +121,8 @@ if (config.simulate) {
   radio.send = () => false;
 }
 
-// Course marks (windward/leeward/pin/committee/finish), as last broadcast by
+// Course marks (windward/leeward/pin/committeeStart/committeeFinish/finish),
+// as last broadcast by
 // the base station - a real rover has no Redis access of its own (see
 // baseStation.js's mark-broadcast comment), so this is the only way it ever
 // learns the course. Kept in memory for anything on the boat that wants it
@@ -202,15 +203,18 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
 // this boat's own PREVIOUS one to detect a crossing, so keeping the ping
 // close to where the boat will actually start avoids a spurious crossing
 // on the real fix that follows it - and specifically the midpoint of
-// pin<->committee, not a mark itself: this frame gets recorded and shown
-// on the map exactly like a real fix (see baseStation.js's radio.on
+// pin<->committeeStart, not a mark itself: this frame gets recorded and
+// shown on the map exactly like a real fix (see baseStation.js's radio.on
 // ('frame', ...)), so landing it on, say, leewardGreen would show the
 // boat starting AT a course mark it was never actually near. The midpoint
 // is guaranteed to read as on-grid (see onGridWatcher.js) regardless of
 // which slot this boat ends up drawing once it actually starts.
 function sendMarksPing() {
   const pos = currentMarks
-    ? { lat: (currentMarks.pin.lat + currentMarks.committee.lat) / 2, lon: (currentMarks.pin.lon + currentMarks.committee.lon) / 2 }
+    ? {
+        lat: (currentMarks.pin.lat + currentMarks.committeeStart.lat) / 2,
+        lon: (currentMarks.pin.lon + currentMarks.committeeStart.lon) / 2,
+      }
     : { lat: config.sim.centerLat, lon: config.sim.centerLon };
   const pingPvt = {
     timestamp: Date.now(),
@@ -605,12 +609,14 @@ function startGpsSimIfReady() {
     startOnly: config.sim.startOnly,
     prestartDwellS: config.sim.prestartDwellS,
     holdForStart: config.sim.holdForStart,
-    // The start/finish line logic needs the REAL pin/committee/finish
-    // positions, not just geometry's scalar distances - see simGps.js's
-    // own comment on why (an edited windward mark rotates the beat axis
-    // independently of wherever the start/finish complex actually still is).
+    // The start/finish line logic needs the REAL pin/committeeStart/
+    // committeeFinish/finish positions, not just geometry's scalar
+    // distances - see simGps.js's own comment on why (an edited windward
+    // mark rotates the beat axis independently of wherever the
+    // start/finish complex actually still is).
     pin: currentMarks.pin,
-    committee: currentMarks.committee,
+    committeeStart: currentMarks.committeeStart,
+    committeeFinish: currentMarks.committeeFinish,
     finish: currentMarks.finish,
   });
   simGpsSource = gps;

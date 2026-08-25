@@ -138,11 +138,12 @@ class RedisStore {
     return this.client.smembers('boats:known');
   }
 
-  // Course marks: five entries (`mark:windward`, `mark:leeward`, `mark:pin`,
-  // `mark:committee`, `mark:finish`), each a Redis hash with lat/lon fields -
-  // so boats can be checked against where the marks actually are (e.g.
-  // confirming a rounding), and so anything else (a dashboard, race software, another
-  // simulator) has one shared place to look up the course.
+  // Course marks: one entry per MARK_NAMES (`mark:windwardGreen`,
+  // `mark:pin`, `mark:committeeStart`, `mark:committeeFinish`, ...), each a
+  // Redis hash with lat/lon fields - so boats can be checked against where
+  // the marks actually are (e.g. confirming a rounding), and so anything
+  // else (a dashboard, race software, another simulator) has one shared
+  // place to look up the course.
   async setMark(name, { lat, lon }) {
     await this.ready;
     await this.client.hset(`mark:${name}`, { lat: String(lat), lon: String(lon) });

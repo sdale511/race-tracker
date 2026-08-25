@@ -230,23 +230,23 @@ function renderDashboard(s) {
 // that's the one thing the base's fleet-wide map doesn't have room to
 // show per-boat.
 // Floating card in the map page's top-left corner, showing the start/finish
-// line's own length and bearing plus a compass heading from committee to
-// each windward/leeward mark - the numbers a race committee actually calls
-// out on the water, not just raw mark coordinates. Bearings are all
-// measured FROM committee, matching how an operator standing at the
-// committee boat would actually read them - not from this boat's own live
-// position, which would make every reading shift as the boat moves. Same
-// as adminServer.js's own copy - see its comment for why this file doesn't
-// import that one instead.
+// lines' own lengths and bearings plus a compass heading from committeeStart
+// to each windward/leeward mark - the numbers a race committee actually
+// calls out on the water, not just raw mark coordinates. Windward/leeward
+// bearings are measured FROM committeeStart specifically (the usual
+// start-line committee boat), matching how an operator standing there would
+// actually read them - not from this boat's own live position, which would
+// make every reading shift as the boat moves. Same as adminServer.js's own
+// copy - see its comment for why this file doesn't import that one instead.
 function buildCourseInfoHtml(marks) {
-  const startLineM = distanceMeters(marks.pin, marks.committee);
-  const startLineBearing = bearingDeg(marks.committee, marks.pin);
-  const finishLineM = distanceMeters(marks.committee, marks.finish);
-  const finishLineBearing = bearingDeg(marks.committee, marks.finish);
+  const startLineM = distanceMeters(marks.pin, marks.committeeStart);
+  const startLineBearing = bearingDeg(marks.committeeStart, marks.pin);
+  const finishLineM = distanceMeters(marks.committeeFinish, marks.finish);
+  const finishLineBearing = bearingDeg(marks.committeeFinish, marks.finish);
   const headingRows = ['windwardBlack', 'windwardGreen', 'leewardGreen', 'leewardBlack']
     .map((name) => {
       const label = name[0].toUpperCase() + name.slice(1);
-      const bearing = bearingDeg(marks.committee, marks[name]);
+      const bearing = bearingDeg(marks.committeeStart, marks[name]);
       return `<div class="course-info-row"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
@@ -296,8 +296,8 @@ function renderMap(s) {
     : '';
   const linesJs = marks
     ? `
-    L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committee.lat}, ${marks.committee.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
-    L.polyline([[${marks.committee.lat}, ${marks.committee.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
+    L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committeeStart.lat}, ${marks.committeeStart.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
+    L.polyline([[${marks.committeeFinish.lat}, ${marks.committeeFinish.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
     L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
     // On-grid detection zone - the exact quadrilateral OnGridWatcher.check
     // itself tests against (see onGridWatcher.js's zonePolygon), not a

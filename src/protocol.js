@@ -89,9 +89,9 @@ function decode(buf) {
 // byte-stream scanner (radioLink.js) can tell them apart before it knows
 // how many bytes to consume.
 //
-// Layout (all little-endian), marks in MARK_NAMES order (currently 7:
-// windwardGreen/windwardBlack/leewardGreen/leewardBlack/pin/committee/
-// finish - see course.js):
+// Layout (all little-endian), marks in MARK_NAMES order (currently 8:
+// windwardGreen/windwardBlack/leewardGreen/leewardBlack/pin/committeeStart/
+// committeeFinish/finish - see course.js):
 //   [0]  sync byte     0xBB
 //   ...  MARK_NAMES.length x { lat*1e7 int32, lon*1e7 int32 }  (8 bytes each)
 //   ...  base IP       4 bytes, one octet each (0.0.0.0 = unknown/none)

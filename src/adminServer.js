@@ -675,26 +675,27 @@ function renderDashboard(s) {
 // tiles loaded from their public CDNs, so this needs the viewing browser to
 // have internet access (the base station's own connectivity to publish
 // marks/tracks does not matter here - this is rendered in whoever's
-// looking at the dashboard). No live boat positions, just the five marks
+// looking at the dashboard). No live boat positions, just the course marks
 // and the start/finish lines between them - this is a course reference
 // view, not a live tracking map.
 // Floating card in the map page's top-left corner, showing the start/finish
-// line's own length and bearing plus a compass heading from committee to
-// each windward/leeward mark - the numbers a race committee actually calls
-// out on the water, not just raw mark coordinates (see the "Course marks"
-// card on the dashboard page for that). Bearings are all measured FROM
-// committee, matching how an operator standing at the committee boat would
-// actually read them - not from the boat's own live position, which would
-// make every reading shift as the boat moves.
+// lines' own lengths and bearings plus a compass heading from committeeStart
+// to each windward/leeward mark - the numbers a race committee actually
+// calls out on the water, not just raw mark coordinates (see the "Course
+// marks" card on the dashboard page for that). Windward/leeward bearings
+// are measured FROM committeeStart specifically (the usual start-line
+// committee boat), matching how an operator standing there would actually
+// read them - not from the boat's own live position, which would make
+// every reading shift as the boat moves.
 function buildCourseInfoHtml(marks) {
-  const startLineM = distanceMeters(marks.pin, marks.committee);
-  const startLineBearing = bearingDeg(marks.committee, marks.pin);
-  const finishLineM = distanceMeters(marks.committee, marks.finish);
-  const finishLineBearing = bearingDeg(marks.committee, marks.finish);
+  const startLineM = distanceMeters(marks.pin, marks.committeeStart);
+  const startLineBearing = bearingDeg(marks.committeeStart, marks.pin);
+  const finishLineM = distanceMeters(marks.committeeFinish, marks.finish);
+  const finishLineBearing = bearingDeg(marks.committeeFinish, marks.finish);
   const headingRows = ['windwardBlack', 'windwardGreen', 'leewardGreen', 'leewardBlack']
     .map((name) => {
       const label = name[0].toUpperCase() + name.slice(1);
-      const bearing = bearingDeg(marks.committee, marks[name]);
+      const bearing = bearingDeg(marks.committeeStart, marks[name]);
       return `<div class="course-info-row"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
@@ -943,9 +944,11 @@ function renderMap(s) {
     ${markersJs}
     ${boatMarkersJs}
 
-    // Start line (pin <-> committee) and finish gate (committee <-> finish).
-    L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committee.lat}, ${marks.committee.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
-    L.polyline([[${marks.committee.lat}, ${marks.committee.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
+    // Start line (pin <-> committeeStart) and finish gate (committeeFinish
+    // <-> finish) - drawn as two independent lines since they no longer
+    // necessarily share an endpoint.
+    L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committeeStart.lat}, ${marks.committeeStart.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
+    L.polyline([[${marks.committeeFinish.lat}, ${marks.committeeFinish.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
     // Course axis (leewardBlack <-> windwardBlack) - just a visual
     // reference; boats actually tack back and forth across this, not sail
     // it directly. Drawn between the black (outer) marks rather than the
