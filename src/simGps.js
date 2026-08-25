@@ -13,7 +13,23 @@ function projectFraction(a, b, p) {
   const abNorth = b.north - a.north;
   const abEast = b.east - a.east;
   const lenSq = abNorth * abNorth + abEast * abEast;
-  if (lenSq === 0) return 0; // degenerate: a and b on top of each other
+  // Degenerate: a and b on top of each other - a real, not just
+  // theoretical, case now that committeeStart/committeeFinish can be
+  // independently positioned (see course.js's FINISH_OFFSET_NORTH_M/
+  // FINISH_OFFSET_EAST_M) and default to the exact same spot. Every
+  // caller of this function uses the result as a membership test
+  // (t>=0 && t<=1) against a real segment's span - a zero-length "segment"
+  // has zero span, so it should never match ANY point, not even its own
+  // location (a single point has no interior to be "inside"). Returning 0
+  // here instead would read as "always inside," which previously made
+  // _inLocalStrip report every point on the entire course as being in the
+  // forbidden strip whenever committeeStart and committeeFinish were
+  // co-located (the default) - confirmed live: boats sailing straight
+  // through the actual finish gate downwind, because the reactive
+  // violation-avoidance leg meant to catch exactly that was permanently
+  // short-circuited by that same "always violating" bug on its OTHER,
+  // unrelated segment checks (see _inLocalStrip's own comment).
+  if (lenSq === 0) return Infinity;
   const apNorth = p.north - a.north;
   const apEast = p.east - a.east;
   return (apNorth * abNorth + apEast * abEast) / lenSq;
@@ -324,7 +340,7 @@ class SimGpsSource extends EventEmitter {
     this.clearingHeadingDeg = null; // set mid-mark-rounding (due east/west) or mid-line-clear (headed up), see _tick()
     this.clearingDirection = null; // +1 (clearing east) or -1 (clearing west) - which way clearingTargetEastM is being approached from
     this.clearingIsLineCross = false; // true when clearingHeadingDeg is clearing the start/finish strip, not a mark
-    this.clearingSegmentPassedKey = null; // which passedStartSide/passedFinishSide/passedMiddleSection this clear is for, see where it's set
+    this.clearingSegmentPassedKeys = []; // which passedStartSide/passedFinishSide/passedMiddleSection this clear covers, see where it's set
     this.steeringDirect = false; // true once close enough to the gate/a mark to steer directly at it instead of a fixed-angle tack, see _startNewLeg()
     // Freezes the heading during finishCoastRemainingM/lapCoastRemainingM
     // (coast straight after a gate crossing) when that crossing happened
@@ -905,23 +921,45 @@ class SimGpsSource extends EventEmitter {
       // Mid clearing leg - a mark rounding (heading frozen due east/west,
       // clearingDirection +1/-1) or (see clearingIsLineCross) heading up to
       // clear the start/finish strip (a real, wider-than-normal angle, not
-      // frozen - see where this gets set below). Either way, "cleared"
-      // means east has reached the target in clearingDirection.
-      const cleared =
+      // frozen - see where this gets set below). "Cleared" means east has
+      // reached the target in clearingDirection.
+      const reachedTarget =
         this.clearingDirection === 1 ? this.east >= this.clearingTargetEastM : this.east <= this.clearingTargetEastM;
+      // For a line-cross clear specifically, reaching the precomputed
+      // target isn't sufficient on its own - the target was sized against
+      // the segments known to be pending when the leg started, but the
+      // straight-line PATH to get there can still cut through one of
+      // THOSE segments' own span partway there (they can sit directly
+      // adjacent to each other, e.g. whenever committeeStart and
+      // committeeFinish are at or near the same spot - the default - so
+      // clearing distance one way can pass straight through the other
+      // segment's own territory before ever reaching the target).
+      // _inLocalStrip is the simulator's own ground truth for "is this
+      // exact point forbidden" - requiring it to say no, not just trusting
+      // the precomputed target, is what actually guarantees the boat
+      // never finishes this leg still standing inside one. If the target's
+      // reached but this still says yes, the leg simply keeps running at
+      // the same wide angle rather than stopping short - eventually either
+      // more east progress or the ongoing north progress clears it for
+      // real. Mark-rounding clears don't need this - they're not
+      // navigating around a segment, just squaring away from one mark's
+      // own longitude.
+      const cleared = reachedTarget && (!this.clearingIsLineCross || !this._inLocalStrip(this.north, this.east));
       if (cleared) {
         this.clearingHeadingDeg = null;
         if (this.clearingIsLineCross) {
           this.clearingIsLineCross = false;
-          // Only THIS segment is actually behind the boat now - not
-          // necessarily the whole start/finish complex (see this leg's own
-          // comment on clearingSegmentPassedKey). Same "only fully done
-          // once every segment is passed" rule as the clean-pass case
-          // above; if another segment is still pending, leave
-          // crossedLineThisLeg false and keep sailing the current tack so
-          // the downwind check re-fires once it's reached.
-          this[this.clearingSegmentPassedKey] = true;
-          this.clearingSegmentPassedKey = null;
+          // Every segment this leg was sized to clear (see its own
+          // comment on clearingSegmentPassedKeys) is actually behind the
+          // boat now - the leg's target was the union of all of them, not
+          // just whichever one triggered it. Same "only fully done once
+          // every segment is passed" rule as the clean-pass case above,
+          // for whatever's left outside this list (there shouldn't be
+          // anything, but a segment reached mid-clear by pure north
+          // progress rather than this leg's own east target stays
+          // possible in principle).
+          for (const key of this.clearingSegmentPassedKeys) this[key] = true;
+          this.clearingSegmentPassedKeys = [];
           if (this._pendingStripTriggerNorths().length === 0) {
             this.crossedLineThisLeg = true; // doesn't count a lap, just marks the crossing handled
             this._startNewLeg();
@@ -1132,20 +1170,31 @@ class SimGpsSource extends EventEmitter {
         // inside the forbidden strip before ever redirecting).
         this.north = prevNorth;
         this.east = prevEast;
-        // Free-tacking wasn't aiming for a particular spot here (there's no
-        // reason to be near either mark downwind), so it can occasionally
-        // land inside the forbidden strip by chance - clear it by heading
-        // up toward whichever edge of THIS segment is nearer (evaluated
-        // against the violating crossing point, not the rolled-back
-        // position, since that's where the boat was actually headed): a
-        // real, wider-than-normal angle off dead downwind (more lateral
-        // speed, but still making some forward progress, not frozen
-        // sideways like a mark rounding) that bears away back to the
-        // normal run angle the instant it's clear (handled above, same as
-        // any other tack/gybe transition).
-        const distToBSide = seg.bLocal.east - crossingEast;
-        const distToASide = crossingEast - seg.aLocal.east;
-        this.clearingDirection = distToBSide <= distToASide ? 1 : -1;
+        // The clearing leg below runs for multiple ticks with the crossing
+        // check itself switched off (see clearingHeadingDeg!=null in the
+        // phase-management chain above) - it doesn't re-check against
+        // anything while under way. Clearing toward whichever edge of just
+        // THIS segment was nearer (the original approach) sized the leg to
+        // dodge only the segment that happened to trigger it - if another
+        // pending segment's own east-range overlapped the path to that
+        // edge, the leg could sail straight through THAT one instead, with
+        // no check left running to catch it (confirmed live: a boat
+        // clearing the committeeStart<->committeeFinish gap sailing
+        // straight through the actual finish gate a moment later). Sized
+        // against the UNION of every still-pending segment's east-range
+        // instead - once east clears past the far side of all of them at
+        // once, the leg can't still be sailing through any of them,
+        // regardless of which one's own north threshold triggered it.
+        const pending = [
+          { aLocal: this.pinLocal, bLocal: this.committeeStartLocal, passedKey: 'passedStartSide' },
+          { aLocal: this.committeeFinishLocal, bLocal: this.finishLocal, passedKey: 'passedFinishSide' },
+          { aLocal: this.committeeStartLocal, bLocal: this.committeeFinishLocal, passedKey: 'passedMiddleSection' },
+        ].filter((s) => !this[s.passedKey]);
+        const minEast = Math.min(...pending.map((s) => Math.min(s.aLocal.east, s.bLocal.east)));
+        const maxEast = Math.max(...pending.map((s) => Math.max(s.aLocal.east, s.bLocal.east)));
+        const distToMax = maxEast - crossingEast;
+        const distToMin = crossingEast - minEast;
+        this.clearingDirection = distToMax <= distToMin ? 1 : -1;
         // sin(180+x) = -sin(x) - a lean off the downwind base heading (180)
         // moves east/west opposite of the same lean off the upwind base
         // (0), so clearingDirection needs a flipped sign here to still mean
@@ -1154,17 +1203,13 @@ class SimGpsSource extends EventEmitter {
         const downwindBaseDeg = (WIND_FROM_DEG + 180) % 360;
         this.clearingHeadingDeg = (downwindBaseDeg - this.clearingDirection * DOWNWIND_CLEAR_HEAD_UP_DEG + 360) % 360;
         this.clearingTargetEastM =
-          this.clearingDirection === 1 ? seg.bLocal.east + DOWNWIND_CLEAR_MARGIN_M : seg.aLocal.east - DOWNWIND_CLEAR_MARGIN_M;
+          this.clearingDirection === 1 ? maxEast + DOWNWIND_CLEAR_MARGIN_M : minEast - DOWNWIND_CLEAR_MARGIN_M;
         this.clearingIsLineCross = true;
         // Remembered so the clearing-leg completion handler (_tick()'s
-        // clearingHeadingDeg!=null branch, a later tick) knows which
-        // segment this particular clear was for - it needs to mark THIS
-        // one passed, not assume the whole complex is behind the boat (see
-        // that handler's own comment on why unconditionally finishing
-        // there was a real bug: a boat clearing e.g. the CS<->CF gap could
-        // sail straight through a still-pending pin<->CS or CF<->finish
-        // segment right after, with no check left to catch it).
-        this.clearingSegmentPassedKey = seg.passedKey;
+        // clearingHeadingDeg!=null branch, a later tick) can mark every
+        // segment this leg was actually sized to clear as passed, not just
+        // the one that triggered it.
+        this.clearingSegmentPassedKeys = pending.map((s) => s.passedKey);
         this.timeSinceManeuverS = 0;
       } else {
         this.north = seg.triggerNorth;
