@@ -306,8 +306,15 @@ class SimGpsSource extends EventEmitter {
     // whether that line happens to be perpendicular to the beat axis -
     // then pulled PENDING_LINE_OFFSET_M leeward (south, in this local
     // frame) of it, not left sitting exactly on top of the line (see that
-    // constant's own comment).
-    const startLineFrac = getStartFraction(startFrac);
+    // constant's own comment). The real, measured line length (not
+    // START_SIDE_LENGTH_M - an operator-edited line isn't guaranteed to
+    // match its own computed default) is what lets getStartFraction keep
+    // the whole fleet SIM_START_LINE_END_MARGIN_M clear of both ends.
+    const lineLenM = Math.hypot(
+      this.committeeStartLocal.north - this.pinLocal.north,
+      this.committeeStartLocal.east - this.pinLocal.east
+    );
+    const startLineFrac = getStartFraction(startFrac, lineLenM);
     this.north =
       this.pinLocal.north + startLineFrac * (this.committeeStartLocal.north - this.pinLocal.north) - PENDING_LINE_OFFSET_M;
     this.east = this.pinLocal.east + startLineFrac * (this.committeeStartLocal.east - this.pinLocal.east);

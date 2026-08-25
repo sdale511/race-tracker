@@ -591,14 +591,23 @@ function main() {
       // result, no matter how many times or which process asks.
       try {
         const existing = await redisStore.getMarks();
-        const hasExisting = MARK_NAMES.every((name) => existing[name]);
+        // Only the three marks actually compared below need to exist for
+        // this check to mean anything - NOT every MARK_NAMES entry.
+        // Requiring the full set (including pin/committeeStart/
+        // committeeFinish/finish, which this check doesn't even look at)
+        // meant that adding a new mark name here (e.g. the
+        // committeeStart/committeeFinish split) made this permanently
+        // false against a course published before that change, treating a
+        // pure schema upgrade as "the course differs" and clearing a real,
+        // unrelated, already-correct course out from under it.
+        const hasGeometryMarks = existing.leewardGreen && existing.windwardGreen && existing.windwardBlack;
         const centerMatches =
-          hasExisting &&
+          hasGeometryMarks &&
           distanceMeters(existing.leewardGreen, { lat: config.sim.centerLat, lon: config.sim.centerLon }) < 0.1;
         const lengthMatches =
-          hasExisting && Math.abs(distanceMeters(existing.leewardGreen, existing.windwardGreen) - COURSE_LENGTH_M) < 0.1;
+          hasGeometryMarks && Math.abs(distanceMeters(existing.leewardGreen, existing.windwardGreen) - COURSE_LENGTH_M) < 0.1;
         const longCourseMatches =
-          hasExisting &&
+          hasGeometryMarks &&
           Math.abs(distanceMeters(existing.windwardGreen, existing.windwardBlack) - LONG_COURSE_EXTRA_M) < 0.1;
         const requestedChange = ['SIM_COURSE_LENGTH_NM', 'SIM_CENTER_LAT', 'SIM_CENTER_LON', 'SIM_LONG_COURSE_EXTRA_NM'].some(
           (name) => process.env[name] !== undefined

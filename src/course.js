@@ -195,6 +195,26 @@ function getMarks(centerLat, centerLon) {
 // and a large simulated fleet needs the room.
 const SIM_START_SAFE_MAX_FRACTION = 1;
 
+// How far, in real meters, a boat's start position stays clear of EITHER
+// end of the pin<->committeeStart line - not just the committeeStart end.
+// A boat sitting essentially AT committeeStart can fall inside
+// onGridWatcher.js's own committee-corner exclusion (a real ambiguity zone,
+// not a bug - see its own HYPOTENUSE_ANGLE_DEG/onGridZoneM), and a boat
+// sitting essentially AT pin has similarly little headroom against
+// _isInZone's own small edge margin; keeping the whole fleet a fixed
+// real-world distance off both ends avoids either regardless of how long
+// the line actually is. 20m comfortably clears onGridWatcher's own default
+// exclusion reach (onGridZoneM=10, HYPOTENUSE_ANGLE_DEG=25 -> ~21.5m) with
+// a small margin, without needing this file to import that file's own
+// constants just to stay in sync - if onGridZoneM is configured much
+// larger than its own default, REGATTAUP_ONGRID_ZONE_M's own operator can
+// raise this to match. Starting conservative (5m, not the ~21.5m that
+// would fully guarantee clearing the default exclusion) - wide enough to
+// keep boats visibly off the marks themselves without eating too much of
+// a short line's own spread; raise it if boats are still landing inside
+// the exclusion zone in practice.
+const SIM_START_LINE_END_MARGIN_M = parseFloat(process.env.SIM_START_LINE_END_MARGIN_M || '5');
+
 // Returns a 0 (pin) to 1 (committeeStart) FRACTION along the line, not an
 // absolute north/east - unlike windward/leeward (always exactly on
 // simGps.js's own rotated local-north axis, by definition of how that
@@ -214,8 +234,19 @@ const SIM_START_SAFE_MAX_FRACTION = 1;
 // boats, but a larger simulated fleet (fleetSim.js routinely runs 20-30)
 // wrapped around and landed many boats on an EXACT duplicate of an earlier
 // boat's position, not just visually close.
-function getStartFraction(frac) {
-  return frac * SIM_START_SAFE_MAX_FRACTION;
+//
+// lineLenM (the real, measured pin<->committeeStart distance - simGps.js
+// has this on hand already, from the same local positions it uses for
+// everything else) converts SIM_START_LINE_END_MARGIN_M into a fraction of
+// THIS line specifically, then confines the 0..SIM_START_SAFE_MAX_FRACTION
+// spread to the sub-range that stays that far off both ends. Capped at 0.45
+// per side so a line shorter than 2x the margin still spreads boats across
+// its own middle rather than collapsing them onto a single point.
+function getStartFraction(frac, lineLenM) {
+  const raw = frac * SIM_START_SAFE_MAX_FRACTION;
+  if (!lineLenM) return raw; // caller didn't measure a real line - no margin to apply
+  const marginFrac = Math.min(0.45, SIM_START_LINE_END_MARGIN_M / lineLenM);
+  return marginFrac + raw * (1 - 2 * marginFrac);
 }
 
 // Which windward/leeward mark the simulator actually races - see

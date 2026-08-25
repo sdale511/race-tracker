@@ -165,20 +165,27 @@ class RedisStore {
     await Promise.all(Object.entries(marks).map(([name, pos]) => this.setMark(name, pos)));
   }
 
-  // Reads the course marks from Redis if all five are already set - so
+  // Reads the course marks from Redis if all of them are already set - so
   // multiple simulators (or a restarted base station) racing the same
   // course agree on identical mark positions instead of each computing its
-  // own. Otherwise computes them from the given center point (see
-  // course.js) and publishes them, so whichever process asks first defines
-  // the course for everyone after it. Not atomic (a get-then-set race is
-  // possible if two processes start at the exact same instant), which is
-  // an acceptable tradeoff for a test/simulation tool.
+  // own. Otherwise computes fresh defaults from the given center point (see
+  // course.js) and publishes ONLY whichever marks are actually missing -
+  // not the full computed set - so a course that already has real
+  // positions (hand-surveyed, or edited through the admin UI) never gets
+  // silently overwritten just because MARK_NAMES later grew a new mark
+  // (e.g. the committeeStart/committeeFinish split): the marks that DO
+  // exist are returned exactly as they are, and only the gap gets filled
+  // in. Not atomic (a get-then-set race is possible if two processes start
+  // at the exact same instant), which is an acceptable tradeoff for a
+  // test/simulation tool.
   async getOrCreateMarks(centerLat, centerLon) {
     const existing = await this.getMarks();
-    if (MARK_NAMES.every((name) => existing[name])) return existing;
+    const missing = MARK_NAMES.filter((name) => !existing[name]);
+    if (missing.length === 0) return existing;
     const computed = computeMarks(centerLat, centerLon);
-    await this.setMarks(computed);
-    return computed;
+    const fillIn = Object.fromEntries(missing.map((name) => [name, computed[name]]));
+    await this.setMarks(fillIn);
+    return { ...existing, ...fillIn };
   }
 
   // Deletes the five `mark:*` keys (plus the derived on-grid zone, so a

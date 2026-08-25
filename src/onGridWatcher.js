@@ -51,7 +51,12 @@ const ONGRID_EDGE_MARGIN_M = 1;
 // equivalent treatment, since a boat approaching there is already excluded
 // by the ordinary "between pin and committeeStart" bound (see _isInZone)
 // well before it'd ever look on-grid.
-const HYPOTENUSE_ANGLE_DEG = 40;
+//
+// A steeper angle here (closer to 90, closer to straight downwind) reaches
+// its own leeward zoneMeters depth after less along-line travel (see the
+// along-line-reach comment below) - a deliberately narrower exclusion, so
+// fewer genuinely-queuing boats near committeeStart get caught by it.
+const HYPOTENUSE_ANGLE_DEG = 55;
 
 // The hypotenuse's own along-line reach (zoneMeters / tan(HYPOTENUSE_ANGLE_DEG),
 // ~11.92m at the 10m default) is a FIXED distance, independent of how long
@@ -68,6 +73,26 @@ const HYPOTENUSE_ANGLE_DEG = 40;
 // assumption above that the pin end never needs this treatment) no matter
 // how short the course.
 const COMMITTEE_TRIANGLE_MAX_FRACTION = 0.5;
+
+// The exclusion above only exists because a boat finishing (or otherwise
+// sailing upwind) near committeeStart could be confused with one queuing -
+// now that start and finish are independent marks, that's only actually
+// possible when committeeFinish is genuinely close to committeeStart (the
+// default, unconfigured case - see course.js's FINISH_OFFSET_NORTH_M/
+// FINISH_OFFSET_EAST_M). Once an operator moves committeeFinish far enough
+// away, a finishing/upwind-sailing boat's real approach is nowhere near
+// this corner at all, and the exclusion becomes pure cost with no
+// remaining benefit - most visible at a short SIM_COURSE_LENGTH_NM test
+// course, where the exclusion's own onGridZoneM-scaled reach (a fixed
+// real-world distance, not scaled down with the course - see
+// HYPOTENUSE_ANGLE_DEG's own comment) can end up capped at eating HALF the
+// entire line (COMMITTEE_TRIANGLE_MAX_FRACTION) even though nothing is
+// actually finishing anywhere nearby. `zoneMeters` itself (not a separate
+// constant) sets the bar for "close enough to matter" - the same distance
+// already used to decide how close behind the line still counts as
+// queued, so a committeeFinish further than SAFE_FINISH_SEPARATION_MULTIPLE
+// zone-widths away is unambiguously clear of it.
+const SAFE_FINISH_SEPARATION_MULTIPLE = 2;
 
 // Same flat-earth approximation as finishLineWatcher.js - fine at the
 // meter-scale distances a start line and its surrounding zone span.
@@ -90,15 +115,48 @@ function toLatLon(originLat, originLon, x, y) {
 // Shared by the constructor and zonePolygon (below) - the one place this
 // geometry actually gets computed, so a drawn zone (see zonePolygon) can
 // never drift out of sync with what check() actually detects against.
-// marks: { committeeStart, pin, windwardGreen, leewardGreen } (all {lat, lon}).
-function computeGeometry(marks) {
+// marks: { committeeStart, committeeFinish, pin, windwardGreen, leewardGreen }
+// (all {lat, lon}) - committeeFinish is optional (a caller with only the
+// older mark set is treated the same as "not safely separated," keeping
+// the exclusion active, same as before that mark existed at all).
+function computeGeometry(marks, zoneMeters) {
   const originLat = marks.committeeStart.lat;
   const originLon = marks.committeeStart.lon;
   const toLocal = (lat, lon) => toXY(originLat, originLon, lat, lon);
   const committeeStart = toLocal(marks.committeeStart.lat, marks.committeeStart.lon);
   const pin = toLocal(marks.pin.lat, marks.pin.lon);
 
-  // Wind axis: leewardGreen -> windwardGreen, pointing upwind.
+  // See SAFE_FINISH_SEPARATION_MULTIPLE's own comment - skip the whole
+  // committee-corner exclusion once committeeFinish is far enough away
+  // that a boat finishing (or sailing upwind generally) near it couldn't
+  // possibly be mistaken for one queuing at committeeStart.
+  const committeeFinishSeparationM = marks.committeeFinish
+    ? Math.hypot(...Object.values(toLocal(marks.committeeFinish.lat, marks.committeeFinish.lon)))
+    : 0;
+  const excludeTriangle = committeeFinishSeparationM < zoneMeters * SAFE_FINISH_SEPARATION_MULTIPLE;
+
+  // The start line's own direction (committeeStart -> pin) - NOT the wind
+  // axis. A real start line is set by an operator (or GPS-migrated/edited
+  // marks), never guaranteed perfectly square to the wind - in one real
+  // course, committeeStart sat a few centimeters off pin's own north, an
+  // entirely ordinary real-world imprecision. The on-grid zone is defined
+  // relative to the LINE itself ("behind the line," "along the line"), so
+  // its own geometry (below) is built from this direction, not the wind
+  // axis - using the wind axis for it made the zone's effective width
+  // balloon (or vanish) the further a boat sat from committeeStart,
+  // proportional to however not-quite-square the line happened to be:
+  // confirmed live, a boat safely on the line's own pin end read as
+  // several meters past it, rejected outright as if it had crossed early.
+  const pinDx = pin.x - committeeStart.x;
+  const pinDy = pin.y - committeeStart.y;
+  const pinLen = Math.hypot(pinDx, pinDy) || 1;
+  const pinUx = pinDx / pinLen;
+  const pinUy = pinDy / pinLen;
+
+  // Wind axis: leewardGreen -> windwardGreen - used ONLY to pick which of
+  // the line's own two perpendiculars actually faces the course side (the
+  // line's two marks alone can't say which side that is), never to
+  // measure any distance directly - that's crossLine below, not this.
   const windward = toLocal(marks.windwardGreen.lat, marks.windwardGreen.lon);
   const leeward = toLocal(marks.leewardGreen.lat, marks.leewardGreen.lon);
   const windDx = windward.x - leeward.x;
@@ -107,21 +165,29 @@ function computeGeometry(marks) {
   const windUx = windDx / windLen;
   const windUy = windDy / windLen;
 
+  // The line's own perpendicular, oriented toward the course (windward)
+  // side - of the two candidates, whichever actually leans toward the
+  // wind axis wins, so this comes out right whichever way the course
+  // happens to be laid, not assumed from a fixed compass sense. This (not
+  // the wind axis itself) is what check() measures "windward of the line"
+  // against below.
+  const candA = { x: -pinUy, y: pinUx };
+  const candB = { x: pinUy, y: -pinUx };
+  const crossLine = candA.x * windUx + candA.y * windUy >= candB.x * windUx + candB.y * windUy ? candA : candB;
+  const crossLineUx = crossLine.x;
+  const crossLineUy = crossLine.y;
+  // "down" (leeward, into the pre-start zone) is simply the opposite of
+  // the line's own windward-facing perpendicular above - used to orient
+  // the hypotenuse (below) and, by zonePolygon, to place the zone's own
+  // far corner.
+  const downX = -crossLineUx;
+  const downY = -crossLineUy;
+
   // The hypotenuse direction: the committeeStart->pin direction (the start
   // line itself), rotated HYPOTENUSE_ANGLE_DEG down into the zone. Both
   // rotations of committeeStart->pin are computed and whichever one
-  // actually leans toward leeward (down into the box, using
-  // straight-downwind - the negated wind axis - as the reference) is kept,
-  // so this comes out right whichever way the course happens to be laid,
-  // not assumed from a fixed compass sense.
-  const downX = -windUx;
-  const downY = -windUy;
-  const pinDx = pin.x - committeeStart.x;
-  const pinDy = pin.y - committeeStart.y;
-  const pinLen = Math.hypot(pinDx, pinDy) || 1;
-  const pinUx = pinDx / pinLen;
-  const pinUy = pinDy / pinLen;
-
+  // actually leans toward leeward (down into the box, using the line's
+  // own leeward perpendicular above as the reference) is kept.
   const angleRad = (HYPOTENUSE_ANGLE_DEG * Math.PI) / 180;
   const cos = Math.cos(angleRad);
   const sin = Math.sin(angleRad);
@@ -141,12 +207,13 @@ function computeGeometry(marks) {
     toLocal,
     committeeStart,
     pin,
-    windUx,
-    windUy,
+    crossLineUx,
+    crossLineUy,
     hypUx: hyp.x,
     hypUy: hyp.y,
     sinAngle: sin,
     excludedSideSign,
+    excludeTriangle,
   };
 }
 
@@ -159,9 +226,9 @@ function computeGeometry(marks) {
 // uses, so this can never show a different zone than what actually gets
 // detected.
 function zonePolygon(marks, zoneMeters) {
-  const geo = computeGeometry(marks);
-  const downX = -geo.windUx;
-  const downY = -geo.windUy;
+  const geo = computeGeometry(marks, zoneMeters);
+  const downX = -geo.crossLineUx;
+  const downY = -geo.crossLineUy;
   // Distance along the hypotenuse to travel before its own leeward
   // (downwind) component reaches zoneMeters - the hypotenuse makes
   // HYPOTENUSE_ANGLE_DEG with the (horizontal) start line, so a unit step
@@ -190,19 +257,24 @@ class OnGridWatcher {
   // the line on the windward/course side outright (see its own comment),
   // so this only ever extends into the pre-start area.
   constructor(marks, zoneMeters) {
-    const geo = computeGeometry(marks);
+    const geo = computeGeometry(marks, zoneMeters);
     this._toXY = geo.toLocal;
     this.committeeStart = geo.committeeStart;
     this.pin = geo.pin;
     this.zoneMeters = zoneMeters;
     this.onGrid = false;
-    // check() reuses this wind axis to reject anything on the
-    // windward/course side of the line, see its own comment.
-    this.windUx = geo.windUx;
-    this.windUy = geo.windUy;
+    // check() reuses this - the line's own perpendicular, not the wind
+    // axis (see computeGeometry's own comment) - to reject anything past
+    // the line on the windward/course side outright, see check() itself.
+    this.crossLineUx = geo.crossLineUx;
+    this.crossLineUy = geo.crossLineUy;
     this.hypUx = geo.hypUx;
     this.hypUy = geo.hypUy;
     this.excludedSideSign = geo.excludedSideSign;
+    // See SAFE_FINISH_SEPARATION_MULTIPLE's own comment - skips
+    // _inCommitteeTriangle entirely once committeeFinish is far enough from
+    // committeeStart that the ambiguity it guards against can't happen.
+    this.excludeTriangle = geo.excludeTriangle;
   }
 
   // Call with every new fix's lat/lon. Returns 'ongrid' every time the boat
@@ -214,20 +286,21 @@ class OnGridWatcher {
     const p = this._toXY(lat, lon);
     // A genuine pre-start boat sits behind (leeward of) the line, never in
     // the course area beyond it - crossing early would be OCS. Projected
-    // onto the wind axis, relative to committeeStart: positive means toward
-    // windward (the course side), so anything more than
-    // ONGRID_EDGE_MARGIN_M past the line on that side is rejected outright,
-    // same small tolerance as the "between pin and committeeStart" check
-    // gives right at the marks themselves.
+    // onto the LINE's own perpendicular (not the wind axis - see
+    // computeGeometry's own comment on why), relative to committeeStart:
+    // positive means toward windward (the course side), so anything more
+    // than ONGRID_EDGE_MARGIN_M past the line on that side is rejected
+    // outright, same small tolerance as the "between pin and
+    // committeeStart" check gives right at the marks themselves.
     const windwardOfLine =
-      (p.x - this.committeeStart.x) * this.windUx + (p.y - this.committeeStart.y) * this.windUy;
+      (p.x - this.committeeStart.x) * this.crossLineUx + (p.y - this.committeeStart.y) * this.crossLineUy;
     // See the module comment above for the other exclusion: a boat only
     // counts as on-grid if it's also in the start zone and NOT in the
     // starboard-tack triangle cut from committeeStart's corner.
     const inside =
       windwardOfLine <= ONGRID_EDGE_MARGIN_M &&
       this._isInZone(p, this.committeeStart, this.pin, this.zoneMeters) &&
-      !this._inCommitteeTriangle(p);
+      (!this.excludeTriangle || !this._inCommitteeTriangle(p));
     const wasInside = this.onGrid;
     this.onGrid = inside;
     if (inside) return 'ongrid';
