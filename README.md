@@ -13,6 +13,11 @@ logging to microSD as a durable backup.
                     microSD (CSV, same fixes sent over radio)
 ```
 
+For the complete rover → base → RegattaUp data flow - wire formats, Redis
+keys, webhook payloads, and RegattaUp's own entity fields - see
+[`docs/telemetry-pipeline.html`](docs/telemetry-pipeline.html) (open directly
+in a browser).
+
 - **GPS**: ZED-F9P emits `UBX-NAV-PVT` binary messages (position, speed,
   heading, fix type, RTK carrier solution, satellite count) — parsed directly,
   no NMEA needed.
