@@ -84,6 +84,7 @@ const sections = [
         envVar: 'MARKS_BROADCAST_INTERVAL_MS',
         unit: 'ms',
       },
+      { label: 'logMarksBroadcast', value: config.logMarksBroadcast, envVar: 'LOG_MARKS_BROADCAST' },
     ],
   },
   {
@@ -97,7 +98,7 @@ const sections = [
   {
     title: 'Log upload over WiFi',
     rows: [
-      { label: 'enabled', value: config.upload.enabled, envVar: 'UPLOAD_DISABLED', inverted: true },
+      { label: 'enabled', value: config.upload.enabled, envVar: 'UPLOAD_ENABLED' },
       { label: 'port', value: config.upload.port, envVar: 'UPLOAD_PORT' },
       { label: 'dir', value: config.upload.dir, envVar: 'UPLOAD_DIR' },
       { label: 'baseIp', value: config.upload.baseIp || '(auto-detect)', envVar: 'BASE_IP' },

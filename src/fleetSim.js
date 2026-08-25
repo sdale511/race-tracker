@@ -1,3 +1,4 @@
+require('./logTimestamps');
 const { spawn } = require('child_process');
 const path = require('path');
 
@@ -35,6 +36,12 @@ const BOAT_ID_START = parseInt(process.env.BOAT_ID_START || '1', 10);
 // from the parent env would otherwise collide across every child), so this
 // is never inherited from process.env, always assigned per boat below.
 const ADMIN_PORT_START = parseInt(process.env.FLEET_ADMIN_PORT_START || '8093', 10);
+// Off by default - every raw IPC message a boat sends (see boatAgent.js's
+// 'waiting-for-fix'/'on-grid') already feeds the aggregated summary line
+// below; echoing each one individually is fleet-size-worth of near-
+// duplicate lines, only worth it while actually debugging the IPC channel
+// itself. Set LOG_IPC=1 to see them.
+const LOG_IPC = process.env.LOG_IPC === '1' || process.env.LOG_IPC === 'true';
 
 if (!Number.isInteger(FLEET_SIZE) || FLEET_SIZE < 1) {
   console.error(`[fleetSim] invalid FLEET_SIZE=${process.env.FLEET_SIZE} - must be a positive integer`);
@@ -104,6 +111,7 @@ for (let i = 0; i < FLEET_SIZE; i++) {
     // see the HOLD_FOR_START block below.
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
+  child.boatId = boatId; // tagged for the message-echo loop below, which only has `child` in scope
   children.push(child);
 
   pipeWithPrefix(child.stdout, prefix, process.stdout);
@@ -132,6 +140,7 @@ const boatsWaitingForFix = new Set();
 let sawAnyWaitingForFix = false;
 for (const child of children) {
   child.on('message', (msg) => {
+    if (LOG_IPC) console.log(`[fleetSim] IPC from boat ${child.boatId}: ${JSON.stringify(msg)}`);
     if (msg === 'waiting-for-fix') {
       boatsWaitingForFix.add(child.pid);
       sawAnyWaitingForFix = true;

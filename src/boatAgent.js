@@ -1,3 +1,4 @@
+require('./logTimestamps');
 const { SerialPort } = require('serialport');
 const { EventEmitter } = require('events');
 const fs = require('fs');
@@ -290,7 +291,7 @@ if (config.upload.enabled) {
     adminPort: myAdminPort,
   });
 } else {
-  console.log('[boatAgent] log upload disabled (UPLOAD_DISABLED=1)');
+  console.log('[boatAgent] log upload disabled by default (set UPLOAD_ENABLED=1 to turn it on)');
 }
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted

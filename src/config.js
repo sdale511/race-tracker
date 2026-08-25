@@ -174,11 +174,11 @@ module.exports = {
   gps: {
     port: process.env.GPS_PORT || '/dev/ttyAMA0',
     baud: parseInt(process.env.GPS_BAUD || '115200', 10),
-    // On by default (matches existing behavior on both roles) - set
-    // GPS_LOG=0 to silence the per-fix [gps]/[baseGps] console line, e.g.
-    // once you've confirmed a good fix and don't want it scrolling by
-    // during an actual race.
-    logConsole: process.env.GPS_LOG !== '0' && process.env.GPS_LOG !== 'false',
+    // Off by default (both roles) - a fleet of any real size floods the
+    // console with a per-fix line each, drowning out anything else worth
+    // watching. Set GPS_LOG=1 to turn the [gps]/[baseGps] console line back
+    // on, e.g. while confirming a fix is actually coming through.
+    logConsole: process.env.GPS_LOG === '1' || process.env.GPS_LOG === 'true',
     // On by default, and only actually matters when stdout is a real
     // terminal (see boatAgent.js's handlePvt and baseStation.js's
     // openBaseGps) - that's when a fix overwrites the same console line
@@ -264,6 +264,9 @@ module.exports = {
   // ACK/retry - see "Radio configuration" in the README), so a boat that
   // misses one still gets the next one a minute later.
   marksBroadcastIntervalMs: parseInt(process.env.MARKS_BROADCAST_INTERVAL_MS || '60000', 10),
+  // Base station only - off by default (see baseStation.js's
+  // broadcastMarksNow), set LOG_MARKS_BROADCAST=1 to log every broadcast.
+  logMarksBroadcast: process.env.LOG_MARKS_BROADCAST === '1' || process.env.LOG_MARKS_BROADCAST === 'true',
 
   // --- Local logging (microSD) ---
   logDir,
@@ -298,11 +301,12 @@ module.exports = {
     // IP (see uploadServer.js's detectLocalIp) if it picks the wrong
     // interface, or none at all.
     baseIp: process.env.BASE_IP || null,
-    // Boat only - set UPLOAD_DISABLED=1 to skip attempting log uploads
-    // entirely (e.g. a boat with no WiFi radio at all, or one you'd rather
-    // not have phoning home) - the base's own upload server is unaffected,
-    // it just never hears from this boat.
-    enabled: process.env.UPLOAD_DISABLED !== '1' && process.env.UPLOAD_DISABLED !== 'true',
+    // Boat only - off by default (used to be opt-out via UPLOAD_DISABLED;
+    // flipped to opt-in, since most rovers - especially simulated fleets -
+    // have no real SD-card logs worth pushing over WiFi, and the periodic
+    // check/attempt is wasted overhead until someone actually wants it).
+    // Set UPLOAD_ENABLED=1 to turn it back on for a given boat.
+    enabled: process.env.UPLOAD_ENABLED === '1' || process.env.UPLOAD_ENABLED === 'true',
     // Boat only - how often to check whether the base is currently
     // reachable and, if so, try sending one pending log file. A boat is
     // expected to drift in and out of WiFi range, so this is a cheap

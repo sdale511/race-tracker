@@ -1,3 +1,4 @@
+require('./logTimestamps');
 const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
@@ -390,7 +391,12 @@ function main() {
   function broadcastMarksNow() {
     if (!raceMarks) return;
     radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port }));
-    console.log(`[baseStation] ${new Date().toISOString()} broadcast course marks to all boats`);
+    // Off by default - this fires on every new-boat join (see
+    // NEW_BOAT_FORCE_BROADCAST_THRESHOLD) as well as the periodic
+    // heartbeat, so a fleet joining in a burst floods the console with a
+    // line that's rarely worth watching. Set LOG_MARKS_BROADCAST=1 to turn
+    // it back on, e.g. while debugging a boat that isn't receiving marks.
+    if (config.logMarksBroadcast) console.log('[baseStation] broadcast course marks to all boats');
     // Republishes the on-grid zone alongside the marks themselves, same
     // trigger points (initial resolve, an edit, the periodic heartbeat) -
     // so anything reading it from Redis (RegattaUp, another dashboard) sees
