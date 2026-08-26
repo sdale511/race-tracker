@@ -15,22 +15,21 @@ function projectFraction(a, b, p) {
   const lenSq = abNorth * abNorth + abEast * abEast;
   // Degenerate: a and b on top of each other - a real, not just
   // theoretical, case now that committeeStart/committeeFinish can be
-  // independently positioned (see course.js's FINISH_OFFSET_NORTH_M/
-  // FINISH_OFFSET_EAST_M) - still reachable by explicitly zeroing both,
-  // even though they no longer default to the same spot. Every caller of
-  // this function uses the result as a membership test (t>=0 && t<=1)
-  // against a real segment's span - a zero-length "segment" has zero span,
-  // so it should never match ANY point, not even its own location (a
-  // single point has no interior to be "inside"). Returning 0 here instead
-  // would read as "always inside," which previously made _inLocalStrip
-  // report every point on the entire course as being in the forbidden
-  // strip whenever committeeStart and committeeFinish were co-located
-  // (the default, before FINISH_OFFSET_EAST_M's default became 3m) -
-  // confirmed live: boats sailing straight through the actual finish gate
-  // downwind, because the reactive violation-avoidance leg meant to catch
-  // exactly that was permanently short-circuited by that same "always
-  // violating" bug on its OTHER, unrelated segment checks (see
-  // _inLocalStrip's own comment).
+  // independently positioned (see course.js's COMMITTEE_GAP_M) - still
+  // reachable by explicitly zeroing it, even though they no longer default
+  // to the same spot. Every caller of this function uses the result as a
+  // membership test (t>=0 && t<=1) against a real segment's span - a
+  // zero-length "segment" has zero span, so it should never match ANY
+  // point, not even its own location (a single point has no interior to be
+  // "inside"). Returning 0 here instead would read as "always inside,"
+  // which previously made _inLocalStrip report every point on the entire
+  // course as being in the forbidden strip whenever committeeStart and
+  // committeeFinish were co-located (the default, before COMMITTEE_GAP_M's
+  // default became non-zero) - confirmed live: boats sailing straight through
+  // the actual finish gate downwind, because the reactive
+  // violation-avoidance leg meant to catch exactly that was permanently
+  // short-circuited by that same "always violating" bug on its OTHER,
+  // unrelated segment checks (see _inLocalStrip's own comment).
   if (lenSq === 0) return Infinity;
   const apNorth = p.north - a.north;
   const apEast = p.east - a.east;
@@ -64,8 +63,8 @@ function projectFraction(a, b, p) {
 // to reduce to one continuous strip from pin to finish, no gap, back when a
 // single committee mark anchored both start and finish (the middle segment
 // was zero-length) - now that committeeStart/committeeFinish can sit at
-// different positions entirely (see course.js's FINISH_OFFSET_NORTH_M/
-// FINISH_OFFSET_EAST_M), all three are independent segments, each checked
+// different positions entirely (see course.js's COMMITTEE_GAP_M), all
+// three are independent segments, each checked
 // against its own threshold as the boat reaches it (see _tick()'s downwind
 // crossing check and passedStartSide/passedFinishSide/passedMiddleSection
 // below) - there's no requirement to be near either mark otherwise. The
@@ -211,7 +210,7 @@ class SimGpsSource extends EventEmitter {
   // drag any mark independently of any other (see adminServer.js's "edit
   // marks" column), and committeeStart/committeeFinish in particular can
   // now be entirely different positions by design (see course.js's
-  // FINISH_OFFSET_NORTH_M/FINISH_OFFSET_EAST_M). Their true position in
+  // COMMITTEE_GAP_M). Their true position in
   // this local frame has to be measured (see _toLocal below), not assumed
   // to sit at some fixed offset perpendicular to the beat axis - otherwise
   // an edited windward mark rotates the beat axis right out from under a
@@ -772,8 +771,8 @@ class SimGpsSource extends EventEmitter {
     const lanes = [midEast(this.pinLocal, this.committeeStartLocal), midEast(this.committeeFinishLocal, this.finishLocal)]; // start line, finish line
     // Committee gap - only a real, distinct thing to test when
     // committeeStart/committeeFinish are actually separated (see course.js's
-    // SIM_FINISH_OFFSET_NORTH_M/EAST_M) - true by default now (3m apart),
-    // but still reachable by explicitly zeroing both. When co-located, that
+    // SIM_COMMITTEE_GAP_M) - true by default now (6m apart), but still
+    // reachable by explicitly zeroing it. When co-located, that
     // one point IS the start line's own committeeStart corner AND the
     // finish line's own committeeFinish corner at once - a "gap" crossing
     // there wouldn't cross anything distinct, just re-graze one of those
@@ -1075,7 +1074,7 @@ class SimGpsSource extends EventEmitter {
       // straight-line PATH to get there can still cut through one of
       // THOSE segments' own span partway there (they can sit directly
       // adjacent to each other, e.g. whenever committeeStart and
-      // committeeFinish are close together - only 3m apart by default -
+      // committeeFinish are close together - only 6m apart by default -
       // so clearing distance one way can pass straight through the other
       // segment's own territory before ever reaching the target).
       // _inLocalStrip is the simulator's own ground truth for "is this

@@ -7,14 +7,14 @@ const METERS_PER_DEG_LAT = 111320;
 const NM_TO_M = 1852;
 
 // Windward mark sits due north of the leeward mark (course laid square to
-// the wind, the usual convention), COURSE_LENGTH_NM apart one-way - so a
-// full lap (leeward -> windward -> leeward) is roughly 2 * COURSE_LENGTH_NM.
+// the wind, the usual convention). COURSE_LENGTH_NM is the OVERALL
+// leewardBlack<->windwardBlack distance - so a full lap on the long course
+// (leeward -> windward -> leeward) is roughly 2 * COURSE_LENGTH_NM.
 // SIM_COURSE_LENGTH_NM shortens this for quick testing (a full 1nm beat/run
 // takes several real minutes even at raised sim speeds) - read directly
 // here rather than via config.js since this fixes the course geometry once
 // at process start for both boatAgent.js and baseStation.js, same as every
-// other constant in this file. This is specifically the green-mark
-// (short-course) distance - see the windward/leeward pair comment below.
+// other constant in this file.
 const COURSE_LENGTH_NM = parseFloat(process.env.SIM_COURSE_LENGTH_NM || '1');
 const COURSE_LENGTH_M = COURSE_LENGTH_NM * NM_TO_M;
 const WIND_FROM_DEG = 0; // wind blows from true north, down the course axis
@@ -25,37 +25,34 @@ const FEET_TO_M = 0.3048;
 // leeward marks on the same north-south axis - a closer "green" pair (the
 // short course) and a further-out "black" pair (the long course), so the
 // committee can call either course depending on conditions without
-// re-laying marks. SIM_LONG_COURSE_EXTRA_NM is how much further out the
-// black marks sit beyond the green ones, on each end - black windward
-// extends COURSE_LENGTH_M + this beyond leewardGreen, black leeward sits
-// this far on the far side of leewardGreen (away from the start/finish
-// complex). Which pair the simulator actually races is configurable per
-// end (SIM_COURSE_MARKS, see config.js/deriveGeometry/getRaceMarks below) -
-// pin/committeeStart/committeeFinish/finish are never targeted by the
-// tacking logic directly, regardless.
-const LONG_COURSE_EXTRA_NM = parseFloat(process.env.SIM_LONG_COURSE_EXTRA_NM || '0.25');
-const LONG_COURSE_EXTRA_M = LONG_COURSE_EXTRA_NM * NM_TO_M;
+// re-laying marks. The green pair isn't independently configurable - there's
+// no separate "how far apart are the green marks" knob to set, they're
+// always exactly halfway between the center and their respective black mark
+// (see getMarks below), so shortening SIM_COURSE_LENGTH_NM shrinks both
+// pairs together, in the same fixed 2:1 proportion, with no separate
+// setting that could put them out of that proportion. Which pair the
+// simulator actually races is configurable per end (SIM_COURSE_MARKS, see
+// config.js/deriveGeometry/getRaceMarks below) - pin/committeeStart/
+// committeeFinish/finish are never targeted by the tacking logic directly,
+// regardless.
 
 // The start/finish complex used to be a single "committee" mark shared by
 // both lines (pin<->committee for the start, committee<->finish for the
 // finish gate) - split into committeeStart/committeeFinish so a real
-// operator can run the two lines from separate committee boats, at
-// different positions entirely, not just two ends of the same physical
-// line. North is toward windwardGreen, east is perpendicular to that (same
-// local axes as everywhere else in this file) - not a distance+bearing
-// pair, so a caller can independently nudge the finish complex up/down the
-// course or side to side without the two interacting.
-const FINISH_OFFSET_NORTH_M = parseFloat(process.env.SIM_FINISH_OFFSET_NORTH_M || '0');
-// Defaults to 3m east, not 0 - a real committeeStart<->committeeFinish gap
-// exists out of the box, matching two actually-separate committee boats
-// (the realistic case) instead of one physically impossible zero-length
-// segment. foulWatcher.js's "through committee gap" foul, and SIM_FOUL's
-// own third crossing (see simGps.js's _foulWaypoints), both need a real gap
-// to have anything to detect/cross - previously that required explicitly
-// setting SIM_FINISH_OFFSET_EAST_M, easy to forget and silently get zero
-// gap fouls instead. Set SIM_FINISH_OFFSET_EAST_M=0 explicitly to go back
-// to the old co-located default.
-const FINISH_OFFSET_EAST_M = parseFloat(process.env.SIM_FINISH_OFFSET_EAST_M || '3');
+// operator can run the two lines from separate committee boats, not just
+// two ends of the same physical line. committeeFinish sits straight east of
+// committeeStart (same north - the finish line doesn't sit anywhere
+// different along the beat than the start line, just off to the side) by
+// this one distance. Defaults to 6m, not 0 - a real committeeStart<->
+// committeeFinish gap exists out of the box, matching two actually-separate
+// committee boats (the realistic case) instead of one physically
+// impossible zero-length segment. foulWatcher.js's "through committee gap"
+// foul, and SIM_FOUL's own third crossing (see simGps.js's
+// _foulWaypoints), both need a real gap to have anything to detect/cross -
+// previously that required explicitly setting this, easy to forget and
+// silently get zero gap fouls instead. Set SIM_COMMITTEE_GAP_M=0
+// explicitly to go back to a single shared committee mark.
+const COMMITTEE_GAP_M = parseFloat(process.env.SIM_COMMITTEE_GAP_M || '6');
 
 // Canonical mark list/order - shared by redisStore.js (Redis key names),
 // protocol.js (the base's mark-broadcast radio frame), and getMarks() below,
@@ -97,17 +94,30 @@ function markStroke(name) {
   return name.endsWith('Black') ? '#e6e9ef' : MARK_COLORS[name];
 }
 
-// The start/finish complex sits halfway up the windward/leeward marks by
-// default, with two independent committee boats (committeeStart,
-// committeeFinish) instead of one shared mark - the usual reason a
-// committee runs two lines: starts and finishes don't cross paths at the
-// same line, and a real operator may run them from two entirely different
-// boats/positions, not just two ends of one physical line.
+// Where the start/finish complex sits along the beat, as a percentage of
+// the overall (black) course: 0 = right at leewardBlack, 100 = right at
+// windwardBlack, 50 (the default) = dead center - equidistant from both the
+// green AND the black windward/leeward marks (see getMarks below). A
+// percentage rather than a fixed distance so it stays proportionally in the
+// same place as SIM_COURSE_LENGTH_NM changes the overall course length,
+// same reasoning as START_SIDE_LENGTH_M/FINISH_SIDE_LENGTH_M below being
+// fractions rather than fixed distances. Two independent committee boats
+// (committeeStart, committeeFinish) instead of one shared mark - the usual
+// reason a committee runs two lines: starts and finishes don't cross paths
+// at the same line, and a real operator may run them from two entirely
+// different boats/positions, not just two ends of one physical line.
 //   - "start side": pin <-> committeeStart, boats start spread out along this.
 //   - "finish side": committeeFinish <-> finish, boats must cross through
 //     this gate each lap to have it count (see simGps.js).
-//
-// These are expressed as fractions of COURSE_LENGTH_M (matching their real
+const START_LINE_POSITION = parseFloat(process.env.SIM_START_LINE_POSITION || '50');
+if (!Number.isFinite(START_LINE_POSITION) || START_LINE_POSITION < 0 || START_LINE_POSITION > 100) {
+  throw new Error(`SIM_START_LINE_POSITION must be a number 0-100 (percent up the course) - got "${process.env.SIM_START_LINE_POSITION}"`);
+}
+// -COURSE_LENGTH_M/2 (leewardBlack) at 0%, +COURSE_LENGTH_M/2 (windwardBlack)
+// at 100%.
+const START_LINE_NORTH_M = (START_LINE_POSITION / 100) * COURSE_LENGTH_M - COURSE_LENGTH_M / 2;
+// START_SIDE_LENGTH_M/FINISH_SIDE_LENGTH_M/BOAT_START_SPACING_M are
+// expressed as fractions of COURSE_LENGTH_M (matching their real
 // 200ft/180ft/25ft proportions at the canonical 1nm course) rather than
 // fixed distances - fixed absolute values would keep the start/finish
 // line's own width constant even as SIM_COURSE_LENGTH_NM shrinks the beat/
@@ -117,7 +127,6 @@ function markStroke(name) {
 // simGps.js was tuned to handle). Scaling together keeps the same
 // qualitative geometry - and the same tacking behavior - at any course
 // length.
-const START_LINE_NORTH_M = COURSE_LENGTH_M / 2;
 const START_SIDE_LENGTH_M = COURSE_LENGTH_M * ((200 * FEET_TO_M) / NM_TO_M);
 const FINISH_SIDE_LENGTH_M = COURSE_LENGTH_M * ((180 * FEET_TO_M) / NM_TO_M);
 const BOAT_START_SPACING_M = COURSE_LENGTH_M * ((25 * FEET_TO_M) / NM_TO_M); // boats start proportionally spaced, from the pin end
@@ -162,33 +171,34 @@ function compassDir(bearingDegrees) {
   return COMPASS_POINTS[index];
 }
 
-// The green leeward mark sits exactly at the configured center point
-// (SIM_CENTER_LAT/LON) - this is the one point that hasn't moved as this
-// function grew from a single windward/leeward pair to green+black pairs,
-// so SIM_CENTER_LAT/LON keeps meaning exactly what it always has. Green
-// windward is COURSE_LENGTH_M due north of it (the short course); black
-// windward/leeward extend LONG_COURSE_EXTRA_M further out on each end (the
-// long course), on the same north-south axis. `committeeStart` sits on that
-// same axis at the start line's position (halfway up the green course, by
-// default); `pin` is START_SIDE_LENGTH_M to its west. `committeeFinish`
-// sits FINISH_OFFSET_NORTH_M/FINISH_OFFSET_EAST_M away from committeeStart
-// (3m east by default - two actually-separate committee boats, not one
-// shared mark; explicitly zero both to go back to co-located) - `finish` is
-// FINISH_SIDE_LENGTH_M
-// further east of *that*, so the whole finish gate moves as a unit when the
-// finish complex is offset from the start complex, rather than the gate's
-// own width changing.
+// The configured center point (SIM_CENTER_LAT/LON) is the true geometric
+// center of the whole course - equidistant from leewardBlack/windwardBlack
+// AND from leewardGreen/windwardGreen, and where the start/finish complex
+// sits by default (SIM_START_LINE_POSITION=50, i.e. dead center - see its
+// own comment above for the other positions). Black windward/leeward sit
+// COURSE_LENGTH_M/2 on either side of it (the long course, the overall
+// length SIM_COURSE_LENGTH_NM actually sets); green windward/leeward are
+// NOT independently configurable - they always sit exactly halfway between
+// the center and their respective black mark (COURSE_LENGTH_M/4 on either
+// side), so the short course is always exactly half the long course's
+// length, no separate knob to put the two pairs out of that proportion.
+// `committeeStart` sits on the same axis at START_LINE_NORTH_M; `pin` is
+// START_SIDE_LENGTH_M to its west. `committeeFinish` sits COMMITTEE_GAP_M
+// straight east of committeeStart, same north - two actually-separate
+// committee boats side by side, not one shared mark; explicitly zero it to
+// go back to co-located - `finish` is FINISH_SIDE_LENGTH_M further east of
+// *that*, so the whole finish gate moves as a unit when the committee gap
+// changes, rather than the gate's own width changing.
 function getMarks(centerLat, centerLon) {
-  const finishLineNorthM = START_LINE_NORTH_M + FINISH_OFFSET_NORTH_M;
   return {
-    leewardGreen: offsetToLatLon(centerLat, centerLon, { north: 0, east: 0 }),
-    leewardBlack: offsetToLatLon(centerLat, centerLon, { north: -LONG_COURSE_EXTRA_M, east: 0 }),
-    windwardGreen: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M, east: 0 }),
-    windwardBlack: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M + LONG_COURSE_EXTRA_M, east: 0 }),
+    leewardGreen: offsetToLatLon(centerLat, centerLon, { north: -COURSE_LENGTH_M / 4, east: 0 }),
+    leewardBlack: offsetToLatLon(centerLat, centerLon, { north: -COURSE_LENGTH_M / 2, east: 0 }),
+    windwardGreen: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M / 4, east: 0 }),
+    windwardBlack: offsetToLatLon(centerLat, centerLon, { north: COURSE_LENGTH_M / 2, east: 0 }),
     committeeStart: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: 0 }),
     pin: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: -START_SIDE_LENGTH_M }),
-    committeeFinish: offsetToLatLon(centerLat, centerLon, { north: finishLineNorthM, east: FINISH_OFFSET_EAST_M }),
-    finish: offsetToLatLon(centerLat, centerLon, { north: finishLineNorthM, east: FINISH_OFFSET_EAST_M + FINISH_SIDE_LENGTH_M }),
+    committeeFinish: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: COMMITTEE_GAP_M }),
+    finish: offsetToLatLon(centerLat, centerLon, { north: START_LINE_NORTH_M, east: COMMITTEE_GAP_M + FINISH_SIDE_LENGTH_M }),
   };
 }
 
@@ -302,13 +312,14 @@ function getRaceMarks(marks, code) {
 // a boat and the marks it's racing against are guaranteed to agree.
 //
 // courseMarks (see parseCourseMarks above) picks WHICH windward/leeward
-// pair to measure - defaults to 'GG' (the plain short course, the old
-// hardcoded behavior) so any existing caller that doesn't pass this keeps
-// today's behavior. Measuring the actual distance/bearing between whichever
-// pair is chosen, rather than assuming COURSE_LENGTH_M/LONG_COURSE_EXTRA_M,
-// is what makes a mixed pair like 'BG' just work: the beat comes out longer
-// on whichever end is actually black, with no separate case needed here.
-function deriveGeometry(marks, courseMarks = 'GG') {
+// pair to measure - defaults to 'BB' (the plain long/overall course,
+// matching config.js's own default) so any existing caller that doesn't
+// pass this gets the actual overall course length. Measuring the actual
+// distance/bearing between whichever pair is chosen, rather than assuming
+// COURSE_LENGTH_M, is what makes a mixed pair like 'BG' just work: the beat
+// comes out shorter on whichever end is actually green, with no separate
+// case needed here.
+function deriveGeometry(marks, courseMarks = 'BB') {
   const { windward, leeward } = getRaceMarks(marks, courseMarks);
   const courseLengthM = distanceMeters(leeward, windward);
   // The actual compass direction from leeward to windward - NOT assumed to
@@ -339,11 +350,9 @@ module.exports = {
   NM_TO_M,
   COURSE_LENGTH_NM,
   COURSE_LENGTH_M,
-  LONG_COURSE_EXTRA_NM,
-  LONG_COURSE_EXTRA_M,
-  FINISH_OFFSET_NORTH_M,
-  FINISH_OFFSET_EAST_M,
+  COMMITTEE_GAP_M,
   WIND_FROM_DEG,
+  START_LINE_POSITION,
   START_LINE_NORTH_M,
   START_SIDE_LENGTH_M,
   FINISH_SIDE_LENGTH_M,

@@ -443,17 +443,17 @@ broadcast output all work exactly as they would with real hardware.
 | `SIM_PORT` | `41234` | Shared port every simulated boat and the base broadcast on and listen to - see "Broadcasting marks to the rovers" above |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
-| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8898` / `-118.3821` | Center point of the simulated racecourse - only takes effect on a truly fresh course (nothing published yet in Redis). If a course is already published and doesn't match, the base warns loudly on startup rather than changing anything - see "Changing the course" below for how to actually reset it |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8970` / `-118.3821` | Center point of the simulated racecourse - only takes effect on a truly fresh course (nothing published yet in Redis). If a course is already published and doesn't match, the base warns loudly on startup rather than changing anything - see "Changing the course" below for how to actually reset it |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
-| `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Like `SIM_CENTER_LAT`/`SIM_CENTER_LON` above, only takes effect on a fresh course - see "Changing the course" below |
-| `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end. Same as `SIM_COURSE_LENGTH_NM` - only takes effect on a fresh course |
-| `SIM_FINISH_OFFSET_NORTH_M` / `SIM_FINISH_OFFSET_EAST_M` | 0 / 3 | How far `committeeFinish`/`finish` sit from `committeeStart`/`pin` (north/east meters) - the default (3m east) gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set `SIM_FINISH_OFFSET_EAST_M=0` explicitly to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Same as `SIM_COURSE_LENGTH_NM` above - only takes effect on a fresh course |
+| `SIM_COURSE_LENGTH_NM` | 1 | leewardBlack-to-windwardBlack distance in nautical miles - the overall/long course (see "Changing the course" below for the green/black mark pairs). Green is not independently configurable - leewardGreen/windwardGreen always sit exactly halfway between the center and their respective black mark, so the short course is always exactly half this value. Shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Like `SIM_CENTER_LAT`/`SIM_CENTER_LON` above, only takes effect on a fresh course - see "Changing the course" below |
+| `SIM_START_LINE_POSITION` | 50 | Where the start/finish complex sits along the beat, as a percentage of the overall course: `0` = right at leewardBlack, `100` = right at windwardBlack, `50` (default) = dead center - equidistant from both the green and the black marks. Only takes effect on a fresh course, same as `SIM_COURSE_LENGTH_NM` above |
+| `SIM_COMMITTEE_GAP_M` | 6 | How far east `committeeFinish` (and `finish`, which trails it by `finishLineLengthM`) sits from `committeeStart` - the default gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set to `0` to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Same as `SIM_COURSE_LENGTH_NM` above - only takes effect on a fresh course |
 | `SIM_COURSE_MARKS` | `BB` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `BB`/`GG` for the plain long/short course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
 | `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
 | `SIM_HOLD_FOR_START` | `1` (on) | Holds every simulated boat at its start position indefinitely - like `SIM_START_ONLY`, but releasable instead of permanent, and overrides `SIM_PRESTART_DWELL_S`'s timer. Gets a whole fleet on the grid and lets the race committee actually start the race server-side before any boat departs: press SPACE in the terminal running `npm run boat` (standalone) or `npm run fleet` (forwarded to every boat it spawned) once everyone's ready. Set to `0` to go back to the old auto-departing-after-`SIM_PRESTART_DWELL_S` behavior |
-| `SIM_FOUL` | unset | Set to `1` to make this one boat, instead of racing normally, hold at its start position exactly like any other boat (still respects `SIM_PRESTART_DWELL_S`/`SIM_HOLD_FOR_START`), then on release sail `SIM_FOUL_WINDWARD_M` upwind before looping around and sailing straight back down through the start line, the finish line, and the committee gap (skipped only if `SIM_FINISH_OFFSET_EAST_M=0` removes it - see `SIM_FINISH_OFFSET_NORTH_M`/`SIM_FINISH_OFFSET_EAST_M` above) - each crossed the wrong (downwind) way, sailing back upwind on the same lane between each one. Real, repeatable events for `foulWatcher.js` to catch, without needing a human pilot to sail the illegal paths by hand. See "Foul detection -> RegattaUp" below. Only meaningful on ONE boat at a time - setting it fleet-wide just has every boat drive the same scripted path instead of racing |
+| `SIM_FOUL` | unset | Set to `1` to make this one boat, instead of racing normally, hold at its start position exactly like any other boat (still respects `SIM_PRESTART_DWELL_S`/`SIM_HOLD_FOR_START`), then on release sail `SIM_FOUL_WINDWARD_M` upwind before looping around and sailing straight back down through the start line, the finish line, and the committee gap (skipped only if `SIM_COMMITTEE_GAP_M=0` removes it - see above) - each crossed the wrong (downwind) way, sailing back upwind on the same lane between each one. Real, repeatable events for `foulWatcher.js` to catch, without needing a human pilot to sail the illegal paths by hand. See "Foul detection -> RegattaUp" below. Only meaningful on ONE boat at a time - setting it fleet-wide just has every boat drive the same scripted path instead of racing |
 | `SIM_FOUL_WINDWARD_M` | 150 | How far upwind (meters) a `SIM_FOUL` boat sails before turning back for the illegal return leg - only needs to look like a real departure, not actually get near the windward mark |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
@@ -750,7 +750,7 @@ However `REGATTAUP_MARK_ROUNDING_EXTENSION_M` is configured, the green
 corresponding black (outer) mark - capped to half the actual
 green<->black distance (`OUTER_MARK_SAFETY_FRACTION` in `baseStation.js`),
 measured fresh off the real published marks each time a watcher is built,
-not assumed from `SIM_LONG_COURSE_EXTRA_NM`. Half rather than the full
+not assumed from any fixed constant. Half rather than the full
 distance leaves a solid buffer on both sides, so a boat actually rounding
 the black mark stays clearly clear of the green radius too, rather than
 the two meeting exactly at the boundary. Only applies to the green marks -
@@ -839,9 +839,9 @@ The boat holds on the grid like any other simulated boat
 (`SIM_HOLD_FOR_START=1` by default) - press SPACE in terminal 2 to release
 it. It sails `SIM_FOUL_WINDWARD_M` (default 150m) upwind, then loops around
 and crosses back down through the start line, the finish line, and the
-committee gap (real by default - see `SIM_FINISH_OFFSET_NORTH_M`/
-`SIM_FINISH_OFFSET_EAST_M` above), each the wrong way, sailing back upwind
-between each one. Watch terminal 1 for three orange lines:
+committee gap (real by default - see `SIM_COMMITTEE_GAP_M` above), each the
+wrong way, sailing back upwind between each one. Watch terminal 1 for three
+orange lines:
 
 ```
 [baseStation] boat=1 foul - downwind start line
@@ -856,11 +856,11 @@ see the detection/queueing without actually posting anywhere.
 If you only see two of the three, check that both processes actually
 picked up a course with a real committee gap - both `npm run base` and
 `npm run boat` need a fresh start (or at least a Redis course-mark cache
-that hasn't been left over from a `SIM_FINISH_OFFSET_EAST_M=0` run) for
-their published `committeeStart`/`committeeFinish` to actually be
-separated. `SIM_FINISH_OFFSET_EAST_M=0` on either command goes back to a
-single shared committee mark, in which case the third crossing correctly
-never fires - there's nothing to cross.
+that hasn't been left over from a `SIM_COMMITTEE_GAP_M=0` run) for their
+published `committeeStart`/`committeeFinish` to actually be separated.
+`SIM_COMMITTEE_GAP_M=0` on either command goes back to a single shared
+committee mark, in which case the third crossing correctly never fires -
+there's nothing to cross.
 
 ## Redis track storage
 
@@ -946,19 +946,21 @@ want cleared.
 The course has eight marks (`src/course.js`'s `MARK_NAMES`): `pin`,
 `committeeStart`, `committeeFinish`, and `finish` make up the start/finish
 complex (two independently-positioned committee boats - see
-`SIM_FINISH_OFFSET_NORTH_M`/`SIM_FINISH_OFFSET_EAST_M` above), and there are
+`SIM_COMMITTEE_GAP_M` above, and `SIM_START_LINE_POSITION` for where along
+the beat it sits), and there are
 two windward marks and two leeward marks - a closer **green** pair (the
 short course) and a further-out **black** pair (the long course), matching
 how a real committee lays two mark pairs on the same axis so either course
-can be called without re-laying anything. `windwardGreen`/`leewardGreen`
-are exactly what a single "windward"/"leeward" mark used to mean in this
-app (same position, same meaning) - `windwardBlack`/`leewardBlack` are new,
-sitting `SIM_LONG_COURSE_EXTRA_NM` (default 0.25nm) further out beyond each
-green mark, on the far side from the start/finish complex. **Which pair the
-simulator (`simGps.js`) actually races is `SIM_COURSE_MARKS`** (default
-`BB`, the plain long course - see the env var table above for the other
-three combinations) - `pin`/`committeeStart`/`committeeFinish`/`finish` are
-never targeted directly by the tacking logic regardless.
+can be called without re-laying anything. `SIM_COURSE_LENGTH_NM` sets the
+overall, black-pair length; green isn't independently configurable -
+`windwardGreen`/`leewardGreen` always sit exactly halfway between the
+course's center and their respective black mark, so the short course is
+always exactly half the long course's length, no separate knob to put the
+two pairs out of that proportion. **Which pair the simulator (`simGps.js`)
+actually races is `SIM_COURSE_MARKS`** (default `BB`, the plain long course
+- see the env var table above for the other three combinations) -
+`pin`/`committeeStart`/`committeeFinish`/`finish` are never targeted
+directly by the tacking logic regardless.
 
 ```
 npm run reset-course
@@ -966,18 +968,20 @@ npm run reset-course
 
 Deletes all eight `mark:*` keys plus the on-grid zone, then immediately
 republishes a fresh course from current defaults (`SIM_CENTER_LAT`/
-`SIM_CENTER_LON`/`SIM_COURSE_LENGTH_NM`/`SIM_LONG_COURSE_EXTRA_NM`/
-`SIM_FINISH_OFFSET_NORTH_M`/`SIM_FINISH_OFFSET_EAST_M`) - one command, not a
-delete followed by hoping something else republishes it later. There's no
+`SIM_CENTER_LON`/`SIM_COURSE_LENGTH_NM`/`SIM_START_LINE_POSITION`/
+`SIM_COMMITTEE_GAP_M`) - one command, not a delete followed by hoping
+something else republishes it later. There's no
 scenario where the marks should just be *gone*: a boat or the admin
-dashboard querying in that gap would see no course at all. Boat tracks are
-left untouched — pair with `npm run clear-boats` if you want those cleared
-too.
+dashboard querying in that gap would see no course at all. Prints every
+parameter that shapes the geometry before publishing (course length,
+start/finish line lengths, committee gap, ...) so it's obvious exactly
+what's about to replace the old course. Boat tracks are left untouched —
+pair with `npm run clear-boats` if you want those cleared too.
 
 **This is the only thing that ever resets published marks.** Changing
 `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`,
-`SIM_LONG_COURSE_EXTRA_NM`, `SIM_FINISH_OFFSET_NORTH_M`, or
-`SIM_FINISH_OFFSET_EAST_M` does nothing to a course that's already
+`SIM_START_LINE_POSITION`, or `SIM_COMMITTEE_GAP_M` does nothing to a
+course that's already
 published - `base` checks the *actual* published course against what
 you've requested on startup and, if they genuinely differ, warns loudly on
 the console rather than changing anything. Run `reset-course` yourself

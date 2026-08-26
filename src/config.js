@@ -84,7 +84,7 @@ module.exports = {
     // How many laps (start/finish line crossings, finish direction) each
     // simulated boat sails before it stops.
     lapCount: parseInt(process.env.SIM_LAP_COUNT || '2', 10),
-    centerLat: parseFloat(process.env.SIM_CENTER_LAT || '40.8898'),
+    centerLat: parseFloat(process.env.SIM_CENTER_LAT || '40.8970'), // ~0.5mi north of the original 40.8898
     centerLon: parseFloat(process.env.SIM_CENTER_LON || '-118.3821'),
     // % chance (0-100) each frame is dropped, to simulate radio range dropouts.
     packetLossPct: parseFloat(process.env.SIM_PACKET_LOSS || '0'),

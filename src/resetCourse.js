@@ -1,12 +1,20 @@
 const config = require('./config');
 const { RedisStore } = require('./redisStore');
 const { zonePolygon } = require('./onGridWatcher');
-const { COURSE_LENGTH_NM, LONG_COURSE_EXTRA_NM, FINISH_OFFSET_NORTH_M, FINISH_OFFSET_EAST_M, NM_TO_M, deriveGeometry } = require('./course');
+const {
+  COURSE_LENGTH_NM,
+  START_LINE_POSITION,
+  START_SIDE_LENGTH_M,
+  FINISH_SIDE_LENGTH_M,
+  COMMITTEE_GAP_M,
+  NM_TO_M,
+  deriveGeometry,
+} = require('./course');
 
 // Clears the course, then immediately republishes a fresh one from current
 // defaults (SIM_CENTER_LAT/SIM_CENTER_LON/SIM_COURSE_LENGTH_NM/
-// SIM_LONG_COURSE_EXTRA_NM/SIM_FINISH_OFFSET_NORTH_M/SIM_FINISH_OFFSET_EAST_M
-// - see config.js/course.js) - one command, not two. There's no real
+// SIM_START_LINE_POSITION/SIM_COMMITTEE_GAP_M - see config.js/course.js) -
+// one command, not two. There's no real
 // scenario where an operator wants the course marks simply gone with
 // nothing to replace them (a boat or the admin dashboard querying in that
 // window would see no course at all) - this replaces the old `npm run
@@ -25,10 +33,14 @@ const { COURSE_LENGTH_NM, LONG_COURSE_EXTRA_NM, FINISH_OFFSET_NORTH_M, FINISH_OF
   // knob to change it should be visible right next to its current value.
   console.log('[resetCourse] course parameters:');
   console.log(`  centerLat / centerLon:     ${config.sim.centerLat} / ${config.sim.centerLon}  (SIM_CENTER_LAT / SIM_CENTER_LON)`);
-  console.log(`  courseMarks:               ${config.sim.courseMarks}  - which pair a boat actually races  (SIM_COURSE_MARKS)`);
-  console.log(`  courseLengthNm (green):    ${COURSE_LENGTH_NM} nm  - leewardGreen<->windwardGreen  (SIM_COURSE_LENGTH_NM)`);
-  console.log(`  longCourseExtraNm:         ${LONG_COURSE_EXTRA_NM} nm  - how much further out each black mark sits  (SIM_LONG_COURSE_EXTRA_NM)`);
-  console.log(`  finishOffsetNorth / East:  ${FINISH_OFFSET_NORTH_M}m / ${FINISH_OFFSET_EAST_M}m  (SIM_FINISH_OFFSET_NORTH_M / SIM_FINISH_OFFSET_EAST_M)`);
+  console.log(
+    `  courseLengthNm (${config.sim.courseMarks}):       ${COURSE_LENGTH_NM} nm  - overall leewardBlack<->windwardBlack; green is always half this, ` +
+      `no separate knob  (SIM_COURSE_LENGTH_NM / SIM_COURSE_MARKS)`
+  );
+  console.log(`  startLinePosition:         ${START_LINE_POSITION}%  - 0=leeward end, 100=windward end  (SIM_START_LINE_POSITION)`);
+  console.log(`  startLineLengthM:          ${START_SIDE_LENGTH_M.toFixed(1)}m  - pin<->committeeStart`);
+  console.log(`  finishLineLengthM:         ${FINISH_SIDE_LENGTH_M.toFixed(1)}m  - committeeFinish<->finish`);
+  console.log(`  committeeGapM:             ${COMMITTEE_GAP_M}m  - committeeStart<->committeeFinish  (SIM_COMMITTEE_GAP_M)`);
   console.log(`  onGridZoneM:               ${config.regattaup.onGridZoneM}m  (REGATTAUP_ONGRID_ZONE_M)`);
   const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
   try {
@@ -42,11 +54,10 @@ const { COURSE_LENGTH_NM, LONG_COURSE_EXTRA_NM, FINISH_OFFSET_NORTH_M, FINISH_OF
 
     const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
     console.log(`[resetCourse] published fresh course marks: ${Object.keys(marks).join(', ')}`);
-    // The beat length a boat actually sails is courseLengthNm above ONLY for
-    // the plain green course ('GG') - measured fresh off the real marks
-    // (same as simGps.js's own deriveGeometry call) so this is always
-    // correct for whichever pair courseMarks picked, mixed ('BG'/'GB')
-    // included, not just assumed from the raw constants.
+    // Sanity-check: measured fresh off the real just-published marks (same
+    // as simGps.js's own deriveGeometry call), not just echoing the
+    // courseLengthNm constant above - confirms what actually got published
+    // matches what was requested, correct for a mixed pair ('BG'/'GB') too.
     const { courseLengthM } = deriveGeometry(marks, config.sim.courseMarks);
     console.log(`[resetCourse] active course length (${config.sim.courseMarks}): ${(courseLengthM / NM_TO_M).toFixed(3)} nm`);
 

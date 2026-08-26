@@ -78,8 +78,8 @@ const COMMITTEE_TRIANGLE_MAX_FRACTION = 0.5;
 // sailing upwind) near committeeStart could be confused with one queuing -
 // now that start and finish are independent marks, that's only actually
 // possible when committeeFinish is genuinely close to committeeStart (the
-// default, unconfigured case - see course.js's FINISH_OFFSET_NORTH_M/
-// FINISH_OFFSET_EAST_M). Once an operator moves committeeFinish far enough
+// default 6m gap - see course.js's COMMITTEE_GAP_M). Once an operator moves
+// committeeFinish far enough
 // away, a finishing/upwind-sailing boat's real approach is nowhere near
 // this corner at all, and the exclusion becomes pure cost with no
 // remaining benefit - most visible at a short SIM_COURSE_LENGTH_NM test

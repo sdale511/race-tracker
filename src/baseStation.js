@@ -3,7 +3,7 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
-const { distanceMeters, COURSE_LENGTH_M, LONG_COURSE_EXTRA_M, FINISH_OFFSET_NORTH_M, FINISH_OFFSET_EAST_M, MARK_NAMES } = require('./course');
+const { distanceMeters, COURSE_LENGTH_M, START_LINE_POSITION, COMMITTEE_GAP_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
@@ -593,8 +593,8 @@ function main() {
   async function resolveMarks() {
     if (config.simulate) {
       // Purely diagnostic: compares whatever SIM_COURSE_LENGTH_NM/
-      // SIM_CENTER_LAT/SIM_CENTER_LON/SIM_LONG_COURSE_EXTRA_NM/
-      // SIM_FINISH_OFFSET_NORTH_M/SIM_FINISH_OFFSET_EAST_M is set to against
+      // SIM_CENTER_LAT/SIM_CENTER_LON/SIM_START_LINE_POSITION/
+      // SIM_COMMITTEE_GAP_M is set to against
       // whatever's actually published in Redis, and warns loudly on a
       // mismatch - but NEVER clears anything itself. This Redis instance
       // can be the same one a real course is published on (REDIS_ENV=
@@ -606,48 +606,69 @@ function main() {
       // not a reset, there's nothing to lose.
       try {
         const existing = await redisStore.getMarks();
-        // Only the three marks actually compared below need to exist for
-        // this check to mean anything - NOT every MARK_NAMES entry.
-        // Requiring the full set (including pin/committeeStart/
-        // committeeFinish/finish, which this check doesn't even look at)
-        // meant that adding a new mark name here (e.g. the
-        // committeeStart/committeeFinish split) made this permanently
-        // false against a course published before that change, treating a
-        // pure schema upgrade as "the course differs" and clearing a real,
-        // unrelated, already-correct course out from under it.
-        const hasGeometryMarks = existing.leewardGreen && existing.windwardGreen && existing.windwardBlack;
+        // Only the marks actually compared below need to exist for this
+        // check to mean anything - NOT every MARK_NAMES entry. Requiring the
+        // full set (including pin/committeeStart/committeeFinish/finish,
+        // which this check doesn't even look at) meant that adding a new
+        // mark name here (e.g. the committeeStart/committeeFinish split)
+        // made this permanently false against a course published before
+        // that change, treating a pure schema upgrade as "the course
+        // differs" and clearing a real, unrelated, already-correct course
+        // out from under it. Checked against the BLACK marks specifically -
+        // they're the ones COURSE_LENGTH_M/SIM_CENTER_LAT/LON actually
+        // define now (green is always a derived midpoint, see course.js's
+        // getMarks - nothing to independently check it against).
+        const hasGeometryMarks = existing.leewardBlack && existing.windwardBlack;
+        // Center is the midpoint between the two black marks (see getMarks)
+        // - averaging lat/lon directly, same flat-earth approximation
+        // distanceMeters/offsetToLatLon already use throughout this file,
+        // fine at course-length scales.
         const centerMatches =
           hasGeometryMarks &&
-          distanceMeters(existing.leewardGreen, { lat: config.sim.centerLat, lon: config.sim.centerLon }) < 0.1;
+          distanceMeters(
+            { lat: (existing.leewardBlack.lat + existing.windwardBlack.lat) / 2, lon: (existing.leewardBlack.lon + existing.windwardBlack.lon) / 2 },
+            { lat: config.sim.centerLat, lon: config.sim.centerLon }
+          ) < 0.1;
         const lengthMatches =
-          hasGeometryMarks && Math.abs(distanceMeters(existing.leewardGreen, existing.windwardGreen) - COURSE_LENGTH_M) < 0.1;
-        const longCourseMatches =
-          hasGeometryMarks &&
-          Math.abs(distanceMeters(existing.windwardGreen, existing.windwardBlack) - LONG_COURSE_EXTRA_M) < 0.1;
+          hasGeometryMarks && Math.abs(distanceMeters(existing.leewardBlack, existing.windwardBlack) - COURSE_LENGTH_M) < 0.1;
+        // Where committeeStart actually sits, as a percentage back up the
+        // leewardBlack->windwardBlack line - compared against
+        // SIM_START_LINE_POSITION the same way as the other geometry checks
+        // here. Plain distanceMeters ratio, not a full vector projection -
+        // fine for an unedited (still axis-aligned) freshly-generated
+        // course, which is the only case this check needs to catch; an
+        // operator-edited course is a deliberate change this diagnostic
+        // isn't meant to second-guess.
+        const startLinePositionMatches =
+          !hasGeometryMarks ||
+          !existing.committeeStart ||
+          Math.abs(
+            (distanceMeters(existing.leewardBlack, existing.committeeStart) / distanceMeters(existing.leewardBlack, existing.windwardBlack)) * 100 -
+              START_LINE_POSITION
+          ) < 1;
         // Same idea, for the committeeStart<->committeeFinish gap (see
-        // course.js's own comment on SIM_FINISH_OFFSET_NORTH_M/EAST_M) -
-        // without this, a course published before the offset was set (or
-        // with a different offset) silently keeps its old, stale gap
-        // forever: SIM_FINISH_OFFSET_EAST_M taking no visible effect until
-        // the course is cleared by some OTHER means looks exactly like
-        // SIM_FOUL's committee-gap crossing simply not firing. Missing
-        // fields (a course published before committeeStart/committeeFinish
-        // existed at all) default to "matches" rather than forcing a clear -
-        // same backward-compatibility reasoning as hasGeometryMarks above.
+        // course.js's own comment on SIM_COMMITTEE_GAP_M) - without this, a
+        // course published before the gap was set (or with a different gap)
+        // silently keeps its old, stale gap forever: SIM_COMMITTEE_GAP_M
+        // taking no visible effect until the course is cleared by some
+        // OTHER means looks exactly like SIM_FOUL's committee-gap crossing
+        // simply not firing. Missing fields (a course published before
+        // committeeStart/committeeFinish existed at all) default to
+        // "matches" rather than forcing a clear - same backward-
+        // compatibility reasoning as hasGeometryMarks above.
         const gapSpanMatches =
           !existing.committeeStart ||
           !existing.committeeFinish ||
           Math.abs(
             distanceMeters(existing.committeeStart, existing.committeeFinish) -
-              Math.hypot(FINISH_OFFSET_NORTH_M, FINISH_OFFSET_EAST_M)
+              COMMITTEE_GAP_M
           ) < 0.1;
         const requestedChange = [
           'SIM_COURSE_LENGTH_NM',
           'SIM_CENTER_LAT',
           'SIM_CENTER_LON',
-          'SIM_LONG_COURSE_EXTRA_NM',
-          'SIM_FINISH_OFFSET_NORTH_M',
-          'SIM_FINISH_OFFSET_EAST_M',
+          'SIM_START_LINE_POSITION',
+          'SIM_COMMITTEE_GAP_M',
         ].some((name) => process.env[name] !== undefined);
         // NEVER clear marks automatically - this used to call
         // redisStore.clearCourseMarks() right here whenever a SIM_* env var
@@ -663,10 +684,10 @@ function main() {
         // mismatch is visible rather than either silently wiped or silently
         // ignored, and leave the existing marks exactly as they are either
         // way.
-        if (requestedChange && !(centerMatches && lengthMatches && longCourseMatches && gapSpanMatches)) {
+        if (requestedChange && !(centerMatches && lengthMatches && startLinePositionMatches && gapSpanMatches)) {
           console.warn(
             '[baseStation] WARNING: requested course (SIM_COURSE_LENGTH_NM/SIM_CENTER_LAT/SIM_CENTER_LON/' +
-              'SIM_LONG_COURSE_EXTRA_NM/SIM_FINISH_OFFSET_NORTH_M/SIM_FINISH_OFFSET_EAST_M) differs from what\'s ' +
+              'SIM_START_LINE_POSITION/SIM_COMMITTEE_GAP_M) differs from what\'s ' +
               'already published in Redis - using the EXISTING published marks as-is, NOT the values just requested. ' +
               'Run `npm run reset-course` if you actually want to reset and republish with the new values.'
           );
