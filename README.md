@@ -344,7 +344,7 @@ attached. In this mode:
   upwind on alternating tacks, running downwind on alternating gybes, with
   randomized leg lengths so no two laps look the same - in place of the real
   UBX-NAV-PVT parser. Races whichever windward/leeward mark pair
-  `SIM_COURSE_MARKS` picks (default `GG`, the short course) - see "Changing
+  `SIM_COURSE_MARKS` picks (default `BB`, the long course) - see "Changing
   the course" below.
 - `src/simRadioLink.js` replaces the serial radio link with a shared UDP
   broadcast socket carrying the exact same frames (`src/protocol.js`), so
@@ -448,7 +448,7 @@ broadcast output all work exactly as they would with real hardware.
 | `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Like `SIM_CENTER_LAT`/`SIM_CENTER_LON` above, only takes effect on a fresh course - see "Changing the course" below |
 | `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end. Same as `SIM_COURSE_LENGTH_NM` - only takes effect on a fresh course |
 | `SIM_FINISH_OFFSET_NORTH_M` / `SIM_FINISH_OFFSET_EAST_M` | 0 / 3 | How far `committeeFinish`/`finish` sit from `committeeStart`/`pin` (north/east meters) - the default (3m east) gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set `SIM_FINISH_OFFSET_EAST_M=0` explicitly to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Same as `SIM_COURSE_LENGTH_NM` above - only takes effect on a fresh course |
-| `SIM_COURSE_MARKS` | `GG` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `GG`/`BB` for the plain short/long course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
+| `SIM_COURSE_MARKS` | `BB` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `BB`/`GG` for the plain long/short course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
 | `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
@@ -923,7 +923,7 @@ part of building the preset's own connection object
 only one is ever actually used), so there's no scenario where `REDIS_URL`
 plus one of those three combine into anything.
 
-Every process that talks to Redis (`npm run base`, `npm run clear-course`,
+Every process that talks to Redis (`npm run base`, `npm run reset-course`,
 `npm run clear-boats`) resolves this identically via `config.redis`, so
 whichever you choose applies consistently across all of them.
 
@@ -956,24 +956,31 @@ app (same position, same meaning) - `windwardBlack`/`leewardBlack` are new,
 sitting `SIM_LONG_COURSE_EXTRA_NM` (default 0.25nm) further out beyond each
 green mark, on the far side from the start/finish complex. **Which pair the
 simulator (`simGps.js`) actually races is `SIM_COURSE_MARKS`** (default
-`GG`, the plain short course - see the env var table above for the other
+`BB`, the plain long course - see the env var table above for the other
 three combinations) - `pin`/`committeeStart`/`committeeFinish`/`finish` are
 never targeted directly by the tacking logic regardless.
 
 ```
-npm run clear-course
+npm run reset-course
 ```
 
-Deletes all eight `mark:*` keys so the next `base` run recomputes and
-republishes the course from scratch instead of reusing whatever's already
-there. Boat tracks are left untouched — pair with `npm run clear-boats` if
-you want those cleared too. **This is the only thing that ever resets
-published marks.** Changing `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`,
-`SIM_CENTER_LON`, `SIM_LONG_COURSE_EXTRA_NM`, `SIM_FINISH_OFFSET_NORTH_M`,
-or `SIM_FINISH_OFFSET_EAST_M` does nothing to a course that's already
+Deletes all eight `mark:*` keys plus the on-grid zone, then immediately
+republishes a fresh course from current defaults (`SIM_CENTER_LAT`/
+`SIM_CENTER_LON`/`SIM_COURSE_LENGTH_NM`/`SIM_LONG_COURSE_EXTRA_NM`/
+`SIM_FINISH_OFFSET_NORTH_M`/`SIM_FINISH_OFFSET_EAST_M`) - one command, not a
+delete followed by hoping something else republishes it later. There's no
+scenario where the marks should just be *gone*: a boat or the admin
+dashboard querying in that gap would see no course at all. Boat tracks are
+left untouched — pair with `npm run clear-boats` if you want those cleared
+too.
+
+**This is the only thing that ever resets published marks.** Changing
+`SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`,
+`SIM_LONG_COURSE_EXTRA_NM`, `SIM_FINISH_OFFSET_NORTH_M`, or
+`SIM_FINISH_OFFSET_EAST_M` does nothing to a course that's already
 published - `base` checks the *actual* published course against what
 you've requested on startup and, if they genuinely differ, warns loudly on
-the console rather than changing anything. Run `clear-course` yourself
+the console rather than changing anything. Run `reset-course` yourself
 first, then restart `base`, to actually apply new values. This is
 deliberate, not a missing feature: this Redis instance can be the same one
 a real committee's real course is published on (`REDIS_ENV=production` is

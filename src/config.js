@@ -116,14 +116,14 @@ module.exports = {
     foulWindwardM: parseFloat(process.env.SIM_FOUL_WINDWARD_M || '150'),
     // Which windward/leeward mark pair the simulated boat actually races -
     // two letters, windward first, each 'G' (green, short course) or 'B'
-    // (black, long course): 'GG' (default, the plain short course), 'BB'
-    // (plain long course), or a mixed 'BG'/'GB' (see course.js's
+    // (black, long course): 'BB' (default, the plain long course), 'GG'
+    // (plain short course), or a mixed 'BG'/'GB' (see course.js's
     // parseCourseMarks/deriveGeometry for how a mixed pair's beat length
     // comes out). Validated eagerly here, not deep inside boatAgent.js's
     // async marks-received callback, so a typo fails fast at startup with a
     // clear message instead of surfacing later mid-race.
     courseMarks: (() => {
-      const raw = (process.env.SIM_COURSE_MARKS || 'GG').toUpperCase();
+      const raw = (process.env.SIM_COURSE_MARKS || 'BB').toUpperCase();
       if (!/^[GB]{2}$/.test(raw)) {
         throw new Error(
           `SIM_COURSE_MARKS must be 2 letters, each G (green) or B (black) - e.g. GG, BB, BG, GB. Got "${process.env.SIM_COURSE_MARKS}"`

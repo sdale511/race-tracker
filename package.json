@@ -9,7 +9,7 @@
     "fleet": "node src/fleetSim.js",
     "base": "node src/baseStation.js",
     "clear-boats": "node src/clearBoats.js",
-    "clear-course": "node src/clearCourse.js",
+    "reset-course": "node src/resetCourse.js",
     "radio-test": "node src/radioTest.js",
     "print-config": "node src/printConfig.js"
   },

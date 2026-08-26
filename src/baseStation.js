@@ -601,7 +601,7 @@ function main() {
       // production is one env var away), and a simulation run must never be
       // able to destroy that just by having a SIM_* var set - resetting
       // published marks is only ever done explicitly, via `npm run
-      // clear-course` (see below). getOrCreateMarks (below) still creates a
+      // reset-course` (see below). getOrCreateMarks (below) still creates a
       // fresh course from scratch when NOTHING is published yet - that's
       // not a reset, there's nothing to lose.
       try {
@@ -658,7 +658,7 @@ function main() {
         // silently wipe a real committee's actual course out from under
         // them, with no undo). Resetting published marks must always be a
         // deliberate, explicit action an operator takes on purpose - see
-        // `npm run clear-course` (clearCourse.js) - never an automatic side
+        // `npm run reset-course` (resetCourse.js) - never an automatic side
         // effect of starting a simulation. Loudly warn instead, so a
         // mismatch is visible rather than either silently wiped or silently
         // ignored, and leave the existing marks exactly as they are either
@@ -668,7 +668,7 @@ function main() {
             '[baseStation] WARNING: requested course (SIM_COURSE_LENGTH_NM/SIM_CENTER_LAT/SIM_CENTER_LON/' +
               'SIM_LONG_COURSE_EXTRA_NM/SIM_FINISH_OFFSET_NORTH_M/SIM_FINISH_OFFSET_EAST_M) differs from what\'s ' +
               'already published in Redis - using the EXISTING published marks as-is, NOT the values just requested. ' +
-              'Run `npm run clear-course` if you actually want to reset and republish with the new values.'
+              'Run `npm run reset-course` if you actually want to reset and republish with the new values.'
           );
         }
       } catch (err) {

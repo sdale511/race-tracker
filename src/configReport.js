@@ -1,4 +1,5 @@
 const config = require('./config');
+const { COURSE_LENGTH_NM, LONG_COURSE_EXTRA_NM, FINISH_OFFSET_NORTH_M, FINISH_OFFSET_EAST_M } = require('./course');
 
 // The fully-resolved configuration - every default plus whatever's been
 // overridden via environment variables or a .env file - grouped/labeled to
@@ -42,7 +43,17 @@ const sections = [
       { label: 'startOnly', value: config.sim.startOnly, envVar: 'SIM_START_ONLY' },
       { label: 'prestartDwellS', value: config.sim.prestartDwellS, envVar: 'SIM_PRESTART_DWELL_S', unit: 's' },
       { label: 'holdForStart', value: config.sim.holdForStart, envVar: 'SIM_HOLD_FOR_START' },
+      { label: 'foulTest', value: config.sim.foulTest, envVar: 'SIM_FOUL' },
+      { label: 'foulWindwardM', value: config.sim.foulWindwardM, envVar: 'SIM_FOUL_WINDWARD_M', unit: 'm' },
       { label: 'courseMarks', value: config.sim.courseMarks, envVar: 'SIM_COURSE_MARKS' },
+      // These four live in course.js, not config.sim - only takes effect on
+      // a fresh course (see "Changing the course" in the README); a
+      // published course already in Redis keeps whatever it was created
+      // with regardless of what these currently resolve to.
+      { label: 'courseLengthNm', value: COURSE_LENGTH_NM, envVar: 'SIM_COURSE_LENGTH_NM', unit: 'nm' },
+      { label: 'longCourseExtraNm', value: LONG_COURSE_EXTRA_NM, envVar: 'SIM_LONG_COURSE_EXTRA_NM', unit: 'nm' },
+      { label: 'finishOffsetNorthM', value: FINISH_OFFSET_NORTH_M, envVar: 'SIM_FINISH_OFFSET_NORTH_M', unit: 'm' },
+      { label: 'finishOffsetEastM', value: FINISH_OFFSET_EAST_M, envVar: 'SIM_FINISH_OFFSET_EAST_M', unit: 'm' },
     ],
   },
   {
