@@ -443,11 +443,11 @@ broadcast output all work exactly as they would with real hardware.
 | `SIM_PORT` | `41234` | Shared port every simulated boat and the base broadcast on and listen to - see "Broadcasting marks to the rovers" above |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
-| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8898` / `-118.3821` | Center point of the simulated racecourse - setting either clears any already-published course marks on startup so the new center actually takes effect (see "Changing the course" below), same as `SIM_COURSE_LENGTH_NM` below |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8898` / `-118.3821` | Center point of the simulated racecourse - only takes effect on a truly fresh course (nothing published yet in Redis). If a course is already published and doesn't match, the base warns loudly on startup rather than changing anything - see "Changing the course" below for how to actually reset it |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
-| `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect |
-| `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
-| `SIM_FINISH_OFFSET_NORTH_M` / `SIM_FINISH_OFFSET_EAST_M` | 0 / 3 | How far `committeeFinish`/`finish` sit from `committeeStart`/`pin` (north/east meters) - the default (3m east) gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set `SIM_FINISH_OFFSET_EAST_M=0` explicitly to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Setting either clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` above |
+| `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Like `SIM_CENTER_LAT`/`SIM_CENTER_LON` above, only takes effect on a fresh course - see "Changing the course" below |
+| `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end. Same as `SIM_COURSE_LENGTH_NM` - only takes effect on a fresh course |
+| `SIM_FINISH_OFFSET_NORTH_M` / `SIM_FINISH_OFFSET_EAST_M` | 0 / 3 | How far `committeeFinish`/`finish` sit from `committeeStart`/`pin` (north/east meters) - the default (3m east) gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set `SIM_FINISH_OFFSET_EAST_M=0` explicitly to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Same as `SIM_COURSE_LENGTH_NM` above - only takes effect on a fresh course |
 | `SIM_COURSE_MARKS` | `GG` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `GG`/`BB` for the plain short/long course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
@@ -943,8 +943,10 @@ want cleared.
 
 ### Changing the course
 
-The course has seven marks (`src/course.js`'s `MARK_NAMES`): `pin`,
-`committee`, and `finish` make up the start/finish complex, and there are
+The course has eight marks (`src/course.js`'s `MARK_NAMES`): `pin`,
+`committeeStart`, `committeeFinish`, and `finish` make up the start/finish
+complex (two independently-positioned committee boats - see
+`SIM_FINISH_OFFSET_NORTH_M`/`SIM_FINISH_OFFSET_EAST_M` above), and there are
 two windward marks and two leeward marks - a closer **green** pair (the
 short course) and a further-out **black** pair (the long course), matching
 how a real committee lays two mark pairs on the same axis so either course
@@ -955,28 +957,34 @@ sitting `SIM_LONG_COURSE_EXTRA_NM` (default 0.25nm) further out beyond each
 green mark, on the far side from the start/finish complex. **Which pair the
 simulator (`simGps.js`) actually races is `SIM_COURSE_MARKS`** (default
 `GG`, the plain short course - see the env var table above for the other
-three combinations) - `pin`/`committee`/`finish` are never targeted directly
-by the tacking logic regardless.
+three combinations) - `pin`/`committeeStart`/`committeeFinish`/`finish` are
+never targeted directly by the tacking logic regardless.
 
 ```
 npm run clear-course
 ```
 
-Deletes all seven `mark:*` keys so the next `base` run recomputes and
+Deletes all eight `mark:*` keys so the next `base` run recomputes and
 republishes the course from scratch instead of reusing whatever's already
 there. Boat tracks are left untouched — pair with `npm run clear-boats` if
-you want those cleared too. You normally don't need to run this yourself
-when changing `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`, or
-`SIM_LONG_COURSE_EXTRA_NM`: `base` checks the *actual* published course
-against what you've requested on startup, and only clears/recomputes if
-they genuinely differ - not just because one of those env vars happens to
-be set. That makes it safe to restart `base` repeatedly with the same
-settings (a normal thing to do) without it re-clearing and re-broadcasting
-the course every time; it only touches Redis when something has actually
-changed. (If you're upgrading from a version of this app that only had a
-single windward/leeward mark, a boat's old `course_marks.json` cache in
-that shape is detected and ignored automatically - no crash, it just waits
-for a fresh broadcast in the current shape.)
+you want those cleared too. **This is the only thing that ever resets
+published marks.** Changing `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`,
+`SIM_CENTER_LON`, `SIM_LONG_COURSE_EXTRA_NM`, `SIM_FINISH_OFFSET_NORTH_M`,
+or `SIM_FINISH_OFFSET_EAST_M` does nothing to a course that's already
+published - `base` checks the *actual* published course against what
+you've requested on startup and, if they genuinely differ, warns loudly on
+the console rather than changing anything. Run `clear-course` yourself
+first, then restart `base`, to actually apply new values. This is
+deliberate, not a missing feature: this Redis instance can be the same one
+a real committee's real course is published on (`REDIS_ENV=production` is
+one env var away - see "Switching between Redis servers" above), and a
+routine test restart with one env var set must never be able to silently
+wipe that out. (If you're upgrading from a version of this app that only
+had a single windward/leeward mark, or a single shared `committee` mark
+instead of independent `committeeStart`/`committeeFinish`, a boat's old
+`course_marks.json` cache in that shape is detected and ignored
+automatically - no crash, it just waits for a fresh broadcast in the
+current shape.)
 
 ### Broadcasting marks to the rovers
 

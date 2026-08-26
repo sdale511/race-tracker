@@ -390,7 +390,17 @@ function main() {
   // hearing about a course that's already known. Works the same way over a
   // real radio or SimRadioLink in SIMULATE mode - both just broadcast, no
   // per-boat addressing at this layer at all (see simRadioLink.js).
-  function broadcastMarksNow() {
+  //
+  // forceZoneUpdate: only true from setMarkLocation's own call (an explicit,
+  // deliberate operator edit) - every other call site (initial resolve, the
+  // periodic heartbeat, a new boat joining) is routine/automatic and must
+  // NOT overwrite an already-published course:on_grid_zone, same "generate
+  // only if nothing's there yet, never silently regenerate over top of it"
+  // policy as the marks themselves (see resolveMarks' own comment on why -
+  // this Redis instance can be shared with a real course). An edit
+  // genuinely changed a mark's position, so the zone MUST be recomputed to
+  // match, or it'd be left silently stale/wrong for the rest of the race.
+  function broadcastMarksNow(forceZoneUpdate = false) {
     if (!raceMarks) return;
     radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port }));
     // Off by default - this fires on every new-boat join (see
@@ -399,17 +409,14 @@ function main() {
     // line that's rarely worth watching. Set LOG_MARKS_BROADCAST=1 to turn
     // it back on, e.g. while debugging a boat that isn't receiving marks.
     if (config.logMarksBroadcast) console.log('[baseStation] broadcast course marks to all boats');
-    // Republishes the on-grid zone alongside the marks themselves, same
-    // trigger points (initial resolve, an edit, the periodic heartbeat) -
-    // so anything reading it from Redis (RegattaUp, another dashboard) sees
-    // the same zone the base's own OnGridWatcher instances are actually
-    // using, never a stale one left over from marks that have since
-    // changed. Fire-and-forget, same as the other non-critical Redis
-    // writes in this file - a failed publish here doesn't affect detection
-    // itself, only what an external reader sees.
-    redisStore
-      .setOnGridZone(zonePolygon(raceMarks, config.regattaup.onGridZoneM))
-      .catch((err) => console.error('[redis] failed to publish on-grid zone:', err.message));
+    (async () => {
+      try {
+        if (!forceZoneUpdate && (await redisStore.getOnGridZone())) return;
+        await redisStore.setOnGridZone(zonePolygon(raceMarks, config.regattaup.onGridZoneM));
+      } catch (err) {
+        console.error('[redis] failed to publish on-grid zone:', err.message);
+      }
+    })();
   }
 
   // Explicit "where is everyone right now" action for the admin dashboard's
@@ -545,7 +552,7 @@ function main() {
     // (every windward/leeward mark), regardless of which specific mark was
     // actually edited - simplest to always clear all three.
     clearRaceWatchers();
-    broadcastMarksNow();
+    broadcastMarksNow(true); // this mark's position just explicitly changed - the on-grid zone must be recomputed to match
     return raceMarks;
   }
 
@@ -585,19 +592,18 @@ function main() {
 
   async function resolveMarks() {
     if (config.simulate) {
-      // getOrCreateMarks otherwise has no way to tell "marks exist" from
-      // "marks exist but are for a different course length/center" - if
-      // SIM_COURSE_LENGTH_NM/SIM_CENTER_LAT/SIM_CENTER_LON is set AND the
-      // course actually published in Redis doesn't match it, clear so it
-      // gets recomputed. Deliberately NOT just "is the env var set" - those
-      // vars normally stay set for a whole shell/testing session (or live
-      // in .env), so that check alone would re-clear+rebroadcast on every
-      // single restart even when nothing was actually asked to change,
-      // including a stale/duplicate base process starting up later with
-      // the same environment - exactly what looks like "something cleared
-      // the course out from under me" from the outside. Comparing against
-      // what's actually there makes this idempotent: same request, same
-      // result, no matter how many times or which process asks.
+      // Purely diagnostic: compares whatever SIM_COURSE_LENGTH_NM/
+      // SIM_CENTER_LAT/SIM_CENTER_LON/SIM_LONG_COURSE_EXTRA_NM/
+      // SIM_FINISH_OFFSET_NORTH_M/SIM_FINISH_OFFSET_EAST_M is set to against
+      // whatever's actually published in Redis, and warns loudly on a
+      // mismatch - but NEVER clears anything itself. This Redis instance
+      // can be the same one a real course is published on (REDIS_ENV=
+      // production is one env var away), and a simulation run must never be
+      // able to destroy that just by having a SIM_* var set - resetting
+      // published marks is only ever done explicitly, via `npm run
+      // clear-course` (see below). getOrCreateMarks (below) still creates a
+      // fresh course from scratch when NOTHING is published yet - that's
+      // not a reset, there's nothing to lose.
       try {
         const existing = await redisStore.getMarks();
         // Only the three marks actually compared below need to exist for
@@ -643,12 +649,30 @@ function main() {
           'SIM_FINISH_OFFSET_NORTH_M',
           'SIM_FINISH_OFFSET_EAST_M',
         ].some((name) => process.env[name] !== undefined);
+        // NEVER clear marks automatically - this used to call
+        // redisStore.clearCourseMarks() right here whenever a SIM_* env var
+        // was set and didn't match what's published. That's genuinely
+        // dangerous: this same Redis instance can be shared with a real,
+        // unrelated course (REDIS_ENV=production is one keystroke away, and
+        // a base restarted for a routine test with one SIM_* var set could
+        // silently wipe a real committee's actual course out from under
+        // them, with no undo). Resetting published marks must always be a
+        // deliberate, explicit action an operator takes on purpose - see
+        // `npm run clear-course` (clearCourse.js) - never an automatic side
+        // effect of starting a simulation. Loudly warn instead, so a
+        // mismatch is visible rather than either silently wiped or silently
+        // ignored, and leave the existing marks exactly as they are either
+        // way.
         if (requestedChange && !(centerMatches && lengthMatches && longCourseMatches && gapSpanMatches)) {
-          await redisStore.clearCourseMarks();
-          console.log('[baseStation] requested course differs from what\'s published - cleared old marks so they get recomputed');
+          console.warn(
+            '[baseStation] WARNING: requested course (SIM_COURSE_LENGTH_NM/SIM_CENTER_LAT/SIM_CENTER_LON/' +
+              'SIM_LONG_COURSE_EXTRA_NM/SIM_FINISH_OFFSET_NORTH_M/SIM_FINISH_OFFSET_EAST_M) differs from what\'s ' +
+              'already published in Redis - using the EXISTING published marks as-is, NOT the values just requested. ' +
+              'Run `npm run clear-course` if you actually want to reset and republish with the new values.'
+          );
         }
       } catch (err) {
-        console.error('[redis] failed to check/clear old course marks:', err.message);
+        console.error('[redis] failed to check published course marks:', err.message);
       }
       try {
         const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
@@ -1051,8 +1075,25 @@ function main() {
     }
     lastSeenByBoat.set(decoded.boatId, now);
 
-    if (raceMarks) detectRaceEvents(decoded);
-    else pendingFrames.push(decoded);
+    // The marks-ping frame (see boatAgent.js's sendMarksPing) is NOT a real
+    // fix - "gnssFixOk: true" with zero satellites is physically impossible
+    // for an actual GPS reading, so this combination unambiguously
+    // identifies it. It's deliberately positioned at the pin<->committeeStart
+    // midpoint specifically so the transition to the boat's real first fix
+    // (2m leeward of that same line - see simGps.js's PENDING_LINE_OFFSET_M)
+    // wouldn't trip up the finish-line/on-grid/mark-rounding watchers that
+    // existed when that positioning was designed - but foulWatcher.js cares
+    // about crossing that exact line, which the ping sits directly on top
+    // of, so feeding it through would report a spurious "downwind start
+    // line" foul on every single boat's startup. sendMarksPing's own
+    // comment already says this frame isn't "itself meant to be a tracked
+    // position" - skip it here for exactly that reason, while still
+    // recording/broadcasting it above like any other frame.
+    const isMarksPing = decoded.gnssFixOk && decoded.numSV === 0 && decoded.carrSoln === 0;
+    if (!isMarksPing) {
+      if (raceMarks) detectRaceEvents(decoded);
+      else pendingFrames.push(decoded);
+    }
   });
 
   // Lap/on-grid/mark-rounding detection for one already-decoded frame - split
