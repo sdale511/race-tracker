@@ -292,8 +292,8 @@ flowchart TB
   RADIO -- decode --> BS["baseStation.js"]:::base
   BS --> REDIS[("Redis<br/>tracks · marks · course")]:::store
   BS --> SD[("SD card CSV<br/>+ upload archive")]:::store
-  BS --> WATCH["Finish · On-grid · Mark<br/>watchers"]:::base
-  WATCH --> Q[("SQLite queues<br/>lap · ongrid · mark")]:::store
+  BS --> WATCH["Finish · On-grid · Mark · Foul<br/>watchers"]:::base
+  WATCH --> Q[("SQLite queues<br/>lap · ongrid · mark · foul")]:::store
   Q -- "POST JSON" --> HOOK["mylapsWebhook<br/>(base44 function)"]:::cloud
   HOOK --> ENT[("Race · Racer · LapCompletion<br/>MarkRounding · MyLapsTag")]:::store
   BS -- "marks frame · broadcast" --> RV
@@ -459,9 +459,11 @@ flowchart LR
   F --> W1["FinishLineWatcher<br/>.check(lat, lon, t)"]
   F --> W2["OnGridWatcher<br/>.check(lat, lon)"]
   F --> W3["MarkRoundingWatcher<br/>.check(lat, lon, t)"]
+  F --> W4["FoulWatcher<br/>.check(lat, lon, t)"]
   W1 -- "crossing found" --> Q1[("lap queue")]
   W2 -- "ongrid / offgrid" --> Q2[("on-grid queue")]
   W3 -- "gate crossed" --> Q3[("mark queue")]
+  W4 -- "foul found" --> Q4[("foul queue")]
 </pre>
         </div>
       </div>
@@ -479,13 +481,17 @@ flowchart LR
           <div class="panel-title">MarkRoundingWatcher</div>
           <p style="font-size:13px; color:var(--ink-muted); margin:0;">One per boat per gate (windward/leeward × green/black). Fires when a boat crosses the virtual gate extending <code class="mono">markRoundingExtensionM</code> beyond a mark.</p>
         </div>
+        <div class="panel">
+          <div class="panel-title">FoulWatcher <span class="chip" style="margin-left:6px;">new</span></div>
+          <p style="font-size:13px; color:var(--ink-muted); margin:0;">One instance per boat. Watches the same three segments as the start/finish line complex — <code class="mono">pin↔committeeStart</code>, <code class="mono">committeeStart↔committeeFinish</code>, <code class="mono">committeeFinish↔finish</code> — and reports a foul whenever a boat crosses the start or finish line <i>downwind</i> (the wrong direction — a legitimate start/finish only ever crosses upwind, same convention FinishLineWatcher already uses) or passes between the two committee marks in either direction at all.</p>
+        </div>
       </div>
     </section>
 
     <!-- ============ QUEUES ============ -->
     <section class="stage" id="queues">
       <div class="stage-head"><span class="stage-num">§4</span><h2>Webhook queues → RegattaUp</h2><span class="chip base">*WebhookQueue.js</span></div>
-      <p class="lead">Three SQLite-backed queues (lap / on-grid / mark-rounding) share one paced send loop — a burst of events (a whole fleet going on-grid at once) never fires that many concurrent requests. Every attempt is recorded for backoff; a row is only removed once RegattaUp actually accepts it.</p>
+      <p class="lead">Four SQLite-backed queues (lap / on-grid / mark-rounding / foul) share one paced send loop — a burst of events (a whole fleet going on-grid at once) never fires that many concurrent requests. Every attempt is recorded for backoff; a row is only removed once RegattaUp actually accepts it.</p>
 
       <div class="panel">
         <div class="diagram-wrap">
@@ -549,9 +555,22 @@ sequenceDiagram
   }
 }</pre>
         </div>
+        <div class="panel">
+          <div class="panel-title">Foul payload <span class="chip" style="margin-left:6px;">new</span></div>
+          <pre class="json">{
+  <span class="k">"mode"</span>: <span class="s">"foul"</span>,
+  <span class="k">"reason"</span>: <span class="s">"downwind finish line"</span>,
+  <span class="k">"decoded"</span>: {
+    <span class="k">"tranCode"</span>: <span class="s">"525"</span>,
+    <span class="k">"rtcTime"</span>: <span class="n">1735142260297000</span>,
+    <span class="k">"strength"</span>: <span class="n">2</span>
+  }
+}</pre>
+        </div>
       </div>
       <div class="note">⏱ <div><b>rtcTime is microseconds.</b> The lap's own GPS-derived crossing time, converted from the watcher's millisecond timestamp (<code class="mono">crossingTime * 1000</code>) — not when the webhook happened to fire.</div></div>
-      <div class="note">🔗 <div><b>mode is always explicit.</b> All three event types send <code class="mono">mode</code> and <code class="mono">decoded.strength</code> - none of race-tracker's own payloads distinguish an event type by a field's absence. The receiver still treats a missing <code class="mono">mode</code> as <code class="mono">'lap'</code>, since this same endpoint also accepts hits from real MyLaps decoder hardware, which has no concept of mode at all.</div></div>
+      <div class="note">🔗 <div><b>mode is always explicit.</b> All four event types send <code class="mono">mode</code> and <code class="mono">decoded.strength</code> - none of race-tracker's own payloads distinguish an event type by a field's absence. The receiver still treats a missing <code class="mono">mode</code> as <code class="mono">'lap'</code>, since this same endpoint also accepts hits from real MyLaps decoder hardware, which has no concept of mode at all.</div></div>
+      <div class="note">🚧 <div><b>foul is race-tracker-side only, for now.</b> <code class="mono">reason</code> is a free-form string — <code class="mono">"downwind start line"</code>, <code class="mono">"through committee gap"</code>, or <code class="mono">"downwind finish line"</code> today (see foulWatcher.js), more later. mylapsWebhook doesn't branch on <code class="mono">mode: "foul"</code> yet — see §5's mode diagram, still lap/ongrid/offgrid/mark only — an explicit unrecognized <code class="mono">mode</code> falls into its own catch-all branch (<code class="mono">skipReason: "unknown mode: foul"</code>, no LapCompletion/entity side effect, just the unconditional MyLapsTag log). That's a safe no-op today, not the intended handling — a Foul entity + mode branch is being built separately, directly on the RegattaUp platform.</div></div>
     </section>
 
     <!-- ============ REGATTAUP ============ -->

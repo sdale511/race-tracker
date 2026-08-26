@@ -16,19 +16,21 @@ function projectFraction(a, b, p) {
   // Degenerate: a and b on top of each other - a real, not just
   // theoretical, case now that committeeStart/committeeFinish can be
   // independently positioned (see course.js's FINISH_OFFSET_NORTH_M/
-  // FINISH_OFFSET_EAST_M) and default to the exact same spot. Every
-  // caller of this function uses the result as a membership test
-  // (t>=0 && t<=1) against a real segment's span - a zero-length "segment"
-  // has zero span, so it should never match ANY point, not even its own
-  // location (a single point has no interior to be "inside"). Returning 0
-  // here instead would read as "always inside," which previously made
-  // _inLocalStrip report every point on the entire course as being in the
-  // forbidden strip whenever committeeStart and committeeFinish were
-  // co-located (the default) - confirmed live: boats sailing straight
-  // through the actual finish gate downwind, because the reactive
-  // violation-avoidance leg meant to catch exactly that was permanently
-  // short-circuited by that same "always violating" bug on its OTHER,
-  // unrelated segment checks (see _inLocalStrip's own comment).
+  // FINISH_OFFSET_EAST_M) - still reachable by explicitly zeroing both,
+  // even though they no longer default to the same spot. Every caller of
+  // this function uses the result as a membership test (t>=0 && t<=1)
+  // against a real segment's span - a zero-length "segment" has zero span,
+  // so it should never match ANY point, not even its own location (a
+  // single point has no interior to be "inside"). Returning 0 here instead
+  // would read as "always inside," which previously made _inLocalStrip
+  // report every point on the entire course as being in the forbidden
+  // strip whenever committeeStart and committeeFinish were co-located
+  // (the default, before FINISH_OFFSET_EAST_M's default became 3m) -
+  // confirmed live: boats sailing straight through the actual finish gate
+  // downwind, because the reactive violation-avoidance leg meant to catch
+  // exactly that was permanently short-circuited by that same "always
+  // violating" bug on its OTHER, unrelated segment checks (see
+  // _inLocalStrip's own comment).
   if (lenSq === 0) return Infinity;
   const apNorth = p.north - a.north;
   const apEast = p.east - a.east;
@@ -78,6 +80,12 @@ function projectFraction(a, b, p) {
 // more margin than that is needed, since the only actual requirement is not
 // sailing through the segment.
 const DOWNWIND_CLEAR_MARGIN_M = 15;
+
+// SIM_FOUL diagnostic mode (see the constructor's foulTest param and
+// _tickFoulTest/_foulWaypoints below) - how far south of the start line the
+// boat ends up after looping back through it the wrong way, so the crossing
+// is unambiguous rather than landing right on the line's own edge.
+const FOUL_TEST_CLEAR_MARGIN_M = 25;
 
 // Once the boat reaches a mark's latitude (ordinary north/leeward
 // threshold, no special overshoot needed), it heads due east or west - a
@@ -221,6 +229,8 @@ class SimGpsSource extends EventEmitter {
     startOnly,
     prestartDwellS,
     holdForStart,
+    foulTest,
+    foulWindwardM,
     pin,
     committeeStart,
     committeeFinish,
@@ -232,6 +242,15 @@ class SimGpsSource extends EventEmitter {
     // See _tick() - when true, every other field this constructor sets up
     // (phase, side, leg targets, lap counting, ...) is simply never read.
     this.startOnly = !!startOnly;
+    // SIM_FOUL diagnostic mode - see _tickFoulTest's own module comment.
+    // Like startOnly, bypasses the entire tack/phase machinery below; unlike
+    // startOnly, still respects the normal prestart dwell/holdForStart hold
+    // (so this boat looks and behaves like any other boat on the grid right
+    // up until the race actually starts), then runs its own fixed scripted
+    // path instead of racing.
+    this.foulTest = !!foulTest;
+    this.foulWindwardM = foulWindwardM;
+    this.foulStageIndex = 0;
     // Like startOnly, but releasable (see release() below) instead of
     // permanent - the boat holds at its start position until something
     // outside this class calls release(), rather than either a fixed timer
@@ -369,13 +388,16 @@ class SimGpsSource extends EventEmitter {
     this.finishCoastRemainingM = null; // set once the final lap's crossing is detected, see _tick()
     this.lapCoastRemainingM = null; // set once a non-final lap's crossing is detected, see _tick()
 
-    // Leg/target setup is irrelevant in startOnly mode - _tick() below
-    // never reads any of it, so skip it entirely rather than run setup for
-    // state that'll never be used.
-    if (!this.startOnly) {
+    // Leg/target setup is irrelevant in startOnly/foulTest mode - _tick()
+    // below never reads any of it, so skip it entirely rather than run
+    // setup for state that'll never be used.
+    if (!this.startOnly && !this.foulTest) {
       this._setLegTarget();
       this._startNewLeg();
     }
+    // Computed once, after this.north/this.east (the boat's real starting
+    // position) are set above - see _foulWaypoints' own comment.
+    if (this.foulTest) this.foulWaypoints = this._foulWaypoints();
     this._timer = setInterval(() => this._tick(), this.intervalMs);
   }
 
@@ -717,6 +739,123 @@ class SimGpsSource extends EventEmitter {
     return (((Math.atan2(dEast, dNorth) * 180) / Math.PI) + 360) % 360;
   }
 
+  // SIM_FOUL's fixed waypoint sequence (see _tickFoulTest) - computed once,
+  // at construction, from this boat's own real starting position and the
+  // complex's true local geometry (not assumed to be one straight
+  // horizontal line - see the constructor's own comment on why
+  // pin/committeeStart/committeeFinish/finish are each measured
+  // independently).
+  //
+  // A single straight diagonal from north-of/east-of the whole complex to
+  // south-of/west-of it can only ever cross the shared start/finish
+  // latitude ONCE, at exactly one east position - so it can only ever
+  // register ONE of the three segments, not all three, no matter how the
+  // endpoints are chosen. Instead: sail upwind, then for each segment in
+  // turn (start, finish, committee gap) - loop around and sail straight
+  // back down through it (the actual foul), then sail back upwind on that
+  // same lane (a plain vertical move, so it only ever re-crosses the one
+  // segment it just came down through, heading upwind - the legitimate
+  // direction, so start/finish never re-trigger) before moving over to the
+  // next segment's own lane, still safely upwind of the whole complex.
+  _foulWaypoints() {
+    const norths = [this.pinLocal.north, this.committeeStartLocal.north, this.committeeFinishLocal.north, this.finishLocal.north];
+    const northMax = Math.max(...norths);
+    const northMin = Math.min(...norths);
+    // At least northMax + margin regardless of foulWindwardM - a small
+    // configured windward distance must never leave the boat's first
+    // "aligned" waypoint sitting inside (or below) the complex it's meant
+    // to already be safely clear of.
+    const alignNorth = Math.max(this.north + this.foulWindwardM, northMax + FOUL_TEST_CLEAR_MARGIN_M);
+    const belowNorth = northMin - FOUL_TEST_CLEAR_MARGIN_M;
+
+    const midEast = (a, b) => (a.east + b.east) / 2;
+    const lanes = [midEast(this.pinLocal, this.committeeStartLocal), midEast(this.committeeFinishLocal, this.finishLocal)]; // start line, finish line
+    // Committee gap - only a real, distinct thing to test when
+    // committeeStart/committeeFinish are actually separated (see course.js's
+    // SIM_FINISH_OFFSET_NORTH_M/EAST_M) - true by default now (3m apart),
+    // but still reachable by explicitly zeroing both. When co-located, that
+    // one point IS the start line's own committeeStart corner AND the
+    // finish line's own committeeFinish corner at once - a "gap" crossing
+    // there wouldn't cross anything distinct, just re-graze one of those
+    // two corners depending on floating-point noise. Skip this lane
+    // entirely rather than generate a crossing that tests nothing real.
+    const gapSpanM = Math.hypot(
+      this.committeeFinishLocal.north - this.committeeStartLocal.north,
+      this.committeeFinishLocal.east - this.committeeStartLocal.east
+    );
+    if (gapSpanM > 1) lanes.push(midEast(this.committeeStartLocal, this.committeeFinishLocal));
+
+    // Sail a bit windward from wherever this boat actually started, and up
+    // to alignNorth - a normal-looking departure that also happens to
+    // already be at the safe altitude every later lateral move needs.
+    const waypoints = [{ north: alignNorth, east: this.east }];
+    lanes.forEach((east, i) => {
+      waypoints.push({ north: alignNorth, east }); // move over to this lane, still safely upwind
+      waypoints.push({ north: belowNorth, east }); // loop around, sail straight down through it - the foul
+      if (i < lanes.length - 1) waypoints.push({ north: alignNorth, east }); // sail back upwind on the same lane (legitimate direction - not a foul)
+    });
+    return waypoints;
+  }
+
+  // SIM_FOUL diagnostic mode: drives this boat in a straight line through
+  // each of _foulWaypoints() in turn, at ordinary upwind/downwind speed, no
+  // sailing physics (tacking, gybing, mark rounding) involved at all - just
+  // a direct bearing to the current target each tick, same idea as
+  // _emitStationaryFix's dwell but moving. Exists to hand foulWatcher.js (in
+  // race-tracker's base station) and RegattaUp's own foul handling a real,
+  // repeatable event to catch, rather than needing a human pilot to sail
+  // the illegal path by hand.
+  _tickFoulTest(dt) {
+    const target = this.foulWaypoints[this.foulStageIndex];
+    const dNorth = target.north - this.north;
+    const dEast = target.east - this.east;
+    const distToTarget = Math.hypot(dNorth, dEast);
+    // Windward departure at upwind speed (stage 0); the position-then-sweep
+    // legs back down through the complex at downwind speed (stages 1-2) -
+    // matching the speed a real boat would actually be doing in each
+    // direction, not because anything here cares which "phase" it's in.
+    const speedMS = this.foulStageIndex === 0 ? this.upwindSpeedMS : this.downwindSpeedMS;
+    const distM = speedMS * dt;
+    const headingDeg = (((Math.atan2(dEast, dNorth) * 180) / Math.PI) + 360) % 360;
+
+    if (distM >= distToTarget) {
+      // Land exactly on the waypoint rather than overshooting past it, then
+      // advance - overshooting here would risk missing a narrow segment's
+      // span on the very next leg's own path instead of starting cleanly
+      // outside it.
+      this.north = target.north;
+      this.east = target.east;
+      this.foulStageIndex++;
+    } else {
+      const headingRad = (headingDeg * Math.PI) / 180;
+      this.north += distM * Math.cos(headingRad);
+      this.east += distM * Math.sin(headingRad);
+    }
+
+    const { lat, lon } = this._toLatLon(this.north, this.east);
+    this.emit('nav-pvt', {
+      fixType: 3,
+      gnssFixOk: true,
+      diffSoln: true,
+      carrSoln: 2,
+      numSV: 14,
+      lat,
+      lon,
+      heightMm: 5000,
+      hAccMm: 15,
+      gSpeedMmS: Math.round(speedMS * 1000),
+      headMotDeg: headingDeg,
+      timestamp: Date.now(),
+      receivedAt: Date.now(),
+    });
+
+    if (this.foulStageIndex >= this.foulWaypoints.length) {
+      this.finished = true;
+      this.stop();
+      this.emit('finished', { laps: 0, foulTest: true });
+    }
+  }
+
   // Converts a local (course-relative, "north"=toward windwardGreen)
   // offset into a real lat/lon, rotating by courseBearingDeg first so the
   // fix lands on the course's actual real-world orientation, not wherever
@@ -866,6 +1005,11 @@ class SimGpsSource extends EventEmitter {
       return;
     }
 
+    if (this.foulTest) {
+      this._tickFoulTest(dt);
+      return;
+    }
+
     this.timeSinceManeuverS += dt;
 
     const recoveryFrac = Math.min(1, this.timeSinceManeuverS / MANEUVER_RECOVERY_S);
@@ -931,8 +1075,8 @@ class SimGpsSource extends EventEmitter {
       // straight-line PATH to get there can still cut through one of
       // THOSE segments' own span partway there (they can sit directly
       // adjacent to each other, e.g. whenever committeeStart and
-      // committeeFinish are at or near the same spot - the default - so
-      // clearing distance one way can pass straight through the other
+      // committeeFinish are close together - only 3m apart by default -
+      // so clearing distance one way can pass straight through the other
       // segment's own territory before ever reaching the target).
       // _inLocalStrip is the simulator's own ground truth for "is this
       // exact point forbidden" - requiring it to say no, not just trusting

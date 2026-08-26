@@ -41,15 +41,21 @@ const LONG_COURSE_EXTRA_M = LONG_COURSE_EXTRA_NM * NM_TO_M;
 // finish gate) - split into committeeStart/committeeFinish so a real
 // operator can run the two lines from separate committee boats, at
 // different positions entirely, not just two ends of the same physical
-// line. Defaults to 0 (both offsets zero, committeeFinish lands exactly on
-// the old committee position) so an unconfigured course still lays out
-// exactly as before. North is toward windwardGreen, east is
-// perpendicular to that (same local axes as everywhere else in this file) -
-// not a distance+bearing pair, so a caller can independently nudge the
-// finish complex up/down the course or side to side without the two
-// interacting.
+// line. North is toward windwardGreen, east is perpendicular to that (same
+// local axes as everywhere else in this file) - not a distance+bearing
+// pair, so a caller can independently nudge the finish complex up/down the
+// course or side to side without the two interacting.
 const FINISH_OFFSET_NORTH_M = parseFloat(process.env.SIM_FINISH_OFFSET_NORTH_M || '0');
-const FINISH_OFFSET_EAST_M = parseFloat(process.env.SIM_FINISH_OFFSET_EAST_M || '0');
+// Defaults to 3m east, not 0 - a real committeeStart<->committeeFinish gap
+// exists out of the box, matching two actually-separate committee boats
+// (the realistic case) instead of one physically impossible zero-length
+// segment. foulWatcher.js's "through committee gap" foul, and SIM_FOUL's
+// own third crossing (see simGps.js's _foulWaypoints), both need a real gap
+// to have anything to detect/cross - previously that required explicitly
+// setting SIM_FINISH_OFFSET_EAST_M, easy to forget and silently get zero
+// gap fouls instead. Set SIM_FINISH_OFFSET_EAST_M=0 explicitly to go back
+// to the old co-located default.
+const FINISH_OFFSET_EAST_M = parseFloat(process.env.SIM_FINISH_OFFSET_EAST_M || '3');
 
 // Canonical mark list/order - shared by redisStore.js (Redis key names),
 // protocol.js (the base's mark-broadcast radio frame), and getMarks() below,
@@ -166,7 +172,9 @@ function compassDir(bearingDegrees) {
 // same axis at the start line's position (halfway up the green course, by
 // default); `pin` is START_SIDE_LENGTH_M to its west. `committeeFinish`
 // sits FINISH_OFFSET_NORTH_M/FINISH_OFFSET_EAST_M away from committeeStart
-// (0,0 by default, i.e. the same spot) - `finish` is FINISH_SIDE_LENGTH_M
+// (3m east by default - two actually-separate committee boats, not one
+// shared mark; explicitly zero both to go back to co-located) - `finish` is
+// FINISH_SIDE_LENGTH_M
 // further east of *that*, so the whole finish gate moves as a unit when the
 // finish complex is offset from the start complex, rather than the gate's
 // own width changing.
@@ -333,6 +341,8 @@ module.exports = {
   COURSE_LENGTH_M,
   LONG_COURSE_EXTRA_NM,
   LONG_COURSE_EXTRA_M,
+  FINISH_OFFSET_NORTH_M,
+  FINISH_OFFSET_EAST_M,
   WIND_FROM_DEG,
   START_LINE_NORTH_M,
   START_SIDE_LENGTH_M,

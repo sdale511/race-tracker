@@ -447,11 +447,14 @@ broadcast output all work exactly as they would with real hardware.
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
 | `SIM_COURSE_LENGTH_NM` | 1 | leewardGreen-to-windwardGreen distance in nautical miles (the short course - see "Changing the course" below for the green/black mark pairs) - shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Setting it clears any already-published course marks on startup so the new length actually takes effect |
 | `SIM_LONG_COURSE_EXTRA_NM` | 0.25 | How much further out the black (long-course) windward/leeward marks sit beyond the green ones, on each end. Setting it clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` |
+| `SIM_FINISH_OFFSET_NORTH_M` / `SIM_FINISH_OFFSET_EAST_M` | 0 / 3 | How far `committeeFinish`/`finish` sit from `committeeStart`/`pin` (north/east meters) - the default (3m east) gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set `SIM_FINISH_OFFSET_EAST_M=0` explicitly to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Setting either clears any already-published course marks on startup, same as `SIM_COURSE_LENGTH_NM` above |
 | `SIM_COURSE_MARKS` | `GG` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `GG`/`BB` for the plain short/long course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
 | `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
 | `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
 | `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
 | `SIM_HOLD_FOR_START` | `1` (on) | Holds every simulated boat at its start position indefinitely - like `SIM_START_ONLY`, but releasable instead of permanent, and overrides `SIM_PRESTART_DWELL_S`'s timer. Gets a whole fleet on the grid and lets the race committee actually start the race server-side before any boat departs: press SPACE in the terminal running `npm run boat` (standalone) or `npm run fleet` (forwarded to every boat it spawned) once everyone's ready. Set to `0` to go back to the old auto-departing-after-`SIM_PRESTART_DWELL_S` behavior |
+| `SIM_FOUL` | unset | Set to `1` to make this one boat, instead of racing normally, hold at its start position exactly like any other boat (still respects `SIM_PRESTART_DWELL_S`/`SIM_HOLD_FOR_START`), then on release sail `SIM_FOUL_WINDWARD_M` upwind before looping around and sailing straight back down through the start line, the finish line, and the committee gap (skipped only if `SIM_FINISH_OFFSET_EAST_M=0` removes it - see `SIM_FINISH_OFFSET_NORTH_M`/`SIM_FINISH_OFFSET_EAST_M` above) - each crossed the wrong (downwind) way, sailing back upwind on the same lane between each one. Real, repeatable events for `foulWatcher.js` to catch, without needing a human pilot to sail the illegal paths by hand. See "Foul detection -> RegattaUp" below. Only meaningful on ONE boat at a time - setting it fleet-wide just has every boat drive the same scripted path instead of racing |
+| `SIM_FOUL_WINDWARD_M` | 150 | How far upwind (meters) a `SIM_FOUL` boat sails before turning back for the illegal return leg - only needs to look like a real departure, not actually get near the windward mark |
 
 Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
 but the `boat` process itself keeps running rather than exiting - so its
@@ -776,6 +779,88 @@ capped-exponential-backoff loop and shared paced drain, same
 "Editing mark positions from the map" above) clears every boat's
 mark-rounding watchers, same as it already does for finish-line and
 on-grid watchers.
+
+## Foul detection -> RegattaUp
+
+On by default, same as laps/on-grid/mark-rounding - set
+`REGATTAUP_FOUL_ENABLED=0` to turn it off on its own (`REGATTAUP_WEBHOOK_DISABLED`
+still gates it too).
+
+`src/foulWatcher.js`, one instance per boat, watches the same three
+segments that make up the start/finish line complex - `pin↔committeeStart`
+(the start line), `committeeStart↔committeeFinish` (the gap directly
+between the two committee boats - not a legal way through the complex
+either, now that they can be independently positioned, see "Changing the
+course" below), and `committeeFinish↔finish` (the finish line). The start
+and finish segments each have one legitimate crossing direction - the same
+committee-boat-on-the-left/outer-mark-on-the-right upwind convention
+`finishLineWatcher.js` already uses to count real laps. Crossing either one
+the other way (downwind) means the boat sailed straight through the line
+instead of racing around the course - reported as a foul, not a lap. The
+middle segment has no legitimate direction at all; crossing it either way
+is a foul.
+
+POSTs to the same RegattaUp webhook laps/on-grid/mark-rounding use, with
+its own payload shape:
+
+```json
+{ "mode": "foul", "reason": "downwind finish line", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
+```
+
+- `reason` — which foul: `"downwind start line"`, `"downwind finish line"`,
+  or `"through committee gap"` today, more later
+- `tranCode` / `rtcTime` — same conventions as laps/on-grid/mark-rounding
+
+Uses the exact same durable-queue-plus-retry mechanics as the other three
+event types (see "Durable retry queue" above) - `src/foulWebhookQueue.js`,
+its own separate sqlite file (`REGATTAUP_FOUL_QUEUE_DB`).
+
+**Not yet handled on RegattaUp's own side** - `mylapsWebhook` doesn't branch
+on `mode: "foul"` yet, so today it falls into that endpoint's existing
+"unknown mode" catch-all (logged to the transponder event log with
+`skip_reason: "unknown mode: foul"`, no other side effect - a safe no-op,
+not the intended handling). A `Foul` entity and the matching webhook branch
+are being built separately, directly on the RegattaUp platform.
+
+### Testing with SIM_FOUL
+
+`SIM_FOUL=1` scripts one boat through the illegal path end to end, so you
+don't need to sail it by hand to see a foul fire:
+
+```
+# terminal 1 - base station
+SIMULATE=1 npm run base
+
+# terminal 2 - the boat, in foul-test mode
+SIMULATE=1 SIM_FOUL=1 BOAT_ID=1 npm run boat
+```
+
+The boat holds on the grid like any other simulated boat
+(`SIM_HOLD_FOR_START=1` by default) - press SPACE in terminal 2 to release
+it. It sails `SIM_FOUL_WINDWARD_M` (default 150m) upwind, then loops around
+and crosses back down through the start line, the finish line, and the
+committee gap (real by default - see `SIM_FINISH_OFFSET_NORTH_M`/
+`SIM_FINISH_OFFSET_EAST_M` above), each the wrong way, sailing back upwind
+between each one. Watch terminal 1 for three orange lines:
+
+```
+[baseStation] boat=1 foul - downwind start line
+[baseStation] boat=1 foul - downwind finish line
+[baseStation] boat=1 foul - through committee gap
+```
+
+followed by a `[regattaup] foul webhook sent...` line for each, once it
+posts. Add `REGATTAUP_WEBHOOK_DISABLED=1` to the base station command to
+see the detection/queueing without actually posting anywhere.
+
+If you only see two of the three, check that both processes actually
+picked up a course with a real committee gap - both `npm run base` and
+`npm run boat` need a fresh start (or at least a Redis course-mark cache
+that hasn't been left over from a `SIM_FINISH_OFFSET_EAST_M=0` run) for
+their published `committeeStart`/`committeeFinish` to actually be
+separated. `SIM_FINISH_OFFSET_EAST_M=0` on either command goes back to a
+single shared committee mark, in which case the third crossing correctly
+never fires - there's nothing to cross.
 
 ## Redis track storage
 
@@ -1421,6 +1506,8 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base station only — set to `0` to turn off mark-rounding webhooks. On by default, same as laps and on-grid; independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base station only — how far (meters) beyond each windward/leeward mark, along the course axis, the virtual rounding gate extends — capped to half the distance to the corresponding outer (black) mark regardless of this setting — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `<LOG_DIR>/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
+| `REGATTAUP_FOUL_ENABLED` | unset (on) | Base station only — set to `0` to turn off foul webhooks. On by default, same as laps/on-grid/mark-rounding; independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Foul detection -> RegattaUp" above |
+| `REGATTAUP_FOUL_QUEUE_DB` | `<LOG_DIR>/foul_webhook_queue.sqlite` | Base station only — where the foul webhook's own retry queue sqlite file lives, separate from the lap/on-grid/mark-rounding queues' |
 | `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
 | `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |
 

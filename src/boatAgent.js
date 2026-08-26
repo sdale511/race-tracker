@@ -610,6 +610,8 @@ function startGpsSimIfReady() {
     startOnly: config.sim.startOnly,
     prestartDwellS: config.sim.prestartDwellS,
     holdForStart: config.sim.holdForStart,
+    foulTest: config.sim.foulTest,
+    foulWindwardM: config.sim.foulWindwardM,
     // The start/finish line logic needs the REAL pin/committeeStart/
     // committeeFinish/finish positions, not just geometry's scalar
     // distances - see simGps.js's own comment on why (an edited windward

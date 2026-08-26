@@ -3,13 +3,15 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
-const { distanceMeters, COURSE_LENGTH_M, LONG_COURSE_EXTRA_M, MARK_NAMES } = require('./course');
+const { distanceMeters, COURSE_LENGTH_M, LONG_COURSE_EXTRA_M, FINISH_OFFSET_NORTH_M, FINISH_OFFSET_EAST_M, MARK_NAMES } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
 const { MarkRoundingWatcher } = require('./markRoundingWatcher');
 const { MarkRoundingWebhookQueue } = require('./markRoundingWebhookQueue');
+const { FoulWatcher } = require('./foulWatcher');
+const { FoulWebhookQueue } = require('./foulWebhookQueue');
 const { pruneOldLogs } = require('./logRotation');
 const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
 const { startAdminServer } = require('./adminServer');
@@ -69,11 +71,11 @@ for (const method of ['log', 'warn', 'error']) {
 // when stderr is a real terminal - same isTTY gating as gpsLineDirty above,
 // so a piped/redirected log (systemd, a file) never gets raw escape codes
 // embedded in it instead of an actual color.
-function red(text) {
-  return process.stderr.isTTY ? `\x1b[31m${text}\x1b[0m` : text;
+function red(text, stream = process.stderr) {
+  return stream.isTTY ? `\x1b[31m${text}\x1b[0m` : text;
 }
-function orange(text) {
-  return process.stderr.isTTY ? `\x1b[38;5;208m${text}\x1b[0m` : text;
+function orange(text, stream = process.stderr) {
+  return stream.isTTY ? `\x1b[38;5;208m${text}\x1b[0m` : text;
 }
 
 // Base station: sits at the committee boat/shore with the matching radio.
@@ -565,6 +567,7 @@ function main() {
     finishLineWatchers.clear();
     onGridWatchers.clear();
     markRoundingWatchers.clear();
+    foulWatchers.clear();
     lastOnGridSentByBoat.clear();
   }
 
@@ -615,10 +618,32 @@ function main() {
         const longCourseMatches =
           hasGeometryMarks &&
           Math.abs(distanceMeters(existing.windwardGreen, existing.windwardBlack) - LONG_COURSE_EXTRA_M) < 0.1;
-        const requestedChange = ['SIM_COURSE_LENGTH_NM', 'SIM_CENTER_LAT', 'SIM_CENTER_LON', 'SIM_LONG_COURSE_EXTRA_NM'].some(
-          (name) => process.env[name] !== undefined
-        );
-        if (requestedChange && !(centerMatches && lengthMatches && longCourseMatches)) {
+        // Same idea, for the committeeStart<->committeeFinish gap (see
+        // course.js's own comment on SIM_FINISH_OFFSET_NORTH_M/EAST_M) -
+        // without this, a course published before the offset was set (or
+        // with a different offset) silently keeps its old, stale gap
+        // forever: SIM_FINISH_OFFSET_EAST_M taking no visible effect until
+        // the course is cleared by some OTHER means looks exactly like
+        // SIM_FOUL's committee-gap crossing simply not firing. Missing
+        // fields (a course published before committeeStart/committeeFinish
+        // existed at all) default to "matches" rather than forcing a clear -
+        // same backward-compatibility reasoning as hasGeometryMarks above.
+        const gapSpanMatches =
+          !existing.committeeStart ||
+          !existing.committeeFinish ||
+          Math.abs(
+            distanceMeters(existing.committeeStart, existing.committeeFinish) -
+              Math.hypot(FINISH_OFFSET_NORTH_M, FINISH_OFFSET_EAST_M)
+          ) < 0.1;
+        const requestedChange = [
+          'SIM_COURSE_LENGTH_NM',
+          'SIM_CENTER_LAT',
+          'SIM_CENTER_LON',
+          'SIM_LONG_COURSE_EXTRA_NM',
+          'SIM_FINISH_OFFSET_NORTH_M',
+          'SIM_FINISH_OFFSET_EAST_M',
+        ].some((name) => process.env[name] !== undefined);
+        if (requestedChange && !(centerMatches && lengthMatches && longCourseMatches && gapSpanMatches)) {
           await redisStore.clearCourseMarks();
           console.log('[baseStation] requested course differs from what\'s published - cleared old marks so they get recomputed');
         }
@@ -768,6 +793,21 @@ function main() {
     }).filter(Boolean);
   }
 
+  // One FoulWatcher per boat (see foulWatcher.js), same lazy-build-per-boat
+  // pattern as the watchers above - built once raceMarks has all four marks
+  // the start/finish line complex needs (pin/committeeStart/
+  // committeeFinish/finish).
+  const foulWatchers = new Map();
+  function foulWatcherFor(boatId) {
+    if (!raceMarks || !raceMarks.pin || !raceMarks.committeeStart || !raceMarks.committeeFinish || !raceMarks.finish) return null;
+    let watcher = foulWatchers.get(boatId);
+    if (!watcher) {
+      watcher = new FoulWatcher(raceMarks);
+      foulWatchers.set(boatId, watcher);
+    }
+    return watcher;
+  }
+
   // All three webhook queues below default to the same LOG_DIR - a queue's
   // own "ready" line just shows its filename (see queueFileLabel), with the
   // shared directory logged once, immediately before the first "ready" line
@@ -844,13 +884,31 @@ function main() {
     }
   })();
 
-  // Every queued lap/on-grid/mark-rounding event, first attempt or retry
-  // alike, is sent through this single shared loop instead of ever being
-  // POSTed directly from enqueueLap/OnGrid/MarkRounding below - see
-  // config.js's regattaup.postIntervalMs for why (throttling total request
-  // rate to RegattaUp, not per-queue). Round-robins across the three
+  // Same buffer-then-flush pattern again, for fouls (see foulWatcher.js) -
+  // its own separate queue file, same reasoning as onGridWebhookQueue.js's
+  // module comment. Created unconditionally even when foulEnabled is off,
+  // same reasoning as the mark-rounding queue above.
+  let foulWebhookQueue = null;
+  let bufferedFouls = [];
+
+  (async () => {
+    try {
+      foulWebhookQueue = await FoulWebhookQueue.create(config.regattaup.foulQueueDbPath);
+      console.log(`[baseStation] foul webhook queue ready (${queueFileLabel(config.regattaup.foulQueueDbPath)})`);
+      for (const event of bufferedFouls) enqueueFoul(event);
+      bufferedFouls = [];
+    } catch (err) {
+      console.error(red(`[regattaup] failed to initialize foul webhook queue: ${err.message}`));
+    }
+  })();
+
+  // Every queued lap/on-grid/mark-rounding/foul event, first attempt or
+  // retry alike, is sent through this single shared loop instead of ever
+  // being POSTed directly from enqueueLap/OnGrid/MarkRounding/Foul below -
+  // see config.js's regattaup.postIntervalMs for why (throttling total
+  // request rate to RegattaUp, not per-queue). Round-robins across the four
   // queues (rather than always draining lap first) so a busy lap queue
-  // can't starve on-grid/mark-rounding sends indefinitely; sends at most
+  // can't starve on-grid/mark-rounding/foul sends indefinitely; sends at most
   // ONE webhook POST per tick, across all queues combined, however many
   // are actually due (see dueForRetry's own backoff for what "due" means -
   // this loop only adds a rate ceiling on top of that, it doesn't change
@@ -859,6 +917,7 @@ function main() {
     { get: () => lapWebhookQueue, send: sendQueuedLap, inFlight: new Set() },
     { get: () => onGridWebhookQueue, send: sendQueuedOnGrid, inFlight: new Set() },
     { get: () => markRoundingWebhookQueue, send: sendQueuedMarkRounding, inFlight: new Set() },
+    { get: () => foulWebhookQueue, send: sendQueuedFoul, inFlight: new Set() },
   ];
   let webhookQueueCursor = 0;
 
@@ -1081,6 +1140,23 @@ function main() {
         else bufferedMarkRoundings.push(event);
       }
     }
+
+    const foulWatcher = foulWatcherFor(decoded.boatId);
+    const foul = foulWatcher && foulWatcher.check(decoded.lat, decoded.lon, decoded.timestamp);
+    if (foul) {
+      console.log(orange(`[baseStation] boat=${decoded.boatId} foul - ${foul.reason}`, process.stdout));
+      if (config.regattaup.enabled && config.regattaup.foulEnabled) {
+        const event = {
+          boatId: decoded.boatId,
+          reason: foul.reason,
+          rtcTime: foul.crossingTime * 1000, // ms -> microseconds
+          strength: decoded.carrSoln,
+          receivedAt: new Date().toISOString(),
+        };
+        if (foulWebhookQueue) enqueueFoul(event);
+        else bufferedFouls.push(event);
+      }
+    }
   }
 
   // Durably records the lap (see lapWebhookQueue.js's module comment for
@@ -1099,6 +1175,11 @@ function main() {
   // Same pattern again, for mark-rounding events.
   function enqueueMarkRounding(event) {
     markRoundingWebhookQueue.enqueue(event);
+  }
+
+  // Same pattern again, for fouls.
+  function enqueueFoul(event) {
+    foulWebhookQueue.enqueue(event);
   }
 
   function logToConsole(d) {
@@ -1446,6 +1527,11 @@ function main() {
         ? `[baseStation] mark roundings post to RegattaUp (gate extends ${config.regattaup.markRoundingExtensionM}m beyond each mark)`
         : '[baseStation] mark-rounding webhook disabled (set REGATTAUP_MARK_ROUNDING_ENABLED=1 to enable)'
     );
+    console.log(
+      config.regattaup.foulEnabled
+        ? '[baseStation] fouls (downwind start/finish line crossings, committee gap) post to RegattaUp'
+        : '[baseStation] foul webhook disabled (set REGATTAUP_FOUL_ENABLED=1 to enable)'
+    );
   }
 }
 
@@ -1547,6 +1633,37 @@ async function sendQueuedMarkRounding(queue, row) {
   } catch (err) {
     console.error(
       orange(`[regattaup] mark webhook failed for boat=${row.boat_id} mark=${row.mark} (attempt ${row.attempts + 1}), will retry: ${err.message}`)
+    );
+  }
+}
+
+// Tells RegattaUp a boat fouled (see foulWatcher.js) - same tranCode/
+// rtcTime/strength conventions and retry/removal semantics as
+// sendQueuedMarkRounding above, with `mode: 'foul'` and which foul
+// (row.reason, e.g. 'downwind finish line') occurred.
+async function sendQueuedFoul(queue, row) {
+  queue.recordAttempt(row.id);
+  const payload = {
+    mode: 'foul',
+    reason: row.reason,
+    decoded: {
+      tranCode: String(row.boat_id),
+      rtcTime: row.rtc_time,
+      strength: row.strength,
+    },
+  };
+  try {
+    const res = await fetch(config.regattaup.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    queue.remove(row.id);
+    console.log(orange(`[regattaup] foul webhook sent for boat=${row.boat_id} reason=${row.reason}`, process.stdout));
+  } catch (err) {
+    console.error(
+      orange(`[regattaup] foul webhook failed for boat=${row.boat_id} reason=${row.reason} (attempt ${row.attempts + 1}), will retry: ${err.message}`)
     );
   }
 }

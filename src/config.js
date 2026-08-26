@@ -96,6 +96,24 @@ module.exports = {
     // off the line seconds after simulation start, or fighting the sim's
     // own movement to keep it near the line.
     startOnly: process.env.SIM_START_ONLY === '1' || process.env.SIM_START_ONLY === 'true',
+    // Off by default - diagnostic override for foulWatcher.js (base station
+    // side) and RegattaUp's own foul handling: instead of racing normally,
+    // the boat holds at its start position exactly like any other boat
+    // (still respects prestartDwellS/holdForStart), then on start sails
+    // foulWindwardM upwind before turning around and sailing straight back
+    // through the finish line, the committee gap, and the start line, all
+    // in the downwind (illegal) direction - see simGps.js's
+    // _foulWaypoints/_tickFoulTest. A real, repeatable foul event on
+    // demand, without needing a human pilot to sail the illegal path by
+    // hand. Only meaningful set on ONE boat at a time (see boatAgent.js) -
+    // setting it fleet-wide would have every boat drive the same scripted
+    // path instead of racing, which isn't useful for anything.
+    foulTest: process.env.SIM_FOUL === '1' || process.env.SIM_FOUL === 'true',
+    // "A bit windward" - how far upwind (meters) the boat sails before
+    // turning back for the illegal return leg. Modest by default: this only
+    // needs to look like a real departure, not actually get anywhere near
+    // the windward mark.
+    foulWindwardM: parseFloat(process.env.SIM_FOUL_WINDWARD_M || '150'),
     // Which windward/leeward mark pair the simulated boat actually races -
     // two letters, windward first, each 'G' (green, short course) or 'B'
     // (black, long course): 'GG' (default, the plain short course), 'BB'
@@ -417,6 +435,15 @@ module.exports = {
     markRoundingExtensionM: parseFloat(process.env.REGATTAUP_MARK_ROUNDING_EXTENSION_M || '50'),
     markRoundingQueueDbPath:
       process.env.REGATTAUP_MARK_ROUNDING_QUEUE_DB || path.join(logDir, 'mark_rounding_webhook_queue.sqlite'),
+    // Foul detection (see foulWatcher.js): reports a 'foul' webhook whenever
+    // a boat's path crosses the start line, the finish line the wrong way
+    // (downwind), or passes between the two committee boats at all. On by
+    // default, same as laps/on-grid/mark-rounding - set
+    // REGATTAUP_FOUL_ENABLED=0 to turn it off, independent of the overall
+    // REGATTAUP_WEBHOOK_DISABLED switch (which still gates it too - both
+    // must allow it for it to send).
+    foulEnabled: process.env.REGATTAUP_FOUL_ENABLED !== '0' && process.env.REGATTAUP_FOUL_ENABLED !== 'false',
+    foulQueueDbPath: process.env.REGATTAUP_FOUL_QUEUE_DB || path.join(logDir, 'foul_webhook_queue.sqlite'),
   },
 
   // --- Local UDP broadcast (base and boat both) ---
