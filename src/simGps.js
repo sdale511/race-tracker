@@ -86,6 +86,17 @@ const DOWNWIND_CLEAR_MARGIN_M = 15;
 // is unambiguous rather than landing right on the line's own edge.
 const FOUL_TEST_CLEAR_MARGIN_M = 25;
 
+// How far clear of the whole start/finish complex a boat parks once it's
+// done racing (see _parkingWaypoints/_tickParking) - west of pin (the
+// complex's own west end) and south of the line, both by this much. Reused
+// for both directions, same as FOUL_TEST_CLEAR_MARGIN_M covers more than one
+// role above: comfortably more than onGridWatcher.js's own
+// ONGRID_EDGE_MARGIN_M (1m), which is all being west of pin actually
+// requires to fall outside its on-grid zone (that zone is bounded to the
+// pin<->committeeStart segment's own span - see _isInZone there - not the
+// whole course), so there's no reason to cut this margin close.
+const PARKING_CLEAR_MARGIN_M = 25;
+
 // Once the boat reaches a mark's latitude (ordinary north/leeward
 // threshold, no special overshoot needed), it heads due east or west - a
 // short, perfectly horizontal leg at that exact latitude - until it's
@@ -855,6 +866,93 @@ class SimGpsSource extends EventEmitter {
     }
   }
 
+  // Where a boat heads once it's actually done racing (see the
+  // finishCoastRemainingM handling in _tick()) - computed once, right when
+  // the finish coast runs out, from wherever the boat actually is at that
+  // moment. Real fleet racing wants finished boats clear of the committee
+  // complex, not sitting stopped just north of the finish line where every
+  // still-racing boat on this leg has to sail around them - and stopping
+  // there was also generating spurious fouls/on-grid reads of its own
+  // whenever the NEXT race's start sequence moved the line back through
+  // (or near) a parked boat's old position. Sail west, around the whole
+  // complex, then south below the start line - two straight legs, not one
+  // diagonal, so the boat is never cutting the corner back through the
+  // forbidden strip (_inLocalStrip) on the way: it only ever moves west
+  // while already well north of every mark, and only moves south once
+  // already well west of pin. Being west of pin by more than
+  // PARKING_CLEAR_MARGIN_M also keeps it out of onGridWatcher.js's own
+  // pre-start zone regardless of how far south it ends up (see that
+  // constant's own comment) - matching the "not on the grid yet"
+  // requirement without needing to reason about that file's zone geometry
+  // any more precisely than "west of pin, by a lot."
+  _parkingWaypoints() {
+    const norths = [this.pinLocal.north, this.committeeStartLocal.north, this.committeeFinishLocal.north, this.finishLocal.north];
+    const northMax = Math.max(...norths);
+    const northMin = Math.min(...norths);
+    const westMost = Math.min(this.pinLocal.east, this.committeeStartLocal.east);
+    // At least northMax + margin regardless of where the finish coast
+    // actually left the boat - same reasoning as _foulWaypoints' own
+    // alignNorth, just guaranteeing "north of everything" rather than
+    // assuming the coast alone already got it there.
+    const alignNorth = Math.max(this.north, northMax + PARKING_CLEAR_MARGIN_M);
+    const parkEast = westMost - PARKING_CLEAR_MARGIN_M;
+    const parkNorth = northMin - PARKING_CLEAR_MARGIN_M;
+    return [
+      { north: alignNorth, east: this.east }, // straight north first if needed, no lateral move yet
+      { north: alignNorth, east: parkEast }, // west, around the whole complex, still well clear north of it
+      { north: parkNorth, east: parkEast }, // south, below the start line - parked
+    ];
+  }
+
+  // Drives a finished boat through _parkingWaypoints() in turn, same
+  // straight-line/no-sailing-physics approach as _tickFoulTest - there's
+  // nothing left to simulate accurately once the race is over, just a boat
+  // motoring/sailing itself clear of the course. Sets `finished` once the
+  // last waypoint is reached, same as the old immediate-stop behavior did,
+  // just after this detour instead of in place.
+  _tickParking(dt) {
+    const target = this.parkingWaypoints[this.parkingStageIndex];
+    const dNorth = target.north - this.north;
+    const dEast = target.east - this.east;
+    const distToTarget = Math.hypot(dNorth, dEast);
+    const speedMS = this.downwindSpeedMS;
+    const distM = speedMS * dt;
+    const headingDeg = (((Math.atan2(dEast, dNorth) * 180) / Math.PI) + 360) % 360;
+
+    if (distM >= distToTarget) {
+      this.north = target.north;
+      this.east = target.east;
+      this.parkingStageIndex++;
+    } else {
+      const headingRad = (headingDeg * Math.PI) / 180;
+      this.north += distM * Math.cos(headingRad);
+      this.east += distM * Math.sin(headingRad);
+    }
+
+    const { lat, lon } = this._toLatLon(this.north, this.east);
+    this.emit('nav-pvt', {
+      fixType: 3,
+      gnssFixOk: true,
+      diffSoln: true,
+      carrSoln: 2,
+      numSV: 14,
+      lat,
+      lon,
+      heightMm: 5000,
+      hAccMm: 15,
+      gSpeedMmS: Math.round(speedMS * 1000),
+      headMotDeg: headingDeg,
+      timestamp: Date.now(),
+      receivedAt: Date.now(),
+    });
+
+    if (this.parkingStageIndex >= this.parkingWaypoints.length) {
+      this.finished = true;
+      this.stop();
+      this.emit('finished', { laps: this.lapsCompleted });
+    }
+  }
+
   // Converts a local (course-relative, "north"=toward windwardGreen)
   // offset into a real lat/lon, rotating by courseBearingDeg first so the
   // fix lands on the course's actual real-world orientation, not wherever
@@ -1006,6 +1104,11 @@ class SimGpsSource extends EventEmitter {
 
     if (this.foulTest) {
       this._tickFoulTest(dt);
+      return;
+    }
+
+    if (this.parkingWaypoints) {
+      this._tickParking(dt);
       return;
     }
 
@@ -1394,9 +1497,11 @@ class SimGpsSource extends EventEmitter {
     });
 
     if (this.finishCoastRemainingM != null && this.finishCoastRemainingM <= 0) {
-      this.finished = true;
-      this.stop();
-      this.emit('finished', { laps: this.lapsCompleted });
+      // Race is over, but don't stop dead here - see _parkingWaypoints' own
+      // comment on why a finished boat still has somewhere to go.
+      this.finishCoastRemainingM = null;
+      this.parkingWaypoints = this._parkingWaypoints();
+      this.parkingStageIndex = 0;
     }
   }
 }

@@ -47,15 +47,21 @@ const ONGRID_EDGE_MARGIN_M = 1;
 // the third side. A boat only counts as on-grid if it's on the pin side of
 // that hypotenuse.
 //
-// The mirror-image port-tack case near the pin end doesn't need the
-// equivalent treatment, since a boat approaching there is already excluded
-// by the ordinary "between pin and committeeStart" bound (see _isInZone)
-// well before it'd ever look on-grid.
+// The mirror-image PORT-tack case near the pin end gets the identical
+// treatment (see _inPinTriangle below, and pinHypUx/pinHypUy/
+// pinExcludedSideSign in computeGeometry) - a boat rounding the leeward mark
+// or otherwise sailing downwind close to pin's own corner can produce the
+// same false "queued" read there, on the opposite side of the box. Unlike
+// the committeeStart cut, this one isn't gated on how far away committeeFinish
+// is (see excludeTriangle/SAFE_FINISH_SEPARATION_MULTIPLE below) - the pin
+// corner's ambiguity has nothing to do with the finish gate's position, so
+// there's no equivalent "safely far enough away" condition that would make
+// it unnecessary; it's simply always on.
 //
 // A steeper angle here (closer to 90, closer to straight downwind) reaches
 // its own leeward zoneMeters depth after less along-line travel (see the
 // along-line-reach comment below) - a deliberately narrower exclusion, so
-// fewer genuinely-queuing boats near committeeStart get caught by it.
+// fewer genuinely-queuing boats near either corner get caught by it.
 const HYPOTENUSE_ANGLE_DEG = 55;
 
 // The hypotenuse's own along-line reach (zoneMeters / tan(HYPOTENUSE_ANGLE_DEG),
@@ -64,14 +70,13 @@ const HYPOTENUSE_ANGLE_DEG = 55;
 // meters) are comfortably longer than that, but a short test course
 // (SIM_COURSE_LENGTH_NM well under 1) can have a start line shorter than
 // the hypotenuse's own reach, in which case the uncapped half-plane test
-// below sweeps past pin's own position before ever reaching the zone's
-// leeward edge, excluding the ENTIRE zone - pin end included - not just
-// the committeeStart corner it's meant for. Capped here at
-// COMMITTEE_TRIANGLE_MAX_FRACTION of the line's own actual length,
-// regardless of onGridZoneM/HYPOTENUSE_ANGLE_DEG, so the pin half of the
-// line is always guaranteed clear (matching this file's own stated
-// assumption above that the pin end never needs this treatment) no matter
-// how short the course.
+// below sweeps past the line's OTHER mark before ever reaching the zone's
+// leeward edge, excluding the ENTIRE zone - not just the one corner it's
+// meant for. Capped here (independently, from each corner's own vertex) at
+// COMMITTEE_TRIANGLE_MAX_FRACTION of the line's own actual length, so
+// neither cut can ever eat past the line's own midpoint - the two corners'
+// exclusions can meet there but never overlap - no matter how short the
+// course.
 const COMMITTEE_TRIANGLE_MAX_FRACTION = 0.5;
 
 // The exclusion above only exists because a boat finishing (or otherwise
@@ -201,6 +206,19 @@ function computeGeometry(marks, zoneMeters) {
   // needs a dot/cross per fix, not this whole setup.
   const excludedSideSign = Math.sign(hyp.x * downY - hyp.y * downX);
 
+  // Mirror image of the hypotenuse above, anchored at pin instead of
+  // committeeStart - same construction, just starting from the
+  // pin->committeeStart direction (the negation of committeeStart->pin
+  // above) instead, so it rotates down into the zone from the opposite
+  // corner. See _inPinTriangle's own comment for why this one isn't gated
+  // by excludeTriangle the way the committeeStart cut is.
+  const startUx = -pinUx;
+  const startUy = -pinUy;
+  const rotC = { x: startUx * cos - startUy * sin, y: startUx * sin + startUy * cos };
+  const rotD = { x: startUx * cos + startUy * sin, y: -startUx * sin + startUy * cos };
+  const pinHyp = rotC.x * downX + rotC.y * downY >= rotD.x * downX + rotD.y * downY ? rotC : rotD;
+  const pinExcludedSideSign = Math.sign(pinHyp.x * downY - pinHyp.y * downX);
+
   return {
     originLat,
     originLon,
@@ -211,8 +229,11 @@ function computeGeometry(marks, zoneMeters) {
     crossLineUy,
     hypUx: hyp.x,
     hypUy: hyp.y,
+    pinHypUx: pinHyp.x,
+    pinHypUy: pinHyp.y,
     sinAngle: sin,
     excludedSideSign,
+    pinExcludedSideSign,
     excludeTriangle,
   };
 }
@@ -220,27 +241,28 @@ function computeGeometry(marks, zoneMeters) {
 // The on-grid zone's own boundary as a lat/lon polygon - for drawing it on
 // a map (see adminServer.js/roverAdminServer.js), not for detection itself
 // (OnGridWatcher.check still does that per-fix). A quadrilateral: pin ->
-// committeeStart -> the point where the hypotenuse reaches the zone's far
-// (leeward) edge -> the equivalent point straight out from pin -> back to
-// pin. Built from the exact same computeGeometry() the detector itself
-// uses, so this can never show a different zone than what actually gets
-// detected.
+// committeeStart -> the point where committeeStart's own hypotenuse reaches
+// the zone's far (leeward) edge -> the equivalent point where pin's own
+// mirror-image hypotenuse reaches it -> back to pin - both corners cut the
+// same way now (see _inCommitteeTriangle/_inPinTriangle), not just
+// committeeStart's. Built from the exact same computeGeometry() the
+// detector itself uses, so this can never show a different zone than what
+// actually gets detected.
 function zonePolygon(marks, zoneMeters) {
   const geo = computeGeometry(marks, zoneMeters);
-  const downX = -geo.crossLineUx;
-  const downY = -geo.crossLineUy;
-  // Distance along the hypotenuse to travel before its own leeward
+  // Distance along either hypotenuse to travel before its own leeward
   // (downwind) component reaches zoneMeters - the hypotenuse makes
   // HYPOTENUSE_ANGLE_DEG with the (horizontal) start line, so a unit step
-  // along it has a leeward component of sin(that angle).
+  // along it has a leeward component of sin(that angle). Same angle, same
+  // sinAngle, for both corners - only the anchor point and direction differ.
   const hypLengthM = zoneMeters / geo.sinAngle;
   const far = {
     x: geo.committeeStart.x + geo.hypUx * hypLengthM,
     y: geo.committeeStart.y + geo.hypUy * hypLengthM,
   };
   const pinFar = {
-    x: geo.pin.x + downX * zoneMeters,
-    y: geo.pin.y + downY * zoneMeters,
+    x: geo.pin.x + geo.pinHypUx * hypLengthM,
+    y: geo.pin.y + geo.pinHypUy * hypLengthM,
   };
   return [
     marks.pin,
@@ -271,9 +293,13 @@ class OnGridWatcher {
     this.hypUx = geo.hypUx;
     this.hypUy = geo.hypUy;
     this.excludedSideSign = geo.excludedSideSign;
+    this.pinHypUx = geo.pinHypUx;
+    this.pinHypUy = geo.pinHypUy;
+    this.pinExcludedSideSign = geo.pinExcludedSideSign;
     // See SAFE_FINISH_SEPARATION_MULTIPLE's own comment - skips
     // _inCommitteeTriangle entirely once committeeFinish is far enough from
     // committeeStart that the ambiguity it guards against can't happen.
+    // _inPinTriangle has no equivalent gate - see its own comment.
     this.excludeTriangle = geo.excludeTriangle;
   }
 
@@ -295,12 +321,14 @@ class OnGridWatcher {
     const windwardOfLine =
       (p.x - this.committeeStart.x) * this.crossLineUx + (p.y - this.committeeStart.y) * this.crossLineUy;
     // See the module comment above for the other exclusion: a boat only
-    // counts as on-grid if it's also in the start zone and NOT in the
-    // starboard-tack triangle cut from committeeStart's corner.
+    // counts as on-grid if it's also in the start zone, NOT in the
+    // starboard-tack triangle cut from committeeStart's corner, and NOT in
+    // the mirror-image port-tack triangle cut from pin's corner.
     const inside =
       windwardOfLine <= ONGRID_EDGE_MARGIN_M &&
       this._isInZone(p, this.committeeStart, this.pin, this.zoneMeters) &&
-      (!this.excludeTriangle || !this._inCommitteeTriangle(p));
+      (!this.excludeTriangle || !this._inCommitteeTriangle(p)) &&
+      !this._inPinTriangle(p);
     const wasInside = this.onGrid;
     this.onGrid = inside;
     if (inside) return 'ongrid';
@@ -355,6 +383,30 @@ class OnGridWatcher {
     const pinLenSq = pinDx * pinDx + pinDy * pinDy;
     if (pinLenSq === 0) return true; // degenerate: marks on top of each other
     const t = (dx * pinDx + dy * pinDy) / pinLenSq; // 0=committeeStart, 1=pin
+    return t <= COMMITTEE_TRIANGLE_MAX_FRACTION;
+  }
+
+  // Mirror image of _inCommitteeTriangle - is p on the excluded (pin/
+  // bottom-left-corner) side of the hypotenuse line through pin? Same pure
+  // half-plane-plus-length-cap test, just anchored at pin instead of
+  // committeeStart (see pinHypUx/pinHypUy/pinExcludedSideSign in
+  // computeGeometry). Always applied, unlike _inCommitteeTriangle - there's
+  // no committeeFinish-distance condition that makes a boat sailing close
+  // past pin's own corner (rounding the leeward mark, or just passing
+  // through on a downwind leg) stop looking like one queuing there; that
+  // ambiguity is inherent to the corner itself, not tied to where the
+  // finish gate happens to be.
+  _inPinTriangle(p) {
+    const dx = p.x - this.pin.x;
+    const dy = p.y - this.pin.y;
+    const crossVal = this.pinHypUx * dy - this.pinHypUy * dx;
+    const sign = Math.sign(crossVal);
+    if (sign !== 0 && sign !== this.pinExcludedSideSign) return false;
+    const csDx = this.committeeStart.x - this.pin.x;
+    const csDy = this.committeeStart.y - this.pin.y;
+    const csLenSq = csDx * csDx + csDy * csDy;
+    if (csLenSq === 0) return true; // degenerate: marks on top of each other
+    const t = (dx * csDx + dy * csDy) / csLenSq; // 0=pin, 1=committeeStart
     return t <= COMMITTEE_TRIANGLE_MAX_FRACTION;
   }
 }
