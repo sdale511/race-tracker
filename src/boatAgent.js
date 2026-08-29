@@ -669,10 +669,28 @@ function startGpsSimIfReady() {
   });
 }
 
+// SIM_TRUST_CACHED_MARKS=1 - set by fleetSim.js (never by a lone `npm run
+// boat`) on every boat it spawns, after it has already fetched the
+// CURRENT course from Redis itself and written it to this exact shared
+// course_marks.json path (see fleetSim.js's own ensureFreshMarksCached -
+// every boat in a fleet shares the same LOG_DIR, hence the same cache
+// file). Unlike the standalone case below, there's no "may be stale" risk
+// here to guard against: this boat only sees the flag because the
+// controlling process just confirmed the file is current, not because of
+// whatever happened to be left over from some earlier run - so it can
+// skip the radio ping/retry wait entirely rather than have every boat in
+// the fleet independently re-fetch the same answer over simulated radio.
+const trustCachedMarks =
+  (process.env.SIM_TRUST_CACHED_MARKS === '1' || process.env.SIM_TRUST_CACHED_MARKS === 'true') && !!currentMarks;
+
 if (config.noGps) {
   // Radio (real or simulated), marks reception, and the upload client are
   // all still fully running above - this just skips ever starting a GPS
   // source, real or simulated, so no position fixes/frames are produced.
+} else if (config.simulateGps && trustCachedMarks) {
+  console.log('[boatAgent] SIM_TRUST_CACHED_MARKS=1 - using the course marks already on disk without waiting for a radio broadcast');
+  freshMarksReceived = true;
+  startGpsSimIfReady();
 } else if (config.simulateGps) {
   console.log(
     '[boatAgent] SIMULATE_GPS - waiting for a fresh course marks broadcast from the base station before starting' +

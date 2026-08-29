@@ -1,6 +1,9 @@
 require('./logTimestamps');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const config = require('./config');
+const { RedisStore } = require('./redisStore');
 
 // Spawns a fleet of independent `boatAgent.js` processes, each simulating
 // its own boat (own BOAT_ID, own randomized start slot/speed/course - see
@@ -62,6 +65,39 @@ if (baseEnv.SIMULATE !== '1' && baseEnv.SIMULATE !== 'true' && baseEnv.SIMULATE_
 
 const boatAgentPath = path.join(__dirname, 'boatAgent.js');
 
+// Every boat this script spawns shares this exact path (none of them get a
+// per-boat LOG_DIR override below), the same one boatAgent.js's own
+// marksFilePath resolves to - so fetching the course ONCE here and writing
+// it here means every child finds it already sitting on disk the instant it
+// starts, instead of each of the FLEET_SIZE boats independently pinging the
+// (already-running) base station over its own simulated radio link and
+// waiting out MARKS_PING_RETRY_MS retries for an answer this process could
+// just look up directly.
+const marksFilePath = path.join(config.logDir, 'course_marks.json');
+
+// Fetches (or creates, if truly missing - same getOrCreateMarks() guarantee
+// resetCourse.js/baseStation.js already rely on, so this never clobbers a
+// course an operator already set up) the CURRENT course straight from
+// Redis and writes it to marksFilePath above. Every boat this script spawns
+// then gets SIM_TRUST_CACHED_MARKS=1 (see boatAgent.js), so it trusts this
+// freshly-written file immediately on startup rather than waiting on a
+// radio broadcast for information this process already has in hand.
+async function ensureFreshMarksCached() {
+  const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
+  try {
+    const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+    // Same defensive mkdir every other writer under logDir already does
+    // (see baseStation.js/sdLogger.js) - normally already created by the
+    // base station this fleet is racing against, but this script has no
+    // real dependency on startup order for this particular file.
+    fs.mkdirSync(config.logDir, { recursive: true });
+    fs.writeFileSync(marksFilePath, JSON.stringify(marks));
+    console.log(`[fleetSim] fetched current course marks from Redis: ${Object.keys(marks).join(', ')}`);
+  } finally {
+    await redisStore.close();
+  }
+}
+
 // Prefixes every line a child writes with its own boat ID, so N boats'
 // interleaved output stays attributable - a raw pipe-through would
 // otherwise interleave partial lines from different boats into an
@@ -80,148 +116,163 @@ function pipeWithPrefix(stream, prefix, out) {
   });
 }
 
-let remaining = FLEET_SIZE;
-let anyFailed = false;
+// Populated once startFleet() actually spawns the children below - declared
+// up here (not inside startFleet) so shutdown() can always find it,
+// including during the brief async window (see ensureFreshMarksCached
+// above) before any boat has actually been spawned yet.
 const children = [];
 
-for (let i = 0; i < FLEET_SIZE; i++) {
-  const boatId = BOAT_ID_START + i;
-  const adminPort = ADMIN_PORT_START + i;
-  const prefix = `[boat ${boatId}] `;
+// Everything past this point used to just run top-to-bottom as soon as this
+// module loaded; now it waits on ensureFreshMarksCached() first (see the
+// call at the bottom of this file), so it's wrapped in a function instead -
+// the logic itself is unchanged.
+function startFleet() {
+  let remaining = FLEET_SIZE;
+  let anyFailed = false;
 
-  const child = spawn('node', [boatAgentPath], {
-    // SIM_START_SLOT/SIM_FLEET_SIZE let boatAgent.js space this boat evenly
-    // along the start line (index/fleetSize) instead of an independent
-    // random draw - random placement across the whole fleet looks clustered
-    // by chance far more often than it looks evenly spread (that's just how
-    // randomness works, not a bug), and this process already knows both the
-    // total fleet size and each child's own index for free.
-    env: {
-      ...baseEnv,
-      BOAT_ID: String(boatId),
-      ADMIN_PORT: String(adminPort),
-      SIM_EXIT_ON_FINISH: '1',
-      SIM_START_SLOT: String(i),
-      SIM_FLEET_SIZE: String(FLEET_SIZE),
-    },
-    // 'ipc' (4th slot) lets this process forward the operator's own
-    // "start the race" signal (SIM_HOLD_FOR_START's spacebar press, read
-    // below - this process is the one with the real terminal, none of its
-    // children have their own TTY stdin) to every boat via child.send() -
-    // see the HOLD_FOR_START block below.
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-  });
-  child.boatId = boatId; // tagged for the message-echo loop below, which only has `child` in scope
-  children.push(child);
+  for (let i = 0; i < FLEET_SIZE; i++) {
+    const boatId = BOAT_ID_START + i;
+    const adminPort = ADMIN_PORT_START + i;
+    const prefix = `[boat ${boatId}] `;
 
-  pipeWithPrefix(child.stdout, prefix, process.stdout);
-  pipeWithPrefix(child.stderr, prefix, process.stderr);
+    const child = spawn('node', [boatAgentPath], {
+      // SIM_START_SLOT/SIM_FLEET_SIZE let boatAgent.js space this boat evenly
+      // along the start line (index/fleetSize) instead of an independent
+      // random draw - random placement across the whole fleet looks clustered
+      // by chance far more often than it looks evenly spread (that's just how
+      // randomness works, not a bug), and this process already knows both the
+      // total fleet size and each child's own index for free.
+      env: {
+        ...baseEnv,
+        BOAT_ID: String(boatId),
+        ADMIN_PORT: String(adminPort),
+        SIM_EXIT_ON_FINISH: '1',
+        SIM_START_SLOT: String(i),
+        SIM_FLEET_SIZE: String(FLEET_SIZE),
+        // See ensureFreshMarksCached above - this process already confirmed
+        // marksFilePath is current, so this boat doesn't need to wait on its
+        // own radio round-trip to find that out too.
+        SIM_TRUST_CACHED_MARKS: '1',
+      },
+      // 'ipc' (4th slot) lets this process forward the operator's own
+      // "start the race" signal (SIM_HOLD_FOR_START's spacebar press, read
+      // below - this process is the one with the real terminal, none of its
+      // children have their own TTY stdin) to every boat via child.send() -
+      // see the HOLD_FOR_START block below.
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    child.boatId = boatId; // tagged for the message-echo loop below, which only has `child` in scope
+    children.push(child);
 
-  child.on('exit', (code, signal) => {
-    remaining--;
-    if (code !== 0 && signal === null) anyFailed = true;
-    console.log(`[fleetSim] boat ${boatId} exited (${signal ? `signal ${signal}` : `code ${code}`}) - ${remaining} boat(s) still running`);
-    if (remaining === 0) {
-      console.log('[fleetSim] all boats finished');
-      process.exit(anyFailed ? 1 : 0);
-    }
-  });
-}
+    pipeWithPrefix(child.stdout, prefix, process.stdout);
+    pipeWithPrefix(child.stderr, prefix, process.stderr);
 
-// Aggregates each boat's "still waiting for a GPS fix" heartbeat (see
-// boatAgent.js) into one combined line instead of the whole fleet's worth of
-// identical per-boat messages scrolling by independently - unconditional
-// (not just under SIM_HOLD_FOR_START below), since every boat waits on
-// marks/its first fix regardless of whether the fleet holds at the grid
-// afterward. Stops itself once every boat that ever reported waiting has
-// gone quiet (gotten its fix), rather than running for the rest of the
-// process's life.
-const boatsWaitingForFix = new Set();
-let sawAnyWaitingForFix = false;
-for (const child of children) {
-  child.on('message', (msg) => {
-    if (LOG_IPC) console.log(`[fleetSim] IPC from boat ${child.boatId}: ${JSON.stringify(msg)}`);
-    if (msg === 'waiting-for-fix') {
-      boatsWaitingForFix.add(child.pid);
-      sawAnyWaitingForFix = true;
-    } else if (msg === 'on-grid') {
-      boatsWaitingForFix.delete(child.pid);
-    }
-  });
-}
-const waitingForFixIntervalId = setInterval(() => {
-  if (boatsWaitingForFix.size > 0) {
-    console.log(`[fleetSim] ${boatsWaitingForFix.size}/${FLEET_SIZE} boat(s) still waiting for a GPS fix`);
-  } else if (sawAnyWaitingForFix) {
-    clearInterval(waitingForFixIntervalId);
-  }
-}, 10000);
-
-// SIM_HOLD_FOR_START holds every boat at its start position (see
-// simGps.js's holdForStart/release()) until told to actually start racing -
-// this process is the one with the real terminal (every child's own stdin
-// is 'ignore' above), so it's the one that reads the operator's spacebar
-// and forwards a single 'start-race' IPC message to each boat's own
-// SIM_HOLD_FOR_START listener (see boatAgent.js) over the 'ipc' channel set
-// up above. On by default - mirrors config.js's own default-on check
-// (opted out with SIM_HOLD_FOR_START=0/false), not the old opt-in one.
-const HOLD_FOR_START = baseEnv.SIM_HOLD_FOR_START !== '0' && baseEnv.SIM_HOLD_FOR_START !== 'false';
-if (HOLD_FOR_START) {
-  if (process.stdin.isTTY) {
-    console.log(`[fleetSim] ${FLEET_SIZE} boat(s) will hold at the grid; press SPACE here once ready to start the race`);
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    let started = false;
-
-    // Each boat notifies this process ('on-grid', see boatAgent.js) once it
-    // has actually reached its start position - tracked so the prompt below
-    // can announce the whole fleet ready, rather than the operator having to
-    // guess from N boats' worth of interleaved, prefixed log lines.
-    let boatsOnGrid = 0;
-    for (const child of children) {
-      child.on('message', (msg) => {
-        if (msg !== 'on-grid') return;
-        boatsOnGrid++;
-        if (boatsOnGrid === FLEET_SIZE && !started) {
-          console.log(`\n[fleetSim] *** all ${FLEET_SIZE} boat(s) are on the grid - press SPACE to start the race! ***\n`);
-        }
-      });
-    }
-
-    // The prompt above is easy to miss under N boats' worth of scrolling GPS
-    // output - repeats a reminder on a slow timer until actually released,
-    // so it doesn't get lost.
-    const reminderIntervalId = setInterval(() => {
-      if (!started && boatsOnGrid > 0) {
-        console.log(
-          `[fleetSim] *** ${boatsOnGrid}/${FLEET_SIZE} boat(s) on the grid - press SPACE to start the race ***`
-        );
-      }
-    }, 15000);
-
-    process.stdin.on('data', (data) => {
-      if (data.includes(0x03)) {
-        // Ctrl+C - raw mode intercepts this before it ever becomes a real
-        // SIGINT, so re-raise it by hand to reach the ordinary SIGINT
-        // handler below (which stops every boat, same as always).
-        clearInterval(reminderIntervalId);
-        process.stdin.setRawMode(false);
-        process.kill(process.pid, 'SIGINT');
-        return;
-      }
-      if (started || !data.includes(0x20)) return;
-      started = true;
-      clearInterval(reminderIntervalId);
-      process.stdin.setRawMode(false);
-      console.log('[fleetSim] SPACE pressed - starting the race');
-      for (const child of children) {
-        if (child.connected) child.send('start-race');
+    child.on('exit', (code, signal) => {
+      remaining--;
+      if (code !== 0 && signal === null) anyFailed = true;
+      console.log(`[fleetSim] boat ${boatId} exited (${signal ? `signal ${signal}` : `code ${code}`}) - ${remaining} boat(s) still running`);
+      if (remaining === 0) {
+        console.log('[fleetSim] all boats finished');
+        process.exit(anyFailed ? 1 : 0);
       }
     });
-  } else {
-    console.warn(
-      '[fleetSim] SIM_HOLD_FOR_START is on but stdin is not a TTY - nothing can send the start signal, boats will hold at the grid forever'
-    );
+  }
+
+  // Aggregates each boat's "still waiting for a GPS fix" heartbeat (see
+  // boatAgent.js) into one combined line instead of the whole fleet's worth of
+  // identical per-boat messages scrolling by independently - unconditional
+  // (not just under SIM_HOLD_FOR_START below), since every boat waits on
+  // marks/its first fix regardless of whether the fleet holds at the grid
+  // afterward. Stops itself once every boat that ever reported waiting has
+  // gone quiet (gotten its fix), rather than running for the rest of the
+  // process's life.
+  const boatsWaitingForFix = new Set();
+  let sawAnyWaitingForFix = false;
+  for (const child of children) {
+    child.on('message', (msg) => {
+      if (LOG_IPC) console.log(`[fleetSim] IPC from boat ${child.boatId}: ${JSON.stringify(msg)}`);
+      if (msg === 'waiting-for-fix') {
+        boatsWaitingForFix.add(child.pid);
+        sawAnyWaitingForFix = true;
+      } else if (msg === 'on-grid') {
+        boatsWaitingForFix.delete(child.pid);
+      }
+    });
+  }
+  const waitingForFixIntervalId = setInterval(() => {
+    if (boatsWaitingForFix.size > 0) {
+      console.log(`[fleetSim] ${boatsWaitingForFix.size}/${FLEET_SIZE} boat(s) still waiting for a GPS fix`);
+    } else if (sawAnyWaitingForFix) {
+      clearInterval(waitingForFixIntervalId);
+    }
+  }, 10000);
+
+  // SIM_HOLD_FOR_START holds every boat at its start position (see
+  // simGps.js's holdForStart/release()) until told to actually start racing -
+  // this process is the one with the real terminal (every child's own stdin
+  // is 'ignore' above), so it's the one that reads the operator's spacebar
+  // and forwards a single 'start-race' IPC message to each boat's own
+  // SIM_HOLD_FOR_START listener (see boatAgent.js) over the 'ipc' channel set
+  // up above. On by default - mirrors config.js's own default-on check
+  // (opted out with SIM_HOLD_FOR_START=0/false), not the old opt-in one.
+  const HOLD_FOR_START = baseEnv.SIM_HOLD_FOR_START !== '0' && baseEnv.SIM_HOLD_FOR_START !== 'false';
+  if (HOLD_FOR_START) {
+    if (process.stdin.isTTY) {
+      console.log(`[fleetSim] ${FLEET_SIZE} boat(s) will hold at the grid; press SPACE here once ready to start the race`);
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      let started = false;
+
+      // Each boat notifies this process ('on-grid', see boatAgent.js) once it
+      // has actually reached its start position - tracked so the prompt below
+      // can announce the whole fleet ready, rather than the operator having to
+      // guess from N boats' worth of interleaved, prefixed log lines.
+      let boatsOnGrid = 0;
+      for (const child of children) {
+        child.on('message', (msg) => {
+          if (msg !== 'on-grid') return;
+          boatsOnGrid++;
+          if (boatsOnGrid === FLEET_SIZE && !started) {
+            console.log(`\n[fleetSim] *** all ${FLEET_SIZE} boat(s) are on the grid - press SPACE to start the race! ***\n`);
+          }
+        });
+      }
+
+      // The prompt above is easy to miss under N boats' worth of scrolling GPS
+      // output - repeats a reminder on a slow timer until actually released,
+      // so it doesn't get lost.
+      const reminderIntervalId = setInterval(() => {
+        if (!started && boatsOnGrid > 0) {
+          console.log(
+            `[fleetSim] *** ${boatsOnGrid}/${FLEET_SIZE} boat(s) on the grid - press SPACE to start the race ***`
+          );
+        }
+      }, 15000);
+
+      process.stdin.on('data', (data) => {
+        if (data.includes(0x03)) {
+          // Ctrl+C - raw mode intercepts this before it ever becomes a real
+          // SIGINT, so re-raise it by hand to reach the ordinary SIGINT
+          // handler below (which stops every boat, same as always).
+          clearInterval(reminderIntervalId);
+          process.stdin.setRawMode(false);
+          process.kill(process.pid, 'SIGINT');
+          return;
+        }
+        if (started || !data.includes(0x20)) return;
+        started = true;
+        clearInterval(reminderIntervalId);
+        process.stdin.setRawMode(false);
+        console.log('[fleetSim] SPACE pressed - starting the race');
+        for (const child of children) {
+          if (child.connected) child.send('start-race');
+        }
+      });
+    } else {
+      console.warn(
+        '[fleetSim] SIM_HOLD_FOR_START is on but stdin is not a TTY - nothing can send the start signal, boats will hold at the grid forever'
+      );
+    }
   }
 }
 
@@ -236,7 +287,10 @@ if (HOLD_FOR_START) {
 // exit THIS process immediately, leaving every already-spawned boat process
 // running (and holding its own radio/admin/log-upload ports) with nothing
 // left watching it - regardless of whether SIM_HOLD_FOR_START ever actually
-// released them.
+// released them. Also the only thing that needs to happen if a signal
+// arrives during the ensureFreshMarksCached() wait below, before any boat
+// has actually been spawned yet - `children` is empty then, so this is
+// already a no-op past the log line.
 function shutdown(signal) {
   if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
   console.log(`\n[fleetSim] ${signal} received - stopping all boats`);
@@ -244,3 +298,10 @@ function shutdown(signal) {
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+ensureFreshMarksCached()
+  .then(startFleet)
+  .catch((err) => {
+    console.error('[fleetSim] failed to fetch course marks from Redis - not starting any boats:', err.message);
+    process.exit(1);
+  });
