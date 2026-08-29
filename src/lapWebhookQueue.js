@@ -27,10 +27,14 @@ class LapWebhookQueue {
     const existing = fs.existsSync(dbPath) ? fs.readFileSync(dbPath) : null;
     const db = existing ? new SQL.Database(existing) : new SQL.Database();
     const queue = new LapWebhookQueue(db, dbPath);
+    // boat_id is TEXT, not INTEGER - BOAT_ID is a fixed-width alphanumeric
+    // string (see boatIdFile.js), and SQLite's INTEGER type affinity
+    // silently converts a numeric-looking value like "00001" to 1,
+    // dropping the leading zeros - confirmed live, not theoretical.
     queue.db.run(`
       CREATE TABLE IF NOT EXISTS pending_laps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        boat_id INTEGER NOT NULL,
+        boat_id TEXT NOT NULL,
         lap INTEGER NOT NULL,
         rtc_time INTEGER NOT NULL,
         strength INTEGER,

@@ -11,11 +11,13 @@ const { UbxParser, encodeNavPvt, RTCM_MSG_USED_NAMES } = require('./ubxParser');
 const { toGGA } = require('./nmea');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
+const { pruneForDiskSpace } = require('./logRotation');
 const protocol = require('./protocol');
 const { distanceMeters, MARK_NAMES } = require('./course');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const roverStats = require('./roverStats');
+const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 
 // True while the cursor is sitting mid-line after an in-place GPS log
 // overwrite (see handlePvt's inPlaceMode) - any *other* log call landing
@@ -61,7 +63,7 @@ if (config.simulate) {
 } else if (config.radio.enabled) {
   console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
 } else {
-  console.log('[boatAgent] Radio disabled (NO_RADIO=1) - fixes still log to SD');
+  console.log('[boatAgent] Radio disabled (RADIO_ENABLED=0) - fixes still log to SD');
 }
 
 // Short labels for the rover admin dashboard (see getRoverStats below) -
@@ -76,6 +78,11 @@ const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' 
 // so config.admin.port's default is fine as-is there. An explicit
 // ADMIN_PORT env var always wins, on either side.
 const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate ? 8093 : config.admin.port;
+// Logged this early (well before startRoverAdminServer actually starts the
+// server, much further down this file) so the one thing an operator most
+// wants right after launch - "where's the dashboard" - isn't buried under
+// everything else this file logs during GPS/radio/upload setup.
+console.log(`[roverAdminServer] dashboard at http://localhost:${myAdminPort}`);
 
 const sdLogger = new SdLogger({
   logDir: config.logDir,
@@ -83,6 +90,18 @@ const sdLogger = new SdLogger({
   retentionDays: config.logRetentionDays,
   chunkMinutes: config.logChunkMinutes,
 });
+
+// Emergency last resort if LOG_RETENTION_DAYS's normal age-based pruning
+// (above, run by SdLogger itself on every chunk rollover) still isn't
+// enough to keep this boat's SD card from filling up - see
+// logRotation.js's own comment on pruneForDiskSpace. On its own timer
+// rather than only checked at chunk rollover, since a chunk boundary is up
+// to LOG_CHUNK_MINUTES away and a genuinely full disk needs a much
+// tighter check than that.
+setInterval(
+  () => pruneForDiskSpace(config.logDir, /^boat[A-Za-z0-9]+_.*\.csv$/, CRITICAL_BELOW_PCT),
+  60000
+);
 
 // Local UDP broadcast of this boat's own fixes - onboard instruments
 // (chartplotter, a laptop running OpenCPN, u-center) on the same LAN can
@@ -118,7 +137,7 @@ if (config.simulate) {
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 } else {
-  radio = new EventEmitter(); // NO_RADIO=1 - never emits 'frame'/'marks', other outputs still testable
+  radio = new EventEmitter(); // RADIO_ENABLED=0 - never emits 'frame'/'marks', other outputs still testable
   radio.send = () => false;
 }
 
@@ -267,7 +286,7 @@ function stopMarksPingRetry() {
 // running - on at least some OSes that silently drops a broadcast send
 // entirely (no error, no exception, just never arrives), which is exactly
 // the kind of one-off miss these pings are meant to prevent, not
-// reproduce. The NO_RADIO stub never emits 'connected', so this is simply
+// reproduce. The RADIO_ENABLED=0 stub never emits 'connected', so this is simply
 // a no-op there (nothing to ping over anyway). Left as a persistent
 // listener, not `.once()`, so a boat that reconnects after a radio dropout
 // (re-)starts retrying too, rather than only ever getting the marks-ping
@@ -279,19 +298,24 @@ radio.on('sync-error', () => roverStats.recordSyncError());
 // Pushes completed chunked SD-card logs to the base whenever it's actually
 // reachable over WiFi (see uploadClient.js) - independent of GPS
 // source/simulate mode, since this is really about the boat's own
-// microSD-backed log files, not position data.
-if (config.upload.enabled) {
-  startUploadClient({
-    logDir: config.logDir,
-    boatId: config.boatId,
-    chunkMinutes: config.logChunkMinutes,
-    getBaseAddress: () => baseAddress,
-    checkIntervalMs: config.upload.checkIntervalMs,
-    timeoutMs: config.upload.timeoutMs,
-    adminPort: myAdminPort,
-  });
-} else {
-  console.log('[boatAgent] log upload disabled by default (set UPLOAD_ENABLED=1 to turn it on)');
+// microSD-backed log files, not position data. Always started, even with
+// UPLOAD_ENABLED=0 - its periodic health-check ping is the only way the
+// base ever learns this boat's IP/admin port (see adminServer.js's
+// dashboard link), so a boat with file uploads turned off shouldn't also
+// disappear from the base's own dashboard. UPLOAD_ENABLED only gates the
+// actual file transfer inside uploadClient.js's own tick().
+startUploadClient({
+  logDir: config.logDir,
+  boatId: config.boatId,
+  chunkMinutes: config.logChunkMinutes,
+  getBaseAddress: () => baseAddress,
+  checkIntervalMs: config.upload.checkIntervalMs,
+  timeoutMs: config.upload.timeoutMs,
+  adminPort: myAdminPort,
+  uploadEnabled: config.upload.enabled,
+});
+if (!config.upload.enabled) {
+  console.log('[boatAgent] log upload disabled (UPLOAD_ENABLED=0) - still reporting identity/health to the base');
 }
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
@@ -695,7 +719,7 @@ if (config.noGps) {
   console.log(
     '[boatAgent] SIMULATE_GPS - waiting for a fresh course marks broadcast from the base station before starting' +
       (currentMarks ? ' (ignoring the last-known copy cached on disk - it may be stale)' : '') +
-      (radioMode === 'none' ? ' (NO_RADIO=1 has no radio to receive one on, so this would wait forever)' : '')
+      (radioMode === 'none' ? ' (RADIO_ENABLED=0 has no radio to receive one on, so this would wait forever)' : '')
   );
 } else {
   openGps();
@@ -716,6 +740,7 @@ function getRoverStats() {
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
     pendingCount: countPending(config.logDir, config.boatId, config.logChunkMinutes),
+    disk: getDiskSpace(config.logDir),
     baseIp: baseAddress ? baseAddress.ip : null,
     adminPort: baseAddress ? baseAddress.adminPort : null,
     baseUploadPort: baseAddress ? baseAddress.port : null,

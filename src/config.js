@@ -1,5 +1,29 @@
 const path = require('path');
 require('dotenv').config();
+const { getOrCreatePersistentBoatId, ID_LENGTH: BOAT_ID_LENGTH } = require('./boatIdFile');
+
+// BOAT_ID always wins outright when set (by hand, or by fleetSim.js for
+// every boat it spawns) - only falls back to this device's own persisted id
+// (see boatIdFile.js) when BOAT_ID is entirely unset, e.g. a standalone
+// `npm run boat` nobody's configured yet. The wire protocol's boatId field
+// (protocol.js's BOAT_ID_LEN) is just a fixed-width slot of raw ASCII
+// bytes - it doesn't actually require letters, that's only
+// getOrCreatePersistentBoatId's own choice of alphabet for its randomly
+// generated ids (see boatIdFile.js); fleetSim.js, for one, assigns plain
+// zero-padded numbers instead (see its own sequentialBoatId). All this
+// checks is the one thing that's actually a hard wire-format requirement -
+// the length - and fails loudly rather than silently truncating/padding a
+// wrong-length value, since a quietly-altered id is a much worse failure
+// mode for fleet identification than a clear error at startup.
+function resolveBoatId() {
+  if (process.env.BOAT_ID === undefined) return getOrCreatePersistentBoatId();
+  if (process.env.BOAT_ID.length !== BOAT_ID_LENGTH) {
+    throw new Error(
+      `BOAT_ID must be exactly ${BOAT_ID_LENGTH} characters (got "${process.env.BOAT_ID}") - the wire protocol's boatId field is a fixed-width ${BOAT_ID_LENGTH}-byte slot`
+    );
+  }
+  return process.env.BOAT_ID;
+}
 
 // Central configuration. Override any of these with environment variables,
 // e.g. GPS_PORT=/dev/ttyACM0 BOAT_ID=7 npm run boat
@@ -247,15 +271,15 @@ module.exports = {
   // Tools to actually run at this baud before you change this value to
   // match - a mismatch here just means the port opens but nothing decodes.
   radio: {
-    // NO_RADIO=1 skips opening the radio port entirely (e.g. bench-testing
+    // RADIO_ENABLED=0 skips opening the radio port entirely (e.g. bench-testing
     // GPS alone, no radio hardware attached) - fixes still log to SD.
-    enabled: process.env.NO_RADIO !== '1' && process.env.NO_RADIO !== 'true',
+    enabled: process.env.RADIO_ENABLED !== '0' && process.env.RADIO_ENABLED !== 'false',
     port: process.env.RADIO_PORT || '/dev/ttyUSB0',
     baud: parseInt(process.env.RADIO_BAUD || '115200', 10),
   },
 
   // --- Identity & timing ---
-  boatId: parseInt(process.env.BOAT_ID || '1', 10),
+  boatId: resolveBoatId(),
   // How far the boat has to actually move before we transmit a new
   // position frame over the radio - distance-based, not time-based, so a
   // stopped boat doesn't keep re-sending the same fix and a fast-moving one
@@ -319,12 +343,14 @@ module.exports = {
     // IP (see uploadServer.js's detectLocalIp) if it picks the wrong
     // interface, or none at all.
     baseIp: process.env.BASE_IP || null,
-    // Boat only - off by default (used to be opt-out via UPLOAD_DISABLED;
-    // flipped to opt-in, since most rovers - especially simulated fleets -
-    // have no real SD-card logs worth pushing over WiFi, and the periodic
-    // check/attempt is wasted overhead until someone actually wants it).
-    // Set UPLOAD_ENABLED=1 to turn it back on for a given boat.
-    enabled: process.env.UPLOAD_ENABLED === '1' || process.env.UPLOAD_ENABLED === 'true',
+    // Boat only - on by default. Only gates the actual file transfer -
+    // uploadClient.js's periodic health-check ping (which is how the base
+    // ever learns this boat's IP/admin port at all, see
+    // adminServer.js's dashboard link) always runs regardless, so turning
+    // this off doesn't also make a boat invisible to the base's dashboard.
+    // Set UPLOAD_ENABLED=0 to turn off just the file transfer, e.g. a
+    // simulated fleet with no real SD-card logs worth pushing over WiFi.
+    enabled: process.env.UPLOAD_ENABLED !== '0' && process.env.UPLOAD_ENABLED !== 'false',
     // Boat only - how often to check whether the base is currently
     // reachable and, if so, try sending one pending log file. A boat is
     // expected to drift in and out of WiFi range, so this is a cheap
@@ -370,8 +396,9 @@ module.exports = {
   // an actual finish line crossing from a boat's position frames - real
   // hardware or simulated, doesn't matter - this triggers a POST so
   // RegattaUp counts the lap. Override the URL to point at a mock endpoint
-  // for testing; set REGATTAUP_WEBHOOK_DISABLED=1 to skip sending entirely
-  // (crossings are still detected and logged).
+  // for testing; set REGATTAUP_WEBHOOK_ENABLED=0 to skip sending entirely
+  // (crossings are still detected and logged). On by default, same
+  // unset-means-on convention as markRoundingEnabled/foulEnabled below.
   //
   // Every lap is durably queued (see lapWebhookQueue.js) before the first
   // send attempt and only removed once RegattaUp actually accepts it - a
@@ -380,7 +407,7 @@ module.exports = {
   // silently dropped.
   regattaup: {
     webhookUrl: process.env.REGATTAUP_WEBHOOK_URL || 'https://regattaup.com/api/functions/mylapsWebhook',
-    enabled: process.env.REGATTAUP_WEBHOOK_DISABLED !== '1' && process.env.REGATTAUP_WEBHOOK_DISABLED !== 'true',
+    enabled: process.env.REGATTAUP_WEBHOOK_ENABLED !== '0' && process.env.REGATTAUP_WEBHOOK_ENABLED !== 'false',
     // Base station only - the admin dashboard's regatta selector (see
     // baseStation.js's refreshActiveRegattas) fetches this list so an
     // operator can pick which regatta this base station is reporting for.
@@ -397,6 +424,15 @@ module.exports = {
     // (pick up a newly published regatta, notice the selected one has
     // ended) rather than a tight sync loop.
     activeRegattasRefreshIntervalMs: parseInt(process.env.REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS || '300000', 10), // 5 minutes
+    // Off by default - a successful fetch is the expected, ordinary
+    // outcome of a background heartbeat that runs indefinitely (every
+    // activeRegattasRefreshIntervalMs), so logging one every time is just
+    // scroll, not signal. A failed fetch still always logs (see
+    // refreshActiveRegattas' own console.error) regardless of this flag -
+    // that's the actual actionable case. Set REGATTAUP_LOG_ACTIVE_REGATTAS=1
+    // to see the routine success line too, e.g. while confirming a mocked
+    // REGATTAUP_ACTIVE_REGATTAS_URL is actually being hit on schedule.
+    logActiveRegattas: process.env.REGATTAUP_LOG_ACTIVE_REGATTAS === '1' || process.env.REGATTAUP_LOG_ACTIVE_REGATTAS === 'true',
     queueDbPath: process.env.REGATTAUP_QUEUE_DB || path.join(logDir, 'lap_webhook_queue.sqlite'),
     // Every lap/on-grid/mark-rounding event is always queued first (see
     // baseStation.js's enqueueLap/OnGrid/MarkRounding), never POSTed
@@ -416,7 +452,7 @@ module.exports = {
     // to the pin<->committeeStart (start) line, while still between the two
     // marks, to count as "on-grid" - an ongrid/offgrid webhook fires on
     // each transition. Same enabled/retry/backoff settings as laps above
-    // (REGATTAUP_WEBHOOK_DISABLED also disables this), but its own queue
+    // (REGATTAUP_WEBHOOK_ENABLED=0 also disables this), but its own queue
     // file - see onGridWebhookQueue.js's module comment for why it can't
     // just share lap_webhook_queue.sqlite.
     onGridZoneM: parseFloat(process.env.REGATTAUP_ONGRID_ZONE_M || '10'),
@@ -425,7 +461,7 @@ module.exports = {
     // 'mark' webhook whenever a boat crosses the virtual gate extending
     // markRoundingExtensionM beyond a windward/leeward mark. On by default,
     // same as laps and on-grid - set REGATTAUP_MARK_ROUNDING_ENABLED=0 to
-    // turn it off, independent of the overall REGATTAUP_WEBHOOK_DISABLED
+    // turn it off, independent of the overall REGATTAUP_WEBHOOK_ENABLED
     // switch (which still gates it too - both must allow it for it to send).
     markRoundingEnabled: process.env.REGATTAUP_MARK_ROUNDING_ENABLED !== '0' && process.env.REGATTAUP_MARK_ROUNDING_ENABLED !== 'false',
     // Generous by default - there's no real downside to a longer gate (see
@@ -440,7 +476,7 @@ module.exports = {
     // (downwind), or passes between the two committee boats at all. On by
     // default, same as laps/on-grid/mark-rounding - set
     // REGATTAUP_FOUL_ENABLED=0 to turn it off, independent of the overall
-    // REGATTAUP_WEBHOOK_DISABLED switch (which still gates it too - both
+    // REGATTAUP_WEBHOOK_ENABLED switch (which still gates it too - both
     // must allow it for it to send).
     foulEnabled: process.env.REGATTAUP_FOUL_ENABLED !== '0' && process.env.REGATTAUP_FOUL_ENABLED !== 'false',
     foulQueueDbPath: process.env.REGATTAUP_FOUL_QUEUE_DB || path.join(logDir, 'foul_webhook_queue.sqlite'),

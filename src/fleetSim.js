@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const config = require('./config');
 const { RedisStore } = require('./redisStore');
+const { sequentialBoatId } = require('./boatIdFile');
 
 // Spawns a fleet of independent `boatAgent.js` processes, each simulating
 // its own boat (own BOAT_ID, own randomized start slot/speed/course - see
@@ -17,9 +18,9 @@ const { RedisStore } = require('./redisStore');
 // `npm run boat` terminals with different BOAT_ID values", just automated
 // here instead of done by hand.
 //
-// Run with `npm run fleet` (respects FLEET_SIZE/BOAT_ID_START below, plus
-// any of boatAgent's own SIM_* env vars - LAP_COUNT, START_ONLY, etc. - all
-// of which pass through to every spawned boat unchanged):
+// Run with `npm run fleet` (respects FLEET_SIZE below, plus any of
+// boatAgent's own SIM_* env vars - LAP_COUNT, START_ONLY, etc. - all of
+// which pass through to every spawned boat unchanged):
 //
 //   FLEET_SIZE=5 npm run fleet
 //
@@ -30,10 +31,6 @@ const { RedisStore } = require('./redisStore');
 // has. Ctrl+C here forwards SIGINT to whichever boats are still racing.
 
 const FLEET_SIZE = parseInt(process.env.FLEET_SIZE || '3', 10);
-// First BOAT_ID handed out; subsequent boats get BOAT_ID_START+1,
-// BOAT_ID_START+2, ... - not necessarily 1, so a fleet can be added
-// alongside boats already started by hand without ID collisions.
-const BOAT_ID_START = parseInt(process.env.BOAT_ID_START || '1', 10);
 // Matches boatAgent.js's own SIMULATE=1 default admin port (8093) as the
 // base - each boat needs its own distinct port (an explicit ADMIN_PORT
 // from the parent env would otherwise collide across every child), so this
@@ -51,7 +48,14 @@ if (!Number.isInteger(FLEET_SIZE) || FLEET_SIZE < 1) {
   process.exit(1);
 }
 
-console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s), BOAT_ID ${BOAT_ID_START}-${BOAT_ID_START + FLEET_SIZE - 1}`);
+// Sequential (00001, 00002, ...) rather than boatIdFile.js's random
+// generateBoatId - this process assigns every id in the fleet itself, so
+// there's nothing to coordinate against and no reason to draw randomly;
+// a plain incrementing number is easier to track across a console full of
+// interleaved per-boat log lines than random ids would be.
+const fleetBoatIds = Array.from({ length: FLEET_SIZE }, (_, i) => sequentialBoatId(i + 1));
+
+console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s), BOAT_ID: ${fleetBoatIds.join(', ')}`);
 
 // This script's whole purpose is a fleet of SIMULATED boats - defaults
 // SIMULATE=1 so `npm run fleet` works with no other env vars set, but
@@ -131,7 +135,7 @@ function startFleet() {
   let anyFailed = false;
 
   for (let i = 0; i < FLEET_SIZE; i++) {
-    const boatId = BOAT_ID_START + i;
+    const boatId = fleetBoatIds[i];
     const adminPort = ADMIN_PORT_START + i;
     const prefix = `[boat ${boatId}] `;
 

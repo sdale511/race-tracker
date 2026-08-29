@@ -114,6 +114,13 @@ function startUploadClient({
   checkIntervalMs = 15000,
   timeoutMs = 5000,
   adminPort,
+  // Gates only the actual file transfer below - the health-check ping
+  // above it always runs regardless (see config.js's own comment on
+  // UPLOAD_ENABLED). That ping is the only way the base ever learns this
+  // boat's IP/admin port at all (see adminServer.js's dashboard link), so
+  // turning off file uploads specifically shouldn't also make a boat
+  // invisible to the base's own dashboard.
+  uploadEnabled = true,
 }) {
   let inFlight = false;
 
@@ -137,6 +144,8 @@ function startUploadClient({
       const healthStatus = await httpGet(healthUrl, timeoutMs).catch(() => null);
       if (healthStatus !== 200) return; // base not reachable right now - retry next tick
       roverStats.recordHealthCheckOk();
+
+      if (!uploadEnabled) return; // identity/health reporting only - see this function's own comment above
 
       const filePath = findPendingUpload(logDir, boatId, chunkMinutes);
       if (!filePath) return; // nothing pending

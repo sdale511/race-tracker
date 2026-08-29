@@ -47,7 +47,9 @@ class SdLogger {
     this.currentChunk = null;
     this.filePath = null;
     fs.mkdirSync(logDir, { recursive: true });
-    pruneOldLogs(logDir, /^boat\d+_.*\.csv$/, retentionDays);
+    // Alphanumeric, not \d+ - BOAT_ID is a fixed-width alphanumeric string
+    // now (see boatIdFile.js), not guaranteed numeric.
+    pruneOldLogs(logDir, /^boat[A-Za-z0-9]+_.*\.csv$/, retentionDays);
   }
 
   // Only touches the filesystem (existsSync/writeFileSync/pruneOldLogs)
@@ -76,7 +78,9 @@ class SdLogger {
     // Every chunk rollover, not just when this particular chunk's file
     // happens to be new - a resumed-after-restart process re-entering an
     // already-existing chunk should still get the periodic prune below.
-    pruneOldLogs(this.logDir, /^boat\d+_.*\.csv$/, this.retentionDays);
+    // Alphanumeric, not \d+ - see the constructor's own comment on this
+    // exact pattern.
+    pruneOldLogs(this.logDir, /^boat[A-Za-z0-9]+_.*\.csv$/, this.retentionDays);
     return this.filePath;
   }
 

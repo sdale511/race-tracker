@@ -16,6 +16,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "ioredis": "^5.11.1",
+    "nanoid": "^3.3.18",
     "serialport": "^12.0.0",
     "sql.js": "^1.14.1"
   }

@@ -1,53 +1,68 @@
 // Compact fixed-length frame sent over the telemetry radio. Kept small on
 // purpose: every byte costs airtime, and long-range links are often
-// bandwidth-limited (a few kbps). This frame is 23 bytes total.
+// bandwidth-limited (a few kbps). This frame is FRAME_LEN bytes total.
 //
 // Layout (all little-endian):
-//   [0]     sync byte        0xAA
-//   [1]     boatId           uint8
-//   [2..5]  unix time (s)    uint32
-//   [6..7]  ms within second uint16  (0-999 - full unix-time precision
-//                                     without needing a 64-bit field or a
-//                                     shared custom epoch)
-//   [8..11] lat * 1e7        int32
-//   [12..15] lon * 1e7       int32
-//   [16..17] speed (0.1 kn)  uint16
-//   [18..19] heading (0.1deg) uint16
-//   [20]    status           uint8  (bit0 fixOk, bits1-2 carrSoln, bits3-7 numSV)
-//   [21]    reserved         uint8  (e.g. battery %, spare)
-//   [22]    checksum         uint8  (sum of bytes 1..21 mod 256)
+//   [0]        sync byte        0xAA
+//   [1..5]     boatId           BOAT_ID_LEN raw ASCII bytes, A-Z only (see
+//                                boatIdFile.js) - not bit-packed (26 letters
+//                                would fit in ~24 bits instead of 40) since
+//                                the few bytes saved isn't worth the extra
+//                                encode/decode complexity next to every
+//                                other field here being a plain fixed-width
+//                                number.
+//   [6..9]     unix time (s)    uint32
+//   [10..11]   ms within second uint16  (0-999 - full unix-time precision
+//                                        without needing a 64-bit field or a
+//                                        shared custom epoch)
+//   [12..15]   lat * 1e7        int32
+//   [16..19]   lon * 1e7        int32
+//   [20..21]   speed (0.1 kn)   uint16
+//   [22..23]   heading (0.1deg) uint16
+//   [24]       status           uint8  (bit0 fixOk, bits1-2 carrSoln, bits3-7 numSV)
+//   [25]       reserved         uint8  (e.g. battery %, spare)
+//   [26]       checksum         uint8  (sum of bytes 1..25 mod 256)
 
 const { MARK_NAMES } = require('./course');
 
 const SYNC = 0xaa;
-const FRAME_LEN = 23;
+// Length of the boatId field itself (see boatIdFile.js's own comment on why
+// 5 uppercase letters - short enough to cost little extra airtime over the
+// old single-byte numeric id, long enough that random generation across a
+// whole fleet is only very remotely likely to ever collide).
+const BOAT_ID_LEN = 5;
+const FRAME_LEN = 1 + BOAT_ID_LEN + 4 + 2 + 4 + 4 + 2 + 2 + 1 + 1 + 1;
 
 function encode(boatId, pvt) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
   const buf = Buffer.alloc(FRAME_LEN);
   buf.writeUInt8(SYNC, 0);
-  buf.writeUInt8(boatId & 0xff, 1);
-  buf.writeUInt32LE(Math.floor(pvt.timestamp / 1000), 2);
-  buf.writeUInt16LE(pvt.timestamp % 1000, 6);
-  buf.writeInt32LE(Math.round(pvt.lat * 1e7), 8);
-  buf.writeInt32LE(Math.round(pvt.lon * 1e7), 12);
+  buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
+  let offset = 1 + BOAT_ID_LEN;
+  buf.writeUInt32LE(Math.floor(pvt.timestamp / 1000), offset);
+  buf.writeUInt16LE(pvt.timestamp % 1000, offset + 4);
+  buf.writeInt32LE(Math.round(pvt.lat * 1e7), offset + 6);
+  buf.writeInt32LE(Math.round(pvt.lon * 1e7), offset + 10);
 
   const speedKnots = (pvt.gSpeedMmS / 1000) * 1.94384; // mm/s -> knots
-  buf.writeUInt16LE(Math.max(0, Math.min(65535, Math.round(speedKnots * 10))), 16);
+  buf.writeUInt16LE(Math.max(0, Math.min(65535, Math.round(speedKnots * 10))), offset + 14);
 
   const heading = ((pvt.headMotDeg % 360) + 360) % 360;
-  buf.writeUInt16LE(Math.round(heading * 10), 18);
+  buf.writeUInt16LE(Math.round(heading * 10), offset + 16);
 
   const status =
     (pvt.gnssFixOk ? 1 : 0) |
     ((pvt.carrSoln & 0x03) << 1) |
     ((Math.min(pvt.numSV, 31) & 0x1f) << 3);
-  buf.writeUInt8(status, 20);
+  buf.writeUInt8(status, offset + 18);
 
-  buf.writeUInt8(0, 21); // reserved
+  buf.writeUInt8(0, offset + 19); // reserved
 
   let sum = 0;
-  for (let i = 1; i < 22; i++) sum = (sum + buf[i]) & 0xff;
-  buf.writeUInt8(sum, 22);
+  for (let i = 1; i < FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, FRAME_LEN - 1);
 
   return buf;
 }
@@ -57,17 +72,18 @@ function decode(buf) {
   if (buf.length !== FRAME_LEN || buf[0] !== SYNC) return null;
 
   let sum = 0;
-  for (let i = 1; i < 22; i++) sum = (sum + buf[i]) & 0xff;
-  if (sum !== buf[22]) return null; // checksum mismatch
+  for (let i = 1; i < FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[FRAME_LEN - 1]) return null; // checksum mismatch
 
-  const status = buf.readUInt8(20);
+  const offset = 1 + BOAT_ID_LEN;
+  const status = buf.readUInt8(offset + 18);
   return {
-    boatId: buf.readUInt8(1),
-    timestamp: buf.readUInt32LE(2) * 1000 + buf.readUInt16LE(6),
-    lat: buf.readInt32LE(8) / 1e7,
-    lon: buf.readInt32LE(12) / 1e7,
-    speedKnots: buf.readUInt16LE(16) / 10,
-    headingDeg: buf.readUInt16LE(18) / 10,
+    boatId: buf.toString('ascii', 1, offset),
+    timestamp: buf.readUInt32LE(offset) * 1000 + buf.readUInt16LE(offset + 4),
+    lat: buf.readInt32LE(offset + 6) / 1e7,
+    lon: buf.readInt32LE(offset + 10) / 1e7,
+    speedKnots: buf.readUInt16LE(offset + 14) / 10,
+    headingDeg: buf.readUInt16LE(offset + 16) / 10,
     gnssFixOk: !!(status & 0x01),
     carrSoln: (status >> 1) & 0x03,
     numSV: (status >> 3) & 0x1f,
@@ -210,6 +226,7 @@ module.exports = {
   decode,
   FRAME_LEN,
   SYNC,
+  BOAT_ID_LEN,
   encodeMarks,
   decodeMarks,
   MARKS_FRAME_LEN,

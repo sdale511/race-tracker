@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -33,7 +33,7 @@ function fixQualityText(f) {
 // clear stale data) even after the underlying connection actually drops,
 // so there needs to be some separate signal that's actually live. `connected`
 // is a tri-state: true/false is an actual live/dead reading, null means "not
-// applicable" (no radio/GPS configured at all, e.g. NO_RADIO=1 or no
+// applicable" (no radio/GPS configured at all, e.g. RADIO_ENABLED=0 or no
 // GPS_PORT) - same dot/text pair the page's own Redis indicator already
 // uses in the subtitle, reused here for visual consistency.
 function connectionDot(connected) {
@@ -287,7 +287,10 @@ function renderDashboard(s) {
   const boatIds = Object.keys(s.boats).sort((a, b) => {
     const tierDiff = activityTier(s.boats[a]) - activityTier(s.boats[b]);
     if (tierDiff !== 0) return tierDiff;
-    return Number(a) - Number(b);
+    // Plain string comparison, not Number(a) - Number(b) - BOAT_ID is a
+    // fixed-width alphanumeric string now (see boatIdFile.js), not
+    // guaranteed numeric, and Number() on a letters-containing id is NaN.
+    return a < b ? -1 : a > b ? 1 : 0;
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (s.boats[id].pending || 0), 0);
 
@@ -471,7 +474,7 @@ function renderDashboard(s) {
       <div class="stat-rows">
         ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
         <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
-        <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (NO_RADIO=1)'}</span></div>
+        <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (RADIO_ENABLED=0)'}</span></div>
       </div>
     </div>
     ${
@@ -517,6 +520,7 @@ function renderDashboard(s) {
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix)}
     ${renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix)}
+    ${renderDiskCard(s.disk, `New log file daily, kept ${config.logRetentionDays} days`)}
   </div>
 
   <section>
@@ -1490,7 +1494,11 @@ function startAdminServer({
   });
 
   server.on('error', (err) => console.error('[adminServer] error:', err.message));
-  server.listen(port, () => console.log(`[adminServer] dashboard at http://localhost:${port}`));
+  // The "dashboard at http://..." announcement itself is logged by
+  // baseStation.js, as early as possible in main() - well before this
+  // function even runs - so an operator sees it before everything else
+  // this process logs during radio/Redis/upload-server setup, not after.
+  server.listen(port);
 
   return server;
 }

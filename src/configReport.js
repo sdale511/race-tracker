@@ -85,7 +85,7 @@ const sections = [
   {
     title: 'Radio (telemetry)',
     rows: [
-      { label: 'enabled', value: config.radio.enabled, envVar: 'NO_RADIO', inverted: true },
+      { label: 'enabled', value: config.radio.enabled, envVar: 'RADIO_ENABLED' },
       { label: 'port', value: config.radio.port, envVar: 'RADIO_PORT', note: 'macOS: /dev/cu.usbserial-XXXX' },
       { label: 'baud', value: config.radio.baud, envVar: 'RADIO_BAUD', unit: 'baud' },
     ],
@@ -93,7 +93,19 @@ const sections = [
   {
     title: 'Identity & timing',
     rows: [
-      { label: 'boatId', value: config.boatId, envVar: 'BOAT_ID' },
+      {
+        label: 'boatId',
+        value: config.boatId,
+        envVar: 'BOAT_ID',
+        // BOAT_ID unset means this value came from this device's own
+        // persisted id instead (see boatIdFile.js) - worth saying so, since
+        // otherwise "default" reads like a hardcoded constant rather than
+        // an id this specific device generated and will keep reusing.
+        note:
+          process.env.BOAT_ID === undefined
+            ? `from ${config.logDir}/boat_id.txt (this device's own persisted id)`
+            : undefined,
+      },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm' },
       {
         label: 'marksBroadcastIntervalMs',
@@ -148,13 +160,18 @@ const sections = [
     title: 'RegattaUp webhooks - lap + on-grid + mark rounding (base station only)',
     rows: [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
-      { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_DISABLED', inverted: true },
+      { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_ENABLED' },
       { label: 'activeRegattasUrl', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_ACTIVE_REGATTAS_URL' },
       {
         label: 'activeRegattasRefreshIntervalMs',
         value: config.regattaup.activeRegattasRefreshIntervalMs,
         envVar: 'REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS',
         unit: 'ms',
+      },
+      {
+        label: 'logActiveRegattas',
+        value: config.regattaup.logActiveRegattas,
+        envVar: 'REGATTAUP_LOG_ACTIVE_REGATTAS',
       },
       { label: 'queueDbPath', value: config.regattaup.queueDbPath, envVar: 'REGATTAUP_QUEUE_DB' },
       { label: 'postIntervalMs', value: config.regattaup.postIntervalMs, envVar: 'REGATTAUP_POST_INTERVAL_MS', unit: 'ms' },
@@ -165,7 +182,6 @@ const sections = [
         label: 'markRoundingEnabled',
         value: config.regattaup.markRoundingEnabled,
         envVar: 'REGATTAUP_MARK_ROUNDING_ENABLED',
-        inverted: true,
       },
       {
         label: 'markRoundingExtensionM',
@@ -190,9 +206,15 @@ function formatValue(v, unit) {
   return unit && typeof v === 'number' ? `${formatted} ${unit}` : formatted;
 }
 
-// `inverted` is for flags like NO_RADIO/REGATTAUP_WEBHOOK_DISABLED where the
-// resolved config value (enabled=true) is the *negation* of the env var
-// actually being set - still an override worth flagging as such.
+// `inverted` is for a flag whose env var name is the *negation* of the
+// resolved config value shown next to it (an old-style `_DISABLED`/`NO_*`
+// var, like NO_RADIO and REGATTAUP_WEBHOOK_DISABLED used to be, before
+// both were renamed to RADIO_ENABLED/REGATTAUP_WEBHOOK_ENABLED) - no row
+// currently needs it. Prefer naming a new env var so its own polarity
+// already matches the field it controls instead (an `_ENABLED` var,
+// defaulting on - see REGATTAUP_WEBHOOK_ENABLED/markRoundingEnabled/
+// RADIO_ENABLED); reach for `inverted` only if a var genuinely can't be
+// renamed that way.
 //
 // The env var name is shown unconditionally (not just once overridden) -
 // same reasoning as renderConfigPage's HTML table below: it's the actual
@@ -202,8 +224,15 @@ function formatValue(v, unit) {
 function overrideTag(envVar, inverted) {
   if (!envVar) return '';
   const isSet = process.env[envVar] !== undefined;
-  if (!isSet) return `(${envVar}, default)`;
-  return `(${envVar}${inverted ? '=' + process.env[envVar] : ''}, overridden)`;
+  if (!inverted) return isSet ? `(${envVar}, overridden)` : `(${envVar}, default)`;
+  // An inverted flag names the env var the OPPOSITE of the resolved value
+  // printed next to this tag - "enabled  true  (NO_RADIO, default)" (back
+  // when NO_RADIO was still spelled that way) reads like the no-radio flag
+  // itself is true. Spelling out the env var's own raw state - always, not
+  // just once overridden, since the confusion is just as real at the
+  // default - is what actually resolves that.
+  const rawState = isSet ? `${envVar}=${process.env[envVar]}` : `${envVar} not set`;
+  return `(${rawState}, ${isSet ? 'overridden' : 'default'})`;
 }
 
 // HTML rendering shared by both admin dashboards' GET /config (see
@@ -227,16 +256,31 @@ function renderConfigPage() {
           const statusHtml = !envVar
             ? '<span class="muted">&mdash;</span>'
             : isSet
-              ? // Inverted flags (NO_RADIO etc.) resolve to the opposite of
-                // what was actually set - show the raw env value too so
-                // it's not confusing that e.g. NO_RADIO=1 shows "enabled: false".
-                `<span class="overridden">overridden${inverted ? ` (${envVar}=${process.env[envVar]})` : ''}</span>`
+              ? '<span class="overridden">overridden</span>'
               : '<span class="muted">default</span>';
           // A platform-specific hint (e.g. what this path looks like on
           // macOS vs the Linux paths used as the actual defaults) - shown
           // as a small muted line under the value, not part of the
           // resolved value itself.
-          const valueHtml = note ? `${formatValue(value, unit)}<div class="muted" style="font-size:11px;">${note}</div>` : formatValue(value, unit);
+          const extraLines = [];
+          if (note) extraLines.push(note);
+          // An inverted flag names the env var the OPPOSITE of the resolved
+          // setting shown here - "enabled: true" sitting next to a bare
+          // `_DISABLED`-style var name reads like that flag itself is true.
+          // Spelling out the env var's own raw state right under the value
+          // (not just in the Status column, and not just once overridden -
+          // the confusion is just as real at the default) is what actually
+          // resolves that: "true" next to "SOME_FLAG not set" can't be
+          // misread the way "true" next to the bare env var name can. No
+          // row currently sets `inverted` - see overrideTag's own module
+          // comment above.
+          if (inverted && envVar) {
+            extraLines.push(isSet ? `${envVar}=${process.env[envVar]}` : `${envVar} not set`);
+          }
+          const valueHtml =
+            extraLines.length > 0
+              ? `${formatValue(value, unit)}${extraLines.map((line) => `<div class="muted" style="font-size:11px;">${line}</div>`).join('')}`
+              : formatValue(value, unit);
           return `<tr>
             <td>${label}</td>
             <td>${envVarHtml}</td>

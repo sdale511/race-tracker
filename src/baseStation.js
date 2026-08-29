@@ -12,10 +12,11 @@ const { MarkRoundingWatcher } = require('./markRoundingWatcher');
 const { MarkRoundingWebhookQueue } = require('./markRoundingWebhookQueue');
 const { FoulWatcher } = require('./foulWatcher');
 const { FoulWebhookQueue } = require('./foulWebhookQueue');
-const { pruneOldLogs } = require('./logRotation');
+const { pruneOldLogs, pruneForDiskSpace } = require('./logRotation');
 const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
 const { startAdminServer } = require('./adminServer');
 const stats = require('./stats');
+const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 const { SerialPort } = require('serialport');
 const {
   UbxParser,
@@ -157,12 +158,19 @@ async function runTestLap() {
 }
 
 function main() {
+  // Logged this early (well before startAdminServer actually starts the
+  // server, much further down this function) so the one thing an operator
+  // most wants right after launch - "where's the dashboard" - isn't
+  // buried under everything else this function logs during radio/Redis/
+  // upload-server setup.
+  console.log(`[adminServer] dashboard at http://localhost:${config.admin.port}`);
+
   let radio;
   // Tracked alongside the radio object itself so the dashboard's "Radio
   // frames" card (see adminServer.js) can show which port/mode is actually
   // in play, not just the frame/error counters - useful for confirming
   // this process picked up the port you expected, especially with
-  // SIMULATE=1 or NO_RADIO=1 around to override the default.
+  // SIMULATE=1 or RADIO_ENABLED=0 around to override the default.
   const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
   if (config.simulate) {
     const { SimRadioLink } = require('./simRadioLink');
@@ -170,7 +178,7 @@ function main() {
   } else if (config.radio.enabled) {
     radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
   } else {
-    radio = new EventEmitter(); // NO_RADIO=1 - never emits 'frame'/'marks', other outputs still testable
+    radio = new EventEmitter(); // RADIO_ENABLED=0 - never emits 'frame'/'marks', other outputs still testable
     radio.send = () => false;
     radio.broadcast = () => false;
   }
@@ -185,7 +193,7 @@ function main() {
   // be SOME live signal distinguishing "still connected" from "was
   // connected." Only 'real' mode has an actual disconnect concept - a
   // SimRadioLink's UDP socket, once bound, doesn't have a serial-port-style
-  // physical disconnect to track, and 'none' (NO_RADIO=1) has no
+  // physical disconnect to track, and 'none' (RADIO_ENABLED=0) has no
   // connection to speak of at all, so `radioConnected` stays null there
   // (adminServer.js treats null as "not applicable," not "disconnected").
   let radioConnected = radioMode === 'simulated' ? true : radioMode === 'real' ? false : null;
@@ -372,6 +380,14 @@ function main() {
   }
   ensureCsvFile();
 
+  // Emergency last resort if LOG_RETENTION_DAYS's normal age-based pruning
+  // above (only re-checked once a day, at the next CSV rollover) still
+  // isn't enough to keep this machine's disk from filling up - see
+  // logRotation.js's own comment on pruneForDiskSpace. On its own timer
+  // rather than only checked at the daily rollover, since a genuinely full
+  // disk needs a much tighter check than that.
+  setInterval(() => pruneForDiskSpace(logDir, /^base_station_received_.*\.csv$/, CRITICAL_BELOW_PCT), 60000);
+
   const udpSocket = dgram.createSocket('udp4');
   const UDP_BROADCAST_ADDR = config.localBroadcast.address;
   const UDP_PORT = config.localBroadcast.port;
@@ -482,9 +498,11 @@ function main() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       activeRegattas = Array.isArray(body.regattas) ? body.regattas : [];
-      console.log(
-        `[baseStation] ${new Date().toISOString()} fetched ${activeRegattas.length} active/future regatta(s) from ${config.regattaup.activeRegattasUrl}`
-      );
+      if (config.regattaup.logActiveRegattas) {
+        console.log(
+          `[baseStation] ${new Date().toISOString()} fetched ${activeRegattas.length} active/future regatta(s) from ${config.regattaup.activeRegattasUrl}`
+        );
+      }
     } catch (err) {
       console.error(`[baseStation] failed to refresh active regattas from ${config.regattaup.activeRegattasUrl}:`, err.message);
     }
@@ -1322,6 +1340,7 @@ function main() {
     return {
       ...snapshot,
       boats,
+      disk: getDiskSpace(config.logDir),
       base: {
         ip: baseIp,
         uploadPort: config.upload.port,
@@ -1335,7 +1354,7 @@ function main() {
       // port is a plain serial path in 'real' mode, or the UDP port
       // SimRadioLink actually listens on in 'simulated' mode (no baud
       // there, it isn't a serial connection); both null in 'none' mode
-      // (NO_RADIO=1).
+      // (RADIO_ENABLED=0).
       radio: {
         ...snapshot.radio,
         mode: radioMode,
@@ -1566,7 +1585,7 @@ function main() {
   } else if (config.radio.enabled) {
     console.log(`[baseStation] listening on radio ${config.radio.port} @ ${config.radio.baud}`);
   } else {
-    console.log('[baseStation] Radio disabled (NO_RADIO=1) - no frames will arrive, other outputs still testable');
+    console.log('[baseStation] Radio disabled (RADIO_ENABLED=0) - no frames will arrive, other outputs still testable');
   }
   console.log(`[baseStation] logging to ${csvPath}`);
   console.log(
@@ -1580,7 +1599,7 @@ function main() {
   console.log(
     config.regattaup.enabled
       ? `[baseStation] lap crossings post to RegattaUp at ${config.regattaup.webhookUrl}`
-      : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_DISABLED=1)'
+      : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_ENABLED=0)'
   );
   if (config.regattaup.enabled) {
     console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m behind the pin<->committeeStart line`);

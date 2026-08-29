@@ -25,7 +25,12 @@ function formatDuration(ms) {
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  // Uploaded-file totals rarely leave the KB/MB range this originally
+  // covered, but a filesystem's own total/free space (see diskSpace.js)
+  // routinely runs into GB - without this tier that shows as an
+  // unreadable six-plus-digit MB figure instead.
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function pct(numerator, denominator) {
@@ -33,4 +38,32 @@ function pct(numerator, denominator) {
   return `${((numerator / denominator) * 100).toFixed(1)}%`;
 }
 
-module.exports = { formatAgo, formatDuration, formatBytes, pct };
+// Shared "Disk space" card for both dashboards - same thresholds, same
+// colors, same layout on either side, since a full SD card is exactly as
+// bad on the boat as it is on the base. `disk` is whatever diskSpace.js's
+// getDiskSpace() returned (or null, if that path couldn't be statted -
+// treated as unknown, not as an alert, since a missing reading isn't
+// evidence of a problem, just of not knowing). `scheduleText` is a short,
+// caller-supplied description of this side's own log rotation/retention
+// policy (the base's daily files vs. the boat's chunked ones are described
+// differently - see adminServer.js/roverAdminServer.js's own callers) -
+// shown here since it's the other half of "will this disk actually fill
+// up," not just the current snapshot.
+function renderDiskCard(disk, scheduleText) {
+  if (!disk) {
+    return `<div class="card">
+      <div class="label">Disk space</div>
+      <div class="value">unknown</div>
+      <div class="sub">couldn't read filesystem stats</div>
+    </div>`;
+  }
+  const isAlert = disk.status === 'alert';
+  return `<div class="card">
+      <div class="label">Disk space</div>
+      <div class="value"><span class="dot ${isAlert ? 'dot-red' : 'dot-green'}"></span>${disk.freePct.toFixed(1)}% free</div>
+      <div class="sub">${formatBytes(disk.freeBytes)} free of ${formatBytes(disk.totalBytes)} &middot; <strong style="color:${isAlert ? '#f85149' : '#3fb950'}">${isAlert ? 'ALERT' : 'OK'}</strong></div>
+      ${scheduleText ? `<div class="sub" style="margin-top:2px;">${scheduleText}</div>` : ''}
+    </div>`;
+}
+
+module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard };

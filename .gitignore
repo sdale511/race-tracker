@@ -141,3 +141,15 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# This device's own persisted BOAT_ID (see src/boatIdFile.js) - generated
+# once per physical unit, never something to commit or share between them.
+boat_id.txt
+
+# Locally-generated race data - received-fix CSVs, webhook retry queues,
+# and every boat's uploaded log history. Both directories are created on
+# demand (fs.mkdirSync in baseStation.js/sdLogger.js/uploadServer.js), so
+# there's no need to keep an empty placeholder tracked just to make the
+# directory exist in a fresh checkout.
+race-logs/
+race-uploads/

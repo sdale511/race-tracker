@@ -16,10 +16,12 @@ class OnGridWebhookQueue {
     const existing = fs.existsSync(dbPath) ? fs.readFileSync(dbPath) : null;
     const db = existing ? new SQL.Database(existing) : new SQL.Database();
     const queue = new OnGridWebhookQueue(db, dbPath);
+    // boat_id is TEXT, not INTEGER - see lapWebhookQueue.js's own comment
+    // on this exact column.
     queue.db.run(`
       CREATE TABLE IF NOT EXISTS pending_ongrid (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        boat_id INTEGER NOT NULL,
+        boat_id TEXT NOT NULL,
         mode TEXT NOT NULL,
         rtc_time INTEGER NOT NULL,
         strength INTEGER,

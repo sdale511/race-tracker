@@ -274,6 +274,16 @@ RADIO_PORT=/dev/ttyUSB0 BOAT_ID=1 npm run boat
 `GPS_PORT=/dev/ttyACM0` if you've wired the simpleRTK2B LR's own USB port
 instead, see "Wiring notes" above.)
 
+`BOAT_ID` doesn't actually have to be set by hand at all - the first time
+this app runs with no `BOAT_ID` in the environment, it generates a random
+one (1-255), writes it to `<LOG_DIR>/boat_id.txt`, and reuses that exact
+same id on every later run from that device. An explicit `BOAT_ID` (set
+here, or by `npm run fleet` for every boat it spawns) always overrides this
+outright and never touches that file. This is mainly useful for a fleet of
+physical units that would otherwise all need `BOAT_ID` flashed onto them
+by hand one at a time - each one just claims its own id the first time it
+boots instead.
+
 Base station (another Pi, or a laptop with a USB radio):
 ```
 RADIO_PORT=/dev/ttyUSB0 npm run base
@@ -371,8 +381,9 @@ FLEET_SIZE=5 npm run fleet
 ```
 
 Spawns `FLEET_SIZE` (default 3) boat processes as one command, each with its
-own sequential `BOAT_ID` (starting from `BOAT_ID_START`, default 1) and its
-own admin dashboard port, output prefixed per boat (`[boat 3] ...`). Each
+own randomly-generated, guaranteed-unique-within-this-fleet `BOAT_ID` (see
+"Boat identity" below) and its own admin dashboard port, output prefixed
+per boat (`[boat PHJVX] ...`). Each
 boat exits on its own the moment it finishes its laps
 (`SIM_EXIT_ON_FINISH=1`, set automatically for every boat this spawns) -
 `fleetSim` reports the fleet done once the last one exits. `SIMULATE=1` is
@@ -552,7 +563,7 @@ with capped exponential backoff (2s, 4s, 8s, ... up to
 | Var | Default | Purpose |
 |---|---|---|
 | `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override to point at a mock endpoint for testing |
-| `REGATTAUP_WEBHOOK_DISABLED` | unset | Set to `1` to skip sending entirely (crossings are still detected and logged) |
+| `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Set to `0` to skip sending entirely (crossings are still detected and logged) |
 | `REGATTAUP_QUEUE_DB` | `<LOG_DIR>/lap_webhook_queue.sqlite` | Where the retry queue's sqlite file lives |
 | `REGATTAUP_POST_INTERVAL_MS` | 500 | How often the shared drain loop attempts one webhook POST, across all three queues combined |
 | `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Cap on the exponential backoff between retries for a single event |
@@ -679,7 +690,7 @@ capped-exponential-backoff loop and shared paced drain, same `REGATTAUP_POST_INT
 `REGATTAUP_MAX_BACKOFF_MS` settings - just its own separate sqlite file
 (`REGATTAUP_ONGRID_QUEUE_DB`), since `sql.js` overwrites its whole file on
 every save and two independent queue instances can't safely share one.
-`REGATTAUP_WEBHOOK_DISABLED` disables both lap and on-grid webhooks
+`REGATTAUP_WEBHOOK_ENABLED=0` disables both lap and on-grid webhooks
 together - there's no separate on/off switch for on-grid alone. Editing
 the pin or committee mark from the map (see "Editing mark positions from
 the map" above) clears every boat's on-grid watcher, same as it already
@@ -709,8 +720,8 @@ SPACE press once you're ready to test the actual start; set
 
 On by default, same as laps and on-grid - set
 `REGATTAUP_MARK_ROUNDING_ENABLED=0` to turn it off on its own. It has its
-own switch separate from `REGATTAUP_WEBHOOK_DISABLED` (both still have to
-allow it - `REGATTAUP_WEBHOOK_DISABLED=1` still turns everything off, laps
+own switch separate from `REGATTAUP_WEBHOOK_ENABLED` (both still have to
+allow it - `REGATTAUP_WEBHOOK_ENABLED=0` still turns everything off, laps
 and on-grid included) since this was a newer event type than the other two
 and needed its own way to disable independently while RegattaUp's webhook
 endpoint support for it was still being confirmed.
@@ -783,7 +794,7 @@ on-grid watchers.
 ## Foul detection -> RegattaUp
 
 On by default, same as laps/on-grid/mark-rounding - set
-`REGATTAUP_FOUL_ENABLED=0` to turn it off on its own (`REGATTAUP_WEBHOOK_DISABLED`
+`REGATTAUP_FOUL_ENABLED=0` to turn it off on its own (`REGATTAUP_WEBHOOK_ENABLED`
 still gates it too).
 
 `src/foulWatcher.js`, one instance per boat, watches the same three
@@ -850,7 +861,7 @@ orange lines:
 ```
 
 followed by a `[regattaup] foul webhook sent...` line for each, once it
-posts. Add `REGATTAUP_WEBHOOK_DISABLED=1` to the base station command to
+posts. Add `REGATTAUP_WEBHOOK_ENABLED=0` to the base station command to
 see the detection/queueing without actually posting anywhere.
 
 If you only see two of the three, check that both processes actually
@@ -1100,6 +1111,13 @@ auto-detected via the first non-internal IPv4 interface it finds, override
 with `BASE_IP` if that picks the wrong one). A boat that's never received
 a broadcast, or received one with no IP in it (`0.0.0.0` - the base
 couldn't detect one), just doesn't attempt uploads until it does.
+
+**`UPLOAD_ENABLED`** (default on, set to `0` to turn off) only gates the
+actual file transfer - the periodic health-check ping underneath it always
+runs regardless, since that ping is also the only way the base ever learns
+a boat's IP/admin port (see the admin dashboard's per-boat "dashboard"
+link below). Turning off log uploads on a boat doesn't make it disappear
+from the base's own dashboard.
 
 **Fault tolerance** (a boat is expected to drift in and out of WiFi range
 constantly, so every part of this is built to fail safely and just retry,
@@ -1496,9 +1514,9 @@ given `boat`/`base` run will actually use, instead of reading through
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | Base station only — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
-| `NO_RADIO` | unset | Set to `1` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
+| `RADIO_ENABLED` | unset (on) | Set to `0` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
-| `BOAT_ID` | 1 | Numeric ID (0-255) distinguishing boats |
+| `BOAT_ID` | this device's own persisted id (see below) | Numeric ID (0-255) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
 | `PING_RESPONSE_JITTER_MS` | 3000 | Boat only — max random delay before responding to the base's "Ping fleet" button (see "Admin dashboard" above), so a full fleet doesn't all reply over each other on the same shared channel at once |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
@@ -1516,16 +1534,17 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
 | `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above. Independent of `REGATTAUP_ACTIVE_REGATTAS_URL` below — overriding this to a mock/staging endpoint for testing does NOT also redirect the active-regattas list |
-| `REGATTAUP_WEBHOOK_DISABLED` | unset | Base station only — set to `1` to skip posting lap crossings to RegattaUp entirely |
+| `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Base station only — set to `0` to skip posting lap crossings to RegattaUp entirely |
 | `REGATTAUP_ACTIVE_REGATTAS_URL` | `https://regattaup.com/api/functions/getActiveRegattas` | Base station only — where the admin dashboard's regatta selector (see "Admin dashboard" above) fetches the active/future regatta list. Override only if you need to mock the regatta list itself for testing — see `REGATTAUP_WEBHOOK_URL` above |
 | `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` | 300000 (5 min) | Base station only — how often the admin dashboard's active-regattas list is refreshed in the background, see "Admin dashboard" above |
+| `REGATTAUP_LOG_ACTIVE_REGATTAS` | unset (off) | Base station only — set to `1` to log a line every time that background refresh succeeds. Off by default since a successful fetch is the expected outcome of an indefinite heartbeat, not something worth a line every cycle; a failed fetch always logs regardless |
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
 | `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
 | `REGATTAUP_ONGRID_QUEUE_DB` | `<LOG_DIR>/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
-| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base station only — set to `0` to turn off mark-rounding webhooks. On by default, same as laps and on-grid; independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
+| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base station only — set to `0` to turn off mark-rounding webhooks. On by default, same as laps and on-grid; independent of `REGATTAUP_WEBHOOK_ENABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base station only — how far (meters) beyond each windward/leeward mark, along the course axis, the virtual rounding gate extends — capped to half the distance to the corresponding outer (black) mark regardless of this setting — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `<LOG_DIR>/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
-| `REGATTAUP_FOUL_ENABLED` | unset (on) | Base station only — set to `0` to turn off foul webhooks. On by default, same as laps/on-grid/mark-rounding; independent of `REGATTAUP_WEBHOOK_DISABLED` (which still gates it too) — see "Foul detection -> RegattaUp" above |
+| `REGATTAUP_FOUL_ENABLED` | unset (on) | Base station only — set to `0` to turn off foul webhooks. On by default, same as laps/on-grid/mark-rounding; independent of `REGATTAUP_WEBHOOK_ENABLED` (which still gates it too) — see "Foul detection -> RegattaUp" above |
 | `REGATTAUP_FOUL_QUEUE_DB` | `<LOG_DIR>/foul_webhook_queue.sqlite` | Base station only — where the foul webhook's own retry queue sqlite file lives, separate from the lap/on-grid/mark-rounding queues' |
 | `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
 | `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |

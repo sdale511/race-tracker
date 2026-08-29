@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -100,7 +100,8 @@ function renderDashboard(s) {
 <body>
   <h1>boat ${s.boatId} - rover admin</h1>
   <div class="subtitle">
-    <span class="dot ${fixStale ? 'dot-red' : 'dot-green'}"></span>GPS ${s.gpsMode}
+    <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
+    &nbsp;·&nbsp; <span class="dot ${fixStale ? 'dot-red' : 'dot-green'}"></span>GPS ${s.gpsMode}
     &nbsp;·&nbsp; radio ${s.radioMode}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; refreshes every 5s
@@ -216,6 +217,7 @@ function renderDashboard(s) {
       <div class="value">${s.upload.attempts.toLocaleString()}</div>
       <div class="sub">${pct(s.upload.successes, s.upload.attempts)} success rate, ${s.upload.failures} failures</div>
     </div>
+    ${renderDiskCard(s.disk, `Logs chunked every ${config.logChunkMinutes}min, kept ${config.logRetentionDays} days`)}
   </div>
 </body>
 </html>`;
@@ -824,7 +826,11 @@ function startRoverAdminServer({ port, getStats, getPosition }) {
   });
 
   server.on('error', (err) => console.error('[roverAdminServer] error:', err.message));
-  server.listen(port, () => console.log(`[roverAdminServer] dashboard at http://localhost:${port}`));
+  // The "dashboard at http://..." announcement itself is logged by
+  // boatAgent.js, as early as possible in its own startup - well before
+  // this function even runs - so an operator sees it before everything
+  // else this process logs during GPS/radio/upload setup, not after.
+  server.listen(port);
 
   return server;
 }
