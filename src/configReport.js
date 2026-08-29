@@ -194,6 +194,8 @@ const sections = [
         value: config.regattaup.markRoundingQueueDbPath,
         envVar: 'REGATTAUP_MARK_ROUNDING_QUEUE_DB',
       },
+      { label: 'foulEnabled', value: config.regattaup.foulEnabled, envVar: 'REGATTAUP_FOUL_ENABLED' },
+      { label: 'foulQueueDbPath', value: config.regattaup.foulQueueDbPath, envVar: 'REGATTAUP_FOUL_QUEUE_DB' },
     ],
   },
 ];

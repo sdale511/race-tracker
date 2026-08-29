@@ -268,7 +268,7 @@ Boat (Pi Zero 2 W):
 ```
 cd race-tracker
 npm install
-RADIO_PORT=/dev/ttyUSB0 BOAT_ID=1 npm run boat
+RADIO_PORT=/dev/ttyUSB0 npm run boat
 ```
 (GPS defaults to the Pi's hardware UART, `/dev/ttyAMA0` - add
 `GPS_PORT=/dev/ttyACM0` if you've wired the simpleRTK2B LR's own USB port
@@ -276,10 +276,13 @@ instead, see "Wiring notes" above.)
 
 `BOAT_ID` doesn't actually have to be set by hand at all - the first time
 this app runs with no `BOAT_ID` in the environment, it generates a random
-one (1-255), writes it to `<LOG_DIR>/boat_id.txt`, and reuses that exact
+5-character id (letters and digits, e.g. `TK10X` - see `src/boatIdFile.js`),
+writes it to `boat_id.txt` in the project root, and reuses that exact
 same id on every later run from that device. An explicit `BOAT_ID` (set
-here, or by `npm run fleet` for every boat it spawns) always overrides this
-outright and never touches that file. This is mainly useful for a fleet of
+here - it must be exactly 5 characters, the wire protocol's boatId field is
+a fixed-width byte slot - or by `npm run fleet` for every boat it spawns)
+always overrides this outright and never touches that file. This is mainly
+useful for a fleet of
 physical units that would otherwise all need `BOAT_ID` flashed onto them
 by hand one at a time - each one just claims its own id the first time it
 boots instead.
@@ -370,7 +373,7 @@ Run both in separate terminals, on the same machine or over a LAN:
 SIMULATE=1 npm run base
 
 # terminal 2 - boat agent
-SIMULATE=1 BOAT_ID=1 npm run boat
+SIMULATE=1 npm run boat
 ```
 For multiple simulated boats, run more `npm run boat` instances with
 different `BOAT_ID` values pointed at the same base station - or use
@@ -412,7 +415,7 @@ FLEET_SIZE=5 npm run fleet
 Every boat sits at its start position once it's on the grid; once they're
 all ready, press SPACE in this same terminal to start the race - `fleetSim`
 forwards the signal to every boat it spawned. (Works the same way on a
-single standalone boat too: `SIMULATE=1 BOAT_ID=1 npm run boat`, pressing
+single standalone boat too: `SIMULATE=1 npm run boat`, pressing
 SPACE in that boat's own terminal.) Set `SIM_HOLD_FOR_START=0` to skip the
 hold entirely and go back to every boat auto-departing after
 `SIM_PRESTART_DWELL_S` seconds, no keypress needed.
@@ -430,7 +433,7 @@ specifically want simulated positions over real hardware radios:
 RADIO_PORT=/dev/cu.usbserial-A npm run base
 
 # terminal 2 - boat agent, fake GPS + real radio
-SIMULATE_GPS=1 RADIO_PORT=/dev/cu.usbserial-B BOAT_ID=1 npm run boat
+SIMULATE_GPS=1 RADIO_PORT=/dev/cu.usbserial-B npm run boat
 ```
 
 (See "Bench-testing the radios" above for a more focused radio-only test
@@ -701,7 +704,7 @@ For testing without a boat sailing off the line seconds after startup,
 `SIM_START_ONLY=1` (see "Simulation mode" above) parks a simulated boat
 on the start line indefinitely:
 ```
-SIM_START_ONLY=1 SIMULATE=1 BOAT_ID=1 npm run boat
+SIM_START_ONLY=1 SIMULATE=1 npm run boat
 ```
 
 An ordinary (non-`SIM_START_ONLY`) simulated race also sits at its start
@@ -843,7 +846,7 @@ don't need to sail it by hand to see a foul fire:
 SIMULATE=1 npm run base
 
 # terminal 2 - the boat, in foul-test mode
-SIMULATE=1 SIM_FOUL=1 BOAT_ID=1 npm run boat
+SIMULATE=1 SIM_FOUL=1 npm run boat
 ```
 
 The boat holds on the grid like any other simulated boat
@@ -855,9 +858,9 @@ wrong way, sailing back upwind between each one. Watch terminal 1 for three
 orange lines:
 
 ```
-[baseStation] boat=1 foul - downwind start line
-[baseStation] boat=1 foul - downwind finish line
-[baseStation] boat=1 foul - through committee gap
+[baseStation] boat=TK10X foul - downwind start line
+[baseStation] boat=TK10X foul - downwind finish line
+[baseStation] boat=TK10X foul - through committee gap
 ```
 
 followed by a `[regattaup] foul webhook sent...` line for each, once it
@@ -1095,6 +1098,29 @@ The lap webhook retry queue (`lapWebhookQueue.js`'s sqlite file) isn't
 touched by this - it already self-cleans on successful delivery, and isn't
 a rotating log in the same sense.
 
+### Disk space
+
+Both admin dashboards show a "Disk space" card (free space, total space,
+and a green **OK**/red **ALERT** status - alert below 10% free) for the
+filesystem holding `LOG_DIR`, alongside a reminder of that side's own log
+rotation schedule (see "Log rotation" above). See `src/diskSpace.js`.
+
+If free space still drops to **5%** despite `LOG_RETENTION_DAYS`'s normal
+age-based pruning - a longer-than-planned race day, retention set too
+generously, some other process eating the same disk - both the boat and
+the base run an independent check every 60 seconds
+(`src/logRotation.js`'s `pruneForDiskSpace`) that starts **deleting the
+oldest of that side's own CSV log files** (by last-modified time, one at a
+time, re-checking free space after each) until back above 5% or there's
+nothing left to delete. This is a last-resort safety valve against a full
+disk silently breaking log writes and webhook queues, not a normal part of
+log rotation - every deletion is logged loudly
+(`[logRotation] disk critically low (...% free) - deleted oldest log
+file: ...`). It only ever touches this side's own rotating CSVs (the
+same files/pattern `LOG_RETENTION_DAYS` already prunes by age) - it never
+touches `race-uploads` (see below), webhook retry queues, or anything on
+the other side of the radio link.
+
 ### Uploading boat logs to the base over WiFi
 
 A boat's SD card log (`src/sdLogger.js`) is the durable backup if the
@@ -1145,14 +1171,17 @@ Uploaded files land in `UPLOAD_DIR` (default a `race-uploads` directory
 next to `LOG_DIR`, deliberately separate from the base's own
 `race-logs` - that's this machine's own received-fix log, not a dumping
 ground for every boat's SD card backup), organized into one subdirectory
-per boat by numeric ID (`race-uploads/<boatId>/boat<boatId>_<chunk>.csv`)
+per boat by BOAT_ID (`race-uploads/<boatId>/boat<boatId>_<chunk>.csv`)
 so a multi-boat fleet's files don't all land in one flat directory
 together. Unlike `race-logs`,
-`race-uploads` is **not** pruned by `LOG_RETENTION_DAYS` - it's meant to
+`race-uploads` is **not** pruned by `LOG_RETENTION_DAYS` (or by the
+emergency low-disk cleanup - see "Disk space" below) - it's meant to
 be the durable, centrally-collected copy that outlives whatever retention
 policy applies to each boat's own rotating SD card log, so nothing removes
-it automatically. Set `UPLOAD_DISABLED=1` on a boat to skip attempting
-uploads entirely.
+it automatically. Set `UPLOAD_ENABLED=0` on a boat to skip attempting
+uploads entirely (the periodic health-check ping that reports this boat's
+IP/admin port to the base still runs regardless - see "`UPLOAD_ENABLED`"
+above).
 
 The boat gzips each file before sending (CSV text compresses well, and a
 smaller transfer has a better chance of finishing inside a short/marginal
@@ -1516,14 +1545,14 @@ given `boat`/`base` run will actually use, instead of reading through
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `RADIO_ENABLED` | unset (on) | Set to `0` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
-| `BOAT_ID` | this device's own persisted id (see below) | Numeric ID (0-255) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright |
+| `BOAT_ID` | this device's own persisted id (see below) | Exactly 5 characters (letters/digits, the wire protocol's boatId field is a fixed-width byte slot) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright over this device's own persisted id - see "Running" above |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
 | `PING_RESPONSE_JITTER_MS` | 3000 | Boat only — max random delay before responding to the base's "Ping fleet" button (see "Admin dashboard" above), so a full fleet doesn't all reply over each other on the same shared channel at once |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |
 | `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
 | `LOG_CHUNK_MINUTES` | 10 | Boat only — how wide a slice of time each SD-card CSV covers before starting a new one, see "Log rotation" above. Smaller chunks upload sooner (see below) but produce more files |
-| `UPLOAD_DISABLED` | unset | Boat only — set to `1` to skip attempting log uploads to the base entirely |
+| `UPLOAD_ENABLED` | unset (on) | Boat only — set to `0` to skip attempting log uploads to the base; the periodic health-check ping (IP/admin port reporting) still runs regardless, see "Uploading boat logs to the base over WiFi" above |
 | `UPLOAD_PORT` | 8090 | Base station only — port its log-upload HTTP server listens on, also published in the marks broadcast |
 | `UPLOAD_DIR` | `race-uploads` (next to `LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
 | `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |

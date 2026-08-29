@@ -11,7 +11,10 @@ const stats = require('./stats');
 // any chunk size (LOG_CHUNK_MINUTES) since the bucket string's shape is
 // the same regardless of what duration produced it. Capture group pulls
 // the boat ID out so uploads can be filed into a per-boat subdirectory.
-const VALID_FILENAME = /^boat(\d+)_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}\.csv$/;
+// Alphanumeric, not \d+ - BOAT_ID is a fixed-width alphanumeric string now
+// (see boatIdFile.js), not guaranteed numeric; still closes off path
+// traversal just as tightly (no `.`/`/`/other specials possible either way).
+const VALID_FILENAME = /^boat([A-Za-z0-9]+)_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}\.csv$/;
 
 // Best-effort pick of a non-internal IPv4 address to publish in the marks
 // broadcast (see protocol.js's encodeMarks) - a machine can have several
@@ -146,10 +149,10 @@ function startUploadServer({ port, uploadDir }) {
     stats.recordUploadAttempt(boatId);
     stats.recordBoatIp(boatId, normalizeIp(req.socket.remoteAddress));
 
-    // One subdirectory per boat, named after its numeric ID (e.g.
-    // race-uploads/1/boat1_2026-08-04T17-10.csv) - keeps a multi-boat
-    // fleet's uploads organized instead of one flat directory of files
-    // from every boat mixed together.
+    // One subdirectory per boat, named after its BOAT_ID (e.g.
+    // race-uploads/TK10X/boatTK10X_2026-08-04T17-10.csv) - keeps a
+    // multi-boat fleet's uploads organized instead of one flat directory of
+    // files from every boat mixed together.
     const boatDir = path.join(uploadDir, filenameMatch[1]);
     fs.mkdirSync(boatDir, { recursive: true });
 
