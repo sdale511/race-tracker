@@ -853,29 +853,45 @@ SIMULATE=1 SIM_FOUL=1 npm run boat
 The boat holds on the grid like any other simulated boat
 (`SIM_HOLD_FOR_START=1` by default) - press SPACE in terminal 2 to release
 it. It sails `SIM_FOUL_WINDWARD_M` (default 150m) upwind, then loops around
-and crosses back down through the start line, the finish line, and the
-committee gap (real by default - see `SIM_COMMITTEE_GAP_M` above), each the
-wrong way, sailing back upwind between each one. Watch terminal 1 for three
-orange lines:
+and crosses back down through the start line, the finish line, the
+committee gap (real by default - see `SIM_COMMITTEE_GAP_M` above), and -
+only if the pin boundary gate (see below) is on when the boat starts -
+the gate itself, each the wrong way, sailing back upwind between each one.
+Watch terminal 1 for three (or four, with the gate on) orange lines:
 
 ```
 [baseStation] boat=TK10X foul - downwind start line
 [baseStation] boat=TK10X foul - downwind finish line
 [baseStation] boat=TK10X foul - through committee gap
+[baseStation] boat=TK10X foul - downwind pin boundary
 ```
 
 followed by a `[regattaup] foul webhook sent...` line for each, once it
 posts. Add `REGATTAUP_WEBHOOK_ENABLED=0` to the base station command to
 see the detection/queueing without actually posting anywhere.
 
-If you only see two of the three, check that both processes actually
-picked up a course with a real committee gap - both `npm run base` and
-`npm run boat` need a fresh start (or at least a Redis course-mark cache
-that hasn't been left over from a `SIM_COMMITTEE_GAP_M=0` run) for their
-published `committeeStart`/`committeeFinish` to actually be separated.
+To include the fourth line, turn the pin boundary gate on (either the
+checkbox on the base's `/map`, or `curl -X POST
+http://localhost:8092/api/pin-boundary -H 'Content-Type: application/json'
+-d '{"enabled": true}'`) *before* starting the boat in terminal 2 - the
+simulator reads the flag once, at startup, same as every other course mark
+(see "Pin boundary gate" below), so turning it on after the boat's already
+running won't add the fourth crossing to an already-in-progress test.
+There's no separate env var to force this lane on its own - it's simply
+included in the loop whenever the course it starts against already has the
+gate enabled, the same way the committee-gap lane is only included when
+there's a real gap to cross (see below).
+
+If you're missing crossings, check that both processes actually picked up
+the course you expect - both `npm run base` and `npm run boat` need a
+fresh start (or at least a Redis course-mark cache that hasn't been left
+over from an earlier run with different settings) for their published
+marks/gate state to actually match what you just configured. Specifically:
 `SIM_COMMITTEE_GAP_M=0` on either command goes back to a single shared
-committee mark, in which case the third crossing correctly never fires -
-there's nothing to cross.
+committee mark, in which case the committee-gap crossing correctly never
+fires - there's nothing to cross; and the pin boundary crossing only
+appears at all when the boat itself started with the gate already on, per
+above.
 
 ### Pin boundary gate
 
@@ -958,6 +974,56 @@ base's own wall-clock time, useful for spotting radio-link latency/drops).
 If Redis is unreachable, `baseStation.js` logs the error and keeps running —
 console/CSV/UDP output are unaffected, matching this app's "SD/console never
 blocks on the network" philosophy elsewhere.
+
+### If Redis runs out of space
+
+Fixes are recorded continuously whenever a boat is transmitting, not just
+while a race is actually running — a fleet roaming around for practice
+between races adds up too. Two things keep this from becoming a real
+problem:
+
+- **Auto-expiry.** `boat:<id>:track`/`all:track` get a TTL
+  (`REDIS_TRACK_RETENTION_HOURS`, default 24h) set once, the first time
+  each is written on a given day - not refreshed on every later write, so a
+  whole day's races age out together roughly a day after the *first* fix of
+  the day, not a rolling day after the most recent one. Nothing else this
+  app stores in Redis (marks, the selected regatta, the on-grid zone, the
+  pin boundary flag) has a TTL at all, ever — this only ever touches track
+  history.
+- **Graceful degradation if it still fills up.** A track write that fails
+  (Redis genuinely out of room, a network blip, whatever) is caught inside
+  `redisStore.js` itself, never thrown - console/CSV/UDP output for that
+  same fix are completely unaffected, and so is lap/on-grid/mark-rounding/
+  foul detection, which run off in-memory watchers and SQLite-backed
+  webhook queues, not live Redis reads. RegattaUp keeps getting real-time
+  events even if Redis is completely full; only new *track history* (the
+  map/replay data) silently stops accumulating until there's room again.
+  Failures are rate-limited in the console (one immediately, then at most
+  once per 30s while it keeps happening, so a full Redis doesn't bury the
+  console under one line per fix) and surfaced on the admin dashboard: the
+  subtitle's Redis dot turns amber ("connected, track writes failing")
+  instead of staying green, and the "Redis memory" card shows the same
+  failure count.
+
+The "Redis memory" card (`adminServer.js`'s `renderRedisMemoryCard`) shows
+current usage against `REDIS_MEMORY_LIMIT_MB` (default 250) - set this to
+your actual plan size. A managed instance (Redis Cloud and similar)
+typically won't report its own configured limit via `CONFIG GET` (it's
+enforced by the platform's plan size, not a queryable Redis setting), so
+there's no way for this app to detect it on its own the way `diskSpace.js`
+can ask the OS directly for real free space.
+
+**Eviction policy**: if you want Redis to proactively free room on its own
+before writes start failing, set `volatile-ttl` on the instance (Redis
+Cloud console → your database's configuration, not something this app can
+set for you — `CONFIG SET` is typically restricted the same way `CONFIG
+GET maxmemory`/`maxmemory-policy` usually are on a managed instance).
+`volatile-ttl` only ever evicts keys that actually have a TTL - which, per
+above, means only track history, never marks/regatta selection/the on-grid
+zone - and it evicts whichever key is closest to expiring first, i.e. the
+*oldest* day's data goes first. Avoid `allkeys-lru`/`allkeys-random` here -
+those can evict anything, including a currently-in-progress race's own
+track key, which is real data loss, not just a delayed write.
 
 ### Switching between Redis servers
 
@@ -1619,6 +1685,8 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
 | `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
 | `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
+| `REDIS_TRACK_RETENTION_HOURS` | 24 | Base station only — how long a `boat:<id>:track`/`all:track` key lives before Redis expires it on its own, set once on that key's first write of the day (not refreshed on every later write) — see "If Redis runs out of space" above |
+| `REDIS_MEMORY_LIMIT_MB` | 250 | Base station only — the admin dashboard's "Redis memory" card divides current usage by this to show a percentage/ALERT status. A managed Redis instance (Redis Cloud and similar) commonly won't report its own configured limit via `CONFIG GET`, so this has to be told explicitly — set it to your actual plan size in MB if it isn't 250MB |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above. Independent of `REGATTAUP_ACTIVE_REGATTAS_URL` below — overriding this to a mock/staging endpoint for testing does NOT also redirect the active-regattas list |
 | `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Base station only — set to `0` to skip posting lap crossings to RegattaUp entirely |
 | `REGATTAUP_ACTIVE_REGATTAS_URL` | `https://regattaup.com/api/functions/getActiveRegattas` | Base station only — where the admin dashboard's regatta selector (see "Admin dashboard" above) fetches the active/future regatta list. Override only if you need to mock the regatta list itself for testing — see `REGATTAUP_WEBHOOK_URL` above |

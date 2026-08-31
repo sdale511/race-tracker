@@ -90,6 +90,15 @@ async function ensureFreshMarksCached() {
   const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
   try {
     const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+    // getOrCreateMarks only ever returns the MARK_NAMES set - the pin
+    // boundary gate (see course.js's own comment on PIN_BOUNDARY_MARK) is a
+    // separate on/off flag, not one of those marks, so it has to be fetched
+    // here explicitly too. Without this, every boat this script spawns
+    // trusts this cache file unconditionally (SIM_TRUST_CACHED_MARKS=1,
+    // see below) and never falls back to a radio broadcast to pick it up -
+    // an omitted flag here was silently racing every fleet boat straight
+    // through a gate the base station had actually turned on.
+    marks.pinBoundaryEnabled = await redisStore.getPinBoundaryEnabled();
     // Same defensive mkdir every other writer under logDir already does
     // (see baseStation.js/sdLogger.js) - normally already created by the
     // base station this fleet is racing against, but this script has no

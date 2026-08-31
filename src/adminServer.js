@@ -254,6 +254,58 @@ function renderManualFixedPositionCard(survey, fix) {
     </div>`;
 }
 
+// Below this percent free, the card reads ALERT instead of OK - same
+// ALERT_BELOW_PCT convention diskSpace.js uses for the filesystem card,
+// reused here for the same reason (real lead time before it's actually
+// full, not a warning that only fires once there's nothing left).
+const REDIS_MEMORY_ALERT_BELOW_PCT = 10;
+
+// Base-only (a boat has no Redis connection of its own - see
+// baseStation.js's own comment on why lap/on-grid/mark-rounding detection
+// lives on the base, not the rover), so this isn't in dashboardFormat.js
+// alongside renderDiskCard, which both dashboards share. `memory` is
+// whatever baseStation.js's getFullStats put in s.redisMemory - null if the
+// query itself failed or Redis is unreachable (treated as unknown, not as
+// an alert - a missing reading isn't evidence of a problem, same reasoning
+// renderDiskCard uses). `writeHealth` (from s.redis.writeHealth) is shown
+// here too, not just in the page's own subtitle dot, since an operator
+// checking on room left is exactly the moment they'd also want to know
+// whether writes are actually succeeding right now.
+function renderRedisMemoryCard(memory, writeHealth, retentionHours) {
+  const retentionText = `Tracks recorded continuously (not just while racing), kept ${retentionHours}h, then expire automatically - "npm run clear-boats" clears sooner`;
+  if (!memory) {
+    return `<div class="card">
+      <div class="label">Redis memory</div>
+      <div class="value">unknown</div>
+      <div class="sub">couldn't read memory stats</div>
+    </div>`;
+  }
+  const { usedBytes, maxmemoryBytes } = memory;
+  const writeFailing = writeHealth && !writeHealth.healthy;
+  const writeSub = writeFailing
+    ? `<div class="sub" style="margin-top:2px;"><strong style="color:#f2b84b;">Track writes failing</strong> (${writeHealth.failureCount} in a row)</div>`
+    : '';
+  if (!maxmemoryBytes) {
+    return `<div class="card">
+      <div class="label">Redis memory</div>
+      <div class="value">${formatBytes(usedBytes)} used</div>
+      <div class="sub">limit unknown - set REDIS_MEMORY_LIMIT_MB to see % used</div>
+      <div class="sub" style="margin-top:2px;">${retentionText}</div>
+      ${writeSub}
+    </div>`;
+  }
+  const usedPct = (usedBytes / maxmemoryBytes) * 100;
+  const freePct = 100 - usedPct;
+  const isAlert = freePct < REDIS_MEMORY_ALERT_BELOW_PCT;
+  return `<div class="card">
+      <div class="label">Redis memory</div>
+      <div class="value"><span class="dot ${isAlert ? 'dot-red' : 'dot-green'}"></span>${freePct.toFixed(1)}% free</div>
+      <div class="sub">${formatBytes(usedBytes)} used of ${formatBytes(maxmemoryBytes)} &middot; <strong style="color:${isAlert ? '#f85149' : '#3fb950'}">${isAlert ? 'ALERT' : 'OK'}</strong></div>
+      <div class="sub" style="margin-top:2px;">${retentionText}</div>
+      ${writeSub}
+    </div>`;
+}
+
 // Renders the whole dashboard server-side from one stats snapshot (see
 // baseStation.js's getFullStats) - simpler than shipping a client-side
 // templating setup for what's fundamentally a page that reloads its data
@@ -293,6 +345,23 @@ function renderDashboard(s) {
     return a < b ? -1 : a > b ? 1 : 0;
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (s.boats[id].pending || 0), 0);
+
+  // Tri-state, not the plain connected/disconnected the dot used to show -
+  // isConnected() only reflects the TCP/auth connection, which stays
+  // "connected" even while Redis is up but refusing writes (out of memory
+  // under a noeviction policy, most likely - see README's "If Redis runs
+  // out of space"). Without this, a full Redis silently drops every new
+  // track write with nothing on this page saying so - the dot itself would
+  // keep reading green. writeHealth is undefined before the very first fix
+  // this session has ever tried to record (nothing to report yet), treated
+  // the same as healthy rather than as a third "unknown" state - there's no
+  // failure to warn about yet either way.
+  const writeHealth = s.redis && s.redis.writeHealth;
+  const redisStatus = !s.base.redisConnected
+    ? { dot: 'dot-red', text: 'disconnected' }
+    : writeHealth && !writeHealth.healthy
+    ? { dot: 'dot-orange', text: `connected, track writes failing (${writeHealth.failureCount} in a row - ${escapeHtml(writeHealth.lastError)})` }
+    : { dot: 'dot-green', text: 'connected' };
 
   const boatRows = boatIds
     .map((id) => {
@@ -406,6 +475,7 @@ function renderDashboard(s) {
   .dot-green { background: #3fb950; box-shadow: 0 0 6px #3fb95080; }
   .dot-gray { background: #4b535e; }
   .dot-red { background: #f85149; box-shadow: 0 0 6px #f8514980; }
+  .dot-orange { background: #f2b84b; box-shadow: 0 0 6px #f2b84b80; }
   .muted { color: #8b94a3; }
   .empty { color: #8b94a3; padding: 20px; text-align: center; }
   a { color: #58a6ff; text-decoration: none; }
@@ -439,7 +509,7 @@ function renderDashboard(s) {
 <body>
   <h1>race-tracker admin</h1>
   <div class="subtitle">
-    <span class="dot ${s.base.redisConnected ? 'dot-green' : 'dot-red'}"></span>Redis ${s.base.redisConnected ? 'connected' : 'disconnected'}
+    <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
     &nbsp;·&nbsp; refreshes every 5s
@@ -522,6 +592,7 @@ function renderDashboard(s) {
     ${renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix)}
     ${renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix)}
     ${renderDiskCard(s.disk, `New log file daily, kept ${config.logRetentionDays} days`)}
+    ${renderRedisMemoryCard(s.redisMemory, s.redis && s.redis.writeHealth, config.redis.trackRetentionHours)}
   </div>
 
   <section>

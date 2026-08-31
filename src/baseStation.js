@@ -405,6 +405,7 @@ function main() {
     url: config.redis.url,
     connection: config.redis.connection,
     minMovementM: config.redis.minMovementM,
+    trackRetentionHours: config.redis.trackRetentionHours,
   });
 
   // Sends whatever raceMarks currently holds to every boat right now (as
@@ -1151,7 +1152,11 @@ function main() {
     stats.recordFrame(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
     logToConsole(decoded);
     logToCsv(decoded);
-    redisStore.recordFix(decoded, new Date()).catch((err) => console.error('[redis] write failed:', err.message));
+    // recordFix never rejects - a write failure (Redis full, network blip,
+    // ...) is caught, tracked, and rate-limit logged inside redisStore.js
+    // itself now (see its own comment), surfaced on the admin dashboard's
+    // Redis card rather than needing a .catch() here.
+    redisStore.recordFix(decoded, new Date());
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
     const now = Date.now();
@@ -1381,6 +1386,10 @@ function main() {
       console.error('[adminServer] failed to query Redis stats:', err.message);
       return null;
     });
+    const redisMemory = await redisStore.getMemoryInfo().catch((err) => {
+      console.error('[adminServer] failed to query Redis memory info:', err.message);
+      return null;
+    });
 
     const lapCounts = {};
     for (const [boatId, watcher] of finishLineWatchers) lapCounts[boatId] = watcher.lapCount;
@@ -1418,6 +1427,15 @@ function main() {
       course: raceMarks ? { marks: raceMarks, boatsKnown: lastSeenByBoat.size } : null,
       lapCounts,
       redis: redisStats,
+      // maxmemoryBytes falls back to the operator-configured
+      // REDIS_MEMORY_LIMIT_MB whenever Redis itself won't report its own
+      // (see redisStore.js's getMemoryInfo - common on a managed instance),
+      // so the dashboard card still gets a real percentage to show whenever
+      // that's been set, not just raw usage.
+      redisMemory: redisMemory && {
+        usedBytes: redisMemory.usedBytes,
+        maxmemoryBytes: redisMemory.maxmemoryBytes || (config.redis.memoryLimitMb ? config.redis.memoryLimitMb * 1024 * 1024 : null),
+      },
       // Merged onto snapshot.radio's own {framesReceived, syncErrors} -
       // port is a plain serial path in 'real' mode, or the UDP port
       // SimRadioLink actually listens on in 'simulated' mode (no baud
