@@ -22,6 +22,8 @@
 // boat sailed straight through the line instead of racing around the
 // course, and is reported as a foul. The middle segment has no legitimate
 // crossing direction at all - either way is a foul.
+const { getPinBoundaryFarPoint } = require('./course');
+
 const METERS_PER_DEG_LAT = 111320;
 
 function toXY(originLat, originLon, lat, lon) {
@@ -57,7 +59,14 @@ function buildSegment(a, b) {
 
 class FoulWatcher {
   // marks: { pin, committeeStart, committeeFinish, finish } - the same
-  // marks finishLineWatcher.js/onGridWatcher.js already use.
+  // marks finishLineWatcher.js/onGridWatcher.js already use, plus an
+  // OPTIONAL marks.pinBoundaryEnabled (see course.js's PIN_BOUNDARY_MARK/
+  // getPinBoundaryFarPoint - the operator's checkbox, not a mark of its
+  // own). When true, this adds a fourth segment covering the effectively
+  // indefinite extension beyond pin, downwind-only, same convention as the
+  // start/finish segments below. When falsy (the default), this class
+  // behaves exactly as it always has, with only the original three
+  // segments.
   constructor(marks) {
     const originLat = marks.committeeStart.lat;
     const originLon = marks.committeeStart.lon;
@@ -84,6 +93,23 @@ class FoulWatcher {
       { reason: 'through committee gap', requireDownwind: false, ...buildSegment(committeeStart, committeeFinish) },
       { reason: 'downwind finish line', requireDownwind: true, ...buildSegment(committeeFinish, finish) },
     ];
+
+    // farPoint-then-pin argument order (reversed from how it might look at a
+    // glance) - buildSegment's "legitimate side" comes from rotating the
+    // a->b vector 90 degrees CCW, and the start line's own
+    // buildSegment(pin, committeeStart) above was verified to put north
+    // (upwind) on the legitimate side specifically because committeeStart
+    // sits EAST of pin (an eastward a->b vector). farPoint sits further
+    // OUTWARD than pin - i.e. further west, continuing that same line past
+    // it (see getPinBoundaryFarPoint) - so getting the same north-is-
+    // legitimate result out of this segment needs an eastward vector too:
+    // farPoint (west) -> pin (east), not pin -> farPoint. Verified against
+    // course.js's canonical layout, same as the start line's own order was.
+    if (marks.pinBoundaryEnabled) {
+      const farPointLatLon = getPinBoundaryFarPoint(marks.pin, marks.committeeStart);
+      const farPoint = this._toXY(farPointLatLon.lat, farPointLatLon.lon);
+      this.segments.push({ reason: 'downwind pin boundary', requireDownwind: true, ...buildSegment(farPoint, pin) });
+    }
 
     this.prevPos = null;
     this.prevTimestamp = null;

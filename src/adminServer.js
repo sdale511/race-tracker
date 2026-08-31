@@ -1,6 +1,6 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
+const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
 const { zonePolygon } = require('./onGridWatcher');
@@ -486,6 +486,7 @@ function renderDashboard(s) {
           const m = s.course.marks[name];
           return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span></div>`;
         }).join('')}
+        <div class="mark-row"><span class="dot" style="background:${MARK_COLORS.pinBoundary}"></span><span class="name">pin boundary gate</span><span class="coords">${s.course.marks.pinBoundaryEnabled ? 'ON' : 'off'}</span></div>
       </div>
     </div>`
         : ''
@@ -709,10 +710,19 @@ function buildCourseInfoHtml(marks) {
       return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
+  // Only shown when the operator's pin boundary gate checkbox is actually
+  // on. Zooms to pin alone (not a fitBounds spanning the gate's own far
+  // endpoint, kilometers out by design - see getPinBoundaryFarPoint) since
+  // that would zoom the map absurdly far out just to fit one dashed line's
+  // own distant end.
+  const pinBoundaryRow = marks.pinBoundaryEnabled
+    ? '<div class="course-info-row zoomable" data-marks="pin"><span class="label">Pin boundary gate</span><span class="value">ON &middot; extends past pin</span></div>'
+    : '';
   return `<div class="course-info-card">
     <div class="course-info-title">Course</div>
     <div class="course-info-row zoomable" data-marks="pin,committeeStart"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
     <div class="course-info-row zoomable" data-marks="committeeFinish,finish"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    ${pinBoundaryRow}
     ${headingRows}
   </div>`;
 }
@@ -896,6 +906,11 @@ function renderMap(s) {
   .mark-set-row button:hover { background: #262c36; }
   .mark-set-row button:disabled { opacity: 0.5; cursor: default; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .pin-boundary-toggle {
+    display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+    font-size: 12px; color: #e6e9ef;
+  }
+  .pin-boundary-toggle input { accent-color: #f85149; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -930,6 +945,13 @@ function renderMap(s) {
 
         <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
         ${markSetRowsHtml}
+
+        <h2 style="margin-top:18px;">Pin boundary gate</h2>
+        <div class="muted" style="font-size:11px;margin-bottom:10px;">When on, boats can never legally sail downwind past the pin side of the course - the whole port side becomes off-limits, indefinitely. Updates and re-broadcasts immediately, same as an edited mark.</div>
+        <label class="pin-boundary-toggle">
+          <input type="checkbox" id="pinBoundaryToggle" ${marks.pinBoundaryEnabled ? 'checked' : ''}>
+          Enable pin boundary gate
+        </label>
       </div>
     </div>
   </div>
@@ -997,6 +1019,21 @@ function renderMap(s) {
     // separately-eyeballed approximation, so this can never show a
     // different zone than what actually gets detected as on-grid.
     L.polygon(${JSON.stringify(zonePolygon(marks, config.regattaup.onGridZoneM).map((p) => [p.lat, p.lon]))}, { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '4 6', fillColor: '${MARK_COLORS.pin}', fillOpacity: 0.08 }).addTo(map);
+    // Pin boundary gate - the whole port side of the course is off-limits
+    // downwind while this is on (see course.js's getPinBoundaryFarPoint).
+    // Not included in any fitBounds call - its far endpoint sits many times
+    // the course's own length away by design, so bounding to it would zoom
+    // the map absurdly far out just to fit one dashed line's own distant
+    // end; Leaflet still draws it perfectly well extending off past the
+    // edge of whatever's actually in view.
+    ${
+      marks.pinBoundaryEnabled
+        ? (() => {
+            const far = getPinBoundaryFarPoint(marks.pin, marks.committeeStart);
+            return `L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${far.lat}, ${far.lon}]], { color: '${MARK_COLORS.pinBoundary}', weight: 2, dashArray: '6 6' }).addTo(map);`;
+          })()
+        : ''
+    }
 
     // Marks-only bounds, kept separate from the initial-load fit below
     // (which also includes boats) - this is what the "Recenter on marks"
@@ -1231,6 +1268,38 @@ function renderMap(s) {
         }
       });
     });
+
+    // Turns the pin boundary gate on/off (see baseStation.js's
+    // setPinBoundaryEnabled) - confirmed first since, once on, it makes the
+    // entire port side of the course illegal to sail through downwind, not
+    // a small local nudge like an ordinary mark edit. Reloads on success,
+    // same reasoning as the mark-edit handler above (the dashed gate line
+    // itself needs a fresh render either way).
+    document.getElementById('pinBoundaryToggle').addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      const label = enabled
+        ? 'turn ON the pin boundary gate? The entire pin side of the course becomes off-limits to downwind boats, indefinitely.'
+        : 'turn OFF the pin boundary gate?';
+      if (!confirm('Are you sure you want to ' + label + '\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
+        e.target.checked = !enabled;
+        return;
+      }
+      e.target.disabled = true;
+      try {
+        const res = await fetch('/api/pin-boundary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        const body = await res.json();
+        if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        location.reload();
+      } catch (err) {
+        alert('Failed to set pin boundary gate: ' + err.message);
+        e.target.checked = !enabled;
+        e.target.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>`;
@@ -1293,6 +1362,7 @@ function startAdminServer({
   getStats,
   getPositions,
   setMark,
+  setPinBoundaryEnabled,
   pingFleet,
   selectRegatta,
   getBaseGps,
@@ -1371,6 +1441,24 @@ function startAdminServer({
         saveBaseGpsConfig();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Toggles the pin boundary gate (see baseStation.js's
+    // setPinBoundaryEnabled/course.js's PIN_BOUNDARY_MARK) - the map's own
+    // checkbox. Base-only, unlike /api/marks/:name below - no CORS needed,
+    // since this checkbox only ever lives on the base's own admin map, not
+    // the rover's (see the user-facing copy on that checkbox).
+    if (req.url === '/api/pin-boundary' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        const marks = await setPinBoundaryEnabled(!!body.enabled);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, marks }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));

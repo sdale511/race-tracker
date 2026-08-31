@@ -64,6 +64,13 @@ const {
     await redisStore.setOnGridZone(zonePolygon(marks, config.regattaup.onGridZoneM));
     console.log('[resetCourse] published fresh on-grid zone');
 
+    // Never auto-enabled here - clearCourseMarks (above) already turned it
+    // off along with everything else, and getOrCreateMarks has no concept
+    // of it at all (it's a checkbox, not one of the marks that function
+    // fills in) - stays off until an operator explicitly turns it back on
+    // from the admin map.
+    console.log('[resetCourse] pin boundary gate is off (toggle it from the admin map if you want it)');
+
     console.log('[resetCourse] boat tracks left untouched');
   } catch (err) {
     console.error('[resetCourse] failed:', err.message);

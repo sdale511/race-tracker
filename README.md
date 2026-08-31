@@ -822,7 +822,8 @@ its own payload shape:
 ```
 
 - `reason` — which foul: `"downwind start line"`, `"downwind finish line"`,
-  or `"through committee gap"` today, more later
+  `"through committee gap"`, or (only while the pin boundary gate below is
+  on) `"downwind pin boundary"`
 - `tranCode` / `rtcTime` — same conventions as laps/on-grid/mark-rounding
 
 Uses the exact same durable-queue-plus-retry mechanics as the other three
@@ -876,6 +877,51 @@ published `committeeStart`/`committeeFinish` to actually be separated.
 committee mark, in which case the third crossing correctly never fires -
 there's nothing to cross.
 
+### Pin boundary gate
+
+An optional, off-by-default extension of the start line's own foul rule
+(above): a checkbox on the base admin map (`/map`, in the "edit marks"
+column) that, when on, makes the entire pin side of the course illegal to
+sail through downwind - indefinitely, not just the pin↔committeeStart line
+itself. Real committee courses sometimes need this: without it, a boat
+running downwind can legally escape past the pin end of the line (nothing
+currently stops a boat from swinging wide of pin and coming back around
+outside it), which this closes off entirely. Effectively, the whole port
+side of the course stops being an option for a boat sailing downwind - it
+has to come back through the finish gate to the starboard side like every
+other lap.
+
+There's no position to set - just on or off. Toggling it immediately
+persists to Redis, re-broadcasts to every boat, and re-draws a dashed red
+line on the map continuing the committeeStart→pin bearing (the start line's
+own axis) way out past pin (`src/course.js`'s `getPinBoundaryFarPoint` -
+50x the start line's own length, floored at 500m, so it reads as
+"effectively unbounded" regardless of course size). That line is just a
+visual/foul-detection convenience, though - the actual rule enforced by
+`foulWatcher.js` and avoided by `simGps.js` has no far edge at all; a boat
+can never clear it by sailing further west, only by turning back through
+the finish gate.
+
+`simGps.js` treats this as a hard constraint once on: its downwind
+tack-selection pre-check, its reactive line-clearing logic, and its
+finished-boat parking route (which switched to always parking east of
+finish, never west of pin, so it's never at risk of routing through this
+side regardless of whether the gate happens to be on) all account for it,
+so a simulated fleet races normally with the gate on, never getting stuck
+"reaching back to clear the finish line to the starboard side" as it would
+with a naive implementation.
+
+`npm run reset-course` always turns this back off, same as it clears every
+other mark - it's meant to be a deliberate, per-course operator choice, not
+something that survives a reset by default (see "Changing the course"
+above). Synced to RegattaUp with no backend changes needed there: on,
+`baseStation.js` publishes a *computed* `mark:pinBoundary` entry (its far
+endpoint, recomputed automatically any time pin/committeeStart move or the
+checkbox changes) that RegattaUp's own `saveRaceMarks` function picks up
+through its ordinary generic `mark:*` scan; its map draws the same dashed
+line the base's own map does. Off, that key is simply absent, and nothing
+extra renders.
+
 ## Redis track storage
 
 Every fix the base station decodes is recorded into Redis by `src/redisStore.js`
@@ -900,6 +946,11 @@ common queries are a single range read:
 
 Course marks themselves live in `mark:<name>` (one Redis hash per mark,
 `lat`/`lon` fields) - see "Editing mark positions from the map" below.
+`course:pin_boundary_enabled` is a plain on/off flag (see "Pin boundary
+gate" above) - when on, its computed endpoint is *also* published as
+`mark:pinBoundary`, in the same `mark:<name>` shape as every real mark,
+purely so RegattaUp's generic mark scan picks it up too; it's never itself
+a source of truth for anything in this app.
 
 Each stored entry is the decoded frame (`boatId, timestamp, lat, lon,
 speedKnots, headingDeg, gnssFixOk, carrSoln, numSV`) plus `receivedAt` (the
@@ -1397,6 +1448,12 @@ checkbox state itself is persisted (`localStorage`, like auto-refresh
 below) so the column stays open across a page reload instead of
 resetting closed every visit - the confirm step on "Set" is what guards
 against an accidental edit, not this.
+
+The base's own edit column has one more control at the bottom, not
+mirrored on any boat's map: the pin boundary gate checkbox (see "Pin
+boundary gate" above). Unlike every "Set" button, there's no position to
+place - just on or off - so it's a plain checkbox with its own confirm,
+not a crosshair workflow.
 
 Each GPS-based recenter button has a live coordinate readout above it
 (updated continuously while edit mode is on, cleared when it's turned

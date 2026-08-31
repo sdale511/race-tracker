@@ -245,6 +245,7 @@ class SimGpsSource extends EventEmitter {
     committeeStart,
     committeeFinish,
     finish,
+    pinBoundaryEnabled,
   }) {
     super();
     this.centerLat = centerLat;
@@ -296,6 +297,17 @@ class SimGpsSource extends EventEmitter {
     this.committeeStartLocal = this._toLocal(committeeStart.lat, committeeStart.lon);
     this.committeeFinishLocal = this._toLocal(committeeFinish.lat, committeeFinish.lon);
     this.finishLocal = this._toLocal(finish.lat, finish.lon);
+    // Operator's "pin boundary gate" checkbox (see course.js's own comment
+    // on PIN_BOUNDARY_MARK/getPinBoundaryFarPoint) - when on, the pin side
+    // of the start line's own forbidden strip (see _inLocalStrip) has no far
+    // edge at all: a boat can never legally clear it by sailing further and
+    // further west, only by turning back east through the finish gate like
+    // every other lap. No separate endpoint is computed/stored for this -
+    // unlike foulWatcher.js (which needs two real, finite points to test a
+    // segment intersection against), everything below is a straight
+    // north/east threshold comparison, so "no far edge" is just "don't
+    // bound the check on that side," not a very-far-away point to sail to.
+    this.pinBoundaryEnabled = !!pinBoundaryEnabled;
     // Which of the three downwind strip segments (see the module comment)
     // this boat has already sailed cleanly past this leg - reset every
     // time it enters a new downwind leg (see the mark-rounding handler in
@@ -794,6 +806,13 @@ class SimGpsSource extends EventEmitter {
       this.committeeFinishLocal.east - this.committeeStartLocal.east
     );
     if (gapSpanM > 1) lanes.push(midEast(this.committeeStartLocal, this.committeeFinishLocal));
+    // Fourth lane, only when the pin boundary gate is on (see the
+    // constructor's own comment) - west of pin by a comfortable margin, well
+    // outside the ORIGINAL bounded pin<->committeeStart segment (which the
+    // first lane above already tests regardless of this flag), so this one
+    // specifically exercises the gate's own unbounded extension rather than
+    // re-testing the ordinary start line.
+    if (this.pinBoundaryEnabled) lanes.push(this.pinLocal.east - FOUL_TEST_CLEAR_MARGIN_M);
 
     // Sail a bit windward from wherever this boat actually started, and up
     // to alignNorth - a normal-looking departure that also happens to
@@ -874,32 +893,37 @@ class SimGpsSource extends EventEmitter {
   // still-racing boat on this leg has to sail around them - and stopping
   // there was also generating spurious fouls/on-grid reads of its own
   // whenever the NEXT race's start sequence moved the line back through
-  // (or near) a parked boat's old position. Sail west, around the whole
+  // (or near) a parked boat's old position. Sail EAST, around the whole
   // complex, then south below the start line - two straight legs, not one
   // diagonal, so the boat is never cutting the corner back through the
-  // forbidden strip (_inLocalStrip) on the way: it only ever moves west
+  // forbidden strip (_inLocalStrip) on the way: it only ever moves east
   // while already well north of every mark, and only moves south once
-  // already well west of pin. Being west of pin by more than
-  // PARKING_CLEAR_MARGIN_M also keeps it out of onGridWatcher.js's own
-  // pre-start zone regardless of how far south it ends up (see that
-  // constant's own comment) - matching the "not on the grid yet"
-  // requirement without needing to reason about that file's zone geometry
-  // any more precisely than "west of pin, by a lot."
+  // already well east of finish. Deliberately the east side, not west of
+  // pin (an earlier version parked there) - west of pin is the side
+  // pinBoundaryEnabled can make unboundedly forbidden (see the
+  // constructor's own comment), and even with the gate off, there's no
+  // actual reason it has to be that side specifically. Being east of
+  // finish by more than PARKING_CLEAR_MARGIN_M also keeps it out of
+  // onGridWatcher.js's own pre-start zone regardless of how far south it
+  // ends up (that zone is bounded to the pin<->committeeStart segment's own
+  // span, nowhere near the finish line's far side) - matching the "not on
+  // the grid yet" requirement without needing to reason about that file's
+  // zone geometry any more precisely than "east of finish, by a lot."
   _parkingWaypoints() {
     const norths = [this.pinLocal.north, this.committeeStartLocal.north, this.committeeFinishLocal.north, this.finishLocal.north];
     const northMax = Math.max(...norths);
     const northMin = Math.min(...norths);
-    const westMost = Math.min(this.pinLocal.east, this.committeeStartLocal.east);
+    const eastMost = Math.max(this.committeeFinishLocal.east, this.finishLocal.east);
     // At least northMax + margin regardless of where the finish coast
     // actually left the boat - same reasoning as _foulWaypoints' own
     // alignNorth, just guaranteeing "north of everything" rather than
     // assuming the coast alone already got it there.
     const alignNorth = Math.max(this.north, northMax + PARKING_CLEAR_MARGIN_M);
-    const parkEast = westMost - PARKING_CLEAR_MARGIN_M;
+    const parkEast = eastMost + PARKING_CLEAR_MARGIN_M;
     const parkNorth = northMin - PARKING_CLEAR_MARGIN_M;
     return [
       { north: alignNorth, east: this.east }, // straight north first if needed, no lateral move yet
-      { north: alignNorth, east: parkEast }, // west, around the whole complex, still well clear north of it
+      { north: alignNorth, east: parkEast }, // east, around the whole complex, still well clear north of it
       { north: parkNorth, east: parkEast }, // south, below the start line - parked
     ];
   }
@@ -1000,12 +1024,20 @@ class SimGpsSource extends EventEmitter {
   // horizontal segment the way the old scalar bounds check was, since pin/
   // committeeStart/committeeFinish/finish aren't guaranteed collinear once
   // edited independently.
+  //
+  // The start side's own lower bound (t>=0, the pin end) is dropped
+  // entirely when pinBoundaryEnabled - see the constructor's own comment -
+  // so that segment becomes an unbounded ray past pin instead of stopping
+  // there, and a boat can never find open water by sailing further west
+  // than pin, only by turning back through the finish gate like any other
+  // lap.
   _inLocalStrip(north, east) {
     const p = { north, east };
     const tStart = projectFraction(this.pinLocal, this.committeeStartLocal, p);
     const tFinish = projectFraction(this.committeeFinishLocal, this.finishLocal, p);
     const tMiddle = projectFraction(this.committeeStartLocal, this.committeeFinishLocal, p);
-    return (tStart >= 0 && tStart <= 1) || (tFinish >= 0 && tFinish <= 1) || (tMiddle >= 0 && tMiddle <= 1);
+    const startSideViolated = this.pinBoundaryEnabled ? tStart <= 1 : tStart >= 0 && tStart <= 1;
+    return startSideViolated || (tFinish >= 0 && tFinish <= 1) || (tMiddle >= 0 && tMiddle <= 1);
   }
 
   // The committeeStart<->committeeFinish segment's own trigger north -
@@ -1431,12 +1463,22 @@ class SimGpsSource extends EventEmitter {
         // instead - once east clears past the far side of all of them at
         // once, the leg can't still be sailing through any of them,
         // regardless of which one's own north threshold triggered it.
+        // The start side's own minEastOverride goes to -Infinity when
+        // pinBoundaryEnabled - it has no west edge to size a clearing leg
+        // against (see _inLocalStrip's own comment) - which pushes minEast
+        // itself to -Infinity below, making distToMin (further down)
+        // infinite and distToMax always the smaller side. That's not
+        // incidental: it's what forces clearingDirection to always resolve
+        // east in that case, since there is no other legal way clear of this
+        // segment - exactly the "reach back to the finish line to the
+        // starboard side" behavior the gate is meant to produce, with no
+        // separate special-casing needed beyond this one override.
         const pending = [
-          { aLocal: this.pinLocal, bLocal: this.committeeStartLocal, passedKey: 'passedStartSide' },
+          { aLocal: this.pinLocal, bLocal: this.committeeStartLocal, passedKey: 'passedStartSide', minEastOverride: this.pinBoundaryEnabled ? -Infinity : undefined },
           { aLocal: this.committeeFinishLocal, bLocal: this.finishLocal, passedKey: 'passedFinishSide' },
           { aLocal: this.committeeStartLocal, bLocal: this.committeeFinishLocal, passedKey: 'passedMiddleSection' },
         ].filter((s) => !this[s.passedKey]);
-        const minEast = Math.min(...pending.map((s) => Math.min(s.aLocal.east, s.bLocal.east)));
+        const minEast = Math.min(...pending.map((s) => s.minEastOverride ?? Math.min(s.aLocal.east, s.bLocal.east)));
         const maxEast = Math.max(...pending.map((s) => Math.max(s.aLocal.east, s.bLocal.east)));
         const distToMax = maxEast - crossingEast;
         const distToMin = crossingEast - minEast;

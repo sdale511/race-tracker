@@ -68,6 +68,34 @@ const MARK_NAMES = [
   'finish',
 ];
 
+// Redis key name for the pin boundary gate's computed, published endpoint -
+// see getPinBoundaryFarPoint below. Not one of the real MARK_NAMES: nothing
+// ever sets this by dragging it on the map, it's derived automatically
+// (from pin/committeeStart, whenever the operator's "pin boundary gate"
+// checkbox - see adminServer.js - is on) and republished any time pin,
+// committeeStart, or the checkbox itself changes. Published under this
+// mark:* key anyway so RegattaUp's own saveRaceMarks function (which
+// generically scans every mark:* key in Redis, no hardcoded list) picks it
+// up and can draw the gate on its own map with zero backend changes there -
+// see redisStore.js's setMark/deleteMark calls for it.
+const PIN_BOUNDARY_MARK = 'pinBoundary';
+
+// How far past pin the gate's published/rendered endpoint reaches, continuing
+// the committeeStart->pin bearing - i.e. the start line's own axis, extended
+// outward. The actual foul/avoidance logic (foulWatcher.js's segment
+// intersection test) needs a real, finite endpoint to test against - a
+// literal Infinity would break that math - but the gate is meant to be
+// effectively indefinite (no racer should be able to sail around it,
+// regardless of course size), so this reaches WAY past anything a boat could
+// plausibly need to clear: 50x the start line's own length, floored at 500m
+// so an unusually short line still gets a gate that's clearly not just "a
+// bit past pin." simGps.js's own avoidance doesn't use this at all - it
+// checks the true unbounded ray directly (see its own comment) - this is
+// only for foulWatcher.js's segment test and for drawing/publishing the gate
+// somewhere concrete on a map.
+const PIN_BOUNDARY_REACH_MULTIPLIER = 50;
+const PIN_BOUNDARY_MIN_REACH_M = 500;
+
 // Fixed per-mark colors, shared between the base and rover admin
 // dashboards' map pages (adminServer.js, roverAdminServer.js) so markers
 // stay visually consistent between the two. Green/black marks are colored
@@ -84,6 +112,11 @@ const MARK_COLORS = {
   committeeStart: '#bc8cff',
   committeeFinish: '#a371f7',
   finish: '#58a6ff',
+  // Red, not one of the other marks' own hues - this is a no-go boundary,
+  // not a mark boats round or a line they start/finish across, and red is
+  // this app's existing "alert" color elsewhere (dashboardFormat.js's disk
+  // card, adminServer.js's dot-red).
+  pinBoundary: '#f85149',
 };
 
 // A pure black dot/marker would disappear against this app's dark UI (map
@@ -157,6 +190,21 @@ function bearingDeg(a, b) {
   const north = (b.lat - a.lat) * METERS_PER_DEG_LAT;
   const east = (b.lon - a.lon) * METERS_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
   return ((Math.atan2(east, north) * 180) / Math.PI + 360) % 360;
+}
+
+// The pin boundary gate's far endpoint - continuing the committeeStart->pin
+// bearing (the start line's own axis) outward past pin by PIN_BOUNDARY_
+// REACH_MULTIPLIER x the line's own length (floored at PIN_BOUNDARY_MIN_
+// REACH_M) - see those constants' own comment. Purely a derived value, never
+// stored as anything an operator can independently edit: baseStation.js
+// recomputes and republishes it fresh any time pin, committeeStart, or the
+// pin-boundary checkbox itself changes, so it's never at risk of going stale
+// against wherever those two marks actually are right now.
+function getPinBoundaryFarPoint(pin, committeeStart) {
+  const bearing = bearingDeg(committeeStart, pin);
+  const reachM = Math.max(distanceMeters(pin, committeeStart) * PIN_BOUNDARY_REACH_MULTIPLIER, PIN_BOUNDARY_MIN_REACH_M);
+  const bearingRad = (bearing * Math.PI) / 180;
+  return offsetToLatLon(pin.lat, pin.lon, { north: reachM * Math.cos(bearingRad), east: reachM * Math.sin(bearingRad) });
 }
 
 // Standard 16-point compass rose abbreviation for a bearingDeg() result -
@@ -358,6 +406,7 @@ module.exports = {
   FINISH_SIDE_LENGTH_M,
   BOAT_START_SPACING_M,
   MARK_NAMES,
+  PIN_BOUNDARY_MARK,
   MARK_COLORS,
   markStroke,
   offsetToLatLon,
@@ -366,6 +415,7 @@ module.exports = {
   compassDir,
   getMarks,
   getStartFraction,
+  getPinBoundaryFarPoint,
   deriveGeometry,
   parseCourseMarks,
   getRaceMarks,

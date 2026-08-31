@@ -3,7 +3,15 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
-const { distanceMeters, COURSE_LENGTH_M, START_LINE_POSITION, COMMITTEE_GAP_M, MARK_NAMES } = require('./course');
+const {
+  distanceMeters,
+  COURSE_LENGTH_M,
+  START_LINE_POSITION,
+  COMMITTEE_GAP_M,
+  MARK_NAMES,
+  PIN_BOUNDARY_MARK,
+  getPinBoundaryFarPoint,
+} = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
@@ -570,7 +578,55 @@ function main() {
     // (every windward/leeward mark), regardless of which specific mark was
     // actually edited - simplest to always clear all three.
     clearRaceWatchers();
+    // The pin boundary gate's own published endpoint (see
+    // republishPinBoundaryMark) is derived from pin/committeeStart - if
+    // either just moved and the gate is on, republish it too, or RegattaUp's
+    // own copy (and this base's next restart) would keep showing/using
+    // wherever it used to point.
+    if ((name === 'pin' || name === 'committeeStart') && raceMarks.pinBoundaryEnabled) {
+      await republishPinBoundaryMark();
+    }
     broadcastMarksNow(true); // this mark's position just explicitly changed - the on-grid zone must be recomputed to match
+    return raceMarks;
+  }
+
+  // Recomputes and republishes (or removes) the pin boundary gate's
+  // Redis-visible mark:pinBoundary entry to match raceMarks.pinBoundaryEnabled
+  // right now - called after that flag changes (setPinBoundaryEnabled),
+  // after pin/committeeStart move while it's on (setMarkLocation above), and
+  // once at startup right after marks first resolve, so a base restarted
+  // after an out-of-band Redis edit still republishes a fresh, correct
+  // value rather than trusting whatever's already sitting there. This mark
+  // is never itself a source of truth for anything in THIS app - only
+  // raceMarks.pinBoundaryEnabled plus the real pin/committeeStart positions
+  // are (see foulWatcher.js/simGps.js, which never read it) - it exists
+  // purely so RegattaUp's own generic mark:* scan (saveRaceMarks) can draw
+  // the same gate on its map with no backend changes needed there.
+  async function republishPinBoundaryMark() {
+    if (raceMarks.pinBoundaryEnabled) {
+      await redisStore.setMark(PIN_BOUNDARY_MARK, getPinBoundaryFarPoint(raceMarks.pin, raceMarks.committeeStart));
+    } else {
+      await redisStore.deleteMark(PIN_BOUNDARY_MARK);
+    }
+  }
+
+  // Turns the pin boundary gate on/off - the base admin map's own checkbox
+  // (see adminServer.js), the only way this is ever set. Unlike
+  // setMarkLocation, there's no position to validate here - just persists
+  // the flag, republishes its derived endpoint, and re-broadcasts, same as
+  // any other course change.
+  async function setPinBoundaryEnabled(enabled) {
+    if (!raceMarks) throw new Error('no course published yet - nothing to edit');
+    const wasEnabled = !!raceMarks.pinBoundaryEnabled;
+    raceMarks.pinBoundaryEnabled = !!enabled;
+    await redisStore.setPinBoundaryEnabled(raceMarks.pinBoundaryEnabled);
+    await republishPinBoundaryMark();
+    // Existing FoulWatchers cached whether the gate was on at construction
+    // time (see foulWatcherFor) - only worth rebuilding if the flag actually
+    // changed, same "don't do the work if nothing changed" reasoning
+    // elsewhere in this file, though harmless either way.
+    if (wasEnabled !== raceMarks.pinBoundaryEnabled) clearRaceWatchers();
+    broadcastMarksNow(true);
     return raceMarks;
   }
 
@@ -715,6 +771,7 @@ function main() {
       }
       try {
         const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+        marks.pinBoundaryEnabled = await redisStore.getPinBoundaryEnabled();
         console.log(`[baseStation] course marks (Redis): ${Object.keys(marks).join(', ')}`);
         return marks;
       } catch (err) {
@@ -725,6 +782,7 @@ function main() {
       try {
         const marks = await redisStore.getMarks();
         if (marks.committeeFinish && marks.finish) {
+          marks.pinBoundaryEnabled = await redisStore.getPinBoundaryEnabled();
           console.log('[baseStation] finish line resolved (Redis) - lap crossings will be reported');
           return marks;
         }
@@ -746,6 +804,16 @@ function main() {
     while (!raceMarks) {
       raceMarks = await resolveMarks();
       if (raceMarks) {
+        // Refreshes mark:pinBoundary against whatever pin/committeeStart
+        // actually are right now - covers a base restarted after an
+        // out-of-band Redis edit (or a version of this app that didn't yet
+        // keep it in sync), rather than trusting whatever's already there.
+        await republishPinBoundaryMark();
+        console.log(
+          raceMarks.pinBoundaryEnabled
+            ? '[baseStation] pin boundary gate is ON - downwind crossings beyond pin will be reported as fouls, the whole pin side of the course is off-limits'
+            : '[baseStation] pin boundary gate is off (optional - toggle it from the admin map if you want it)'
+        );
         broadcastMarksNow();
         // Replay whatever arrived too early to be detected live (see
         // pendingFrames' own comment, above the radio.on('frame') handler) -
@@ -1571,6 +1639,7 @@ function main() {
     getStats: getFullStats,
     getPositions: getBoatPositions,
     setMark: setMarkLocation,
+    setPinBoundaryEnabled,
     pingFleet,
     selectRegatta,
     getBaseGps: getBaseGpsFix,
@@ -1610,7 +1679,7 @@ function main() {
     );
     console.log(
       config.regattaup.foulEnabled
-        ? '[baseStation] fouls (downwind start/finish line crossings, committee gap) post to RegattaUp'
+        ? '[baseStation] fouls (downwind start/finish line crossings, committee gap, pin boundary gate if on) post to RegattaUp'
         : '[baseStation] foul webhook disabled (set REGATTAUP_FOUL_ENABLED=1 to enable)'
     );
   }

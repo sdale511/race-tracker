@@ -645,6 +645,10 @@ function startGpsSimIfReady() {
     committeeStart: currentMarks.committeeStart,
     committeeFinish: currentMarks.committeeFinish,
     finish: currentMarks.finish,
+    // The operator's pin boundary gate checkbox (see course.js's own
+    // comment on PIN_BOUNDARY_MARK) - false/undefined whenever it's off,
+    // which SimGpsSource treats identically to "not set" either way.
+    pinBoundaryEnabled: currentMarks.pinBoundaryEnabled,
   });
   simGpsSource = gps;
   // Listener attached (and the real starting position emitted through it -

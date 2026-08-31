@@ -1,6 +1,6 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir } = require('./course');
+const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
 const { zonePolygon } = require('./onGridWatcher');
@@ -167,6 +167,7 @@ function renderDashboard(s) {
           const m = s.currentMarks[name];
           return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span></div>`;
         }).join('')}
+        <div class="mark-row"><span class="dot" style="background:${MARK_COLORS.pinBoundary}"></span><span class="name">pin boundary gate</span><span class="coords">${s.currentMarks.pinBoundaryEnabled ? 'ON' : 'off'}</span></div>
       </div>
     </div>`
         : `<div class="card">
@@ -256,10 +257,17 @@ function buildCourseInfoHtml(marks) {
       return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
+  // Only shown when the pin boundary gate is actually on - read-only here
+  // (this checkbox only lives on the base's own admin map), same shape as
+  // adminServer.js's own copy.
+  const pinBoundaryRow = marks.pinBoundaryEnabled
+    ? '<div class="course-info-row zoomable" data-marks="pin"><span class="label">Pin boundary gate</span><span class="value">ON &middot; extends past pin</span></div>'
+    : '';
   return `<div class="course-info-card">
     <div class="course-info-title">Course</div>
     <div class="course-info-row zoomable" data-marks="pin,committeeStart"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
     <div class="course-info-row zoomable" data-marks="committeeFinish,finish"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    ${pinBoundaryRow}
     ${headingRows}
   </div>`;
 }
@@ -309,7 +317,17 @@ function renderMap(s) {
     // itself tests against (see onGridWatcher.js's zonePolygon), not a
     // separately-eyeballed approximation, so this can never show a
     // different zone than what actually gets detected as on-grid.
-    L.polygon(${JSON.stringify(zonePolygon(marks, config.regattaup.onGridZoneM).map((p) => [p.lat, p.lon]))}, { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '4 6', fillColor: '${MARK_COLORS.pin}', fillOpacity: 0.08 }).addTo(map);`
+    L.polygon(${JSON.stringify(zonePolygon(marks, config.regattaup.onGridZoneM).map((p) => [p.lat, p.lon]))}, { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '4 6', fillColor: '${MARK_COLORS.pin}', fillOpacity: 0.08 }).addTo(map);
+    // Pin boundary gate - read-only here, same as adminServer.js's own copy
+    // (see its comment on why this is never included in a fitBounds call).
+    ${
+      marks.pinBoundaryEnabled
+        ? (() => {
+            const far = getPinBoundaryFarPoint(marks.pin, marks.committeeStart);
+            return `L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${far.lat}, ${far.lon}]], { color: '${MARK_COLORS.pinBoundary}', weight: 2, dashArray: '6 6' }).addTo(map);`;
+          })()
+        : ''
+    }`
     : '';
   const boatMarkerJs = fix
     ? `boatMarker = L.circleMarker([${fix.lat}, ${fix.lon}], { radius: 7, color: '#ffffff', weight: 2, fillColor: '${fixStale ? '#8b94a3' : '#3fb950'}', fillOpacity: 0.9 })

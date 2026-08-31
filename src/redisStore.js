@@ -1,5 +1,5 @@
 const Redis = require('ioredis');
-const { getMarks: computeMarks, METERS_PER_DEG_LAT, MARK_NAMES } = require('./course');
+const { getMarks: computeMarks, METERS_PER_DEG_LAT, MARK_NAMES, PIN_BOUNDARY_MARK } = require('./course');
 
 // Flat-earth approximation (same style as course.js's offsetToLatLon) - fine
 // at the meter-scale distances this is used for (deciding whether a fix
@@ -156,6 +156,16 @@ class RedisStore {
     return { lat: parseFloat(h.lat), lon: parseFloat(h.lon) };
   }
 
+  // Removes a single mark:* hash - unlike clearCourseMarks (bulk, for a full
+  // course reset), this exists specifically for the pin boundary gate's own
+  // published mark:pinBoundary entry (see course.js's PIN_BOUNDARY_MARK):
+  // that one gets deleted individually whenever the operator's checkbox
+  // turns the gate off, without touching any other mark.
+  async deleteMark(name) {
+    await this.ready;
+    await this.client.del(`mark:${name}`);
+  }
+
   async getMarks() {
     const values = await Promise.all(MARK_NAMES.map((name) => this.getMark(name)));
     return Object.fromEntries(MARK_NAMES.map((name, i) => [name, values[i]]));
@@ -198,13 +208,40 @@ class RedisStore {
   // Leaves boat tracks/start slots untouched (see clearBoatData for those).
   async clearCourseMarks() {
     await this.ready;
-    const keys = [...MARK_NAMES.map((name) => `mark:${name}`), 'course:on_grid_zone'];
+    // Also clears the pin boundary gate's own on/off flag and its published
+    // mark:pinBoundary endpoint (see setPinBoundaryEnabled/
+    // course.js's PIN_BOUNDARY_MARK) - a course reset should mean a genuinely
+    // fresh course, with the gate back off, not left on from whatever the
+    // previous course had it set to.
+    const keys = [
+      ...MARK_NAMES.map((name) => `mark:${name}`),
+      `mark:${PIN_BOUNDARY_MARK}`,
+      'course:pin_boundary_enabled',
+      'course:on_grid_zone',
+    ];
     const existingKeys = [];
     for (const key of keys) {
       if (await this.client.exists(key)) existingKeys.push(key);
     }
     if (existingKeys.length > 0) await this.client.del(...existingKeys);
     return existingKeys;
+  }
+
+  // Whether the pin boundary gate (see course.js's own comment on
+  // PIN_BOUNDARY_MARK/getPinBoundaryFarPoint) is currently on - the actual
+  // source of truth for the gate; a plain on/off flag rather than a
+  // hash, since there's no position of its own to store here (the gate's
+  // endpoint is always derived fresh from pin/committeeStart, never
+  // independently edited - see baseStation.js's setPinBoundaryEnabled).
+  async setPinBoundaryEnabled(enabled) {
+    await this.ready;
+    if (enabled) await this.client.set('course:pin_boundary_enabled', '1');
+    else await this.client.del('course:pin_boundary_enabled');
+  }
+
+  async getPinBoundaryEnabled() {
+    await this.ready;
+    return !!(await this.client.get('course:pin_boundary_enabled'));
   }
 
   // The on-grid detection zone's own boundary - the exact quadrilateral
