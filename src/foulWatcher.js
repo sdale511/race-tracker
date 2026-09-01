@@ -26,6 +26,14 @@ const { getPinBoundaryFarPoint } = require('./course');
 
 const METERS_PER_DEG_LAT = 111320;
 
+// How long after a legitimate (upwind) finish-line crossing a boat gets a
+// pass on the pin boundary segment specifically - see check()'s own use of
+// this below for why. Comfortably covers a real boat's turn-away-and-park
+// maneuver (this app has no idea how fast any given boat actually is, or
+// how many laps/what time limit the race even has) without leaving the gate
+// open indefinitely.
+const FINISH_GRACE_MS = 120000;
+
 function toXY(originLat, originLon, lat, lon) {
   const y = (lat - originLat) * METERS_PER_DEG_LAT;
   const x = (lon - originLon) * METERS_PER_DEG_LAT * Math.cos((originLat * Math.PI) / 180);
@@ -66,7 +74,10 @@ class FoulWatcher {
   // indefinite extension beyond pin, downwind-only, same convention as the
   // start/finish segments below. When falsy (the default), this class
   // behaves exactly as it always has, with only the original three
-  // segments.
+  // segments. A boat that's just legitimately finished (crossed
+  // committeeFinish->finish upwind) gets a FINISH_GRACE_MS pass on the pin
+  // boundary segment specifically, so its own turn-away-and-park maneuver
+  // doesn't get reported as a foul - see check()'s own comment.
   constructor(marks) {
     const originLat = marks.committeeStart.lat;
     const originLon = marks.committeeStart.lon;
@@ -114,6 +125,10 @@ class FoulWatcher {
     this.prevPos = null;
     this.prevTimestamp = null;
     this.foulCount = 0;
+    // Timestamp of this boat's most recent legitimate (upwind) finish-line
+    // crossing, or null if it hasn't finished yet - see check()'s own use
+    // of FINISH_GRACE_MS above.
+    this.lastFinishCrossingTime = null;
   }
 
   // Call with every new fix's lat/lon/timestamp (ms), in order. Returns
@@ -130,15 +145,35 @@ class FoulWatcher {
     if (this.prevPos) {
       for (const seg of this.segments) {
         if (!segmentsIntersect(this.prevPos, curPos, seg.a, seg.b)) continue;
-        if (seg.requireDownwind) {
-          const crossedUpwind = sideOf(seg.a, seg.b, curPos) === sideOf(seg.a, seg.b, seg.upwindRef);
-          if (crossedUpwind) continue; // legitimate start/finish - not a foul
-        }
-        this.foulCount++;
         const d1 = cross(seg.a, seg.b, this.prevPos);
         const d2 = cross(seg.a, seg.b, curPos);
         const t = d1 / (d1 - d2);
         const crossingTime = this.prevTimestamp + t * (timestamp - this.prevTimestamp);
+        if (seg.requireDownwind) {
+          const crossedUpwind = sideOf(seg.a, seg.b, curPos) === sideOf(seg.a, seg.b, seg.upwindRef);
+          if (crossedUpwind) {
+            // Legitimate start/finish - not a foul. A finish specifically
+            // (not a start) also opens the pin-boundary grace window below -
+            // a boat that's just legitimately finished is about to turn
+            // away and park, which can easily mean re-crossing the pin
+            // boundary's own indefinite extension moments later. That's not
+            // the "sailed straight through instead of racing the course"
+            // behavior this whole class exists to catch, so it shouldn't
+            // report a foul just because this app has no idea how many laps
+            // the race actually has or whether a time limit is still
+            // running.
+            if (seg.reason === 'downwind finish line') this.lastFinishCrossingTime = crossingTime;
+            continue;
+          }
+        }
+        if (
+          seg.reason === 'downwind pin boundary' &&
+          this.lastFinishCrossingTime != null &&
+          timestamp - this.lastFinishCrossingTime <= FINISH_GRACE_MS
+        ) {
+          continue; // just finished - see the grace-window comment above
+        }
+        this.foulCount++;
         result = { reason: seg.reason, crossingTime };
         break;
       }
@@ -147,6 +182,19 @@ class FoulWatcher {
     this.prevPos = curPos;
     this.prevTimestamp = timestamp;
     return result;
+  }
+
+  // Call the moment this boat rounds the windward mark (baseStation.js
+  // already runs a MarkRoundingWatcher per boat per mark - see its own
+  // markRoundingWatchersFor - and is the one place that knows which mark
+  // was just rounded). A windward rounding means this boat is out sailing
+  // another lap (or the next race), not parking after its own finish, so
+  // the FINISH_GRACE_MS pass on the pin boundary segment no longer applies
+  // - any pin boundary crossing from here on is a foul again, same as
+  // before it ever finished. A no-op if the boat hasn't finished (or the
+  // grace already lapsed) - lastFinishCrossingTime is already null then.
+  clearFinishGrace() {
+    this.lastFinishCrossingTime = null;
   }
 }
 

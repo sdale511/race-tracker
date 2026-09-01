@@ -893,38 +893,40 @@ class SimGpsSource extends EventEmitter {
   // still-racing boat on this leg has to sail around them - and stopping
   // there was also generating spurious fouls/on-grid reads of its own
   // whenever the NEXT race's start sequence moved the line back through
-  // (or near) a parked boat's old position. Sail EAST, around the whole
-  // complex, then south below the start line - two straight legs, not one
-  // diagonal, so the boat is never cutting the corner back through the
-  // forbidden strip (_inLocalStrip) on the way: it only ever moves east
-  // while already well north of every mark, and only moves south once
-  // already well east of finish. Deliberately the east side, not west of
-  // pin (an earlier version parked there) - west of pin is the side
-  // pinBoundaryEnabled can make unboundedly forbidden (see the
-  // constructor's own comment), and even with the gate off, there's no
-  // actual reason it has to be that side specifically. Being east of
-  // finish by more than PARKING_CLEAR_MARGIN_M also keeps it out of
-  // onGridWatcher.js's own pre-start zone regardless of how far south it
-  // ends up (that zone is bounded to the pin<->committeeStart segment's own
-  // span, nowhere near the finish line's far side) - matching the "not on
-  // the grid yet" requirement without needing to reason about that file's
-  // zone geometry any more precisely than "east of finish, by a lot."
+  // (or near) a parked boat's old position. Turn left and sail WEST, around
+  // the end of the start line past pin, then south below it - two straight
+  // legs, not one diagonal, so the boat is never cutting the corner back
+  // through the forbidden strip (_inLocalStrip) on the way: it only ever
+  // moves west while already well north of every mark, and only moves south
+  // once already well west of pin. West of pin (not east of finish, as an
+  // intermediate version parked while pinBoundaryEnabled's own indefinite
+  // extension was still a genuine foul risk here) matches how a real boat
+  // actually clears the course - away from the reciprocal, downwind-facing
+  // course rather than cutting back across it - and no longer risks a
+  // spurious pin-boundary foul now that foulWatcher.js grants a
+  // FINISH_GRACE_MS pass on that segment right after a legitimate finish
+  // (see its own comment). Being west of pin by more than
+  // PARKING_CLEAR_MARGIN_M also keeps it out of onGridWatcher.js's own
+  // pre-start zone regardless of how far south it ends up (that zone is
+  // bounded to the pin<->committeeStart segment's own span) - matching the
+  // "not on the grid yet" requirement without needing to reason about that
+  // file's zone geometry any more precisely than "west of pin, by a lot."
   _parkingWaypoints() {
     const norths = [this.pinLocal.north, this.committeeStartLocal.north, this.committeeFinishLocal.north, this.finishLocal.north];
     const northMax = Math.max(...norths);
     const northMin = Math.min(...norths);
-    const eastMost = Math.max(this.committeeFinishLocal.east, this.finishLocal.east);
+    const westMost = this.pinLocal.east; // pin is the complex's own west end (see course.js's getMarks)
     // At least northMax + margin regardless of where the finish coast
     // actually left the boat - same reasoning as _foulWaypoints' own
     // alignNorth, just guaranteeing "north of everything" rather than
     // assuming the coast alone already got it there.
     const alignNorth = Math.max(this.north, northMax + PARKING_CLEAR_MARGIN_M);
-    const parkEast = eastMost + PARKING_CLEAR_MARGIN_M;
+    const parkWest = westMost - PARKING_CLEAR_MARGIN_M;
     const parkNorth = northMin - PARKING_CLEAR_MARGIN_M;
     return [
       { north: alignNorth, east: this.east }, // straight north first if needed, no lateral move yet
-      { north: alignNorth, east: parkEast }, // east, around the whole complex, still well clear north of it
-      { north: parkNorth, east: parkEast }, // south, below the start line - parked
+      { north: alignNorth, east: parkWest }, // west, around the end of the start line, still well clear north of it
+      { north: parkNorth, east: parkWest }, // south, below the start line - parked, west of pin
     ];
   }
 

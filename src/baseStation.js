@@ -1440,6 +1440,16 @@ function main() {
       const rounding = watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
       if (!rounding) continue;
       console.log(`[baseStation] boat=${decoded.boatId} rounded ${mark} - rounding ${rounding.rounding}`);
+      // A windward rounding (either mark - whichever course this boat is
+      // actually racing) means it's out sailing another lap or the next
+      // race, not still parking after its last finish - see
+      // FoulWatcher.clearFinishGrace's own comment for why that ends its
+      // pin-boundary grace window early instead of leaving it to expire on
+      // its own FINISH_GRACE_MS timer.
+      if (mark === 'windwardGreen' || mark === 'windwardBlack') {
+        const foulWatcherForRounding = foulWatcherFor(decoded.boatId);
+        if (foulWatcherForRounding) foulWatcherForRounding.clearFinishGrace();
+      }
       if (config.regattaup.enabled && config.regattaup.markRoundingEnabled) {
         const event = {
           boatId: decoded.boatId,
