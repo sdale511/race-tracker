@@ -305,12 +305,16 @@ after plugging in each device to see which path just appeared.
 
 Auto-start on boat boot:
 ```
-sudo ./install-boat-service.sh <BOAT_ID>
+sudo ./install-boat-service.sh [BOAT_ID]
 ```
 Generates and installs the `boat-agent` systemd unit (`systemd/boat-agent.service`
 is kept as a static reference of what it produces, not something to copy by
-hand) with this boat's `BOAT_ID` baked in, enables it, and starts it. Also
-sets `GPS_LOG=0`, unlike the interactive `npm run boat` default - under
+hand), enables it, and starts it. `BOAT_ID` is optional here too, same as
+running `npm run boat` by hand above - omit it and this Pi generates and
+persists its own id on first run; pass a plain number (e.g. `7`) to assign
+one deliberately instead, and the script zero-pads it to the wire protocol's
+fixed 5-character width for you (`7` becomes `BOAT_ID=00007` in the unit).
+Also sets `GPS_LOG=0`, unlike the interactive `npm run boat` default - under
 systemd stdout isn't a TTY, so the console line's in-place-overwrite never
 applies and every GPS fix would otherwise become its own permanent journal
 entry. Nothing else is overridden - `config.js`'s own defaults (see

@@ -1,7 +1,11 @@
 # Static reference example, not meant to be copied by hand - install-boat-
-# service.sh (repo root) generates this same unit with BOAT_ID actually set
-# for this Pi, then installs it. Kept here mainly to show what that script
-# produces.
+# service.sh (repo root) generates this same unit and installs it. Shown
+# here without an explicit BOAT_ID - the default now: this Pi generates and
+# persists its own id on first run (boat_id.txt), same as running `npm run
+# boat` by hand unconfigured. Pass a number to install-boat-service.sh
+# instead to assign one deliberately (e.g. `sudo ./install-boat-service.sh
+# 7`) - it comes out zero-padded to the wire protocol's fixed width, e.g.
+# Environment=BOAT_ID=00007, not the bare "7" you'd type.
 [Unit]
 Description=Race Tracker Boat Agent
 After=network.target
@@ -10,7 +14,6 @@ After=network.target
 Type=simple
 User=jycadmin
 WorkingDirectory=/home/jycadmin/race-tracker
-Environment=BOAT_ID=1
 Environment=GPS_LOG=0
 ExecStart=/usr/bin/node src/boatAgent.js
 Restart=always
