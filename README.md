@@ -328,6 +328,36 @@ restarts the service to pick it up. `./boat-logs.sh` (shorthand for
 boat-agent`, then prints status) restarts it, and `systemctl status
 boat-agent` works as usual too.
 
+Auto-start the base station on boot (Linux only - a Pi, or a Linux laptop;
+on macOS just run `npm run base` by hand, or use your own launchd agent):
+```
+sudo ./install-base-service.sh [REGATTAUP_REGATTA_ID]
+```
+Generates and installs the `base-station` systemd unit
+(`systemd/base-station.service` is kept as a static reference of what it
+produces, not something to copy by hand), enables it, and starts it.
+Unlike the boat script, the install location isn't hardcoded - it installs
+wherever this checkout actually lives, since a base can run on any of
+several different machines rather than identical fixed-path Pis.
+`REGATTAUP_REGATTA_ID` is optional - omit it and this base picks up
+`regatta-id.txt` if one's already persisted, otherwise auto-selects
+whichever active/future regatta is closest to today the moment it first
+starts with a real RegattaUp connection (see "Selecting a regatta at
+startup" below); pass one to pin a specific regatta deliberately instead.
+Either way it's exactly as overridable afterward as any other pick, from
+the admin dashboard's own Regatta card. Also sets `GPS_LOG=0`, same
+console-noise reasoning as the boat service above. Nothing else is
+overridden - `config.js`'s own defaults are correct for a normal install;
+edit the generated unit directly if this particular machine genuinely
+needs `GPS_PORT`/`RADIO_PORT`/etc. overridden. Safe to re-run any time
+`REGATTAUP_REGATTA_ID` needs to change - it regenerates the unit and
+restarts the service to pick it up (though changing which regatta is
+selected doesn't actually need a restart at all - the admin dashboard does
+that live). `./base-logs.sh` (shorthand for `journalctl -u base-station -f`,
+extra args pass through) follows the logs, `sudo ./base-restart.sh`
+(shorthand for `sudo systemctl restart base-station`, then prints status)
+restarts it, and `systemctl status base-station` works as usual too.
+
 Setting the boat's WiFi (so it can reach the base for log uploads - see
 "Log upload over WiFi" below) from the command line, no desktop needed:
 ```
@@ -1424,17 +1454,25 @@ machine:
    by id against RegattaUp's live list.
 3. **An interactive terminal prompt**, if none of the above resolved anything
    and this process has a real TTY attached (a systemd/piped/background run
-   has no one to answer, so this step is skipped there, falling straight to
-   the dashboard-pick warning below): fetches and lists the current
+   has no one to answer, so this step is skipped there, falling to the
+   automatic pick below instead): fetches and lists the current
    active/future regattas, asks for a number, re-prompts on anything that
    doesn't parse to a valid choice.
+4. **Automatically, the closest active/future regatta to today** - only
+   reached with no TTY (a systemd/piped/background run, since the prompt
+   above blocks until answered whenever one's attached): 0 distance if a
+   regatta is currently running (`start_date <= today <= end_date`),
+   otherwise however far off the nearer boundary is. Exists so a freshly-
+   installed service starts reporting immediately instead of sitting idle
+   until someone finds the admin dashboard - it's exactly as overridable
+   afterward as any other pick.
 
-If nothing resolves at all (no TTY, or RegattaUp returned an empty list),
-the base starts up anyway with no regatta selected - the operator picks one
-from the admin dashboard's own Regatta card before racing, same as before
-any of this existed.
+If nothing resolves at all (no TTY *and* RegattaUp returned an empty
+active/future list), the base starts up anyway with no regatta selected -
+the operator picks one from the admin dashboard's own Regatta card before
+racing, same as before any of this existed.
 
-Whichever regatta actually gets selected - by any of the three paths above,
+Whichever regatta actually gets selected - by any of the four paths above,
 or later from the dashboard - is persisted to `regatta-id.txt` (id and
 name) on this machine only, so it's what every later run of this same base
 defaults to. A different base station, even sharing the same Redis, keeps
