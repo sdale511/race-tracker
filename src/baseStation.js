@@ -194,7 +194,23 @@ function main() {
     const { SimRadioLink } = require('./simRadioLink');
     radio = new SimRadioLink({ port: config.sim.port });
   } else if (config.radio.enabled) {
-    radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+    // Deferred - a real radio's serial port opening (RadioLink's own
+    // constructor, see radioLink.js) fails loudly and retries forever with
+    // a console error every 3s the moment nothing answers, which is exactly
+    // the kind of noise that buries "please pick a regatta" the instant
+    // this process starts on a base that isn't racing yet. `radio` is a
+    // plain stand-in until connectRealRadio() below actually opens the port
+    // - every .on(...)/.send()/.broadcast() call site elsewhere in this
+    // file targets this same object regardless, so nothing else needs to
+    // change; connectRealRadio() just wires a real RadioLink's events/
+    // methods through it once a regatta is actually selected (see
+    // selectRegatta). SIMULATE mode is deliberately NOT deferred the same
+    // way - simulated boats have nothing resembling this failure mode, and
+    // this app already explicitly supports running SIMULATE=1 with no
+    // regatta selected at all.
+    radio = new EventEmitter();
+    radio.send = () => false;
+    radio.broadcast = () => false;
   } else {
     radio = new EventEmitter(); // RADIO_ENABLED=0 - never emits 'frame'/'marks', other outputs still testable
     radio.send = () => false;
@@ -202,6 +218,27 @@ function main() {
   }
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+
+  // Opens the real radio's serial port for the first time - see the
+  // radioMode 'real' comment above for why this is deferred rather than
+  // happening in the constructor the way RadioLink normally works (and
+  // still does for boatAgent.js/radioTest.js, which have no regatta concept
+  // to wait on). Forwards every event RadioLink emits onto the placeholder
+  // `radio` above instead of replacing it, so every listener already
+  // attached to `radio` throughout this file (including ones registered
+  // further down, like the frame handler) keeps working unmodified. No-op
+  // outside radioMode 'real' (nothing to defer for 'simulated'/'none').
+  // Called once, from selectRegatta, the moment a regatta is first
+  // selected - see systemStarted's own comment below.
+  function connectRealRadio() {
+    if (radioMode !== 'real') return;
+    const real = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+    radio.send = (buf) => real.send(buf);
+    radio.broadcast = (buf) => real.broadcast(buf);
+    for (const evt of ['error', 'disconnected', 'connected', 'frame', 'sync-error']) {
+      real.on(evt, (...args) => radio.emit(evt, ...args));
+    }
+  }
 
   // Surfaced on the dashboard (see adminServer.js's "Radio frames" card) so
   // a lost connection actually shows as lost, rather than the card just
@@ -258,77 +295,85 @@ function main() {
   let currentGpsPort = null;
   if (process.env.GPS_PORT) {
     console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
-    (function openBaseGps() {
-      const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {
-        if (err) {
-          if (currentGpsPort === gpsPort) currentGpsPort = null;
-          console.error('[baseGps] open failed:', err.message, '- retrying in 3s');
-          setTimeout(openBaseGps, 3000);
-        }
-      });
-      currentGpsPort = gpsPort;
-      const parser = new UbxParser();
-      gpsPort.on('data', (chunk) => parser.write(chunk));
-      gpsPort.on('close', () => {
+  }
+  // Opens the base GPS's serial port - deferred, same reasoning and same
+  // trigger (selectRegatta, via systemStarted below) as connectRealRadio
+  // above: a real port that isn't actually wired up yet would otherwise
+  // retry-and-log-an-error every 3s starting the instant this process
+  // boots, well before an operator has had a chance to pick a regatta.
+  // No-op when GPS_PORT isn't set at all (most base stations have no GPS
+  // hardware attached - see the config comment this used to sit under).
+  function openBaseGps() {
+    if (!process.env.GPS_PORT) return;
+    const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {
+      if (err) {
         if (currentGpsPort === gpsPort) currentGpsPort = null;
-        clearInterval(tmode3PollTimer);
-        console.warn('[baseGps] port closed, retrying in 3s');
+        console.error('[baseGps] open failed:', err.message, '- retrying in 3s');
         setTimeout(openBaseGps, 3000);
-      });
-      gpsPort.on('error', (err) => console.error('[baseGps] error:', err.message));
-      parser.on('nav-pvt', (pvt) => {
-        baseGpsFix = pvt;
-        if (config.gps.logConsole) {
-          // The base GPS is normally stationary (it's the fixed reference,
-          // not something moving around a course), so unlike the boat's own
-          // TX_DISTANCE_M-gated logging, there's no "did it move enough to
-          // be worth its own line" distinction to fall back on here - every
-          // fix would otherwise scroll a near-identical line at whatever
-          // rate the receiver's configured for. Overwrite the same line
-          // instead (same mechanism as boatAgent.js's own in-place GPS log -
-          // see the gpsLineDirty wrapper above), and let any other log call
-          // advance past it. Timestamp included so a genuinely frozen
-          // connection is still visually distinguishable from a live one
-          // that just hasn't moved - the clock keeps ticking either way.
-          const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
-          // No diffSoln/carrSoln here (unlike boatAgent.js's own [gps] line)
-          // - those describe whether *this* receiver is consuming
-          // corrections, which is meaningless for a base: it's the source
-          // of corrections, not a consumer, so those fields just sit at
-          // false/0 regardless of whether the base is actually working.
-          const line =
-            `[baseGps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
-            `fixType=${pvt.fixType} numSV=${pvt.numSV} hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
-          // Same isTTY/logReplace guard as boatAgent.js - piped/redirected
-          // output (a log file, systemd/journald) falls through to a plain
-          // scrolling console.log, since the in-place escape codes would
-          // just show up as raw control characters there.
-          if (config.gps.logReplace && process.stdout.isTTY) {
-            process.stdout.write(`\x1b[2K\r${line}`);
-            gpsLineDirty = true;
-          } else {
-            console.log(line);
-          }
+      }
+    });
+    currentGpsPort = gpsPort;
+    const parser = new UbxParser();
+    gpsPort.on('data', (chunk) => parser.write(chunk));
+    gpsPort.on('close', () => {
+      if (currentGpsPort === gpsPort) currentGpsPort = null;
+      clearInterval(tmode3PollTimer);
+      console.warn('[baseGps] port closed, retrying in 3s');
+      setTimeout(openBaseGps, 3000);
+    });
+    gpsPort.on('error', (err) => console.error('[baseGps] error:', err.message));
+    parser.on('nav-pvt', (pvt) => {
+      baseGpsFix = pvt;
+      if (config.gps.logConsole) {
+        // The base GPS is normally stationary (it's the fixed reference,
+        // not something moving around a course), so unlike the boat's own
+        // TX_DISTANCE_M-gated logging, there's no "did it move enough to
+        // be worth its own line" distinction to fall back on here - every
+        // fix would otherwise scroll a near-identical line at whatever
+        // rate the receiver's configured for. Overwrite the same line
+        // instead (same mechanism as boatAgent.js's own in-place GPS log -
+        // see the gpsLineDirty wrapper above), and let any other log call
+        // advance past it. Timestamp included so a genuinely frozen
+        // connection is still visually distinguishable from a live one
+        // that just hasn't moved - the clock keeps ticking either way.
+        const time = new Date(pvt.timestamp).toISOString().slice(11, 23);
+        // No diffSoln/carrSoln here (unlike boatAgent.js's own [gps] line)
+        // - those describe whether *this* receiver is consuming
+        // corrections, which is meaningless for a base: it's the source
+        // of corrections, not a consumer, so those fields just sit at
+        // false/0 regardless of whether the base is actually working.
+        const line =
+          `[baseGps] ${time} ${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)} ` +
+          `fixType=${pvt.fixType} numSV=${pvt.numSV} hAcc=${(pvt.hAccMm / 1000).toFixed(2)}m`;
+        // Same isTTY/logReplace guard as boatAgent.js - piped/redirected
+        // output (a log file, systemd/journald) falls through to a plain
+        // scrolling console.log, since the in-place escape codes would
+        // just show up as raw control characters there.
+        if (config.gps.logReplace && process.stdout.isTTY) {
+          process.stdout.write(`\x1b[2K\r${line}`);
+          gpsLineDirty = true;
+        } else {
+          console.log(line);
         }
-      });
-      parser.on('cfg-tmode3', (t) => {
-        baseGpsTmode3 = t;
-      });
-      parser.on('nav-svin', (s) => {
-        baseGpsSvin = s;
-      });
-      // The receiver only tells us its TMODE3 mode when asked - poll once
-      // right after opening (so the UI has something on the very first
-      // load) and again periodically, since a poll request sent before the
-      // receiver's serial buffer is ready, or one that's simply lost, would
-      // otherwise leave the UI stuck showing nothing until a manual
-      // restart. 15s is frequent enough to feel live without meaningfully
-      // adding to the base GPS's own UART traffic.
+      }
+    });
+    parser.on('cfg-tmode3', (t) => {
+      baseGpsTmode3 = t;
+    });
+    parser.on('nav-svin', (s) => {
+      baseGpsSvin = s;
+    });
+    // The receiver only tells us its TMODE3 mode when asked - poll once
+    // right after opening (so the UI has something on the very first
+    // load) and again periodically, since a poll request sent before the
+    // receiver's serial buffer is ready, or one that's simply lost, would
+    // otherwise leave the UI stuck showing nothing until a manual
+    // restart. 15s is frequent enough to feel live without meaningfully
+    // adding to the base GPS's own UART traffic.
+    gpsPort.write(encodePollRequest(CLASS_CFG, ID_CFG_TMODE3));
+    const tmode3PollTimer = setInterval(() => {
       gpsPort.write(encodePollRequest(CLASS_CFG, ID_CFG_TMODE3));
-      const tmode3PollTimer = setInterval(() => {
-        gpsPort.write(encodePollRequest(CLASS_CFG, ID_CFG_TMODE3));
-      }, 15000);
-    })();
+    }, 15000);
   }
 
   // Receives boat log uploads over WiFi whenever a boat happens to be in
@@ -498,6 +543,20 @@ function main() {
   let activeRegattas = [];
   let selectedRegatta = null;
 
+  // Neither the real radio (connectRealRadio above) nor the base GPS
+  // (openBaseGps above) actually opens anything until a regatta is picked
+  // for the first time - see selectRegatta below, the sole place this
+  // flips. Until then this process just runs the admin dashboard and keeps
+  // fetching the active/future regatta list - no serial-port connect
+  // attempts, no reconnect/retry error spam - so a freshly-started base
+  // sitting on "please pick a regatta" has a quiet console instead of one
+  // full of connection errors for hardware nobody's asked it to use yet.
+  // Once true, stays true - re-selecting a DIFFERENT regatta later (or one
+  // ending and needing a new pick) never tears this back down. SIMULATE
+  // mode is unaffected either way (see radioMode 'simulated' above) - this
+  // only ever gates real hardware.
+  let systemStarted = false;
+
   function regattaHasEnded(regatta) {
     // end_date is a bare 'YYYY-MM-DD' (no time component) - treat the
     // regatta as still current through the end of that day rather than its
@@ -575,6 +634,12 @@ function main() {
     // arrives, well before anyone actually crosses anything.
     clearRaceWatchers();
     console.log(`[baseStation] regatta selected: "${regatta.name}" (${regatta.venue})`);
+    if (!systemStarted) {
+      systemStarted = true;
+      if (radioMode === 'real') console.log(`[baseStation] connecting to radio ${config.radio.port} @ ${config.radio.baud}`);
+      connectRealRadio();
+      openBaseGps();
+    }
     return regatta;
   }
 
@@ -1764,7 +1829,11 @@ function main() {
   if (config.simulate) {
     console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);
   } else if (config.radio.enabled) {
-    console.log(`[baseStation] listening on radio ${config.radio.port} @ ${config.radio.baud}`);
+    // Always logs the deferred form here - this line runs synchronously,
+    // before the async regatta-resolution flow below has had any chance to
+    // select one yet (see systemStarted's own comment), so it's never
+    // actually already connected at this exact point.
+    console.log(`[baseStation] radio ${config.radio.port} @ ${config.radio.baud} configured - will connect once a regatta is selected`);
   } else {
     console.log('[baseStation] Radio disabled (RADIO_ENABLED=0) - no frames will arrive, other outputs still testable');
   }

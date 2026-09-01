@@ -571,7 +571,9 @@ function renderDashboard(s) {
       ${
         s.regatta.selected
           ? `<div class="sub">Reporting for <strong>${escapeHtml(s.regatta.selected.name)}</strong> - ${escapeHtml(s.regatta.selected.venue)} (through ${escapeHtml(s.regatta.selected.end_date)})</div>`
-          : `<div class="regatta-warning">No regatta selected - pick one below before racing, so laps/on-grid/mark events report against the right event.</div>`
+          : `<div class="regatta-warning">No regatta selected - pick one below before racing, so laps/on-grid/mark events report against the right event.${
+              s.radio.mode === 'real' ? ' The radio connection is paused until then.' : ''
+            }</div>`
       }
       <select class="regatta-select" id="regatta-select" onchange="selectRegatta(this)">
         <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
