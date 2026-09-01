@@ -928,6 +928,31 @@ function main() {
     })();
   }
 
+  // Picks whichever active/future regatta's date range sits closest to
+  // today - 0 "distance" if it's currently running (start_date <= today <=
+  // end_date), otherwise however far off the nearer boundary is. Used only
+  // as the last-resort fallback below, when nothing else selected a regatta
+  // (no REGATTAUP_REGATTA_ID, nothing persisted in regatta-id.txt from a
+  // prior run, and no interactive terminal to prompt on - i.e. running as a
+  // systemd service with no operator watching the console). Without this a
+  // freshly-installed service just sits idle reporting for nothing until
+  // someone finds the admin dashboard - this gets it racing for *something*
+  // reasonable immediately, and it's exactly as overridable afterward as
+  // any other pick (selectRegatta below persists it the same way a
+  // dashboard click would, and the admin dashboard's dropdown can always
+  // change it). null if there's nothing to pick from.
+  function pickClosestRegatta() {
+    if (activeRegattas.length === 0) return null;
+    const now = Date.now();
+    const distanceMs = (r) => {
+      const start = new Date(`${r.start_date}T00:00:00`).getTime();
+      const end = new Date(`${r.end_date}T23:59:59`).getTime();
+      if (now >= start && now <= end) return 0;
+      return Math.min(Math.abs(now - start), Math.abs(now - end));
+    };
+    return activeRegattas.reduce((closest, r) => (distanceMs(r) < distanceMs(closest) ? r : closest));
+  }
+
   // Regatta selection MUST resolve before course/marks resolution begins -
   // every mark/on-grid-zone/pin-boundary key now lives under
   // `regattas:<id>:...` (see redisStore.js's own module comment), so
@@ -964,6 +989,21 @@ function main() {
       }
     }
     if (!picked) picked = await promptForRegatta();
+    // Only ever reached with no TTY (promptForRegatta blocks until answered
+    // when one's attached) - see pickClosestRegatta's own comment.
+    if (!picked) {
+      const auto = pickClosestRegatta();
+      if (auto) {
+        try {
+          picked = selectRegatta(auto.id);
+          console.log(
+            `[baseStation] no regatta selected - automatically picked "${auto.name}" (${auto.start_date} to ${auto.end_date}, closest to today) - change it on the admin dashboard if this isn't right`
+          );
+        } catch (err) {
+          console.error('[baseStation] failed to auto-select the closest regatta:', err.message);
+        }
+      }
+    }
     if (!picked) console.log('[baseStation] regatta: none selected - pick one on the admin dashboard before racing');
     setInterval(refreshActiveRegattas, config.regattaup.activeRegattasRefreshIntervalMs);
 
