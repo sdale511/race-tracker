@@ -1,6 +1,7 @@
 const path = require('path');
 require('dotenv').config();
 const { getOrCreatePersistentBoatId, ID_LENGTH: BOAT_ID_LENGTH } = require('./boatIdFile');
+const { getPersistedRegattaId, persistRegattaId } = require('./regattaIdFile');
 
 // BOAT_ID always wins outright when set (by hand, or by fleetSim.js for
 // every boat it spawns) - only falls back to this device's own persisted id
@@ -23,6 +24,27 @@ function resolveBoatId() {
     );
   }
   return process.env.BOAT_ID;
+}
+
+// REGATTAUP_REGATTA_ID always wins when set - and, unlike BOAT_ID (which is
+// only ever read, never written back), setting it here also persists it to
+// regatta-id.txt immediately, so it becomes the new remembered default from
+// this point on even on a later run that omits the env var entirely - see
+// regattaIdFile.js's own comment on why both the env var and the admin
+// dashboard's dropdown write to that same file. Falls back to whatever's
+// already persisted there when the env var isn't set this run; null (not an
+// error) if neither exists yet. Returns { id, name } (name null when
+// setting via the env var, which has no way to also supply a display name -
+// only ever filled in once the admin dashboard/startup prompt actually
+// selects this id against RegattaUp's own live list, see baseStation.js's
+// selectRegatta), not just a bare id - name is display-only, matching is
+// always by id.
+function resolveDefaultRegattaId() {
+  if (process.env.REGATTAUP_REGATTA_ID) {
+    persistRegattaId(process.env.REGATTAUP_REGATTA_ID);
+    return { id: process.env.REGATTAUP_REGATTA_ID, name: null };
+  }
+  return getPersistedRegattaId();
 }
 
 // Central configuration. Override any of these with environment variables,
@@ -388,16 +410,17 @@ module.exports = {
     // otherwise write a nearly-identical fix over and over - skip a Redis
     // write (SD/console logging is unaffected) unless the boat has moved at
     // least this far since the last one that was actually recorded.
-    minMovementM: parseFloat(process.env.REDIS_MIN_MOVEMENT_M || '5'),
-    // How long a boat:<id>:track/all:track key sticks around before Redis
-    // drops it on its own - set once, the first time that key is written on
-    // a given day (see redisStore.js's recordFix), not refreshed on every
-    // later write, so a full day's worth of races all still expire together
-    // roughly a day after the FIRST fix of the day, not a rolling day after
-    // the last one. 24h by default - plenty for reviewing a race day
-    // afterward, without tracks piling up in Redis forever (there's no other
-    // cleanup for these besides `npm run clear-boats`, which is manual).
-    trackRetentionHours: parseFloat(process.env.REDIS_TRACK_RETENTION_HOURS || '24'),
+    minMovementM: parseFloat(process.env.REDIS_MIN_MOVEMENT_M || '1'),
+    // How long a boat:<id>:track/all:track:<regattaId> key sticks around
+    // before Redis drops it on its own - set once, the first time that key
+    // is written on a given day (see redisStore.js's recordFix), not
+    // refreshed on every later write, so a full day's worth of races all
+    // still expire together roughly a day after the FIRST fix of the day,
+    // not a rolling day after the last one. 48h by default - covers
+    // reviewing a race day into the next, without tracks piling up in Redis
+    // forever (there's no other cleanup for these besides `npm run
+    // clear-boats`, which is manual).
+    trackRetentionHours: parseFloat(process.env.REDIS_TRACK_RETENTION_HOURS || '48'),
     // The admin dashboard's "Redis memory" card divides usedBytes by this to
     // show a percentage/ALERT status, the same way the disk-space card does
     // for the filesystem - but unlike disk space, Redis has no OS syscall to
@@ -439,6 +462,22 @@ module.exports = {
     // from the real RegattaUp host. Override REGATTAUP_ACTIVE_REGATTAS_URL
     // explicitly if the regatta list itself needs to be mocked too.
     activeRegattasUrl: process.env.REGATTAUP_ACTIVE_REGATTAS_URL || 'https://regattaup.com/api/functions/getActiveRegattas',
+    // Which regatta to auto-select at startup if none is already active in
+    // Redis (see baseStation.js's own startup block and selectRegatta) - an
+    // { id, name } object, or null. REGATTAUP_REGATTA_ID always wins when
+    // set, and gets persisted to regatta-id.txt right away so it becomes
+    // the new default even without the env var on later runs; otherwise
+    // falls back to whatever's already in that file (see regattaIdFile.js),
+    // most recently written either by a prior REGATTAUP_REGATTA_ID or by an
+    // operator's own pick from the admin dashboard's dropdown or the
+    // startup terminal prompt. null (not an error) when neither exists -
+    // the existing "no regatta selected" startup behavior (now: prompt
+    // interactively, or warn if not possible) is unchanged in that case.
+    // This is a DEFAULT, not a hard override - it's only ever applied when
+    // Redis has nothing currently selected, never used to clobber an
+    // already-active selection (e.g. one still valid from this same base's
+    // last run).
+    defaultRegatta: resolveDefaultRegattaId(),
     // How often that list is refreshed in the background - regattas
     // essentially never change mid-race, so this is just a slow heartbeat
     // (pick up a newly published regatta, notice the selected one has

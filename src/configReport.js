@@ -154,6 +154,13 @@ const sections = [
       },
       { label: 'connection.tls', value: !!config.redis.connection.tls, envVar: 'REDIS_TLS' },
       { label: 'minMovementM', value: config.redis.minMovementM, envVar: 'REDIS_MIN_MOVEMENT_M', unit: 'm' },
+      {
+        label: 'trackRetentionHours',
+        value: config.redis.trackRetentionHours,
+        envVar: 'REDIS_TRACK_RETENTION_HOURS',
+        unit: 'h',
+      },
+      { label: 'memoryLimitMb', value: config.redis.memoryLimitMb, envVar: 'REDIS_MEMORY_LIMIT_MB', unit: 'MB' },
     ],
   },
   {
@@ -162,6 +169,12 @@ const sections = [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
       { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_ENABLED' },
       { label: 'activeRegattasUrl', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_ACTIVE_REGATTAS_URL' },
+      {
+        label: 'defaultRegatta',
+        value: config.regattaup.defaultRegatta ? `${config.regattaup.defaultRegatta.id}${config.regattaup.defaultRegatta.name ? ` (${config.regattaup.defaultRegatta.name})` : ''}` : '(none)',
+        envVar: 'REGATTAUP_REGATTA_ID',
+        note: 'also persisted to regatta-id.txt by this env var or by picking a regatta from the admin dashboard/startup prompt',
+      },
       {
         label: 'activeRegattasRefreshIntervalMs',
         value: config.regattaup.activeRegattasRefreshIntervalMs,

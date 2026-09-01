@@ -44,6 +44,24 @@ const {
   console.log(`  onGridZoneM:               ${config.regattaup.onGridZoneM}m  (REGATTAUP_ONGRID_ZONE_M)`);
   const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
   try {
+    // Every mark/on-grid-zone/pin-boundary key now lives under
+    // `regattas:<id>:...` (see redisStore.js's own module comment) - this
+    // has to pick the same regatta the base station would, before touching
+    // anything, or it could silently reset a DIFFERENT regatta's course (or
+    // the empty "none" namespace) instead of the one an operator actually
+    // means. Regatta selection is never stored in Redis (see redisStore.js's
+    // own comment on why - it's local to each base station process), so the
+    // only source available to a standalone script like this one is
+    // REGATTAUP_REGATTA_ID/regatta-id.txt (config.regattaup.defaultRegatta) -
+    // pass REGATTAUP_REGATTA_ID explicitly if this needs to target a
+    // regatta other than whatever's currently persisted locally.
+    if (config.regattaup.defaultRegatta) {
+      redisStore.setCurrentRegatta(config.regattaup.defaultRegatta.id);
+    }
+    console.log(
+      `[resetCourse] resetting course for regatta: ${redisStore.currentRegattaId || 'none (no regatta selected - see REGATTAUP_REGATTA_ID or the admin dashboard)'}`
+    );
+
     const cleared = await redisStore.clearCourseMarks();
     if (cleared.length > 0) {
       console.log(`[resetCourse] cleared ${cleared.length} key(s):`);

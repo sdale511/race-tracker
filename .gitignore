@@ -146,6 +146,11 @@ vite.config.ts.timestamp-*
 # once per physical unit, never something to commit or share between them.
 boat_id.txt
 
+# This base station's own persisted default regatta id (see
+# src/regattaIdFile.js) - an operator's local preference, never something
+# to commit or share between machines.
+regatta-id.txt
+
 # Locally-generated race data - received-fix CSVs, webhook retry queues,
 # and every boat's uploaded log history. Both directories are created on
 # demand (fs.mkdirSync in baseStation.js/sdLogger.js/uploadServer.js), so

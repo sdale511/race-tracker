@@ -3,6 +3,7 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
+const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
 const {
   distanceMeters,
   COURSE_LENGTH_M,
@@ -478,9 +479,15 @@ function main() {
   // base has no other way to know which of possibly several concurrent
   // RegattaUp regattas it's actually sitting at. `activeRegattas` is just
   // an in-memory cache of the last successful fetch, refreshed on the
-  // interval below; the actual selection lives in Redis (see
-  // redisStore.js's setSelectedRegatta) so it survives a base restart.
+  // interval below. `selectedRegatta` is the actual selection - entirely
+  // local to THIS process (see redisStore.js's own module comment on why
+  // this is never written to Redis: a base sharing Redis with other base
+  // stations must be free to report for a completely different regatta
+  // than any of them, with nothing there to collide over) - persisted to
+  // regatta-id.txt (see regattaIdFile.js) so it survives a restart of this
+  // same base, but never visible to, or shared with, any other process.
   let activeRegattas = [];
+  let selectedRegatta = null;
 
   function regattaHasEnded(regatta) {
     // end_date is a bare 'YYYY-MM-DD' (no time component) - treat the
@@ -494,13 +501,12 @@ function main() {
   // config.js's activeRegattasUrl) and, while at it, checks whether the
   // currently selected regatta (if any) has passed its own end_date - not
   // whether it's still in RegattaUp's own "active" list, since a regatta
-  // can legitimately drop out of that list before its end_date arrives
-  // (see redisStore.js's setSelectedRegatta comment) and this base should
-  // keep reporting for it right up until the date itself passes. Called
-  // once at startup and on a periodic timer (see the interval below) -
-  // errors are logged and swallowed, same as the other best-effort
-  // background refreshes in this file, so a transient RegattaUp/network
-  // hiccup doesn't crash the base station.
+  // can legitimately drop out of that list before its end_date arrives and
+  // this base should keep reporting for it right up until the date itself
+  // passes. Called once at startup and on a periodic timer (see the
+  // interval below) - errors are logged and swallowed, same as the other
+  // best-effort background refreshes in this file, so a transient
+  // RegattaUp/network hiccup doesn't crash the base station.
   async function refreshActiveRegattas() {
     try {
       const res = await fetch(config.regattaup.activeRegattasUrl, { method: 'POST' });
@@ -516,30 +522,37 @@ function main() {
       console.error(`[baseStation] failed to refresh active regattas from ${config.regattaup.activeRegattasUrl}:`, err.message);
     }
 
-    const selected = await redisStore.getSelectedRegatta();
-    if (selected && regattaHasEnded(selected)) {
-      await redisStore.clearSelectedRegatta();
+    if (selectedRegatta && regattaHasEnded(selectedRegatta)) {
       console.warn(
-        `[baseStation] selected regatta "${selected.name}" ended ${selected.end_date} - cleared, please pick another one on the admin dashboard`
+        `[baseStation] selected regatta "${selectedRegatta.name}" ended ${selectedRegatta.end_date} - cleared, please pick another one on the admin dashboard`
       );
+      selectedRegatta = null;
+      redisStore.setCurrentRegatta(null);
+      clearPersistedRegattaId();
     }
   }
 
   // What the admin dashboard's regatta card actually renders - the cached
-  // list plus whichever one (if any) is currently persisted in Redis.
-  async function getRegattaStatus() {
-    return { regattas: activeRegattas, selected: await redisStore.getSelectedRegatta() };
+  // list plus whichever one (if any) is currently selected.
+  function getRegattaStatus() {
+    return { regattas: activeRegattas, selected: selectedRegatta };
   }
 
-  // Called from the admin dashboard's regatta select (see adminServer.js) -
-  // looks the id up in the last-fetched list (not blindly trusted from the
-  // client) so a stale/tampered id can't get persisted, then saves the
-  // whole regatta object, not just its id (see redisStore.js's
-  // setSelectedRegatta comment for why).
-  async function selectRegatta(id) {
+  // Called from the admin dashboard's regatta select (see adminServer.js)
+  // and from the startup terminal prompt/default below - looks the id up
+  // in the last-fetched list (not blindly trusted from the client) so a
+  // stale/tampered id can't get selected.
+  function selectRegatta(id) {
     const regatta = activeRegattas.find((r) => r.id === id);
     if (!regatta) throw new Error('unknown regatta id - refresh the list and try again');
-    await redisStore.setSelectedRegatta(regatta);
+    selectedRegatta = regatta;
+    redisStore.setCurrentRegatta(regatta.id);
+    // Remembers this pick as the new default for next time this base
+    // restarts - the same file REGATTAUP_REGATTA_ID itself writes to (see
+    // config.js's resolveDefaultRegattaId/regattaIdFile.js), so whichever
+    // was used most recently (an operator's own dashboard pick, or the env
+    // var) is what the startup resolution defaults to on the next run.
+    persistRegattaId(id, regatta.name);
     // A newly-selected regatta is a new race starting - every per-boat
     // watcher (lap count, on-grid state, mark roundings) is keyed only by
     // boatId, not by regatta, and lives for as long as this process stays
@@ -795,13 +808,95 @@ function main() {
     }
   }
 
-  // Real-hardware marks might not be in Redis yet at startup (an operator
-  // setting up the course after the base is already running is a normal
-  // sequence, not an error) - keeps trying every few seconds instead of
-  // giving up after one look, so the moment they do show up, this picks
-  // them up and broadcasts immediately rather than waiting for the base to
-  // be restarted.
+  // Prompts on the terminal for which regatta to race, when nothing else
+  // resolved one (see the call site below) - only possible with a real TTY
+  // attached (a systemd/piped/background run has no one to answer, and
+  // would otherwise hang here forever). Lists whatever refreshActiveRegattas
+  // just fetched, 1-indexed for a human to type, and re-prompts on anything
+  // that doesn't parse to a valid choice rather than guessing. Returns the
+  // selected regatta, or null if there's nothing to prompt with (no TTY, or
+  // RegattaUp returned an empty list).
+  function promptForRegatta() {
+    if (!process.stdin.isTTY) {
+      console.warn(
+        '[baseStation] no regatta selected and no interactive terminal to prompt on - pick one on the admin dashboard before racing'
+      );
+      return Promise.resolve(null);
+    }
+    if (activeRegattas.length === 0) {
+      console.warn('[baseStation] no regatta selected and none are currently active/future on RegattaUp - pick one on the admin dashboard once available');
+      return Promise.resolve(null);
+    }
+    console.log('\n[baseStation] no regatta selected - choose one to race:');
+    activeRegattas.forEach((r, i) => {
+      console.log(`  ${i + 1}. ${r.name} - ${r.venue} (${r.start_date} to ${r.end_date})`);
+    });
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = () => new Promise((resolve) => rl.question('[baseStation] enter a number: ', resolve));
+    return (async () => {
+      let choice = null;
+      while (!choice) {
+        const answer = (await ask()).trim();
+        const n = parseInt(answer, 10);
+        if (Number.isInteger(n) && n >= 1 && n <= activeRegattas.length) choice = activeRegattas[n - 1];
+        else console.log(`[baseStation] enter a number between 1 and ${activeRegattas.length}`);
+      }
+      rl.close();
+      try {
+        return await selectRegatta(choice.id);
+      } catch (err) {
+        console.error('[baseStation] failed to select regatta:', err.message);
+        return null;
+      }
+    })();
+  }
+
+  // Regatta selection MUST resolve before course/marks resolution begins -
+  // every mark/on-grid-zone/pin-boundary key now lives under
+  // `regattas:<id>:...` (see redisStore.js's own module comment), so
+  // creating or reading a course before redisStore.currentRegattaId is set
+  // would silently operate on the "none" namespace even when a real
+  // regatta (REGATTAUP_REGATTA_ID, a persisted default from regatta-id.txt,
+  // or an operator's own terminal pick) is about to be selected moments
+  // later. Previously these ran as two independent, unsequenced async flows
+  // - now one sequential IIFE, regatta first, then marks.
   (async () => {
+    // Fetch once at startup and keep refreshing on a slow heartbeat after
+    // (see refreshActiveRegattas' own comment). Selection is always local
+    // to this process (see the module comment above selectedRegatta) - a
+    // fresh process always starts with nothing selected, so there's no
+    // "already selected" case to check here the way a Redis-backed
+    // selection would have had.
+    await refreshActiveRegattas();
+    // Apply config.regattaup.defaultRegatta (REGATTAUP_REGATTA_ID, or
+    // whatever's persisted in regatta-id.txt from a prior run/pick - see
+    // config.js's own comment) if it's actually one of the regattas
+    // RegattaUp just returned. A default that doesn't match anything real
+    // (stale, or from an account/environment switch) falls through to the
+    // interactive terminal prompt below instead of a hard error, since an
+    // operator can still pick correctly even when the remembered default no
+    // longer applies.
+    let picked = null;
+    if (config.regattaup.defaultRegatta) {
+      try {
+        picked = selectRegatta(config.regattaup.defaultRegatta.id);
+      } catch (err) {
+        console.warn(
+          `[baseStation] default regatta id "${config.regattaup.defaultRegatta.id}" isn't in the active/future list - ${err.message}`
+        );
+      }
+    }
+    if (!picked) picked = await promptForRegatta();
+    if (!picked) console.log('[baseStation] regatta: none selected - pick one on the admin dashboard before racing');
+    setInterval(refreshActiveRegattas, config.regattaup.activeRegattasRefreshIntervalMs);
+
+    // Real-hardware marks might not be in Redis yet at startup (an operator
+    // setting up the course after the base is already running is a normal
+    // sequence, not an error) - keeps trying every few seconds instead of
+    // giving up after one look, so the moment they do show up, this picks
+    // them up and broadcasts immediately rather than waiting for the base
+    // to be restarted.
     while (!raceMarks) {
       raceMarks = await resolveMarks();
       if (raceMarks) {
@@ -841,18 +936,6 @@ function main() {
   // one above (powered on late, brief radio dropout) - see
   // broadcastMarksNow()'s comment.
   setInterval(broadcastMarksNow, config.marksBroadcastIntervalMs);
-
-  // Same idea as the marks resolution above, for the regatta list/selection
-  // instead of the course - fetch once at startup (also picks up an
-  // already-expired selection left over from a previous run) and keep
-  // refreshing on a slow heartbeat (see refreshActiveRegattas' own comment).
-  refreshActiveRegattas().then(async () => {
-    const selected = await redisStore.getSelectedRegatta();
-    if (!selected) {
-      console.warn('[baseStation] no regatta selected - pick one on the admin dashboard before racing');
-    }
-  });
-  setInterval(refreshActiveRegattas, config.regattaup.activeRegattasRefreshIntervalMs);
 
   // One FinishLineWatcher per boat (each needs its own independent
   // crossing-state and lap counter), built lazily the first time a given

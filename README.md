@@ -941,34 +941,58 @@ extra renders.
 ## Redis track storage
 
 Every fix the base station decodes is recorded into Redis by `src/redisStore.js`
-(`REDIS_URL`, default `redis://127.0.0.1:6379`), indexed two ways so both
-common queries are a single range read:
+(`REDIS_URL`, default `redis://127.0.0.1:6379`). **Everything this app stores in
+Redis lives under `regattas:<regattaId>:...`** - one complete, self-contained
+namespace per regatta, with no exceptions. Which regatta is currently selected
+is never itself stored in Redis - see "Selecting a regatta at startup" below
+for why and where that lives instead. Switching the selected regatta is switching to a fully independent workspace:
+a regatta that's never been raced before starts with no marks, no known
+boats, nothing, exactly as if this were a brand new Redis; an
+already-configured regatta picks up exactly where its own namespace left off.
+`<regattaId>` is `none` for anything recorded/created while no regatta is
+selected at all (e.g. `SIMULATE=1` testing without ever touching the regatta
+selector, a normal workflow this app still fully supports).
 
-- `boat:<id>:track` — one sorted set per boat, scored by the fix's own GPS
-  timestamp (ms since epoch). Use `getBoatTrack(boatId, fromMs, toMs)` (either
-  bound optional) to get that boat's track, optionally within a timeframe.
-- `all:track` — one sorted set holding every boat's fixes together, same
-  scoring. Use `getAllTrack(fromMs, toMs)` to get all boats' positions within
-  a timeframe without knowing boat IDs up front.
-- `boats:known` — a set of every boat ID that's ever reported in
-  (`knownBoatIds()`), for discovering which boats exist without scanning keys.
-- `course:on_grid_zone` — the on-grid detection zone's own boundary, as a
-  JSON array of `{lat, lon}` points (`setOnGridZone`/`getOnGridZone`) - the
-  exact quadrilateral `OnGridWatcher.check` tests against (see
-  `onGridWatcher.js`'s `zonePolygon`), republished every time marks are
-  broadcast (initial resolve, an edit, the periodic heartbeat), so anything
-  reading it - RegattaUp, another dashboard - sees the same zone the base
-  is actually detecting against, not a separately-derived approximation.
+This exists because a single Redis instance can genuinely be shared by
+multiple regattas happening at once - multiple base stations/locations, or
+one base switching between regattas across a season. Without full
+namespacing, two regattas' marks/tracks/boats would collide under the exact
+same key names, each silently overwriting or mixing into the other's data.
 
-Course marks themselves live in `mark:<name>` (one Redis hash per mark,
-`lat`/`lon` fields) - see "Editing mark positions from the map" below.
-`course:pin_boundary_enabled` is a plain on/off flag (see "Pin boundary
-gate" above) - when on, its computed endpoint is *also* published as
-`mark:pinBoundary`, in the same `mark:<name>` shape as every real mark,
-purely so RegattaUp's generic mark scan picks it up too; it's never itself
-a source of truth for anything in this app.
+Within one regatta's namespace:
 
-Each stored entry is the decoded frame (`boatId, timestamp, lat, lon,
+- `regattas:<id>:mark:<name>` — one Redis hash per course mark (`lat`/`lon`
+  fields) - see "Editing mark positions from the map" below.
+  `regattas:<id>:course:pin_boundary_enabled` is a plain on/off flag (see
+  "Pin boundary gate" above) - when on, its computed endpoint is *also*
+  published as `regattas:<id>:mark:pinBoundary`, in the same `mark:<name>`
+  shape as every real mark, purely so RegattaUp's generic mark scan (scoped
+  to the same regatta id) picks it up too; it's never itself a source of
+  truth for anything in this app.
+- `regattas:<id>:course:on_grid_zone` — the on-grid detection zone's own
+  boundary, as a JSON array of `{lat, lon}` points
+  (`setOnGridZone`/`getOnGridZone`) - the exact quadrilateral
+  `OnGridWatcher.check` tests against (see `onGridWatcher.js`'s
+  `zonePolygon`), republished every time marks are broadcast (initial
+  resolve, an edit, the periodic heartbeat), so anything reading it -
+  RegattaUp, another dashboard - sees the same zone the base is actually
+  detecting against, not a separately-derived approximation.
+- `regattas:<id>:boat:<boatId>:track` — one sorted set per boat, scored by
+  the fix's own GPS timestamp (ms since epoch). Use `getBoatTrack(boatId,
+  fromMs, toMs, regattaId)` (regattaId optional, defaults to whichever is
+  currently selected) to get that boat's track, optionally within a
+  timeframe.
+- `regattas:<id>:all:track` — one sorted set holding every boat's fixes for
+  that regatta, same scoring. Use `getAllTrack(fromMs, toMs, regattaId)` to
+  get all boats' positions within a timeframe for one regatta, without
+  knowing boat IDs up front.
+- `regattas:<id>:boats:known` — a set of every boat ID that's reported in
+  for that regatta (`knownBoatIds()`), for discovering which boats exist
+  without scanning keys.
+- `regattas:<id>:boats:start_slots` / `regattas:<id>:boats:start_slot_counter`
+  — each boat's assigned start-line slot (`getOrAssignStartSlot`).
+
+Each stored fix entry is the decoded frame (`boatId, timestamp, lat, lon,
 speedKnots, headingDeg, gnssFixOk, carrSoln, numSV`) plus `receivedAt` (the
 base's own wall-clock time, useful for spotting radio-link latency/drops).
 If Redis is unreachable, `baseStation.js` logs the error and keeps running —
@@ -982,14 +1006,15 @@ while a race is actually running — a fleet roaming around for practice
 between races adds up too. Two things keep this from becoming a real
 problem:
 
-- **Auto-expiry.** `boat:<id>:track`/`all:track` get a TTL
-  (`REDIS_TRACK_RETENTION_HOURS`, default 24h) set once, the first time
+- **Auto-expiry.** Track keys (`regattas:<id>:boat:<boatId>:track`/
+  `regattas:<id>:all:track`) get a TTL
+  (`REDIS_TRACK_RETENTION_HOURS`, default 48h) set once, the first time
   each is written on a given day - not refreshed on every later write, so a
-  whole day's races age out together roughly a day after the *first* fix of
-  the day, not a rolling day after the most recent one. Nothing else this
-  app stores in Redis (marks, the selected regatta, the on-grid zone, the
-  pin boundary flag) has a TTL at all, ever — this only ever touches track
-  history.
+  whole day's races age out together roughly two days after the *first* fix
+  of the day, not a rolling window after the most recent one. Nothing else
+  this app stores in Redis (marks, the selected regatta, the on-grid zone,
+  the pin boundary flag) has a TTL at all, ever — this only ever touches
+  track history.
 - **Graceful degradation if it still fills up.** A track write that fails
   (Redis genuinely out of room, a network blip, whatever) is caught inside
   `redisStore.js` itself, never thrown - console/CSV/UDP output for that
@@ -1064,13 +1089,15 @@ whichever you choose applies consistently across all of them.
 npm run clear-boats
 ```
 
-Deletes every boat-related key (`boat:<id>:track`, `all:track`,
-`boats:known`, and start-slot assignments) so a fresh fleet can race the
-same course without stale boats/tracks left over from earlier runs. The
+Deletes every boat-related key for the **currently selected regatta only**
+(each boat's own track, `all:track`, `boats:known`, and start-slot
+assignments - see "Redis track storage" above for the full key shapes) so a
+fresh fleet can race the same course without stale boats/tracks left over
+from earlier runs. Never touches any other regatta's own namespace. The
 course marks are left untouched. Respects `REDIS_ENV`/`REDIS_URL` the same
-way `base` does (`boat` doesn't touch Redis at all - see "Broadcasting
-marks to the rovers" above), so point it at whichever Redis you actually
-want cleared.
+way `base` does (`boat` doesn't touch Redis at all - see "Broadcasting marks
+to the rovers" above), so point it at whichever Redis you actually want
+cleared.
 
 ### Changing the course
 
@@ -1097,7 +1124,12 @@ directly by the tacking logic regardless.
 npm run reset-course
 ```
 
-Deletes all eight `mark:*` keys plus the on-grid zone, then immediately
+Deletes all eight `mark:*` keys plus the on-grid zone and the pin boundary
+gate's own flag, for whichever regatta `REGATTAUP_REGATTA_ID`/regatta-id.txt
+currently resolves to (see "Selecting a regatta at startup" below - this
+script has no base station process to inherit a live selection from, so it's
+the only source it has; prints exactly which regatta it's about to touch
+before doing anything), then immediately
 republishes a fresh course from current defaults (`SIM_CENTER_LAT`/
 `SIM_CENTER_LON`/`SIM_COURSE_LENGTH_NM`/`SIM_START_LINE_POSITION`/
 `SIM_COMMITTEE_GAP_M`) - one command, not a delete followed by hoping
@@ -1106,8 +1138,9 @@ scenario where the marks should just be *gone*: a boat or the admin
 dashboard querying in that gap would see no course at all. Prints every
 parameter that shapes the geometry before publishing (course length,
 start/finish line lengths, committee gap, ...) so it's obvious exactly
-what's about to replace the old course. Boat tracks are left untouched —
-pair with `npm run clear-boats` if you want those cleared too.
+what's about to replace the old course. Never touches any other regatta's
+own namespace. Boat tracks are left untouched — pair with `npm run
+clear-boats` if you want those cleared too.
 
 **This is the only thing that ever resets published marks.** Changing
 `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`,
@@ -1330,14 +1363,57 @@ A **Regatta** card lets an operator pick which RegattaUp regatta this base
 station is currently reporting for - fetched from `POST
 /api/functions/getActiveRegattas` (`src/baseStation.js`'s
 `refreshActiveRegattas`, no auth, refreshed every
-`REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` in the background) and persisted in
-Redis (`src/redisStore.js`'s `setSelectedRegatta`) so it survives a base
-restart. If nothing's selected, the card shows a warning - pick one before
+`REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` in the background) and persisted
+locally to `regatta-id.txt` on this base (`src/baseStation.js`'s
+`selectRegatta`, via `regattaIdFile.js` - see "Selecting a regatta at
+startup" below) so it survives a base restart. If nothing's selected, the card shows a warning - pick one before
 racing. The whole regatta object (not just its id) is stored, so if the
 selected regatta later drops out of RegattaUp's own "active" list before its
 own `end_date`, this base keeps reporting for it right up until that date -
 only once `end_date` actually passes does the selection get cleared
 automatically, with a console warning to pick another one.
+
+### Selecting a regatta at startup
+
+Since every mark/on-grid-zone/pin-boundary/track key now lives under
+`regattas:<id>:...` (see "Redis track storage" above), the base resolves
+which regatta to use *before* touching the course at all, in this order,
+logged clearly (`[baseStation] regatta: ...`) as early as this resolution
+itself happens. **Which regatta is selected is never stored in Redis** - a
+single Redis instance can be shared by multiple base stations at once (see
+"Redis track storage" above), and a Redis-side selection key would be one
+global value every base sharing that Redis would fight over, exactly the
+collision this whole namespacing scheme exists to avoid for marks/tracks/
+boats. Instead, selection is entirely local to this process and this
+machine:
+
+1. **`REGATTAUP_REGATTA_ID`**, if set - persisted to `regatta-id.txt`
+   immediately (see below) and applied, as long as it matches one of
+   RegattaUp's currently active/future regattas.
+2. **Whatever's persisted in `regatta-id.txt`** - the same file
+   `REGATTAUP_REGATTA_ID` writes to, so whichever was used most recently (an
+   explicit env var on an earlier run, or a pick from the dashboard/terminal
+   prompt) is what a later run defaults to without needing the env var
+   repeated every time. Stores `{"id": ..., "name": ...}` - the name is
+   display-only (a startup log line, the prompt below), matching is always
+   by id against RegattaUp's live list.
+3. **An interactive terminal prompt**, if none of the above resolved anything
+   and this process has a real TTY attached (a systemd/piped/background run
+   has no one to answer, so this step is skipped there, falling straight to
+   the dashboard-pick warning below): fetches and lists the current
+   active/future regattas, asks for a number, re-prompts on anything that
+   doesn't parse to a valid choice.
+
+If nothing resolves at all (no TTY, or RegattaUp returned an empty list),
+the base starts up anyway with no regatta selected - the operator picks one
+from the admin dashboard's own Regatta card before racing, same as before
+any of this existed.
+
+Whichever regatta actually gets selected - by any of the three paths above,
+or later from the dashboard - is persisted to `regatta-id.txt` (id and
+name) on this machine only, so it's what every later run of this same base
+defaults to. A different base station, even sharing the same Redis, keeps
+its own independent `regatta-id.txt` and its own selection.
 
 One dashboard button acts on the whole fleet at once:
 
@@ -1684,12 +1760,13 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Switching between Redis servers" above. Ignored entirely if `REDIS_URL` is set |
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
 | `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
-| `REDIS_MIN_MOVEMENT_M` | 5 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes |
-| `REDIS_TRACK_RETENTION_HOURS` | 24 | Base station only — how long a `boat:<id>:track`/`all:track` key lives before Redis expires it on its own, set once on that key's first write of the day (not refreshed on every later write) — see "If Redis runs out of space" above |
+| `REDIS_MIN_MOVEMENT_M` | 1 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes. Matches `TX_DISTANCE_M`'s own default (1m), so Redis records essentially every fix a boat actually transmits |
+| `REDIS_TRACK_RETENTION_HOURS` | 48 | Base station only — how long a `boat:<id>:track`/`all:track:<regattaId>` key lives before Redis expires it on its own, set once on that key's first write of the day (not refreshed on every later write) — see "If Redis runs out of space" above |
 | `REDIS_MEMORY_LIMIT_MB` | 250 | Base station only — the admin dashboard's "Redis memory" card divides current usage by this to show a percentage/ALERT status. A managed Redis instance (Redis Cloud and similar) commonly won't report its own configured limit via `CONFIG GET`, so this has to be told explicitly — set it to your actual plan size in MB if it isn't 250MB |
 | `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above. Independent of `REGATTAUP_ACTIVE_REGATTAS_URL` below — overriding this to a mock/staging endpoint for testing does NOT also redirect the active-regattas list |
 | `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Base station only — set to `0` to skip posting lap crossings to RegattaUp entirely |
 | `REGATTAUP_ACTIVE_REGATTAS_URL` | `https://regattaup.com/api/functions/getActiveRegattas` | Base station only — where the admin dashboard's regatta selector (see "Admin dashboard" above) fetches the active/future regatta list. Override only if you need to mock the regatta list itself for testing — see `REGATTAUP_WEBHOOK_URL` above |
+| `REGATTAUP_REGATTA_ID` | unset | Base station only — selects this regatta at startup (always wins over whatever's persisted), and persists it to `regatta-id.txt` immediately so it becomes the new remembered default even on a later run that omits this var — see "Selecting a regatta at startup" above |
 | `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` | 300000 (5 min) | Base station only — how often the admin dashboard's active-regattas list is refreshed in the background, see "Admin dashboard" above |
 | `REGATTAUP_LOG_ACTIVE_REGATTAS` | unset (off) | Base station only — set to `1` to log a line every time that background refresh succeeds. Off by default since a successful fetch is the expected outcome of an indefinite heartbeat, not something worth a line every cycle; a failed fetch always logs regardless |
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
