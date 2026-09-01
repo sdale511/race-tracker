@@ -140,6 +140,15 @@ const MARK_ROUNDING_GATES = [
 // position could still let the two overlap.
 const OUTER_MARK_SAFETY_FRACTION = 0.5;
 
+// Mirrors main()'s own selectedRegatta.id (see selectRegatta/
+// refreshActiveRegattas inside main()) - kept in sync purely so the
+// sendQueued* functions below, which are plain top-level functions with no
+// closure over main()'s locals, can tag their RegattaUp webhook posts with
+// which regatta they're for (mylapsWebhook/entry.ts's own optional
+// regatta_id fast path - see its comment on ACTIVE_REGATTAS_KEY). null
+// whenever no regatta is selected, same as selectedRegatta itself.
+let currentRegattaId = null;
+
 if (config.testLapNumber > 0) {
   console.log(
     `[baseStation] TEST_LAP_NUMBER=${config.testLapNumber} - sending a single test lap for boat ${config.testLapBoatId} and exiting`
@@ -528,6 +537,7 @@ function main() {
       );
       selectedRegatta = null;
       redisStore.setCurrentRegatta(null);
+      currentRegattaId = null;
       clearPersistedRegattaId();
     }
   }
@@ -547,6 +557,7 @@ function main() {
     if (!regatta) throw new Error('unknown regatta id - refresh the list and try again');
     selectedRegatta = regatta;
     redisStore.setCurrentRegatta(regatta.id);
+    currentRegattaId = regatta.id;
     // Remembers this pick as the new default for next time this base
     // restarts - the same file REGATTAUP_REGATTA_ID itself writes to (see
     // config.js's resolveDefaultRegattaId/regattaIdFile.js), so whichever
@@ -1794,7 +1805,14 @@ function main() {
 // field is missing entirely (real third-party MyLaps hardware has no
 // concept of mode and will never send one) - explicit here just means our
 // own three event types (lap/ongrid/mark) are never distinguished by
-// *absence* of a field, only by its value. Every attempt (success or
+// *absence* of a field, only by its value. Also includes `regatta_id`
+// (module-level currentRegattaId, kept in sync with main()'s own
+// selectedRegatta - see its own comment) whenever a regatta is selected, so
+// mylapsWebhook/entry.ts can read straight from that one regatta's own Redis
+// cache instead of enumerating every active regatta on the platform - real
+// MyLaps hardware has no such field and never sends one, so the webhook
+// falls back to that enumeration exactly as before when it's absent (no
+// regatta selected, e.g. SIMULATE=1 testing). Every attempt (success or
 // failure) is recorded on the row so dueForRetry's backoff stays accurate;
 // the row is only removed once RegattaUp actually accepts it - a failure
 // just leaves it queued for the next retry, logged but not thrown further,
@@ -1804,6 +1822,7 @@ async function sendQueuedLap(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
     mode: 'lap',
+    ...(currentRegattaId ? { regatta_id: currentRegattaId } : {}),
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,
@@ -1835,6 +1854,7 @@ async function sendQueuedOnGrid(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
     mode: row.mode,
+    ...(currentRegattaId ? { regatta_id: currentRegattaId } : {}),
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,
@@ -1866,6 +1886,7 @@ async function sendQueuedMarkRounding(queue, row) {
   const payload = {
     mode: 'mark',
     mark: row.mark,
+    ...(currentRegattaId ? { regatta_id: currentRegattaId } : {}),
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,
@@ -1897,6 +1918,7 @@ async function sendQueuedFoul(queue, row) {
   const payload = {
     mode: 'foul',
     reason: row.reason,
+    ...(currentRegattaId ? { regatta_id: currentRegattaId } : {}),
     decoded: {
       tranCode: String(row.boat_id),
       rtcTime: row.rtc_time,

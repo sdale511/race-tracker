@@ -524,6 +524,8 @@ POSTs to RegattaUp's lap webhook so the crossing counts as a lap there:
 
 ```json
 {
+  "mode": "lap",
+  "regatta_id": "6a44a2531e401d60c28afcd8",
   "decoded": {
     "tranCode": "51",
     "rtcTime": 1785337740000000,
@@ -533,6 +535,19 @@ POSTs to RegattaUp's lap webhook so the crossing counts as a lap there:
 }
 ```
 
+- `mode` — always sent explicitly as `"lap"` here, even though the webhook
+  already defaults to it when the field is missing entirely - real
+  third-party MyLaps hardware has no concept of `mode` and never sends one,
+  so explicit here just means our own event types are never distinguished
+  by *absence* of a field, only by its value
+- `regatta_id` — the currently-selected regatta's id (see "Selecting a
+  regatta at startup" below), included whenever one is selected so
+  `mylapsWebhook` can read straight from that one regatta's own Redis cache
+  instead of enumerating every active regatta on the platform. Omitted
+  entirely when no regatta is selected (e.g. `SIMULATE=1` testing) - real
+  MyLaps hardware has no concept of this field either, and the webhook falls
+  back to its own active-regatta lookup exactly as if this app didn't send
+  it at all
 - `tranCode` — the boat's ID (as a string), matched against that boat's
   transponder code configured in RegattaUp
 - `rtcTime` — the lap's own timestamp, converted from milliseconds to
@@ -645,15 +660,17 @@ A boat counts as on-grid when it's all of:
 POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 
 ```json
-{ "mode": "ongrid", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
+{ "mode": "ongrid", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
 ```
 ```json
-{ "mode": "offgrid", "decoded": { "tranCode": "51", "rtcTime": 1785337745000000 } }
+{ "mode": "offgrid", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337745000000 } }
 ```
 
 - `tranCode` — the boat's ID (as a string), same convention as laps
 - `rtcTime` — the fix's own timestamp, converted from milliseconds to
   microseconds
+- `regatta_id` — same as laps above (see "Lap events -> RegattaUp"), omitted
+  when no regatta is selected
 
 `onGridWatcher.check()` itself still re-fires `'ongrid'` on **every**
 incoming fix for as long as the boat stays in the zone (not just the
@@ -775,7 +792,7 @@ POSTs to the same RegattaUp webhook laps and on-grid use, with its own
 payload shape:
 
 ```json
-{ "mode": "mark", "mark": "windwardGreen", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
+{ "mode": "mark", "mark": "windwardGreen", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
 ```
 
 - `mark` — which mark was rounded (`windwardGreen`, `windwardBlack`,
@@ -784,6 +801,8 @@ payload shape:
 - `rtcTime` — the interpolated crossing instant (same upsampling
   finish-line laps use, not just the later fix's own timestamp), converted
   from milliseconds to microseconds
+- `regatta_id` — same as laps above (see "Lap events -> RegattaUp"), omitted
+  when no regatta is selected
 
 Uses the exact same durable-queue-plus-retry mechanics as laps/on-grid
 (see "Durable retry queue" above) - `src/markRoundingWebhookQueue.js`, same
@@ -818,13 +837,15 @@ POSTs to the same RegattaUp webhook laps/on-grid/mark-rounding use, with
 its own payload shape:
 
 ```json
-{ "mode": "foul", "reason": "downwind finish line", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
+{ "mode": "foul", "reason": "downwind finish line", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
 ```
 
 - `reason` — which foul: `"downwind start line"`, `"downwind finish line"`,
   `"through committee gap"`, or (only while the pin boundary gate below is
   on) `"downwind pin boundary"`
 - `tranCode` / `rtcTime` — same conventions as laps/on-grid/mark-rounding
+- `regatta_id` — same as laps above (see "Lap events -> RegattaUp"), omitted
+  when no regatta is selected
 
 Uses the exact same durable-queue-plus-retry mechanics as the other three
 event types (see "Durable retry queue" above) - `src/foulWebhookQueue.js`,
