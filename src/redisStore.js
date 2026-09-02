@@ -115,6 +115,32 @@ class RedisStore {
     const retryOpts = { lazyConnect: true, retryStrategy: () => 3000 };
     this.client = url ? new Redis(url, retryOpts) : new Redis({ ...connection, ...retryOpts });
     this.client.on('error', (err) => console.error('[redis] error:', err.message));
+    // Brackets an outage with exactly one "lost"/"reconnected" pair, however
+    // long it lasts or however many retries it takes - same rate-limited-
+    // recovery idiom as _recordTrackWriteFailure/_recordTrackWriteSuccess
+    // below, just for the TCP/auth connection itself rather than individual
+    // writes. Without this, a transient error (e.g. the ETIMEDOUT this was
+    // added for) is easy to mistake for a still-ongoing outage days later -
+    // 'error' logs the failure, but ioredis's retryStrategy above quietly
+    // reconnects on its own every 3s with nothing logging that it succeeded,
+    // so there was no way to tell from the console alone whether (or when)
+    // it actually came back. 'close' fires on every dropped connection,
+    // including once per failed retry attempt during a prolonged outage -
+    // connectionDownSince guards against re-logging "lost" on each of those.
+    let connectionDownSince = null;
+    this.client.on('close', () => {
+      if (connectionDownSince == null) {
+        connectionDownSince = Date.now();
+        console.error('[redis] connection lost - reconnecting...');
+      }
+    });
+    this.client.on('ready', () => {
+      if (connectionDownSince != null) {
+        const downSec = Math.round((Date.now() - connectionDownSince) / 1000);
+        console.log(`[redis] reconnected after ${downSec}s`);
+        connectionDownSince = null;
+      }
+    });
     this.ready = this.client.connect().catch((err) => {
       console.error('[redis] connect failed:', err.message);
     });
