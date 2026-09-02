@@ -461,6 +461,7 @@ function main() {
     connection: config.redis.connection,
     minMovementM: config.redis.minMovementM,
     trackRetentionHours: config.redis.trackRetentionHours,
+    keepaliveIntervalMs: config.redis.keepaliveIntervalMs,
   });
 
   // Sends whatever raceMarks currently holds to every boat right now (as

@@ -432,6 +432,22 @@ module.exports = {
     // Cloud plan size - so the card shows a real percentage out of the box;
     // override with the actual plan size if it's not 250MB.
     memoryLimitMb: parseFloat(process.env.REDIS_MEMORY_LIMIT_MB || '250'),
+    // How often redisStore.js sends an idle-connection keepalive PING.
+    // Without real traffic, a managed instance (Redis Cloud and similar -
+    // see memoryLimitMb's own comment) or whatever network sits between
+    // this base and it (a NAT/firewall on the base's own WiFi/cellular link
+    // included) silently drops the TCP connection after some idle period -
+    // observed in production as a `read ETIMEDOUT` roughly every 12-36
+    // minutes, varying with how much real Redis traffic happened to be
+    // flowing (see redisStore.js's own comment on the keepalive timer for
+    // the full diagnosis). ioredis's retryStrategy already recovers from
+    // this cleanly (reconnects within ~3s - see redisStore.js's own
+    // 'close'/'ready' logging), so this isn't fixing a failure, just
+    // avoiding causing one: keeping real Redis protocol traffic flowing
+    // often enough that neither end (nor anything in between) ever sees the
+    // connection go idle long enough to reap it. Comfortably under the
+    // shortest observed idle-to-drop window above.
+    keepaliveIntervalMs: parseInt(process.env.REDIS_KEEPALIVE_INTERVAL_MS || '60000', 10),
   },
 
   // --- RegattaUp lap webhook (base station only) ---

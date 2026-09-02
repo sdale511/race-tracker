@@ -107,13 +107,16 @@ class RedisStore {
   // to be worth recording - see recordFix. `trackRetentionHours` (default
   // 48) is how long a track key lives before Redis expires it on its own -
   // see recordFix's own comment on why this is set once, not refreshed on
-  // every write.
-  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48 }) {
+  // every write. `keepaliveIntervalMs` (default 60000) is how often an
+  // idle-connection keepalive PING is sent - see its own comment below.
+  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, keepaliveIntervalMs = 60000 }) {
     // Fixed 3s retry backoff, matching the reconnect cadence used elsewhere
     // in this app (radioLink.js, boatAgent.js's GPS reopen) instead of
     // ioredis's default rapid-fire retry.
     const retryOpts = { lazyConnect: true, retryStrategy: () => 3000 };
     this.client = url ? new Redis(url, retryOpts) : new Redis({ ...connection, ...retryOpts });
+    // Set by close() below - see the 'close' listener's own comment on why.
+    this._closing = false;
     this.client.on('error', (err) => console.error('[redis] error:', err.message));
     // Brackets an outage with exactly one "lost"/"reconnected" pair, however
     // long it lasts or however many retries it takes - same rate-limited-
@@ -127,8 +130,13 @@ class RedisStore {
     // it actually came back. 'close' fires on every dropped connection,
     // including once per failed retry attempt during a prolonged outage -
     // connectionDownSince guards against re-logging "lost" on each of those.
+    // Also fires on OUR OWN deliberate client.quit() (see close() below) -
+    // this._closing skips logging that case, since nothing is actually
+    // reconnecting and "lost - reconnecting" would be actively misleading
+    // during a normal shutdown.
     let connectionDownSince = null;
     this.client.on('close', () => {
+      if (this._closing) return;
       if (connectionDownSince == null) {
         connectionDownSince = Date.now();
         console.error('[redis] connection lost - reconnecting...');
@@ -144,6 +152,24 @@ class RedisStore {
     this.ready = this.client.connect().catch((err) => {
       console.error('[redis] connect failed:', err.message);
     });
+    // Idle-connection keepalive - without real traffic flowing, a managed
+    // Redis instance (or whatever network sits between this base and it -
+    // its own WiFi/cellular NAT included) silently drops the connection
+    // after some idle period. Observed in production as a `read ETIMEDOUT`
+    // roughly every 12-36 minutes, tracking how much real Redis traffic
+    // happened to be flowing at the time - not a fixed clock, which is what
+    // pointed at an idle-connection timeout somewhere in the path rather
+    // than a periodic maintenance job on Redis's own side. ioredis's
+    // retryStrategy above already recovers from this cleanly (~3s - see the
+    // 'close'/'ready' logging above), so this doesn't fix a failure, it
+    // avoids causing one: a lightweight PING often enough that neither end
+    // (nor anything in between) ever sees the connection go idle long
+    // enough to reap it. Errors are swallowed - a failed keepalive during a
+    // real outage is already being handled by the 'error'/'close' listeners
+    // above, this has nothing useful to add on top of that.
+    this._keepaliveTimer = setInterval(() => {
+      this.client.ping().catch(() => {});
+    }, keepaliveIntervalMs);
     this.minMovementM = minMovementM;
     this.trackRetentionSeconds = Math.round(trackRetentionHours * 3600);
     // In-memory only (per boatId) - not persisted, so a restarted base
@@ -574,6 +600,8 @@ class RedisStore {
   }
 
   async close() {
+    this._closing = true;
+    clearInterval(this._keepaliveTimer);
     await this.client.quit();
   }
 }
