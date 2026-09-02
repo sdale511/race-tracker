@@ -2,6 +2,7 @@ const path = require('path');
 require('dotenv').config();
 const { getOrCreatePersistentBoatId, ID_LENGTH: BOAT_ID_LENGTH } = require('./boatIdFile');
 const { getPersistedRegattaId, persistRegattaId } = require('./regattaIdFile');
+const { getPersistedPowerSchedule, persistPowerSchedule } = require('./powerScheduleFile');
 
 // BOAT_ID always wins outright when set (by hand, or by fleetSim.js for
 // every boat it spawns) - only falls back to this device's own persisted id
@@ -45,6 +46,40 @@ function resolveDefaultRegattaId() {
     return { id: process.env.REGATTAUP_REGATTA_ID, name: null };
   }
   return getPersistedRegattaId();
+}
+
+// Same env-wins spirit as resolveBoatId/resolveDefaultRegattaId above, but
+// per-field rather than all-or-nothing: each of the four ROVER_SHUTDOWN_*
+// vars independently overrides whatever's persisted, since an operator
+// might reasonably set just ROVER_SHUTDOWN_AT in a systemd unit and leave
+// the rest to their previous dashboard-set values (or the hardcoded
+// defaults). Whatever the effective combination ends up being this boot -
+// some fields from env vars, the rest from the last persisted schedule or
+// their defaults - gets persisted right back, so a later restart with NO
+// env vars at all (the normal case once an operator's using the rover
+// dashboard's own power card - see roverAdminServer.js/powerSchedule.js)
+// remembers exactly what was in effect last, not just whatever a stale env
+// var says.
+function resolveDefaultPowerSchedule() {
+  const persisted = getPersistedPowerSchedule() || {};
+  const schedule = {
+    shutdownAt:
+      process.env.ROVER_SHUTDOWN_AT !== undefined ? process.env.ROVER_SHUTDOWN_AT || null : persisted.shutdownAt ?? null,
+    shutdownIdleMinutes:
+      process.env.ROVER_SHUTDOWN_IDLE_MIN !== undefined
+        ? parseFloat(process.env.ROVER_SHUTDOWN_IDLE_MIN)
+        : persisted.shutdownIdleMinutes ?? 10,
+    shutdownSpeedKn:
+      process.env.ROVER_SHUTDOWN_SPEED_KN !== undefined
+        ? parseFloat(process.env.ROVER_SHUTDOWN_SPEED_KN)
+        : persisted.shutdownSpeedKn ?? 0.5,
+    shutdownCheckIntervalMs:
+      process.env.ROVER_SHUTDOWN_CHECK_INTERVAL_MS !== undefined
+        ? parseInt(process.env.ROVER_SHUTDOWN_CHECK_INTERVAL_MS, 10)
+        : persisted.shutdownCheckIntervalMs ?? 30000,
+  };
+  persistPowerSchedule(schedule);
+  return schedule;
 }
 
 // Central configuration. Override any of these with environment variables,
@@ -299,6 +334,30 @@ module.exports = {
     port: process.env.RADIO_PORT || '/dev/ttyUSB0',
     baud: parseInt(process.env.RADIO_BAUD || '115200', 10),
   },
+
+  // --- Scheduled shutdown (boat only) ---
+  // Battery-saving: shuts THIS device down (not the boat's own power/GPS
+  // hardware, just this Pi) once both a configured clock time has passed
+  // AND the boat has been genuinely stationary for a sustained window - see
+  // powerSchedule.js for the actual logic. The idle gate exists specifically
+  // so a race running late doesn't get killed mid-track just because the
+  // clock crossed shutdownAt; it waits for a real lull instead.
+  // Off by default (shutdownAt null) - this is real hardware shutting
+  // itself off, not something to happen without an operator deliberately
+  // opting in, either via ROVER_SHUTDOWN_AT or the rover dashboard's own
+  // power card. Power-up is NOT handled here - this repo has no way to know
+  // what (if any) RTC-alarm/relay/smart-switch hardware a given Pi has
+  // wired up to bring it back; that's on whatever's actually controlling
+  // this device's power rail. Without such hardware, someone has to
+  // physically re-power it before the next session either way.
+  //
+  // See resolveDefaultPowerSchedule above for exactly how these four
+  // fields resolve between the ROVER_SHUTDOWN_* env vars and whatever's
+  // persisted from a previous run/dashboard edit (power-schedule.txt, via
+  // powerScheduleFile.js) - boatAgent.js only ever reads this snapshot at
+  // startup; from then on the running scheduler (see powerSchedule.js's
+  // startShutdownScheduler) holds the live, dashboard-editable values.
+  power: resolveDefaultPowerSchedule(),
 
   // --- Identity & timing ---
   boatId: resolveBoatId(),

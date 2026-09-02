@@ -18,6 +18,7 @@ const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const roverStats = require('./roverStats');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
+const { startShutdownScheduler } = require('./powerSchedule');
 
 // True while the cursor is sitting mid-line after an in-place GPS log
 // overwrite (see handlePvt's inPlaceMode) - any *other* log call landing
@@ -771,7 +772,26 @@ function getPosition() {
     : null;
 }
 
-startRoverAdminServer({ port: myAdminPort, getStats: getRoverStats, getPosition });
+// Armed only if config.power.shutdownAt ends up set (ROVER_SHUTDOWN_AT, or
+// a schedule persisted from a previous rover dashboard edit - see config
+// .js's own "Scheduled shutdown" comment) - otherwise this is just a live,
+// currently-disabled controller the dashboard's power card can still arm
+// on the fly. See powerSchedule.js for the full picture.
+const powerScheduler = startShutdownScheduler({
+  shutdownAt: config.power.shutdownAt,
+  shutdownIdleMinutes: config.power.shutdownIdleMinutes,
+  shutdownSpeedKn: config.power.shutdownSpeedKn,
+  shutdownCheckIntervalMs: config.power.shutdownCheckIntervalMs,
+  getLastFix: () => lastPvt,
+});
+
+startRoverAdminServer({
+  port: myAdminPort,
+  getStats: getRoverStats,
+  getPosition,
+  getPowerStatus: powerScheduler.getStatus,
+  updatePowerSchedule: powerScheduler.updateParams,
+});
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
 // Under fleetSim.js, report through IPC instead of logging directly - a

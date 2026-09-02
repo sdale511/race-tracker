@@ -26,11 +26,62 @@ function dopQualityText(dop) {
   return 'poor';
 }
 
+// `power` is whatever powerSchedule.js's getStatus() returned (see
+// boatAgent.js's powerScheduler) - surfaces the scheduled-shutdown feature
+// (config.js's "Scheduled shutdown" / powerSchedule.js) as a card with its
+// own inline edit form, so an operator can arm/retune/disable it from the
+// dashboard instead of hand-editing a .env and restarting the boat
+// process. idleSince present means the gate is past shutdownAt AND
+// currently reading idle - i.e. the countdown to an actual shutdown is
+// running right now, which is worth calling out with its own color/copy
+// rather than folding into the same "armed" state as "configured but nothing
+// imminent."
+function renderPowerCard(power) {
+  const dotClass = power.triggered ? 'dot-red' : power.idleSince ? 'dot-orange' : power.armed ? 'dot-green' : 'dot-gray';
+  const statusText = power.triggered
+    ? 'shutting down now'
+    : !power.capable
+    ? 'unsupported on this platform'
+    : power.shutdownAt
+    ? power.idleSince
+        ? `idle ${formatDuration(Date.now() - power.idleSince)} of ${power.shutdownIdleMinutes}m`
+        : 'armed'
+    : 'disabled';
+  const subText = power.triggered
+    ? 'device is powering off'
+    : !power.capable
+    ? `shutdown -h now only runs on Linux (platform=${process.platform}) - safe to leave configured for when this runs on the Pi`
+    : power.shutdownAt
+    ? `after ${power.shutdownAt} local time, once stationary &lt;${power.shutdownSpeedKn}kn (or no fresh fix) for ${power.shutdownIdleMinutes} continuous minutes`
+    : 'set a time below to arm';
+  return `<div class="card power-card">
+      <div class="label">Scheduled shutdown</div>
+      <div class="value"><span class="dot ${dotClass}"></span>${statusText}</div>
+      <div class="sub">${subText}</div>
+      <div class="manual-fixed-field">
+        <label for="powerShutdownAt">Time</label>
+        <input type="time" class="manual-input" id="powerShutdownAt" value="${power.shutdownAt || ''}" ${power.triggered ? 'disabled' : ''}>
+      </div>
+      <div class="manual-fixed-field">
+        <label for="powerIdleMin">Idle min</label>
+        <input type="number" step="any" min="0" class="manual-input" id="powerIdleMin" value="${power.shutdownIdleMinutes}" ${power.triggered ? 'disabled' : ''}>
+      </div>
+      <div class="manual-fixed-field">
+        <label for="powerSpeedKn">Speed (kn)</label>
+        <input type="number" step="any" min="0" class="manual-input" id="powerSpeedKn" value="${power.shutdownSpeedKn}" ${power.triggered ? 'disabled' : ''}>
+      </div>
+      <div class="card-actions">
+        <button type="button" class="card-btn" onclick="savePowerSchedule(this)" ${power.triggered ? 'disabled' : ''}>Save</button>
+        ${power.shutdownAt ? `<button type="button" class="card-btn" onclick="disablePowerSchedule(this)" ${power.triggered ? 'disabled' : ''}>Disable</button>` : ''}
+      </div>
+    </div>`;
+}
+
 // Renders the boat's own dashboard server-side from one stats snapshot (see
 // boatAgent.js's getRoverStats) - the boat-side counterpart to
 // adminServer.js's renderDashboard, but there's only ever one boat here, so
 // this is a single detail view rather than a fleet table.
-function renderDashboard(s) {
+function renderDashboard(s, power) {
   const fix = s.lastFix;
   // receivedAt (this Pi's own local-clock receipt time), not timestamp
   // (the fix's own GPS-derived time, which can legitimately diverge from
@@ -91,10 +142,26 @@ function renderDashboard(s) {
   .dot-green { background: #3fb950; box-shadow: 0 0 6px #3fb95080; }
   .dot-gray { background: #4b535e; }
   .dot-red { background: #f85149; box-shadow: 0 0 6px #f8514980; }
+  .dot-orange { background: #f2b84b; box-shadow: 0 0 6px #f2b84b80; }
   .muted { color: #8b94a3; }
   .empty { color: #8b94a3; padding: 20px; text-align: center; }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .card-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .card-btn {
+    flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid #262c36;
+    background: #1c222b; color: #e6e9ef; font-size: 11px; cursor: pointer;
+  }
+  .card-btn:hover { background: #262c36; }
+  .card-btn:disabled { opacity: 0.5; cursor: default; }
+  .power-card { grid-column: span 2; }
+  .manual-fixed-field { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .manual-fixed-field label { flex-shrink: 0; width: 70px; font-size: 11px; color: #8b94a3; }
+  .manual-input {
+    flex: 1; min-width: 0; padding: 7px 10px; border-radius: 6px; border: 1px solid #262c36;
+    background: #0f1216; color: #e6e9ef; font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .manual-input::placeholder { color: #5a6270; }
 </style>
 </head>
 <body>
@@ -219,7 +286,50 @@ function renderDashboard(s) {
       <div class="sub">${pct(s.upload.successes, s.upload.attempts)} success rate, ${s.upload.failures} failures</div>
     </div>
     ${renderDiskCard(s.disk, `Logs chunked every ${config.logChunkMinutes}min, kept ${config.logRetentionDays} days`)}
+    ${renderPowerCard(power)}
   </div>
+
+  <script>
+    // Shared by savePowerSchedule/disablePowerSchedule below - POSTs
+    // whatever's in the power card's own fields (see powerSchedule.js's
+    // updateParams for the validation/persistence this triggers on the
+    // boat side) and reloads on success so the card's status/dot reflect
+    // the now-live schedule immediately, rather than waiting on this
+    // page's own 5s meta-refresh.
+    async function postPowerSchedule(btn, body) {
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/power', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    function savePowerSchedule(btn) {
+      postPowerSchedule(btn, {
+        shutdownAt: document.getElementById('powerShutdownAt').value || null,
+        shutdownIdleMinutes: Number(document.getElementById('powerIdleMin').value),
+        shutdownSpeedKn: Number(document.getElementById('powerSpeedKn').value),
+      });
+    }
+
+    // Clears shutdownAt specifically (the whole feature's on/off switch -
+    // see config.js) without touching whatever idle minutes/speed are
+    // currently in the fields, so re-enabling later (typing a time back in
+    // and hitting Save) doesn't also need those retyped.
+    function disablePowerSchedule(btn) {
+      if (!confirm('Disable scheduled shutdown for this boat?')) return;
+      postPowerSchedule(btn, { shutdownAt: null });
+    }
+  </script>
 </body>
 </html>`;
 }
@@ -780,6 +890,27 @@ function renderMap(s) {
 </html>`;
 }
 
+// Parses a POST body as JSON - duplicated from adminServer.js's own
+// readJsonBody rather than imported, same "small enough to just duplicate"
+// reasoning as this file's other standalone helpers.
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 10000) req.destroy(new Error('body too large'));
+    });
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (err) {
+        reject(new Error('invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 // Serves the boat's own admin dashboard - same idea as adminServer.js on
 // the base, but scoped to this one boat's own state (GPS, radio, course,
 // upload activity) rather than a whole fleet. Runs on the same ADMIN_PORT
@@ -790,8 +921,27 @@ function renderMap(s) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition }) {
-  const server = http.createServer((req, res) => {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule }) {
+  const server = http.createServer(async (req, res) => {
+    // Power card's Save/Disable buttons (see renderPowerCard) - the only
+    // write route this server has, so it's handled up front rather than
+    // folded into the blanket "non-GET -> 404" below. Same body-parsing
+    // contract as adminServer.js's own readJsonBody - duplicated rather
+    // than imported, same reasoning as this file's other small
+    // duplicated-not-shared helpers (see dopQualityText above).
+    if (req.url === '/api/power' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        updatePowerSchedule(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
     if (req.method !== 'GET') {
       res.writeHead(404);
       res.end();
@@ -812,7 +962,7 @@ function startRoverAdminServer({ port, getStats, getPosition }) {
 
     if (req.url === '/' || req.url === '') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderDashboard(getStats()));
+      res.end(renderDashboard(getStats(), getPowerStatus()));
       return;
     }
 

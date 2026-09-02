@@ -358,6 +358,48 @@ extra args pass through) follows the logs, `sudo ./base-restart.sh`
 (shorthand for `sudo systemctl restart base-station`, then prints status)
 restarts it, and `systemctl status base-station` works as usual too.
 
+### Scheduled shutdown (boat, battery-saving)
+
+The rover dashboard's own "Scheduled shutdown" card (`http://<boat>:<port>/`)
+is the normal way to set this up - a time, an idle threshold, and a speed
+threshold, saved with one click, no restart needed. Set `ROVER_SHUTDOWN_AT`
+(e.g. `ROVER_SHUTDOWN_AT=21:00`, in the generated `boat-agent` systemd unit
+or a boat's `.env`) instead if you'd rather configure it before the process
+ever starts; either path shuts this Pi down once BOTH the clock has passed
+that time AND the boat has been genuinely idle - stationary (under
+`ROVER_SHUTDOWN_SPEED_KN`, default 0.5kn) or with no fresh GPS fix at all -
+for `ROVER_SHUTDOWN_IDLE_MIN` continuous minutes (default 10). The idle gate
+is deliberate: it's what stops a race that's still running late from getting
+killed mid-track just because the clock crossed the configured time - it
+waits for a real lull first. Disabled (the default) means this feature does
+nothing at all. Whatever's in effect - from the env vars or the dashboard
+card - is remembered in `power-schedule.txt` (repo root, git-ignored) across
+restarts. Linux-only by design - `shutdown -h now` is a real command on
+macOS too, so this refuses to arm itself on anything other than `linux`
+(logs a warning and shows "unsupported on this platform" on the card
+instead), specifically so testing locally with a schedule left over from a
+previous run never shuts down a developer's own machine.
+
+**This only handles powering DOWN, never back up.** A Raspberry Pi has no
+built-in way to power itself back on after a full shutdown - that needs
+either a physical re-power (someone flips the switch/reconnects the
+battery next time out) or dedicated wake hardware (an RTC-alarm relay, a
+PiJuice-style HAT, a smart timer switch on the battery itself) that this
+repo has no way to know is present or how to drive. Without such hardware,
+plan on manual power-up either way.
+
+Requires the systemd service's own user (see `install-boat-service.sh`) to
+be able to run `shutdown` without a password prompt - it can't enter one
+non-interactively. One-time setup:
+```
+echo "jycadmin ALL=(ALL) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown" | sudo tee /etc/sudoers.d/boat-shutdown
+sudo chmod 440 /etc/sudoers.d/boat-shutdown
+```
+(swap `jycadmin` for whatever user the service actually runs as, if
+different). Without this, the shutdown attempt fails - loudly, in the
+journal (`[power] shutdown command failed...`), not silently - and the
+Pi just stays on.
+
 Setting the boat's WiFi (so it can reach the base for log uploads - see
 "Log upload over WiFi" below) from the command line, no desktop needed:
 ```
@@ -1809,6 +1851,10 @@ given `boat`/`base` run will actually use, instead of reading through
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
 | `BOAT_ID` | this device's own persisted id (see below) | Exactly 5 characters (letters/digits, the wire protocol's boatId field is a fixed-width byte slot) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright over this device's own persisted id - see "Running" above |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
+| `ROVER_SHUTDOWN_AT` | unset (off) | Boat only — 24h local time (`"HH:MM"`, e.g. `21:00`) after which this Pi shuts itself down once genuinely idle — see "Scheduled shutdown" below |
+| `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only — continuous minutes below `ROVER_SHUTDOWN_SPEED_KN` (or with no fresh fix at all) required, once `ROVER_SHUTDOWN_AT` has passed, before actually shutting down — any real movement resets this back to zero |
+| `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only — ground speed below which a fix counts as "stationary" for the gate above |
+| `ROVER_SHUTDOWN_CHECK_INTERVAL_MS` | 30000 | Boat only — how often the shutdown gate is re-evaluated |
 | `PING_RESPONSE_JITTER_MS` | 3000 | Boat only — max random delay before responding to the base's "Ping fleet" button (see "Admin dashboard" above), so a full fleet doesn't all reply over each other on the same shared channel at once |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_DIR` | `./race-logs` (next to the package) | Where CSV logs go — override to put this on the SD card, e.g. `/home/pi/race-logs` |

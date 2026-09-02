@@ -150,6 +150,7 @@ boat_id.txt
 # src/regattaIdFile.js) - an operator's local preference, never something
 # to commit or share between machines.
 regatta-id.txt
+power-schedule.txt
 
 # Locally-generated race data - received-fix CSVs, webhook retry queues,
 # and every boat's uploaded log history. Both directories are created on
