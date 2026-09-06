@@ -10,6 +10,7 @@
     "base": "node src/baseStation.js",
     "clear-boats": "node src/clearBoats.js",
     "reset-course": "node src/resetCourse.js",
+    "reset-regatta": "node src/resetRegatta.js",
     "radio-test": "node src/radioTest.js",
     "print-config": "node src/printConfig.js"
   },

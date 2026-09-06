@@ -12,6 +12,7 @@ const {
   MARK_NAMES,
   PIN_BOUNDARY_MARK,
   getPinBoundaryFarPoint,
+  resolveCourseCenter,
 } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
@@ -615,6 +616,7 @@ function main() {
   function selectRegatta(id) {
     const regatta = activeRegattas.find((r) => r.id === id);
     if (!regatta) throw new Error('unknown regatta id - refresh the list and try again');
+    const isLiveSwitch = regattaSwitchesResolveTheirOwnCourse && (!selectedRegatta || selectedRegatta.id !== regatta.id);
     selectedRegatta = regatta;
     redisStore.setCurrentRegatta(regatta.id);
     currentRegattaId = regatta.id;
@@ -623,7 +625,7 @@ function main() {
     // config.js's resolveDefaultRegattaId/regattaIdFile.js), so whichever
     // was used most recently (an operator's own dashboard pick, or the env
     // var) is what the startup resolution defaults to on the next run.
-    persistRegattaId(id, regatta.name);
+    persistRegattaId(id, regatta.name, regatta.default_lat, regatta.default_lon);
     // A newly-selected regatta is a new race starting - every per-boat
     // watcher (lap count, on-grid state, mark roundings) is keyed only by
     // boatId, not by regatta, and lives for as long as this process stays
@@ -634,6 +636,20 @@ function main() {
     // spurious "lap" the moment this boat's very first fix of the new race
     // arrives, well before anyone actually crosses anything.
     clearRaceWatchers();
+    // A live re-pick (the admin dashboard's dropdown, or a second terminal
+    // prompt after the first regatta already got this base fully started)
+    // - the course/pin-boundary/on-grid-zone that raceMarks and the admin
+    // map are currently showing are the PREVIOUS regatta's, now published
+    // under a namespace this base isn't even looking at anymore (see
+    // redisStore.js's `regattas:<id>:...` prefixing). Not awaited - the
+    // caller (the admin dashboard's POST handler) shouldn't hang on this,
+    // and resolveCourseForCurrentRegatta(false) never retries past one
+    // attempt anyway.
+    if (isLiveSwitch) {
+      resolveCourseForCurrentRegatta(false).catch((err) =>
+        console.error('[baseStation] failed to resolve course for newly-selected regatta:', err.message)
+      );
+    }
     console.log(`[baseStation] regatta selected: "${regatta.name}" (${regatta.venue})`);
     if (!systemStarted) {
       systemStarted = true;
@@ -755,6 +771,17 @@ function main() {
   // per boat.
   let raceMarks = null;
 
+  // False until the startup flow below reaches its own course-resolution
+  // step (see the call site further down) - selectRegatta checks this so a
+  // regatta picked as part of THAT startup sequence (the default/persisted
+  // id, the terminal prompt, or the closest-regatta fallback) doesn't also
+  // race its own course resolution against the startup flow's, which runs
+  // unconditionally right after regatta selection settles either way. Once
+  // true, every later call to selectRegatta is necessarily a live re-pick
+  // (the admin dashboard's dropdown, or a second terminal prompt), and gets
+  // its course refreshed on the spot instead.
+  let regattaSwitchesResolveTheirOwnCourse = false;
+
   async function resolveMarks() {
     if (config.simulate) {
       // Purely diagnostic: compares whatever SIM_COURSE_LENGTH_NM/
@@ -861,7 +888,22 @@ function main() {
         console.error('[redis] failed to check published course marks:', err.message);
       }
       try {
-        const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+        // An operator's explicit SIM_CENTER_LAT/SIM_CENTER_LON always wins
+        // (same rule the requestedChange warning above already applies) -
+        // otherwise a freshly-created course defaults to the selected
+        // regatta's own venue coordinates (RegattaUp's default_lat/
+        // default_lon - see getActiveRegattas) rather than the hardcoded
+        // Black Rock Desert fallback, so a course an operator never
+        // explicitly positioned still starts out roughly where the regatta
+        // actually is. See resolveCourseCenter's own comment (course.js).
+        const explicitCenterOverride = process.env.SIM_CENTER_LAT !== undefined || process.env.SIM_CENTER_LON !== undefined;
+        const { lat: centerLat, lon: centerLon } = resolveCourseCenter(
+          explicitCenterOverride ? undefined : selectedRegatta && selectedRegatta.default_lat,
+          explicitCenterOverride ? undefined : selectedRegatta && selectedRegatta.default_lon,
+          config.sim.centerLat,
+          config.sim.centerLon
+        );
+        const marks = await redisStore.getOrCreateMarks(centerLat, centerLon);
         marks.pinBoundaryEnabled = await redisStore.getPinBoundaryEnabled();
         console.log(`[baseStation] course marks (Redis): ${Object.keys(marks).join(', ')}`);
         return marks;
@@ -883,6 +925,53 @@ function main() {
         return null;
       }
     }
+  }
+
+  // Resolves the current regatta's course (raceMarks always starts back at
+  // null, so a regatta switch can never leave the PREVIOUS regatta's course
+  // sitting there mislabeled as the new one's), then republishes the pin
+  // boundary gate and broadcasts to the fleet - the startup flow (below)
+  // and selectRegatta (further up) share this rather than each having their
+  // own copy. retryUntilFound=true (startup only) keeps trying every 5s,
+  // the way real hardware needs when an operator hasn't published a course
+  // yet; selectRegatta passes false so a live regatta switch that lands on
+  // one with no course yet just shows "no course" on the admin map, rather
+  // than leaving that dashboard request hanging on a retry loop.
+  async function resolveCourseForCurrentRegatta(retryUntilFound) {
+    raceMarks = null;
+    do {
+      raceMarks = await resolveMarks();
+      if (raceMarks) {
+        // Refreshes mark:pinBoundary against whatever pin/committeeStart
+        // actually are right now - covers a base restarted after an
+        // out-of-band Redis edit (or a version of this app that didn't yet
+        // keep it in sync), rather than trusting whatever's already there.
+        await republishPinBoundaryMark();
+        console.log(
+          raceMarks.pinBoundaryEnabled
+            ? '[baseStation] pin boundary gate is ON - downwind crossings beyond pin will be reported as fouls, the whole pin side of the course is off-limits'
+            : '[baseStation] pin boundary gate is off (optional - toggle it from the admin map if you want it)'
+        );
+        broadcastMarksNow();
+        // Replay whatever arrived too early to be detected live (see
+        // pendingFrames' own comment, above the radio.on('frame') handler) -
+        // through the exact same detectRaceEvents logic a live frame goes
+        // through, so none of it is silently lost just because it happened
+        // to land before this resolved.
+        for (const decoded of pendingFrames) detectRaceEvents(decoded);
+        pendingFrames = [];
+      } else if (retryUntilFound) {
+        // Either a real Redis error (both branches) or, real-hardware mode
+        // only, marks just aren't published yet - either way, wait before
+        // retrying rather than hammering Redis in a tight loop.
+        console.log(
+          config.simulate
+            ? '[baseStation] failed to resolve/create course marks - will retry in 5s'
+            : '[baseStation] no course marks in Redis yet - will keep checking every 5s'
+        );
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+    } while (retryUntilFound && !raceMarks);
   }
 
   // Prompts on the terminal for which regatta to race, when nothing else
@@ -1013,40 +1102,12 @@ function main() {
     // sequence, not an error) - keeps trying every few seconds instead of
     // giving up after one look, so the moment they do show up, this picks
     // them up and broadcasts immediately rather than waiting for the base
-    // to be restarted.
-    while (!raceMarks) {
-      raceMarks = await resolveMarks();
-      if (raceMarks) {
-        // Refreshes mark:pinBoundary against whatever pin/committeeStart
-        // actually are right now - covers a base restarted after an
-        // out-of-band Redis edit (or a version of this app that didn't yet
-        // keep it in sync), rather than trusting whatever's already there.
-        await republishPinBoundaryMark();
-        console.log(
-          raceMarks.pinBoundaryEnabled
-            ? '[baseStation] pin boundary gate is ON - downwind crossings beyond pin will be reported as fouls, the whole pin side of the course is off-limits'
-            : '[baseStation] pin boundary gate is off (optional - toggle it from the admin map if you want it)'
-        );
-        broadcastMarksNow();
-        // Replay whatever arrived too early to be detected live (see
-        // pendingFrames' own comment, above the radio.on('frame') handler) -
-        // through the exact same detectRaceEvents logic a live frame goes
-        // through, so none of it is silently lost just because it happened
-        // to land before this resolved.
-        for (const decoded of pendingFrames) detectRaceEvents(decoded);
-        pendingFrames = [];
-      } else {
-        // Either a real Redis error (both branches) or, real-hardware mode
-        // only, marks just aren't published yet - either way, wait before
-        // retrying rather than hammering Redis in a tight loop.
-        console.log(
-          config.simulate
-            ? '[baseStation] failed to resolve/create course marks - will retry in 5s'
-            : '[baseStation] no course marks in Redis yet - will keep checking every 5s'
-        );
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    }
+    // to be restarted. Flipped just before this starts, not after it
+    // finishes - see regattaSwitchesResolveTheirOwnCourse's own comment on
+    // why selectRegatta needs to know "the startup flow owns course
+    // resolution from here on", not "the startup flow is fully done".
+    regattaSwitchesResolveTheirOwnCourse = true;
+    await resolveCourseForCurrentRegatta(true);
   })();
 
   // Periodic heartbeat re-broadcast, for a boat that missed the immediate

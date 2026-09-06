@@ -9,6 +9,7 @@ const {
   COMMITTEE_GAP_M,
   NM_TO_M,
   deriveGeometry,
+  resolveCourseCenter,
 } = require('./course');
 
 // Clears the course, then immediately republishes a fresh one from current
@@ -26,13 +27,31 @@ const {
 (async () => {
   const target = config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`;
   console.log(`[resetCourse] connecting to Redis at ${target}`);
+  // An operator's explicit SIM_CENTER_LAT/SIM_CENTER_LON always wins,
+  // otherwise defaults to the persisted regatta's own venue coordinates
+  // (RegattaUp's default_lat/default_lon, persisted alongside the id/name
+  // in regatta-id.txt by selectRegatta/resetRegatta.js - see
+  // regattaIdFile.js) rather than the hardcoded Black Rock Desert fallback,
+  // same reasoning/rule as baseStation.js's own resolveMarks. See
+  // resolveCourseCenter's own comment (course.js).
+  const explicitCenterOverride = process.env.SIM_CENTER_LAT !== undefined || process.env.SIM_CENTER_LON !== undefined;
+  const { lat: centerLat, lon: centerLon } = resolveCourseCenter(
+    explicitCenterOverride ? undefined : config.regattaup.defaultRegatta && config.regattaup.defaultRegatta.defaultLat,
+    explicitCenterOverride ? undefined : config.regattaup.defaultRegatta && config.regattaup.defaultRegatta.defaultLon,
+    config.sim.centerLat,
+    config.sim.centerLon
+  );
   // Every parameter that actually shapes the geometry being published below
   // - printed up front so it's obvious exactly what's about to replace the
   // old course, not just that *something* got reset. Each one's env var is
   // shown alongside it, same reasoning as configReport.js's own table: the
   // knob to change it should be visible right next to its current value.
   console.log('[resetCourse] course parameters:');
-  console.log(`  centerLat / centerLon:     ${config.sim.centerLat} / ${config.sim.centerLon}  (SIM_CENTER_LAT / SIM_CENTER_LON)`);
+  console.log(
+    `  centerLat / centerLon:     ${centerLat} / ${centerLon}  ${
+      explicitCenterOverride ? '(SIM_CENTER_LAT / SIM_CENTER_LON)' : '(regatta default, or SIM_CENTER_LAT / SIM_CENTER_LON fallback if none)'
+    }`
+  );
   console.log(
     `  courseLengthNm (${config.sim.courseMarks}):       ${COURSE_LENGTH_NM} nm  - overall leewardBlack<->windwardBlack; green is always half this, ` +
       `no separate knob  (SIM_COURSE_LENGTH_NM / SIM_COURSE_MARKS)`
@@ -70,7 +89,7 @@ const {
       console.log('[resetCourse] no course marks found - publishing fresh anyway');
     }
 
-    const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
+    const marks = await redisStore.getOrCreateMarks(centerLat, centerLon);
     console.log(`[resetCourse] published fresh course marks: ${Object.keys(marks).join(', ')}`);
     // Sanity-check: measured fresh off the real just-published marks (same
     // as simGps.js's own deriveGeometry call), not just echoing the

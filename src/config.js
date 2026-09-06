@@ -34,16 +34,17 @@ function resolveBoatId() {
 // regattaIdFile.js's own comment on why both the env var and the admin
 // dashboard's dropdown write to that same file. Falls back to whatever's
 // already persisted there when the env var isn't set this run; null (not an
-// error) if neither exists yet. Returns { id, name } (name null when
-// setting via the env var, which has no way to also supply a display name -
-// only ever filled in once the admin dashboard/startup prompt actually
+// error) if neither exists yet. Returns { id, name, defaultLat, defaultLon }
+// (name/defaultLat/defaultLon null when setting via the env var, which has
+// no way to also supply a display name or RegattaUp's own venue coordinates
+// - only ever filled in once the admin dashboard/startup prompt actually
 // selects this id against RegattaUp's own live list, see baseStation.js's
-// selectRegatta), not just a bare id - name is display-only, matching is
-// always by id.
+// selectRegatta), not just a bare id - name/defaultLat/defaultLon are
+// display/course-default only, matching is always by id.
 function resolveDefaultRegattaId() {
   if (process.env.REGATTAUP_REGATTA_ID) {
     persistRegattaId(process.env.REGATTAUP_REGATTA_ID);
-    return { id: process.env.REGATTAUP_REGATTA_ID, name: null };
+    return { id: process.env.REGATTAUP_REGATTA_ID, name: null, defaultLat: null, defaultLon: null };
   }
   return getPersistedRegattaId();
 }
@@ -539,7 +540,7 @@ module.exports = {
     activeRegattasUrl: process.env.REGATTAUP_ACTIVE_REGATTAS_URL || 'https://regattaup.com/api/functions/getActiveRegattas',
     // Which regatta to auto-select at startup if none is already active in
     // Redis (see baseStation.js's own startup block and selectRegatta) - an
-    // { id, name } object, or null. REGATTAUP_REGATTA_ID always wins when
+    // { id, name, defaultLat, defaultLon } object, or null. REGATTAUP_REGATTA_ID always wins when
     // set, and gets persisted to regatta-id.txt right away so it becomes
     // the new default even without the env var on later runs; otherwise
     // falls back to whatever's already in that file (see regattaIdFile.js),

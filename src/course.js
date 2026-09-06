@@ -393,6 +393,25 @@ function deriveGeometry(marks, courseMarks = 'BB') {
   return { courseLengthM, courseBearingDeg, startSideLengthM, boatStartSpacingM };
 }
 
+// Picks the center point a freshly-created course should be built around.
+// An operator's explicit SIM_CENTER_LAT/SIM_CENTER_LON always wins (callers
+// pass regattaLat/regattaLon as undefined when either env var is set, so
+// this just falls through to fallbackLat/fallbackLon - config.js's own
+// SIM_CENTER_LAT/LON defaults) - otherwise prefers the currently-selected
+// regatta's own venue coordinates (RegattaUp's default_lat/default_lon on
+// the regatta entity - see getActiveRegattas) when present and shaped like
+// real coordinates. RegattaUp entities are third-party data this app
+// doesn't control (a draft regatta can have these unset, or malformed - see
+// baseStation.js's own comment on why this is validated at all) - an
+// invalid value here falls back to fallbackLat/fallbackLon rather than
+// silently building a nonsensical course somewhere off the map.
+function resolveCourseCenter(regattaLat, regattaLon, fallbackLat, fallbackLon) {
+  if (Number.isFinite(regattaLat) && Number.isFinite(regattaLon) && Math.abs(regattaLat) <= 90 && Math.abs(regattaLon) <= 180) {
+    return { lat: regattaLat, lon: regattaLon };
+  }
+  return { lat: fallbackLat, lon: fallbackLon };
+}
+
 module.exports = {
   METERS_PER_DEG_LAT,
   NM_TO_M,
@@ -419,4 +438,5 @@ module.exports = {
   deriveGeometry,
   parseCourseMarks,
   getRaceMarks,
+  resolveCourseCenter,
 };
