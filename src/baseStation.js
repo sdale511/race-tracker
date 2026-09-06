@@ -1097,17 +1097,38 @@ function main() {
     if (!picked) console.log('[baseStation] regatta: none selected - pick one on the admin dashboard before racing');
     setInterval(refreshActiveRegattas, config.regattaup.activeRegattasRefreshIntervalMs);
 
-    // Real-hardware marks might not be in Redis yet at startup (an operator
-    // setting up the course after the base is already running is a normal
-    // sequence, not an error) - keeps trying every few seconds instead of
-    // giving up after one look, so the moment they do show up, this picks
-    // them up and broadcasts immediately rather than waiting for the base
-    // to be restarted. Flipped just before this starts, not after it
-    // finishes - see regattaSwitchesResolveTheirOwnCourse's own comment on
-    // why selectRegatta needs to know "the startup flow owns course
-    // resolution from here on", not "the startup flow is fully done".
+    // Flipped either way, right here rather than after course resolution
+    // finishes (or doesn't run at all) - see regattaSwitchesResolveTheirOwnCourse's
+    // own comment on why selectRegatta needs to know "the startup flow is
+    // done deciding whether IT owns course resolution", not "a course now
+    // exists". Without this, an operator who finally picks a regatta from
+    // the admin dashboard after starting with none selected would find
+    // selectRegatta silently skips resolving a course for it too.
     regattaSwitchesResolveTheirOwnCourse = true;
-    await resolveCourseForCurrentRegatta(true);
+    if (picked) {
+      // Real-hardware marks might not be in Redis yet at startup (an
+      // operator setting up the course after the base is already running is
+      // a normal sequence, not an error) - keeps trying every few seconds
+      // instead of giving up after one look, so the moment they do show up,
+      // this picks them up and broadcasts immediately rather than waiting
+      // for the base to be restarted.
+      await resolveCourseForCurrentRegatta(true);
+    } else {
+      // No regatta selected at all (no TTY to prompt on, RegattaUp returned
+      // nothing to pick from) - deliberately do NOT create/read a course
+      // here. redisStore.currentRegattaId is still null at this point, and
+      // every course/mark/on-grid-zone key is namespaced by regatta (see
+      // redisStore.js's own module comment) - resolving one now would
+      // silently create/publish a real course under the "none" namespace,
+      // which is exactly the confusing state an operator would otherwise
+      // find later (a course apparently coming from nowhere, or fixes
+      // recorded against no regatta at all - see radio.on('frame', ...)
+      // below, which refuses to process anything for the same reason).
+      // Once an operator does pick a regatta from the admin dashboard,
+      // selectRegatta's own isLiveSwitch path (regattaSwitchesResolveTheirOwnCourse
+      // is already true) resolves its course then, same as any other live switch.
+      console.log('[baseStation] no regatta selected - not reading/writing any course, and ignoring any boat fixes, until one is picked on the admin dashboard');
+    }
   })();
 
   // Periodic heartbeat re-broadcast, for a boat that missed the immediate
@@ -1409,7 +1430,35 @@ function main() {
   // themselves (bufferedLaps/bufferedOnGrid/bufferedMarkRoundings).
   let pendingFrames = [];
 
+  // Rate-limits the "no regatta selected, ignoring fix" warning below - a
+  // boat (or a whole simulated fleet) still streaming while nobody's picked
+  // a regatta yet would otherwise log one of these per fix, per boat (5-10Hz
+  // across a fleet), burying everything else in the console. First one
+  // always logs immediately (so it's not missed), then at most once per this
+  // interval while it keeps happening - same pattern as redisStore.js's own
+  // WRITE_ERROR_LOG_INTERVAL_MS.
+  const NO_REGATTA_WARN_INTERVAL_MS = 30000;
+  let lastNoRegattaWarnAt = 0;
+
   radio.on('frame', (decoded) => {
+    // No regatta selected - every course/mark/on-grid-zone/track key is
+    // namespaced by regatta (see redisStore.js's own module comment), so
+    // recording this fix now would silently write it under the "none"
+    // namespace rather than just dropping it - an orphaned fix no actual
+    // regatta will ever see, sitting in Redis under a namespace nothing
+    // else meaningfully reads. Refused entirely rather than buffered (unlike
+    // pendingFrames below, which only bridges the brief startup window
+    // before an ALREADY-selected regatta's own course resolves): there's no
+    // bound on how long "no regatta selected" can last, and no course to
+    // eventually detect events against even if fixes were buffered.
+    if (!selectedRegatta) {
+      const now = Date.now();
+      if (now - lastNoRegattaWarnAt > NO_REGATTA_WARN_INTERVAL_MS) {
+        console.warn(`[baseStation] ignoring fix from boat=${decoded.boatId} - no regatta selected, pick one on the admin dashboard`);
+        lastNoRegattaWarnAt = now;
+      }
+      return;
+    }
     stats.recordFrame(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
     logToConsole(decoded);
     logToCsv(decoded);
