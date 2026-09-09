@@ -126,8 +126,11 @@ else
   echo "boat-agent installed and running (user $SERVICE_USER, $REPO_DIR)."
   echo "no BOAT_ID given - this Pi will generate (or reuse, if already present) its own id in $REPO_DIR/boat_id.txt."
 fi
-echo "  status:  systemctl status $SERVICE_NAME"
-echo "  logs:    ./boat-logs.sh   (or: journalctl -u $SERVICE_NAME -f)"
-echo "  restart: sudo ./boat-restart.sh   (or: sudo systemctl restart $SERVICE_NAME)"
+echo "  status:    systemctl status $SERVICE_NAME"
+echo "  logs:      ./boat-logs.sh   (or: journalctl -u $SERVICE_NAME -f)"
+echo "  restart:   sudo ./boat-restart.sh   (or: sudo systemctl restart $SERVICE_NAME)"
+echo "  stop:      sudo ./boat-stop.sh   (or: sudo systemctl stop $SERVICE_NAME)"
+echo "  start:     sudo ./boat-start.sh   (or: sudo systemctl start $SERVICE_NAME)"
+echo "  autostart: sudo ./boat-autostart.sh [on|off]   (or: sudo systemctl enable|disable $SERVICE_NAME)"
 echo
 echo "To change BOAT_ID later, just re-run this script."

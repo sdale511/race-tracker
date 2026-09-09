@@ -326,7 +326,12 @@ restarts the service to pick it up. `./boat-logs.sh` (shorthand for
 `journalctl -u boat-agent -f`, extra args pass through) follows the logs,
 `sudo ./boat-restart.sh` (shorthand for `sudo systemctl restart
 boat-agent`, then prints status) restarts it, and `systemctl status
-boat-agent` works as usual too.
+boat-agent` works as usual too. `sudo ./boat-stop.sh` and
+`sudo ./boat-start.sh` stop/start it without touching whether it auto-starts
+on boot; `sudo ./boat-autostart.sh on|off` (no argument shows current
+status) controls that separately - `off` stops it from coming back on the
+next boot without stopping it right now, mirroring `systemctl enable|disable
+boat-agent`.
 
 Auto-start the base station on boot (Linux only - a Pi, or a Linux laptop;
 on macOS just run `npm run base` by hand, or use your own launchd agent):
