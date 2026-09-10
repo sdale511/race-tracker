@@ -235,6 +235,33 @@ real-world tuning step you'll need to do on the water. **Antenna height
 matters a lot for going over water at >2mi; get both ends as high as
 practical.**
 
+### Configuring XBee radios (xbee_configure_p2mp.py)
+
+For XBee-PRO S3B (900HP / DigiMesh) radios, `xbee_configure_p2mp.py`
+(repo root) does the above via `digi-xbee` instead of XCTU by hand - Point-
+to-Multipoint MAC mode (no mesh hop routing), matching Network ID/DH-DL/HP/
+MT, and the base-vs-rover `CE`/`CD` role parameter, all written to
+non-volatile memory and read back to confirm they stuck. `TARGET_BAUD`
+(115200 by default, matching `RADIO_BAUD` above) is applied last since it
+changes how the script itself talks to the radio afterward.
+
+```
+pip install digi-xbee
+
+python3 xbee_configure_p2mp.py --port /dev/ttyUSB0 --role base    # committee/base radio
+python3 xbee_configure_p2mp.py --port /dev/ttyUSB0 --role rover   # each boat radio
+python3 xbee_configure_p2mp.py --port /dev/ttyUSB0 --dry-run      # read current config, change nothing
+```
+
+Connects at `--connect-baud` (the radio's CURRENT speed, default 9600 -
+the XBee factory default; pass the radio's actual current baud if it's
+already been reconfigured) and, once `BD` is changed, automatically
+reconnects at `--target-baud` to read the config back. Run once per radio,
+`--role base` for the committee/base station's radio and `--role rover`
+for every boat radio; the config values themselves (network ID, DH/DL,
+channel, etc.) live in the `CONFIG` dict at the top of the script, not as
+flags - edit them there if your network needs different values.
+
 ### Bench-testing the radios
 
 ```
@@ -692,7 +719,7 @@ per boat (same lazy-build-per-boat pattern as `FinishLineWatcher`), watches
 every incoming fix against the **start** side of the course - the
 pin<->committee segment, not committee<->finish.
 
-![The on-grid zone: a box along the leeward side of the pin-to-committee line, with a right triangle cut from the committee corner - hypotenuse starting at committee, running 40° down from the start line to the far edge of the zone, cutting off the entire bottom-right corner of the box.](docs/on-grid-zone.svg)
+![The on-grid zone: a box along the leeward side of the pin-to-committee line, with a right triangle cut from EACH end - one hypotenuse starting at committee, the other at pin, each running 55° down from the start line to the far edge of the zone, cutting off both bottom corners of the box.](docs/on-grid-zone.svg)
 
 A boat counts as on-grid when it's all of:
 
@@ -709,34 +736,45 @@ A boat counts as on-grid when it's all of:
   bearing (the only wind direction this app can know at all for real
   racing - there's no live wind sensor anywhere in this codebase),
   assuming the line was laid square to it, the standard practice.
-- **Not** inside the starboard-tack triangle cut from committee's corner -
-  a boat finishing upwind on starboard tack near the committee end
-  approaches from the southwest, briefly on the geometric "pin side" of
-  committee while still south of the line, before crossing just past
-  committee. That point is unambiguously in the start zone by the checks
-  above (between pin and committee, within the zone, on the leeward side),
-  yet it's a finish approach, not pre-start queuing.
+- **Not** inside either corner's own triangle cut - both ends of the box
+  are angled off, not just committee's:
+  - The starboard-tack triangle cut from committee's corner - a boat
+    finishing upwind on starboard tack near the committee end approaches
+    from the southwest, briefly on the geometric "pin side" of committee
+    while still south of the line, before crossing just past committee.
+    That point is unambiguously in the start zone by the checks above
+    (between pin and committee, within the zone, on the leeward side), yet
+    it's a finish approach, not pre-start queuing. Only applied when
+    `committeeFinish` is close enough to `committeeStart` (within
+    `SAFE_FINISH_SEPARATION_MULTIPLE`, 2, zone-widths) that this confusion
+    can actually happen - once an operator moves the finish mark further
+    away, a boat finishing there is nowhere near this corner and the cut
+    is skipped entirely.
+  - The mirror-image port-tack triangle cut from pin's own corner - a boat
+    rounding the leeward mark, or otherwise sailing downwind close past
+    pin, can produce the same false "queued" read on that side of the box.
+    Unlike the committee cut, this one isn't gated on any mark's distance -
+    the ambiguity is inherent to the corner itself, so it's always on.
 
-  Cut with a straight line, not an arc: `_inCommitteeTriangle` excludes a
-  right triangle whose hypotenuse starts exactly at committee and runs
-  `HYPOTENUSE_ANGLE_DEG` (40 degrees) below the start line itself down into
-  the zone, continuing until it reaches the far (leeward) edge - the whole
-  bottom-right corner of the on-grid box, one straight cut. The triangle's
-  two legs are the zone's own right edge (straight down from committee,
-  length `REGATTAUP_ONGRID_ZONE_M`) and its own bottom edge (length
-  `REGATTAUP_ONGRID_ZONE_M / tan(40°)` - about 11.92m at the 10m default,
+  Cut with a straight line, not an arc, at each end: `_inCommitteeTriangle`/
+  `_inPinTriangle` each exclude a right triangle whose hypotenuse starts
+  exactly at that corner's own mark and runs `HYPOTENUSE_ANGLE_DEG` (55
+  degrees) below the start line itself down into the zone, continuing until
+  it reaches the far (leeward) edge - the whole bottom corner of the on-grid
+  box on that side, one straight cut. Each triangle's two legs are the
+  zone's own edge at that end (straight down from the mark, length
+  `REGATTAUP_ONGRID_ZONE_M`) and its own bottom edge (length
+  `REGATTAUP_ONGRID_ZONE_M / tan(55°)` - about 7.0m at the 10m default),
   capped at `COMMITTEE_TRIANGLE_MAX_FRACTION` (50%) of the actual
-  pin<->committee distance regardless of that math - a real start line
-  (tens of meters) is comfortably longer than 11.92m so this cap never
-  matters in practice, but an aggressively short `SIM_COURSE_LENGTH_NM`
-  test course can have a start line shorter than the hypotenuse's own
-  uncapped reach, in which case it would otherwise sweep past pin's own
-  position and exclude the ENTIRE zone, not just committee's corner - the
-  cap guarantees the pin half of the line always stays on-grid regardless
-  of course length). The mirror-image port-tack case near the pin end
-  doesn't need the equivalent treatment, since a boat approaching there is
-  already excluded by the ordinary "between pin and committee" bound well
-  before it'd ever look on-grid.
+  pin<->committee distance regardless of that math, independently from each
+  corner's own vertex - a real start line (tens of meters) is comfortably
+  longer than 7.0m so this cap never matters in practice, but an
+  aggressively short `SIM_COURSE_LENGTH_NM` test course can have a start
+  line shorter than a hypotenuse's own uncapped reach, in which case it
+  would otherwise sweep past the line's other mark and exclude the ENTIRE
+  zone, not just the one corner - the cap guarantees the two cuts can meet
+  at the line's own midpoint but never overlap past it, regardless of
+  course length.
 
 POSTs to the same RegattaUp webhook laps use, with its own payload shape:
 
