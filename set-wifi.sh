@@ -42,8 +42,8 @@ set -euo pipefail
 # Known networks for this event, in matching order - a no-argument run saves
 # ALL of these, and typing one of these SSIDs explicitly with no PASSWORD
 # arg looks its password up here instead of prompting.
-DEFAULT_SSIDS=("JYC RC" "Rustybit" "Bondi-Van" "JYC Outer")
-DEFAULT_PASSWORDS=("headjudge" "gogoshop" "gogobondi" "jycsailing")
+DEFAULT_SSIDS=("JYC RC" "Rustybit" "Bondi-Van" "JYC Outer" "18Upper")
+DEFAULT_PASSWORDS=("headjudge" "gogoshop" "gogobondi" "jycsailing" "gogosurf")
 
 # Prints every saved WiFi network's name (and whether it's the one currently
 # connected) - read-only, so unlike everything below it doesn't need sudo.
