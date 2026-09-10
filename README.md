@@ -235,32 +235,45 @@ real-world tuning step you'll need to do on the water. **Antenna height
 matters a lot for going over water at >2mi; get both ends as high as
 practical.**
 
-### Configuring XBee radios (xbee_configure_p2mp.py)
+### Configuring XBee radios (xbee_configure_at.py)
 
-For XBee-PRO S3B (900HP / DigiMesh) radios, `xbee_configure_p2mp.py`
-(repo root) does the above via `digi-xbee` instead of XCTU by hand - Point-
-to-Multipoint MAC mode (no mesh hop routing), matching Network ID/DH-DL/HP/
-MT, and the base-vs-rover `CE`/`CD` role parameter, all written to
-non-volatile memory and read back to confirm they stuck. `TARGET_BAUD`
-(115200 by default, matching `RADIO_BAUD` above) is applied last since it
-changes how the script itself talks to the radio afterward.
+For XBee-PRO S3B (900HP / DigiMesh) radios, `xbee_configure_at.py` (repo
+root) automates the above instead of using XCTU by hand - Point-to-
+Multipoint delivery mode (`TO` bits 6:7, no mesh hop routing), matching
+Network ID/DH-DL/HP/MT/`CE`, and `BD`, all written to non-volatile memory
+and read back to confirm they stuck. Every command name/value it uses comes
+straight from Digi's own XBee-PRO 900HP/XSC S3/S3B User Guide - **not**
+`MM`/`CH`/`CD`, which an earlier version of this script guessed at by
+analogy with other XBee product lines and don't actually exist on this
+module (confirmed live: both return `ERROR`). There's no base-vs-rover
+config split either - this module has no role-selecting command, so every
+radio (committee/base and every boat) gets the identical config. It speaks
+AT Command Mode directly (plain `pyserial`, the same "+++", then
+"ATxx<value>", then "ATWR" dialect any serial terminal speaks) - the radio
+never leaves the AT/transparent mode race-tracker itself needs (see "Pair
+every radio... in transparent-serial mode" above), so there's no mode to
+flip before or after running it.
 
 ```
-pip install digi-xbee
+pip install pyserial
 
-python3 xbee_configure_p2mp.py --port /dev/ttyUSB0 --role base    # committee/base radio
-python3 xbee_configure_p2mp.py --port /dev/ttyUSB0 --role rover   # each boat radio
-python3 xbee_configure_p2mp.py --port /dev/ttyUSB0 --dry-run      # read current config, change nothing
+python3 xbee_configure_at.py --port /dev/ttyUSB0             # every radio, base or boat
+python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run    # read current config, change nothing
 ```
 
 Connects at `--connect-baud` (the radio's CURRENT speed, default 9600 -
 the XBee factory default; pass the radio's actual current baud if it's
 already been reconfigured) and, once `BD` is changed, automatically
-reconnects at `--target-baud` to read the config back. Run once per radio,
-`--role base` for the committee/base station's radio and `--role rover`
-for every boat radio; the config values themselves (network ID, DH/DL,
-channel, etc.) live in the `CONFIG` dict at the top of the script, not as
-flags - edit them there if your network needs different values.
+reconnects at `--target-baud` (115200 by default, matching `RADIO_BAUD`
+above, applied last since it changes how the script itself talks to the
+radio) to read the config back. Run once per radio; the config values
+themselves (network ID, DH/DL, channel mask, etc.) live in the `CONFIG`
+dict at the top of the script, not as flags - edit them there if your
+network needs different values. Only one process can hold a serial port at
+a time, so stop any running `npm run base`/`npm run boat`/`npm run
+radio-test` (or XCTU, another terminal session, etc.) using the same port
+before running this script, or it fails outright with a "could not
+exclusively lock port" error.
 
 ### Bench-testing the radios
 
