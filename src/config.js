@@ -444,6 +444,14 @@ module.exports = {
     // Set UPLOAD_ENABLED=0 to turn off just the file transfer, e.g. a
     // simulated fleet with no real SD-card logs worth pushing over WiFi.
     enabled: process.env.UPLOAD_ENABLED !== '0' && process.env.UPLOAD_ENABLED !== 'false',
+    // Both roles - off by default. Gates only the one-line "uploaded"/
+    // "received" console message on a successful transfer (uploadClient.js/
+    // uploadServer.js) - a boat uploads a chunk every LOG_CHUNK_MINUTES for
+    // the whole race, so this would otherwise print on its own timer
+    // regardless of anything actually being wrong. Failures stay visible
+    // either way (console.error in both files) - those are worth knowing
+    // about even with this off. Set UPLOAD_LOG=1 to turn it back on.
+    logSuccess: process.env.UPLOAD_LOG === '1' || process.env.UPLOAD_LOG === 'true',
     // Boat only - how often to check whether the base is currently
     // reachable and, if so, try sending one pending log file. A boat is
     // expected to drift in and out of WiFi range, so this is a cheap

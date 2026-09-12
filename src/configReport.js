@@ -135,6 +135,7 @@ const sections = [
     title: 'Log upload over WiFi',
     rows: [
       { label: 'enabled', value: config.upload.enabled, envVar: 'UPLOAD_ENABLED' },
+      { label: 'logSuccess', value: config.upload.logSuccess, envVar: 'UPLOAD_LOG' },
       { label: 'port', value: config.upload.port, envVar: 'UPLOAD_PORT' },
       { label: 'dir', value: config.upload.dir, envVar: 'UPLOAD_DIR' },
       { label: 'baseIp', value: config.upload.baseIp || '(auto-detect)', envVar: 'BASE_IP' },

@@ -340,6 +340,7 @@ startUploadClient({
   timeoutMs: config.upload.timeoutMs,
   adminPort: myAdminPort,
   uploadEnabled: config.upload.enabled,
+  logSuccess: config.upload.logSuccess,
 });
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted

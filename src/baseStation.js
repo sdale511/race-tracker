@@ -387,7 +387,7 @@ function main() {
   } else {
     console.log(`[baseStation] log upload address: ${baseIp}:${config.upload.port}`);
   }
-  startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir });
+  startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir, logSuccess: config.upload.logSuccess });
 
   // Scanned once at startup (see scanUploadDir's own comment on why this
   // stays cheap regardless of how many files have piled up over a season)

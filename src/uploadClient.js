@@ -121,6 +121,11 @@ function startUploadClient({
   // turning off file uploads specifically shouldn't also make a boat
   // invisible to the base's own dashboard.
   uploadEnabled = true,
+  // Off by default - a boat uploading its own log chunks every
+  // logChunkMinutes doesn't need a console line each time; failures
+  // (console.error above) stay visible regardless, since those are worth
+  // knowing about even with this off.
+  logSuccess = false,
 }) {
   let inFlight = false;
 
@@ -161,7 +166,9 @@ function startUploadClient({
       if (status === 200) {
         fs.writeFileSync(markerPath(filePath), '');
         const durationS = ((Date.now() - uploadStart) / 1000).toFixed(2);
-        console.log(`[uploadClient] ${new Date().toISOString()} uploaded ${filename} to base (${durationS}s)`);
+        if (logSuccess) {
+          console.log(`[uploadClient] ${new Date().toISOString()} uploaded ${filename} to base (${durationS}s)`);
+        }
         roverStats.recordUploadSuccess(fs.statSync(filePath).size);
       } else {
         // Anything other than 200 (or a thrown error, already logged above)

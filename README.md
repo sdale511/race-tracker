@@ -1948,6 +1948,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
 | `LOG_CHUNK_MINUTES` | 10 | Boat only — how wide a slice of time each SD-card CSV covers before starting a new one, see "Log rotation" above. Smaller chunks upload sooner (see below) but produce more files |
 | `UPLOAD_ENABLED` | unset (on) | Boat only — set to `0` to skip attempting log uploads to the base; the periodic health-check ping (IP/admin port reporting) still runs regardless, see "Uploading boat logs to the base over WiFi" above |
+| `UPLOAD_LOG` | unset (off) | Both roles — set to `1` to log the one-line `[uploadClient]`/`[uploadServer]` message on each successful upload (a boat sends a chunk every `LOG_CHUNK_MINUTES` for the whole race, so this is off by default to avoid a steady drip of routine lines). Upload failures log regardless of this setting |
 | `UPLOAD_PORT` | 8090 | Base station only — port its log-upload HTTP server listens on, also published in the marks broadcast |
 | `UPLOAD_DIR` | `race-uploads` (next to `LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
 | `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |

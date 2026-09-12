@@ -107,7 +107,7 @@ function scanUploadDir(uploadDir) {
 // what actually lands in race-uploads is a plain, immediately-readable
 // .csv, identical to what the boat originally wrote - not something you
 // need to gunzip yourself before opening it.
-function startUploadServer({ port, uploadDir }) {
+function startUploadServer({ port, uploadDir, logSuccess = false }) {
   fs.mkdirSync(uploadDir, { recursive: true });
 
   const server = http.createServer((req, res) => {
@@ -204,7 +204,9 @@ function startUploadServer({ port, uploadDir }) {
         const bytes = fs.statSync(finalPath).size;
         const durationS = ((Date.now() - receiveStart) / 1000).toFixed(2);
         stats.recordUploadSuccess(boatId, bytes);
-        console.log(`[uploadServer] ${new Date().toISOString()} received ${filename} (${bytes} bytes, ${durationS}s)`);
+        if (logSuccess) {
+          console.log(`[uploadServer] ${new Date().toISOString()} received ${filename} (${bytes} bytes, ${durationS}s)`);
+        }
         res.writeHead(200);
         res.end('ok');
       });
