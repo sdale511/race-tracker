@@ -152,15 +152,26 @@ if [ ! -e "$GPS_PORT" ]; then
   exit 1
 fi
 
-# Confirm GPS_BAUD is actually right before trying to configure anything at
-# it - a wrong baud here doesn't error, it just silently talks past the
-# module (ubxtool would hang/timeout with no useful message). Reads raw
-# bytes for 2s per candidate rather than assuming GPS_BAUD is correct just
-# because it's the default.
+# Find whatever baud the module is ACTUALLY at right now - a wrong guess
+# here doesn't error, it just silently talks past the module (ubxtool would
+# hang/timeout with no useful message), so this never assumes GPS_BAUD
+# (the TARGET below) is already correct.
 find_working_baud() {
+  local b
   for b in "$GPS_BAUD" 9600 19200 38400 57600 115200; do
     stty -F "$GPS_PORT" "$b" raw -echo
-    if timeout 2 head -c 64 "$GPS_PORT" 2>/dev/null | grep -qE '\$GN|\$GP|\xb5\x62'; then
+    # Switching stty's baud only changes how FUTURE incoming bits get
+    # sampled - it does nothing to bytes already sitting in the kernel's
+    # receive buffer, which the UART hardware deserialized in real time at
+    # whatever baud was set when they physically arrived (i.e. the
+    # PREVIOUS, wrong, candidate). Without draining those stale/garbled
+    # bytes first, the very next read below returns leftover noise from
+    # the last candidate instead of genuine data at this one - this is
+    # exactly why a quick manual one-shot test at the right baud can work
+    # fine while this loop, cycling through several baud candidates back
+    # to back, was missing the correct one.
+    timeout 0.3 head -c 4096 "$GPS_PORT" >/dev/null 2>&1 || true
+    if timeout 2 head -c 256 "$GPS_PORT" 2>/dev/null | grep -qaE '\$GN|\$GP|\xb5\x62'; then
       echo "$b"
       return 0
     fi
@@ -168,9 +179,9 @@ find_working_baud() {
   return 1
 }
 
-echo "Confirming $GPS_PORT's actual baud (starting with GPS_BAUD=$GPS_BAUD)..."
-ACTUAL_BAUD="$(find_working_baud || true)"
-if [ -z "$ACTUAL_BAUD" ]; then
+echo "Finding $GPS_PORT's current baud (target is GPS_BAUD=$GPS_BAUD)..."
+CURRENT_BAUD="$(find_working_baud || true)"
+if [ -z "$CURRENT_BAUD" ]; then
   echo "error: got no recognizable NMEA/UBX data on $GPS_PORT at any common baud." >&2
   echo "  This means the UART side is fine but nothing usable is coming from the module -" >&2
   echo "  check TX/RX/GND wiring, that the module has power, and that it's not still" >&2
@@ -178,11 +189,32 @@ if [ -z "$ACTUAL_BAUD" ]; then
   echo "  your wiring - try the other one)." >&2
   exit 1
 fi
-if [ "$ACTUAL_BAUD" != "$GPS_BAUD" ]; then
-  echo "Note: module is actually at $ACTUAL_BAUD baud, not GPS_BAUD=$GPS_BAUD - using $ACTUAL_BAUD" \
-       "for this script's own ubxtool commands. Update GPS_BAUD for npm run boat/base to match."
+echo "Module is currently at $CURRENT_BAUD baud."
+
+# Raise it to the target (GPS_BAUD) if it isn't there already - persisted
+# to RAM+BBR+Flash (,7) so it survives a power cycle. Connects at the
+# CURRENT (just-detected) baud to issue this, since that's the only speed
+# the module is actually listening at right now; every ubxtool command
+# after this one uses GPS_BAUD instead, since the module switches the
+# instant this command takes effect.
+if [ "$CURRENT_BAUD" != "$GPS_BAUD" ]; then
+  echo "Raising UART${GPS_UART} baud from $CURRENT_BAUD to $GPS_BAUD..."
+  ubxtool -f "$GPS_PORT" -s "$CURRENT_BAUD" -P 27.11 -z "CFG-UART${GPS_UART}-BAUDRATE,${GPS_BAUD},7"
+  # Confirm it actually took - same drain-then-read approach as
+  # find_working_baud above, now expecting the NEW baud specifically.
+  stty -F "$GPS_PORT" "$GPS_BAUD" raw -echo
+  timeout 0.3 head -c 4096 "$GPS_PORT" >/dev/null 2>&1 || true
+  if ! timeout 2 head -c 256 "$GPS_PORT" 2>/dev/null | grep -qaE '\$GN|\$GP|\xb5\x62'; then
+    echo "error: module isn't answering at $GPS_BAUD after the baud-raise command." >&2
+    echo "  It may still be at $CURRENT_BAUD (the CFG-UART${GPS_UART}-BAUDRATE key name/layer" >&2
+    echo "  bitmask may not match this module's firmware) - re-run with GPS_BAUD=$CURRENT_BAUD" >&2
+    echo "  to confirm it's still reachable there before troubleshooting further." >&2
+    exit 1
+  fi
+  echo "Confirmed: module now answering at $GPS_BAUD."
+else
+  echo "Already at the target baud ($GPS_BAUD) - nothing to raise."
 fi
-GPS_BAUD="$ACTUAL_BAUD"
 
 echo
 echo "Configuring the GPS module on $GPS_PORT @ $GPS_BAUD baud, UART$GPS_UART..."
