@@ -47,30 +47,15 @@ for (const method of ['log', 'warn', 'error']) {
   };
 }
 
-console.log(`[boatAgent] starting, boatId=${config.boatId}`);
-if (config.noGps) {
-  console.log('[boatAgent] NO_GPS=1 - not starting any GPS source (real or simulated)');
-} else if (config.simulateGps) {
-  console.log(
-    config.simulate
-      ? '[boatAgent] SIMULATE=1 - using a fake GPS track (no GPS hardware)'
-      : '[boatAgent] SIMULATE_GPS=1 - using a fake GPS track, real radio hardware'
-  );
-} else {
-  console.log(`[boatAgent] GPS  ${config.gps.port} @ ${config.gps.baud}`);
-}
-if (config.simulate) {
-  console.log(`[boatAgent] sim radio - UDP broadcast on :${config.sim.port}`);
-} else if (config.radio.enabled) {
-  console.log(`[boatAgent] Radio ${config.radio.port} @ ${config.radio.baud}`);
-} else {
-  console.log('[boatAgent] Radio disabled (RADIO_ENABLED=0) - fixes still log to SD');
-}
-
-// Short labels for the rover admin dashboard (see getRoverStats below) -
-// mirrors the startup log conditionals above without duplicating them.
+// Short labels for the rover admin dashboard (see getRoverStats below).
 const gpsMode = config.noGps ? 'none' : config.simulateGps ? 'simulated' : 'real';
 const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
+// True whenever a radio link is actually expected to come up at all (real
+// or simulated) - RADIO_ENABLED=0 is the only case this is false. Reused
+// by transmitFix (below) and the status summary (further down) so "is the
+// radio genuinely down" and "there's deliberately no radio" never drift
+// out of sync between the two.
+const radioExpected = config.simulate || config.radio.enabled;
 
 // This boat's own admin dashboard port. In SIMULATE mode, defaults to a
 // different port than the base's own dashboard (config.admin.port, 8092)
@@ -79,11 +64,37 @@ const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' 
 // so config.admin.port's default is fine as-is there. An explicit
 // ADMIN_PORT env var always wins, on either side.
 const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate ? 8093 : config.admin.port;
-// Logged this early (well before startRoverAdminServer actually starts the
-// server, much further down this file) so the one thing an operator most
-// wants right after launch - "where's the dashboard" - isn't buried under
-// everything else this file logs during GPS/radio/upload setup.
-console.log(`[roverAdminServer] dashboard at http://localhost:${myAdminPort}`);
+
+// One consolidated startup summary of the settings that actually matter
+// for "is this boat configured the way I expect," printed together right
+// up front - instead of scattered one-line-each prints interleaved with
+// unrelated setup code further down this file, which made them easy to
+// miss and hard to compare against each other at a glance.
+console.log(`[boatAgent] boatId=${config.boatId}`);
+console.log(
+  `[boatAgent] gps=${gpsMode}` +
+    (gpsMode === 'real'
+      ? ` ${config.gps.port}@${config.gps.baud}`
+      : gpsMode === 'simulated'
+      ? config.simulate
+        ? ' (no GPS hardware)'
+        : ' (real radio hardware)'
+      : ' (NO_GPS=1)')
+);
+console.log(
+  `[boatAgent] radio=${radioMode}` +
+    (radioMode === 'real'
+      ? ` ${config.radio.port}@${config.radio.baud}`
+      : radioMode === 'simulated'
+      ? ` udp:${config.sim.port}`
+      : ' (RADIO_ENABLED=0, fixes still log to SD)') +
+    ` txDistance=${config.txDistanceM}m txInterval=${config.txIntervalMs / 1000}s`
+);
+console.log(
+  `[boatAgent] dashboard=http://localhost:${myAdminPort} ` +
+    `localBroadcast=${config.localBroadcast.format.toUpperCase()}:${config.localBroadcast.address}:${config.localBroadcast.port} ` +
+    `upload=${config.upload.enabled ? 'on' : 'off'}`
+);
 
 const sdLogger = new SdLogger({
   logDir: config.logDir,
@@ -120,11 +131,14 @@ function outputLocalFrame(pvt) {
   localBroadcastSocket.send(buf, config.localBroadcast.port, config.localBroadcast.address);
 }
 
-console.log(
-  `[boatAgent] broadcasting ${config.localBroadcast.format.toUpperCase()} over UDP ${config.localBroadcast.address}:${config.localBroadcast.port}`
-);
-
 let radio;
+// Tracked for the periodic status summary (further down) - starts false
+// rather than assuming connected, so a boat that never reaches 'connected'
+// at all (still trying, or genuinely broken) reports "down" instead of a
+// misleadingly optimistic default. Stays permanently false under
+// RADIO_ENABLED=0, which never emits 'connected' at all - fine, since
+// radioExpected (above) is what the status summary actually checks first.
+let radioConnected = false;
 if (config.simulate) {
   const { SimRadioLink } = require('./simRadioLink');
   radio = new SimRadioLink({
@@ -132,11 +146,13 @@ if (config.simulate) {
     packetLossPct: config.sim.packetLossPct,
   });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
-  radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+  radio.on('connected', () => { radioConnected = true; });
+  radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
 } else if (config.radio.enabled) {
   radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
-  radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
+  radio.on('connected', () => { radioConnected = true; });
+  radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
 } else {
   radio = new EventEmitter(); // RADIO_ENABLED=0 - never emits 'frame'/'marks', other outputs still testable
   radio.send = () => false;
@@ -325,9 +341,6 @@ startUploadClient({
   adminPort: myAdminPort,
   uploadEnabled: config.upload.enabled,
 });
-if (!config.upload.enabled) {
-  console.log('[boatAgent] log upload disabled (UPLOAD_ENABLED=0) - still reporting identity/health to the base');
-}
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
@@ -458,7 +471,6 @@ function transmitFix(pvt) {
   sdLogger.logPvt(pvt);
   const frame = protocol.encode(config.boatId, pvt);
   const sent = radio.send(frame);
-  const radioExpected = config.simulate || config.radio.enabled;
   if (sent || !radioExpected) {
     lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
     lastTxTime = pvt.timestamp;
@@ -834,6 +846,55 @@ startRoverAdminServer({
   getPowerStatus: powerScheduler.getStatus,
   updatePowerSchedule: powerScheduler.updateParams,
 });
+
+// Compact fix-quality label - RTK carrier solution takes priority over the
+// plain fixType, since "RTK-fixed" is a much stronger statement than the
+// "3D" fixType alone would suggest (carrSoln is layered on top of a fix,
+// not an alternative to one). Matches this app's own u-blox field names
+// directly rather than inventing new terminology.
+const FIX_TYPE_LABELS = { 0: 'no-fix', 1: 'dead-reckoning', 2: '2D', 3: '3D', 4: 'GNSS+DR', 5: 'time-only' };
+function fixLabel(pvt) {
+  if (!pvt) return 'none';
+  if (pvt.carrSoln === 2) return 'RTK-fixed';
+  if (pvt.carrSoln === 1) return 'RTK-float';
+  return FIX_TYPE_LABELS[pvt.fixType] ?? `type${pvt.fixType}`;
+}
+
+// "Xs"/"Xm" ago, or "never" - used for every timestamp in the status
+// summary below so a stale value (radio gone quiet, marks not refreshed
+// in a while) is immediately obvious without doing timestamp math by eye.
+function ageStr(ts) {
+  if (ts == null) return 'never';
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`;
+}
+
+// One-line status summary - deliberately the ONE thing this process prints
+// on a timer regardless of what GPS_LOG/etc. are set to, so there's always
+// SOME live signal on an otherwise-quiet console without needing to enable
+// any per-fix logging. Covers what an operator glancing at this terminal
+// actually wants to know: is GPS locked and how good, where is the boat
+// and how fresh is that, do we have a current course, and is the radio
+// actually getting frames out - all the individually-toggleable logs
+// elsewhere in this file are for digging into ONE of these in detail once
+// this line says something's off, not for routine watching.
+function logStatusSummary() {
+  const pvt = lastPvt;
+  const radioLabel = !radioExpected ? 'disabled' : radioConnected ? 'ok' : 'down';
+  // roverStats already tracks lastMarksReceivedAt for the dashboard
+  // (recordMarksReceived() is called in the 'marks' handler above) -
+  // reused here instead of a second, separately-tracked copy of the same
+  // timestamp that could drift out of sync with it.
+  const lastMarksReceivedAt = roverStats.snapshot().marks.lastReceivedAt;
+  console.log(
+    `[status] gps=${fixLabel(pvt)} acc=${pvt ? (pvt.hAccMm / 1000).toFixed(2) + 'm' : '-'} ` +
+      `sv=${pvt ? pvt.numSV : 0} pos=${pvt ? `${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)}` : 'none'} ` +
+      `fixAge=${ageStr(pvt?.timestamp)} marks=${ageStr(lastMarksReceivedAt)} ` +
+      `radio=${radioLabel} txAge=${ageStr(lastTxTime)}`
+  );
+}
+setInterval(logStatusSummary, 60000);
+logStatusSummary(); // once immediately, not just after the first 60s wait
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
 // Under fleetSim.js, report through IPC instead of logging directly - a
