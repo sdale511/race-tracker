@@ -885,16 +885,17 @@ function radioLabel() {
 
 function logStatusSummary() {
   const pvt = lastPvt;
-  // roverStats already tracks lastMarksReceivedAt for the dashboard
-  // (recordMarksReceived() is called in the 'marks' handler above) -
-  // reused here instead of a second, separately-tracked copy of the same
-  // timestamp that could drift out of sync with it.
-  const lastMarksReceivedAt = roverStats.snapshot().marks.lastReceivedAt;
+  // roverStats already tracks lastMarksReceivedAt/upload.lastUploadAt for
+  // the dashboard (recordMarksReceived()/recordUploadSuccess() are called
+  // from the 'marks' handler above and uploadClient.js respectively) -
+  // reused here instead of second, separately-tracked copies of the same
+  // timestamps that could drift out of sync with them.
+  const snap = roverStats.snapshot();
   console.log(
     `[status] gps=${fixLabel(pvt)} acc=${pvt ? (pvt.hAccMm / 1000).toFixed(2) + 'm' : '-'} ` +
       `sv=${pvt ? pvt.numSV : 0} pos=${pvt ? `${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)}` : 'none'} ` +
-      `fixAge=${ageStr(pvt?.timestamp)} marks=${ageStr(lastMarksReceivedAt)} ` +
-      `radio=${radioLabel()} txAge=${ageStr(lastTxTime)}`
+      `fixAge=${ageStr(pvt?.timestamp)} marks=${ageStr(snap.marks.lastReceivedAt)} ` +
+      `radio=${radioLabel()} txAge=${ageStr(lastTxTime)} uploadAge=${ageStr(snap.upload.lastUploadAt)}`
   );
 }
 
@@ -909,12 +910,14 @@ function logStatusSummary() {
 // line was built to replace.
 function statusKey() {
   const pvt = lastPvt;
+  const snap = roverStats.snapshot();
   return JSON.stringify([
     fixLabel(pvt),
     radioLabel(),
     pvt != null,
-    roverStats.snapshot().marks.lastReceivedAt != null,
+    snap.marks.lastReceivedAt != null,
     lastTxTime != null,
+    snap.upload.lastUploadAt != null,
   ]);
 }
 
