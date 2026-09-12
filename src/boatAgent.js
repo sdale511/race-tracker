@@ -522,7 +522,7 @@ function releaseHold() {
   if (simGpsSource) simGpsSource.release();
 }
 
-if (config.sim.holdForStart) {
+if (config.simulateGps && config.sim.holdForStart) {
   console.log('[boatAgent] SIM_HOLD_FOR_START=1 - will hold at the start position once on the grid, waiting for the start signal');
   // Fleet child: process.send only exists when this process was spawned
   // with an 'ipc' stdio channel (see fleetSim.js), which is how the

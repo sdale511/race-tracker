@@ -238,21 +238,44 @@ practical.**
 ### Configuring XBee radios (xbee_configure_at.py)
 
 For XBee-PRO S3B (900HP / DigiMesh) radios, `xbee_configure_at.py` (repo
-root) automates the above instead of using XCTU by hand - Point-to-
-Multipoint delivery mode (`TO` bits 6:7, no mesh hop routing), matching
-Network ID/DH-DL/HP/MT/`CE`, and `BD`, all written to non-volatile memory
-and read back to confirm they stuck. Every command name/value it uses comes
-straight from Digi's own XBee-PRO 900HP/XSC S3/S3B User Guide - **not**
-`MM`/`CH`/`CD`, which an earlier version of this script guessed at by
-analogy with other XBee product lines and don't actually exist on this
-module (confirmed live: both return `ERROR`). There's no base-vs-rover
-config split either - this module has no role-selecting command, so every
-radio (committee/base and every boat) gets the identical config. It speaks
-AT Command Mode directly (plain `pyserial`, the same "+++", then
-"ATxx<value>", then "ATWR" dialect any serial terminal speaks) - the radio
-never leaves the AT/transparent mode race-tracker itself needs (see "Pair
-every radio... in transparent-serial mode" above), so there's no mode to
-flip before or after running it.
+root) automates the above instead of using XCTU by hand - DigiMesh delivery
+mode (`TO` bits 6:7 = `0xC0`) with routing/relaying disabled on every node
+(`CE` bit 1, since this fleet is single-hop only - no boat ever relays
+another's signal), and matching Network ID/DH-DL/HP/MT and `BD`. Every
+command name/value it uses comes straight from Digi's own XBee-PRO
+900HP/XSC S3/S3B User Guide - **not** `MM`/`CH`/`CD`, which an earlier
+version of this script guessed at by analogy with other XBee product lines
+and don't actually exist on this module (confirmed live: both return
+`ERROR`). There's no base-vs-rover config split either - this module has no
+role-selecting command, so every radio (committee/base and every boat) gets
+the identical config. It speaks AT Command Mode directly (plain `pyserial`,
+the same "+++", then "ATxx<value>", then "ATWR" dialect any serial terminal
+speaks) - the radio never leaves the AT/transparent mode race-tracker
+itself needs (see "Pair every radio... in transparent-serial mode" above),
+so there's no mode to flip before or after running it.
+
+Point-to-Multipoint (`TO=0x40`, lower overhead in principle - no network
+header) was tried as the default twice. The first attempt appeared to
+produce no traffic at all, which turned out to be an unrelated script bug
+(a baud-rate write's response went unchecked after the post-baud-change
+reconnect, so a radio whose `BD` didn't actually survive a reboot still
+reported success - see below). Once that was fixed and persistence was
+directly confirmed on both radios - every parameter, including `TO=0x40`
+itself, verified to survive an actual reset - traffic still failed between
+two correctly, persistently P2MP-configured radios: a real, reproducible
+incompatibility on this hardware, not a config or persistence issue.
+DigiMesh is the confirmed-working delivery method, hence the default. One
+lead for revisiting P2MP later: DigiMesh's own broadcasts already reuse the
+Directed-Broadcast/Repeater wire format (`0x80`), not unique DigiMesh
+framing - real mesh-routing framing only applies to unicasts - and this
+app's traffic is 100% broadcast (`DH=0`/`DL=0xFFFF`), so the "working"
+DigiMesh config was never actually exercising DigiMesh-specific behavior
+for this app's own traffic pattern in the first place.
+
+After writing everything to non-volatile memory, a real (non-dry-run) run
+does a soft reset (`FR`) and reconnects to re-check every parameter against
+`CONFIG` again - proof the config actually survives a reboot, not just that
+it reads back correctly within the same still-running session.
 
 ```
 pip install pyserial
@@ -267,9 +290,12 @@ already been reconfigured) and, once `BD` is changed, automatically
 reconnects at `--target-baud` (115200 by default, matching `RADIO_BAUD`
 above, applied last since it changes how the script itself talks to the
 radio) to read the config back. Run once per radio; the config values
-themselves (network ID, DH/DL, channel mask, etc.) live in the `CONFIG`
-dict at the top of the script, not as flags - edit them there if your
-network needs different values. Only one process can hold a serial port at
+themselves (network ID, DH/DL, etc.) live in the `CONFIG` dict at the top
+of the script, not as flags - edit them there if your network needs
+different values. Channel selection (`CM`, a 64-bit channel mask, not a
+simple index) isn't touched by this script at all - set it by hand first
+if your network needs to avoid specific frequencies. Only one process can
+hold a serial port at
 a time, so stop any running `npm run base`/`npm run boat`/`npm run
 radio-test` (or XCTU, another terminal session, etc.) using the same port
 before running this script, or it fails outright with a "could not

@@ -2,20 +2,39 @@
 """
 xbee_configure_at.py
 
-Configure a Digi XBee-PRO S3B (900HP / DigiMesh series) radio for
-Point-to-Multipoint ("one to many") operation instead of full DigiMesh
-mesh routing, and match it to the rest of the rover/base radio network -
-entirely over AT Command Mode (the plain "+++" / "ATxx" dialect any
-serial terminal speaks), the same way you'd do it by hand, just scripted
-with read-back verification on every parameter.
+Configure a Digi XBee-PRO S3B (900HP / DigiMesh series) radio for DigiMesh
+delivery with routing/relaying disabled on every node (this fleet is
+single-hop only - no boat ever needs to relay another boat's signal, so
+there's nothing for mesh routing to actually do), with an identical config
+on every radio in the fleet - base/committee station and every boat alike,
+no role-specific settings. Entirely over AT Command Mode (the plain "+++" /
+"ATxx" dialect any serial terminal speaks), the same way you'd do it by
+hand, just scripted with read-back verification on every parameter,
+followed by an actual soft-reset-and-reverify pass (see "Verifying
+persistence" in main()) to confirm every value survives a reboot, not
+just this session.
 
 Every command name/value below is taken from Digi's own XBee-PRO 900HP/XSC
-RF Modules S3 and S3B User Guide (docs.digi.com, document 90002173) - an
-earlier version of this script guessed at a "MM" (MAC Mode) command and a
-CE(base)/CD(rover) role split by analogy with other XBee product lines,
-neither of which actually exist on THIS module (confirmed live against a
-real, already-correctly-configured radio: both returned "ERROR"). See
-WHAT THIS DOES below for what the real commands are.
+RF Modules S3 and S3B User Guide (docs.digi.com, document 90002173).
+
+Note: Point-to-Multipoint (TO=0x40) was tried as the default twice. The
+first time, it appeared to produce no traffic at all - that turned out to
+be an unrelated bug in this script (a baud-rate write's response went
+unchecked after the post-baud-change reconnect, so a radio whose BD didn't
+actually survive a reboot still reported success; fixed, see the reset-
+and-reverify pass below). Once that was fixed and persistence was directly
+confirmed on both radios (every parameter, including TO=0x40 itself,
+verified to survive an actual reset), traffic STILL failed between two
+correctly, persistently P2MP-configured radios - a real, reproducible P2MP
+incompatibility on this hardware, not a config or persistence issue.
+DigiMesh (0xC0) is the confirmed-working delivery method, hence the
+default here. One lead for anyone revisiting P2MP later: DigiMesh's own
+broadcasts already reuse the Directed-Broadcast/Repeater wire format
+(0x80), not unique DigiMesh framing - real mesh-routing framing only
+applies to unicasts - and this app's traffic is 100% broadcast
+(DH=0/DL=0xFFFF), so the "working" DigiMesh config was never actually
+exercising DigiMesh-specific behavior for this app's own traffic pattern
+in the first place.
 
 WHY AT COMMAND MODE, NOT THE digi-xbee LIBRARY
     digi-xbee can only talk to a radio already in API mode (AP=1/2) - but
@@ -27,25 +46,26 @@ WHY AT COMMAND MODE, NOT THE digi-xbee LIBRARY
     leaves AT/transparent mode, so there's no mode to flip either way.
 
 WHAT THIS DOES
-    - Sets TO (Transmit Options) bits 6:7 to Point-to-Multipoint (0x40) -
-      THE actual delivery-method switch on this module (0x80 = directed
-      broadcast/repeater, 0xC0 = DigiMesh mesh routing). There is no "MM"
-      command on this module at all.
+    - Sets TO (Transmit Options) bits 6:7 to DigiMesh (0xC0) - the
+      delivery-method switch on this module (0x40 = Point-to-Multipoint,
+      0x80 = directed broadcast/repeater).
     - Sets ID, DH/DL, HP, MT, BD to the values below.
     - Sets CE (Node Messaging Options) to disable routing on this node
-      (bit 1) - there's no base/rover distinction at the radio level on
-      this module (no "CD" command exists here either), so every radio
-      gets the same config regardless of which end of the link it is.
+      (bit 1) - this fleet is single-hop, so no node should ever act as
+      an intermediate relay for another's traffic, regardless of TO.
     - Writes the config to non-volatile memory (so it survives power
-      cycling) and reads every value back to confirm it actually stuck.
+      cycling), reads every value back within THIS session to confirm it
+      stuck, then does a real soft reset and re-checks everything again
+      to confirm it actually survives a reboot (see main()).
 
 BEFORE YOU RUN THIS
     pip install pyserial
 
     Run once per radio - base/committee station and every rover, all get
-    the identical config below. CHANNEL_MASK is still a placeholder below
-    -- fill it in (see the CM command in the user guide) if your network
-    pins a specific channel set; leave it as None to leave CM alone.
+    the identical config below. Channel selection (the CM command - a
+    64-bit channel mask, not a simple index) isn't touched by this script
+    at all; set it by hand first if your network needs to avoid specific
+    frequencies (see CM in the user guide).
 
     Only one process can hold a serial port at a time - stop any running
     `npm run base`/`npm run boat`/`npm run radio-test` (or XCTU, a
@@ -74,18 +94,13 @@ CONFIG = {
     # default too, but set explicitly so it's never left to chance.
     "NETWORK_ID": "0x7FFF",
 
-    # Channel Mask (CM) — leave as None to skip (not touched). This module
-    # has no simple "CH" channel-index command; channel selection is this
-    # 64-bit bitfield instead (see the CM command in the user guide) if
-    # your network needs to avoid specific frequencies.
-    "CHANNEL_MASK": None,
-
     # TO (Transmit Options), bits 6:7 are the delivery method: 0x40 =
     # Point-to-Multipoint, 0x80 = directed broadcast/repeater, 0xC0 =
-    # DigiMesh (mesh routing) - the actual mode switch on this module,
-    # there is no separate "MM" command here. Bits 0-3 (ack/route-discovery/
-    # NACK/trace-route options) left at 0 - ordinary acked, routed unicasts.
-    "TRANSMIT_OPTIONS": 0x40,
+    # DigiMesh (mesh routing) - confirmed working on real hardware, see
+    # the top-of-file Note on why this is 0xC0 rather than 0x40. Bits 0-3
+    # (ack/route-discovery/NACK/trace-route options) left at 0 - ordinary
+    # acked, routed unicasts.
+    "TRANSMIT_OPTIONS": 0xC0,
 
     # Destination addressing: broadcast (DH=0, DL=0xFFFF) -- default.
     "DH": "0",
@@ -100,9 +115,9 @@ CONFIG = {
 
     # CE (Node Messaging Options), a bitfield for the (unused here)
     # Indirect Messaging sleep/polling feature - bit 1 (value 2) disables
-    # routing on this node, appropriate for a non-mesh Point-to-Multipoint
-    # network. Same value on every radio - this module has no CE/CD
-    # base-vs-rover role split (no "CD" command exists at all).
+    # routing on this node, so it won't relay other nodes' DigiMesh/
+    # broadcast traffic - this fleet is single-hop only, nothing should
+    # ever need relaying. Same value on every radio in the fleet.
     "CE": 2,
 }
 
@@ -206,6 +221,79 @@ def set_and_verify(ser, param, value_hex, label):
     return match
 
 
+def compare_row(label, current_raw, target_hex, decode=None):
+    """Print one dry-run row: the radio's CURRENT value for one parameter
+    next to what this script would set it TO - always, even when they
+    already match, so the full current/target picture stays visible. Only
+    an actual mismatch (or an unreadable current value) gets a trailing
+    status flag - a matching row's status is left blank rather than
+    spelling out "already correct" on every single line. Returns True if
+    applying the script would actually change this parameter, so the
+    caller can tally how many will. decode(int)->str, if given, appends a
+    human-readable label to both sides (e.g. TO's delivery method, BD's
+    baud rate)."""
+    cur_val = hex_to_int(current_raw)
+    tgt_val = hex_to_int(target_hex)
+    cur_str = f"0x{cur_val:X}" if cur_val is not None else f"<no response: {current_raw!r}>"
+    tgt_str = f"0x{tgt_val:X}"
+    if decode:
+        if cur_val is not None:
+            cur_str += f" ({decode(cur_val)})"
+        tgt_str += f" ({decode(tgt_val)})"
+    will_change = cur_val is None or cur_val != tgt_val
+    status = ""
+    if cur_val is None:
+        status = "*** currently unreadable - would attempt to set anyway ***"
+    elif will_change:
+        status = "*** WILL CHANGE ***"
+    print(f"  {label:28s} current={cur_str:<26} target={tgt_str:<26} {status}")
+    return will_change
+
+
+def dry_run_report(ser, target_baud):
+    """Same parameters read_config reads, but as a current-vs-target diff
+    against CONFIG (and --target-baud for BD) - so --dry-run answers "what
+    would actually change" directly, not just "what's there now" (which
+    left it up to you to compare against CONFIG by eye). Every parameter
+    gets a row regardless of whether it matches (see compare_row); a
+    trailing summary line says how many of them actually would change.
+    Returns the number of mismatches - 0 means everything already matches
+    CONFIG, which main() also uses as its actual proof of persistence: it
+    re-runs this against the radio after a real reset (see "Verifying
+    persistence" below), not just against the same still-running session
+    a set-and-verify readback would trust."""
+    changed = 0
+
+    changed += compare_row("TO (Transmit Options)", query(ser, "TO"), format(CONFIG["TRANSMIT_OPTIONS"], "X"),
+                            decode=lambda v: TO_DELIVERY_LABELS.get((v >> 6) & 0b11, "unknown"))
+
+    nid = CONFIG["NETWORK_ID"]
+    nid_hex = nid[2:] if nid.lower().startswith("0x") else nid
+    changed += compare_row("ID (Network ID)", query(ser, "ID"), nid_hex)
+
+    changed += compare_row("DH (Dest high)", query(ser, "DH"), CONFIG["DH"])
+    changed += compare_row("DL (Dest low)", query(ser, "DL"), CONFIG["DL"])
+    changed += compare_row("HP (Preamble ID)", query(ser, "HP"), format(CONFIG["HP"], "X"))
+    changed += compare_row("MT (Broadcast Multi-Tx)", query(ser, "MT"), format(CONFIG["MT"], "X"))
+    changed += compare_row("CE (Node Msg Options)", query(ser, "CE"), format(CONFIG["CE"], "X"))
+
+    total = 7  # TO, ID, DH, DL, HP, MT, CE - kept in sync with the calls above
+
+    bd_code = BAUD_CODE_MAP.get(target_baud)
+    if bd_code is not None:
+        changed += compare_row("BD (Baud rate)", query(ser, "BD"), format(bd_code, "X"),
+                                decode=lambda v: f"{BAUD_CODE_TO_RATE.get(v, 'code ' + str(v))} baud")
+        total += 1
+    else:
+        print(f"  {'BD (Baud rate)':28s} no code mapping for --target-baud {target_baud}, skipping comparison")
+
+    if changed == 0:
+        print(f"\nAll {total} parameters already match - running for real would be a no-op.")
+    else:
+        print(f"\n{changed} of {total} parameters would change.")
+    return changed
+
+
 def read_config(ser):
     """Read and print every parameter this script cares about, decoded
     into human-readable form where possible. Safe to call any time -
@@ -243,7 +331,13 @@ def read_config(ser):
 def open_and_enter_command_mode(port, baud):
     """Shared by the initial connect and the post-baud-change reconnect
     below - opens the port and enters command mode, or prints a specific
-    hint and exits for the two failure modes actually seen in practice."""
+    hint and exits for the two failure modes actually seen in practice.
+    Prints which baud it's trying BEFORE attempting anything, not just on
+    success - a wrong --connect-baud is the single most common way this
+    fails, and the baud actually being tried needs to be visible right
+    next to that failure, not buried in a success message that never
+    prints."""
+    print(f"Connecting to {port} at {baud} baud...")
     try:
         ser = serial.Serial(port, baud, timeout=0.05)
     except serial.SerialException as e:
@@ -257,9 +351,19 @@ def open_and_enter_command_mode(port, baud):
     try:
         enter_command_mode(ser)
     except RuntimeError as e:
-        print(f"Failed to enter command mode: {e}")
+        print(f"Failed to enter command mode at {baud} baud: {e}")
+        print(f"  -> If this radio was already configured before (e.g. RADIO_BAUD=115200 in "
+              f"race-tracker's own .env, or a prior run of this script), it's likely no longer at the "
+              f"XBee factory default (9600) - retry with --connect-baud matching its CURRENT speed, "
+              f"e.g. --connect-baud 115200.")
+        print(f"  -> On a genuinely factory-fresh radio (9600 IS correct), a totally empty response "
+              f"more often means: wrong --port (double check with `ls /dev/cu.*` before/after "
+              f"plugging it in), TX/RX swapped on the wiring, or the radio not actually getting "
+              f"power/a solid USB connection. Try the same +++ by hand in a plain terminal (`screen "
+              f"{port} {baud}`) to see whether the problem is this script or the link itself.")
         ser.close()
         sys.exit(1)
+    print(f"Connected at {baud} baud - command mode entered.")
     return ser
 
 
@@ -275,12 +379,11 @@ def main():
     args = ap.parse_args()
 
     ser = open_and_enter_command_mode(args.port, args.connect_baud)
-    print(f"Connected to {args.port} @ {args.connect_baud} baud - command mode entered")
 
     try:
         if args.dry_run:
-            print("\nCurrent radio configuration:")
-            read_config(ser)
+            print("\nCurrent radio configuration vs. what this script would set (nothing written yet):")
+            dry_run_report(ser, args.target_baud)
             send_at(ser, "ATCN")
             print("\n--dry-run: not changing anything.")
             return
@@ -288,7 +391,7 @@ def main():
         print("\n--- BEFORE ---")
         read_config(ser)
 
-        print("\nApplying Point-to-Multipoint config...")
+        print("\nApplying config...")
         all_ok = True
 
         all_ok &= set_and_verify(ser, "TO", format(CONFIG["TRANSMIT_OPTIONS"], "X"), "TO (Transmit Options)")
@@ -296,11 +399,6 @@ def main():
         nid = CONFIG["NETWORK_ID"]
         nid_hex = nid[2:] if nid.lower().startswith("0x") else nid
         all_ok &= set_and_verify(ser, "ID", nid_hex, "ID (Network ID)")
-
-        if CONFIG["CHANNEL_MASK"] is not None:
-            cm = CONFIG["CHANNEL_MASK"]
-            cm_hex = cm[2:] if cm.lower().startswith("0x") else cm
-            all_ok &= set_and_verify(ser, "CM", cm_hex, "CM (Channel Mask)")
 
         all_ok &= set_and_verify(ser, "DH", CONFIG["DH"], "DH (Dest high)")
         all_ok &= set_and_verify(ser, "DL", CONFIG["DL"], "DL (Dest low)")
@@ -328,7 +426,11 @@ def main():
                 # Already at the target baud - set/verify/write normally,
                 # no reconnect dance needed.
                 all_ok &= set_and_verify(ser, "BD", format(bd_code, "X"), "BD (Baud rate)")
-                send_at(ser, "ATWR")
+                wr_resp = send_at(ser, "ATWR")
+                if "OK" not in wr_resp:
+                    print(f"  *** BD write (WR) did not return OK (got {wr_resp!r}) - baud rate may "
+                          f"NOT survive a reboot. Re-run this script to confirm/retry. ***")
+                    all_ok = False
             else:
                 print(f"\nSetting BD to {target_baud} (code {bd_code}) - this switches the radio's "
                       f"actual serial speed, so this session (still at {args.connect_baud}) may stop "
@@ -339,15 +441,64 @@ def main():
                 ser = open_and_enter_command_mode(args.port, target_baud)
                 # The BD change itself may not have made it into non-volatile
                 # memory if the switch happened before WR was processed -
-                # write again now that we're talking to it at the new baud.
-                send_at(ser, "ATWR")
+                # write again now that we're talking to it at the new baud, and
+                # actually check the response this time (a prior version of
+                # this script silently discarded it - if this particular WR
+                # ever failed, BD would revert to its old value on the next
+                # power cycle with no indication anything was wrong).
+                wr_resp = send_at(ser, "ATWR")
+                if "OK" not in wr_resp:
+                    print(f"  *** BD write (WR) after baud-switch did not return OK (got {wr_resp!r}) - "
+                          f"baud rate may NOT survive a reboot. Re-run this script to confirm/retry. ***")
+                    all_ok = False
+                else:
+                    # Belt-and-suspenders read-only check (no re-set, so it
+                    # can't undo the WR above) - confirms the NEW baud is
+                    # what's actually stored, not just that WR said OK.
+                    bd_readback = hex_to_int(query(ser, "BD"))
+                    if bd_readback != bd_code:
+                        print(f"  *** BD (Baud rate, post-reconnect)     readback={bd_readback} "
+                              f"expected={bd_code} *** MISMATCH ***")
+                        all_ok = False
+                    else:
+                        print(f"  {'BD (Baud rate, post-reconnect)':28s} readback={bd_readback:<10} OK")
                 bd_changed = True
 
-        print("\n--- AFTER ---")
+        print("\n--- AFTER (this session's own memory - not proof of persistence) ---")
         read_config(ser)
 
-        print("\n" + ("All parameters verified OK." if all_ok else
-                       "*** One or more parameters did not verify -- check output above. ***"))
+        # A set-and-verify readback, and even the "AFTER" dump above, only
+        # prove a parameter is correct in the device's CURRENT session -
+        # exactly what silently masked the earlier BD-not-surviving-reboot
+        # bug (its own WR response went unchecked, so nothing here would
+        # have caught it either). A real soft reset via FR (Force Reset)
+        # exercises the actual load-from-NVM-on-boot path a power cycle
+        # would, so reconnecting afterward and re-diffing against CONFIG
+        # (reusing dry_run_report - same check --dry-run does) is the
+        # first thing in this script that actually proves persistence
+        # rather than assuming it from an "OK" string.
+        print("\n--- Verifying persistence (soft reset) ---")
+        verify_baud = target_baud if (target_baud != 0 and target_baud in BAUD_CODE_MAP) else args.connect_baud
+        fr_resp = send_at(ser, "ATFR")
+        if "OK" not in fr_resp:
+            print(f"  *** FR (Force Reset) did not return OK (got {fr_resp!r}) - could not verify "
+                  f"persistence. Re-run this script to confirm settings actually survive a reboot. ***")
+            all_ok = False
+        else:
+            ser.close()
+            time.sleep(1.5)  # let the module actually finish rebooting before reconnecting
+            ser = open_and_enter_command_mode(args.port, verify_baud)
+            print("Reconnected after reset - re-checking every parameter against CONFIG:")
+            mismatches = dry_run_report(ser, verify_baud)
+            if mismatches:
+                print(f"*** {mismatches} parameter(s) reverted after reset - see above. Re-run this "
+                      f"script; if it keeps happening, something below the script's own visibility "
+                      f"(e.g. power cut before a flash write physically completes) is the real cause. ***")
+                all_ok = False
+
+        print("\n" + ("All parameters verified OK and confirmed to survive a reset." if all_ok else
+                       "*** One or more parameters did not verify or did not survive a reset -- "
+                       "check output above. ***"))
 
         if bd_changed:
             print(f"\nNote: radio's serial baud rate is now {target_baud}. "
