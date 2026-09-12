@@ -187,6 +187,14 @@ let baseAddress = null;
 let freshMarksReceived = false;
 
 radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
+  // baseStation.js re-broadcasts marks periodically (MARKS_BROADCAST_INTERVAL_MS,
+  // 60s default) for the whole time this boat's connected, not just once -
+  // logging every re-broadcast would spam the console for the entire race.
+  // freshMarksReceived already tracks "has this run heard marks yet" for
+  // an unrelated reason (gating SIMULATE_GPS's own start below); reusing it
+  // here means the log line fires on exactly the same "first time" event,
+  // not a separately-tracked one that could drift out of sync with it.
+  const isFirstMarks = !freshMarksReceived;
   currentMarks = marks;
   freshMarksReceived = true;
   stopMarksPingRetry();
@@ -197,10 +205,12 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   } catch (err) {
     console.error('[boatAgent] failed to persist course marks to disk:', err.message);
   }
-  console.log(
-    '[boatAgent] received course marks from base station' +
-      (baseAddress ? `, upload ${baseAddress.ip}:${baseAddress.port}` : '')
-  );
+  if (isFirstMarks) {
+    console.log(
+      '[boatAgent] received course marks from base station' +
+        (baseAddress ? `, upload ${baseAddress.ip}:${baseAddress.port}` : '')
+    );
+  }
   startGpsSimIfReady();
 });
 
