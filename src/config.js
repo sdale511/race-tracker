@@ -370,6 +370,17 @@ module.exports = {
   // airtime/bandwidth over long range.
   txDistanceM: parseFloat(process.env.TX_DISTANCE_M || '1'),
 
+  // Heartbeat alongside txDistanceM above: even a boat that hasn't moved
+  // far enough to clear the distance gate still transmits at least once
+  // every this many seconds, so a stationary boat (sitting at a mooring,
+  // holding on the grid) doesn't go completely silent on the base's
+  // dashboard for as long as it stays still. Distance-gated sends still
+  // reset this timer (see boatAgent.js's transmitFix) - it only ever fires
+  // when NEITHER gate has cleared in this long, not on top of every
+  // distance-triggered send too. 0 disables it (distance gate only, the
+  // old behavior).
+  txIntervalMs: parseFloat(process.env.TX_INTERVAL_S || '60') * 1000,
+
   // Boat only - how long (max, milliseconds) a boat waits after hearing a
   // ping request (see protocol.js's encodePing/boatAgent.js's radio.on
   // ('ping', ...)) before actually transmitting its response - a random

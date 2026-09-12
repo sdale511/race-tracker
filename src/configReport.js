@@ -108,6 +108,13 @@ const sections = [
       },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm' },
       {
+        label: 'txIntervalMs',
+        value: config.txIntervalMs,
+        envVar: 'TX_INTERVAL_S',
+        unit: 'ms',
+        note: 'env var is in seconds; 0 disables the heartbeat (distance gate only)',
+      },
+      {
         label: 'marksBroadcastIntervalMs',
         value: config.marksBroadcastIntervalMs,
         envVar: 'MARKS_BROADCAST_INTERVAL_MS',

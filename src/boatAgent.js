@@ -320,6 +320,7 @@ if (!config.upload.enabled) {
 }
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
+let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
 let lastPvt = null;
 // True once a dwelling/holding fix (pvt.stationary - see simGps.js's
 // _emitStationaryFix) has already been logged to the console once, so
@@ -333,17 +334,28 @@ function handlePvt(pvt) {
   roverStats.recordFix(pvt);
   outputLocalFrame(pvt);
 
-  // Distance-based, not time-based: send whenever the boat has actually
-  // moved TX_DISTANCE_M since the last transmitted fix, regardless of how
-  // long that took - a stopped or barely-drifting boat doesn't need to
-  // keep re-transmitting the same position on a timer, and a fast-moving
-  // one gets updates as often as its own movement actually warrants. The
-  // SD log follows the exact same gate rather than logging every fix -
-  // the SD record is meant to mirror what actually went out over the
-  // radio, not a separate full-rate trace, so a fix that wouldn't have
-  // been worth transmitting isn't worth logging either.
+  // Primarily distance-based: send whenever the boat has actually moved
+  // TX_DISTANCE_M since the last transmitted fix, regardless of how long
+  // that took - a stopped or barely-drifting boat doesn't need to keep
+  // re-transmitting the same position on a timer, and a fast-moving one
+  // gets updates as often as its own movement actually warrants. The SD
+  // log follows the exact same gate rather than logging every fix - the SD
+  // record is meant to mirror what actually went out over the radio, not a
+  // separate full-rate trace, so a fix that wouldn't have been worth
+  // transmitting isn't worth logging either.
+  //
+  // TX_INTERVAL_MS is the heartbeat fallback: a boat that's stayed inside
+  // TX_DISTANCE_M this whole time (sitting at a mooring, holding on the
+  // grid) still reports at least this often, so it doesn't go completely
+  // silent on the base's dashboard for as long as it stays still. Elapsed
+  // time is measured from the last fix actually transmitted, same as
+  // movedM above - a distance-triggered send resets this timer too (see
+  // transmitFix), so it's genuinely "at least every N seconds," not a
+  // separate clock ticking on top of already-frequent distance-based sends.
   const movedM = lastTxPosition ? distanceMeters(lastTxPosition, pvt) : Infinity;
-  const clearedTxGate = movedM >= config.txDistanceM;
+  const elapsedSinceTxMs = lastTxTime !== null ? pvt.timestamp - lastTxTime : Infinity;
+  const clearedTxGate =
+    movedM >= config.txDistanceM || (config.txIntervalMs > 0 && elapsedSinceTxMs >= config.txIntervalMs);
 
   // Every fix gets a console line, same as the base's own GPS logging
   // (openBaseGps in baseStation.js) - the console is a live "is this thing
@@ -416,16 +428,36 @@ function handlePvt(pvt) {
 // so the ping handler below (which transmits the current fix on request,
 // deliberately bypassing the movement gate - see its own comment) can reuse
 // the exact same send/log/stats path rather than duplicating it.
-// lastTxPosition is updated here too, same as a normal gated transmit, so a
-// ping response doesn't leave the NEXT ordinary fix thinking it still needs
-// to cover the same distance from further back than it actually last sent.
+// lastTxPosition/lastTxTime only advance when radio.send() actually reports
+// success, OR there's deliberately no radio at all (RADIO_ENABLED=0 - see
+// below) - NOT unconditionally on every call, so a frame dropped because a
+// real radio hadn't finished connecting YET (a genuine startup race: an
+// already-converged RTK fix can arrive within milliseconds of GPS port
+// open, comfortably beating a USB radio's own connect time) doesn't get
+// treated as "reported." Leaving both null in that specific case means
+// handlePvt's own clearedTxGate stays true (movedM stays Infinity) on the
+// very next fix too, so it keeps retrying every fix until one genuinely
+// gets out, rather than a stationary boat silently never transmitting
+// again because its one guaranteed always-send attempt was spent on a
+// frame that never left. RADIO_ENABLED=0 is different: send() there is a
+// permanent `() => false` by design (see radio init above), not a
+// transient failure - advancing both regardless keeps that mode's SD
+// logging properly TX_DISTANCE_M/TX_INTERVAL_MS-gated instead of retrying
+// (and therefore logging) every single fix forever.
 function transmitFix(pvt) {
-  lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
   sdLogger.logPvt(pvt);
   const frame = protocol.encode(config.boatId, pvt);
   const sent = radio.send(frame);
-  if (sent) roverStats.recordFrameSent();
-  if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+  const radioExpected = config.simulate || config.radio.enabled;
+  if (sent || !radioExpected) {
+    lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
+    lastTxTime = pvt.timestamp;
+  }
+  if (sent) {
+    roverStats.recordFrameSent();
+  } else if (radioExpected) {
+    console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+  }
 }
 
 // Base-triggered "report your current position now" (see protocol.js's

@@ -26,11 +26,11 @@ in a browser).
   A compact 23-byte binary frame (`src/protocol.js`) is used to minimize
   airtime.
 - **SD log**: a fix is logged to CSV exactly when it also clears the
-  `TX_DISTANCE_M` threshold (same gate as the radio send, see below) - the
-  SD record mirrors what actually got transmitted rather than keeping an
-  independent full-rate trace, so a dropped radio link never loses data
-  the boat itself considered worth sending - only live tracking is
-  affected, not the durable record.
+  `TX_DISTANCE_M`/`TX_INTERVAL_S` gate (same gate as the radio send, see
+  below) - the SD record mirrors what actually got transmitted rather than
+  keeping an independent full-rate trace, so a dropped radio link never
+  loses data the boat itself considered worth sending - only live tracking
+  is affected, not the durable record.
 
 ## Wiring notes
 
@@ -846,11 +846,13 @@ send, so a long pre-start dwell still reads as "alive" on RegattaUp's end
 rather than one static fact from whenever it first arrived. `offgrid`
 still only fires (and sends) once, on the transition out - there's no
 reason to keep affirming "still not there." A boat that's genuinely
-dead-still (e.g. `SIM_START_ONLY`, which reports zero speed) only ever
-sends its very first frame at all (it never clears `TX_DISTANCE_M` again),
-so in practice it gets exactly one `'ongrid'` send and nothing further
-until pinged (see "Admin dashboard" above, whose "Ping fleet" button also
-clears this same latch), it actually moves, or it reconnects - the same
+dead-still (e.g. `SIM_START_ONLY`, which reports zero speed) never clears
+`TX_DISTANCE_M` again on its own, so absent anything else it would only
+ever send its very first frame - in practice `TX_INTERVAL_MS` (see
+"Running" above, default 60s) clears the gate on a timer too, so it still
+gets a fresh `'ongrid'` send at least that often. It can also be pinged
+(see "Admin dashboard" above, whose "Ping fleet" button also clears this
+same latch), moved, or reconnected - the same
 "this boat looks like it just (re)started" detection that triggers an
 immediate marks re-broadcast (`BOAT_RECONNECT_GAP_MS`, 10s gap since its
 last frame) also clears this one boat's latch, so restarting a simulated
@@ -1608,10 +1610,12 @@ One dashboard button acts on the whole fleet at once:
   current position right now (`POST /api/ping-fleet`, `src/protocol.js`'s
   `encodePing`, over the same radio/UDP link as everything else). Mainly
   for a boat that's been sitting stationary since before the base/dashboard
-  was even up: a stationary boat only ever clears the movement-gated
-  `TX_DISTANCE_M` threshold once (see "Lap events -> RegattaUp" above), so
-  without this there's no way to learn it's actually there, on-grid, right
-  now. Each boat waits its own random delay up to `PING_RESPONSE_JITTER_MS`
+  was even up: a stationary boat only clears the movement-gated
+  `TX_DISTANCE_M` threshold once (see "Lap events -> RegattaUp" above) and
+  otherwise waits on `TX_INTERVAL_S`'s own heartbeat (default 60s) to
+  report again, so pinging it gets an immediate answer instead of waiting
+  out that timer. Each boat waits its own random delay up to
+  `PING_RESPONSE_JITTER_MS`
   (default 3000, `src/boatAgent.js`'s own `radio.on('ping', ...)` handler)
   before replying, so a full fleet doesn't all key up over each other on
   the same shared channel the instant they hear the request - replies
@@ -1933,6 +1937,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
 | `BOAT_ID` | this device's own persisted id (see below) | Exactly 5 characters (letters/digits, the wire protocol's boatId field is a fixed-width byte slot) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright over this device's own persisted id - see "Running" above |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
+| `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` — even a boat that hasn't moved far enough to clear the distance gate still sends (and logs) at least once every this many seconds, so a boat sitting still (at a mooring, holding on the grid) doesn't go silent on the base's dashboard for as long as it stays put. A distance-triggered send resets this timer too, so it's "at least every N seconds," not a separate clock stacking on top of frequent distance-based sends. Set to `0` to disable (distance gate only, the old behavior) |
 | `ROVER_SHUTDOWN_AT` | unset (off) | Boat only — 24h local time (`"HH:MM"`, e.g. `21:00`) after which this Pi shuts itself down once genuinely idle — see "Scheduled shutdown" below |
 | `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only — continuous minutes below `ROVER_SHUTDOWN_SPEED_KN` (or with no fresh fix at all) required, once `ROVER_SHUTDOWN_AT` has passed, before actually shutting down — any real movement resets this back to zero |
 | `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only — ground speed below which a fix counts as "stationary" for the gate above |

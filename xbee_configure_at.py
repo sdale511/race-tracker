@@ -506,8 +506,31 @@ def main():
 
         send_at(ser, "ATCN")
 
+    except serial.SerialException as e:
+        # A mid-session OS-level read/write failure - not a bug in this
+        # script's own AT-command logic (that would show up as garbled or
+        # missing responses, not an exception from pyserial itself). This
+        # means the OS lost the underlying device: the USB-serial adapter
+        # or the radio disconnected/reset mid-session, another process
+        # grabbed the port out from under us, or a marginal
+        # cable/connector dropped out under the intermittent current draw
+        # of a live radio.
+        print(f"\n*** Lost the connection to {args.port} mid-session: {e} ***")
+        print("  -> Check the physical USB connection (reseat the cable/adapter, try a different "
+              "port, avoid unpowered hubs), confirm nothing else opened this port during the run, "
+              "and re-run once the link is solid. If this keeps happening on one specific radio, "
+              "suspect that radio/its connector rather than this script.")
+        sys.exit(1)
+
     finally:
-        ser.close()
+        # A port that just raised SerialException may already be in a bad
+        # state at the OS level - closing it should be harmless, but this
+        # is cleanup code, not somewhere a second exception should get to
+        # mask or crash past the one already being handled/reported above.
+        try:
+            ser.close()
+        except serial.SerialException:
+            pass
 
 
 if __name__ == "__main__":
