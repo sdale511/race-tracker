@@ -878,9 +878,12 @@ function ageStr(ts) {
 // actually getting frames out - all the individually-toggleable logs
 // elsewhere in this file are for digging into ONE of these in detail once
 // this line says something's off, not for routine watching.
+function radioLabel() {
+  return !radioExpected ? 'disabled' : radioConnected ? 'ok' : 'down';
+}
+
 function logStatusSummary() {
   const pvt = lastPvt;
-  const radioLabel = !radioExpected ? 'disabled' : radioConnected ? 'ok' : 'down';
   // roverStats already tracks lastMarksReceivedAt for the dashboard
   // (recordMarksReceived() is called in the 'marks' handler above) -
   // reused here instead of a second, separately-tracked copy of the same
@@ -890,11 +893,49 @@ function logStatusSummary() {
     `[status] gps=${fixLabel(pvt)} acc=${pvt ? (pvt.hAccMm / 1000).toFixed(2) + 'm' : '-'} ` +
       `sv=${pvt ? pvt.numSV : 0} pos=${pvt ? `${pvt.lat.toFixed(6)},${pvt.lon.toFixed(6)}` : 'none'} ` +
       `fixAge=${ageStr(pvt?.timestamp)} marks=${ageStr(lastMarksReceivedAt)} ` +
-      `radio=${radioLabel} txAge=${ageStr(lastTxTime)}`
+      `radio=${radioLabel()} txAge=${ageStr(lastTxTime)}`
   );
 }
-setInterval(logStatusSummary, 60000);
-logStatusSummary(); // once immediately, not just after the first 60s wait
+
+// The DISCRETE part of the status worth reacting to immediately, as
+// opposed to the 60s heartbeat below: GPS fix quality and radio
+// connectivity are real state transitions (RTK lock gained/lost, radio up/
+// down), and "never had one" -> "have one now" for a fix/marks/TX is a
+// genuine one-time milestone. Deliberately excludes the continuously-
+// varying fields (position, accuracy, satellite count, every *Age) - those
+// change on essentially every fix while under way, and reacting to THEM
+// immediately would just reproduce the exact per-fix log spam this status
+// line was built to replace.
+function statusKey() {
+  const pvt = lastPvt;
+  return JSON.stringify([
+    fixLabel(pvt),
+    radioLabel(),
+    pvt != null,
+    roverStats.snapshot().marks.lastReceivedAt != null,
+    lastTxTime != null,
+  ]);
+}
+
+let lastLoggedStatusKey = null;
+let lastStatusLogAt = 0;
+function maybeLogStatusSummary() {
+  const key = statusKey();
+  const now = Date.now();
+  if (key !== lastLoggedStatusKey || now - lastStatusLogAt >= 60000) {
+    logStatusSummary();
+    lastLoggedStatusKey = key;
+    lastStatusLogAt = now;
+  }
+}
+// Checked every 2s rather than hooked into every individual mutation site
+// (handlePvt, radio connect/disconnect, the marks handler, transmitFix) -
+// far simpler than scattering "maybe log now" calls across all of them,
+// at the cost of up to ~2s detection latency for a change, which is
+// irrelevant here (arguably even desirable - it won't fire on a one-fix
+// transient blip).
+setInterval(maybeLogStatusSummary, 2000);
+maybeLogStatusSummary(); // once immediately, not just after the first check
 
 // Simple heartbeat so you can tell the process is alive even with no fix yet.
 // Under fleetSim.js, report through IPC instead of logging directly - a
