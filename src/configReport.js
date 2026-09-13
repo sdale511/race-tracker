@@ -11,40 +11,52 @@ const { COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH_M, FINISH_SIDE_
 // than positional arrays - with five optional fields per row, named keys
 // stay readable where array-position magic wouldn't.
 //
-// Not role-filtered: config.js resolves the exact same object structure
-// whether this process is `npm run base` or `npm run boat`, so this list
-// (and both dashboards' /config pages) always shows everything, with
-// section titles noting the handful that are only actually read by one
-// role or the other.
+// config.js resolves the exact same object structure regardless of which
+// process reads it (`npm run base`/`boat`/`rtk`/`basertk`), but each
+// process only ever actually READS a subset of it - `roles`, on a row or
+// (when every row in it shares the same answer) a whole section, names
+// which of 'base', 'boat', 'rtk' actually read that setting; omitted means
+// every role does. 'basertk' is deliberately not a tag that appears below
+// at all - see renderConfigPage's own comment on why it's derived (base's
+// settings union rtk's) rather than duplicated onto every row. That
+// function's `role` param uses this to show each dashboard only what that
+// process reads, instead of the full list including settings it never
+// looks at. `npm run print-config` (printConfig.js) deliberately bypasses
+// this and always prints everything, unfiltered - it's a standalone
+// diagnostic dump, not run "as" any particular role.
 const sections = [
   {
     title: 'Mode',
     rows: [
-      { label: 'simulate', value: config.simulate, envVar: 'SIMULATE' },
-      { label: 'simulateGps', value: config.simulateGps, envVar: 'SIMULATE_GPS' },
-      { label: 'noGps', value: config.noGps, envVar: 'NO_GPS' },
+      { label: 'simulate', value: config.simulate, envVar: 'SIMULATE', roles: ['base', 'boat'] },
+      { label: 'simulateGps', value: config.simulateGps, envVar: 'SIMULATE_GPS', roles: ['boat'] },
+      { label: 'noGps', value: config.noGps, envVar: 'NO_GPS', roles: ['boat'] },
       // testLapNumber doubles as the on/off switch for this test mode (0 =
       // off) and the lap number to report - see config.js's own comment.
-      { label: 'testLapBoatId', value: config.testLapBoatId, envVar: 'TEST_LAP_BOAT_ID' },
-      { label: 'testLapNumber', value: config.testLapNumber, envVar: 'TEST_LAP_NUMBER' },
+      { label: 'testLapBoatId', value: config.testLapBoatId, envVar: 'TEST_LAP_BOAT_ID', roles: ['base'] },
+      { label: 'testLapNumber', value: config.testLapNumber, envVar: 'TEST_LAP_NUMBER', roles: ['base'] },
     ],
   },
   {
     title: 'Simulation (sim.*, only used when simulate=true)',
+    // Only `port` is read on the base side too (SimRadioLink listens on it
+    // for sim frames) - every other sim.* field is specifically about
+    // simGps.js's fake race track, boat-only.
+    roles: ['base', 'boat'],
     rows: [
-      { label: 'port', value: config.sim.port, envVar: 'SIM_PORT' },
-      { label: 'gpsHz', value: config.sim.gpsHz, envVar: 'SIM_GPS_HZ', unit: 'Hz' },
-      { label: 'upwindSpeedKn', value: config.sim.upwindSpeedKn, envVar: 'SIM_UPWIND_SPEED_KN', unit: 'kn' },
-      { label: 'downwindSpeedKn', value: config.sim.downwindSpeedKn, envVar: 'SIM_DOWNWIND_SPEED_KN', unit: 'kn' },
-      { label: 'lapCount', value: config.sim.lapCount, envVar: 'SIM_LAP_COUNT', unit: 'laps' },
-      { label: 'centerLat', value: config.sim.centerLat, envVar: 'SIM_CENTER_LAT', unit: '°' },
-      { label: 'centerLon', value: config.sim.centerLon, envVar: 'SIM_CENTER_LON', unit: '°' },
-      { label: 'packetLossPct', value: config.sim.packetLossPct, envVar: 'SIM_PACKET_LOSS', unit: '%' },
-      { label: 'startOnly', value: config.sim.startOnly, envVar: 'SIM_START_ONLY' },
-      { label: 'prestartDwellS', value: config.sim.prestartDwellS, envVar: 'SIM_PRESTART_DWELL_S', unit: 's' },
-      { label: 'holdForStart', value: config.sim.holdForStart, envVar: 'SIM_HOLD_FOR_START' },
-      { label: 'foulTest', value: config.sim.foulTest, envVar: 'SIM_FOUL' },
-      { label: 'foulWindwardM', value: config.sim.foulWindwardM, envVar: 'SIM_FOUL_WINDWARD_M', unit: 'm' },
+      { label: 'port', value: config.sim.port, envVar: 'SIM_PORT', roles: ['base', 'boat'] },
+      { label: 'gpsHz', value: config.sim.gpsHz, envVar: 'SIM_GPS_HZ', unit: 'Hz', roles: ['boat'] },
+      { label: 'upwindSpeedKn', value: config.sim.upwindSpeedKn, envVar: 'SIM_UPWIND_SPEED_KN', unit: 'kn', roles: ['boat'] },
+      { label: 'downwindSpeedKn', value: config.sim.downwindSpeedKn, envVar: 'SIM_DOWNWIND_SPEED_KN', unit: 'kn', roles: ['boat'] },
+      { label: 'lapCount', value: config.sim.lapCount, envVar: 'SIM_LAP_COUNT', unit: 'laps', roles: ['boat'] },
+      { label: 'centerLat', value: config.sim.centerLat, envVar: 'SIM_CENTER_LAT', unit: '°', roles: ['boat'] },
+      { label: 'centerLon', value: config.sim.centerLon, envVar: 'SIM_CENTER_LON', unit: '°', roles: ['boat'] },
+      { label: 'packetLossPct', value: config.sim.packetLossPct, envVar: 'SIM_PACKET_LOSS', unit: '%', roles: ['boat'] },
+      { label: 'startOnly', value: config.sim.startOnly, envVar: 'SIM_START_ONLY', roles: ['boat'] },
+      { label: 'prestartDwellS', value: config.sim.prestartDwellS, envVar: 'SIM_PRESTART_DWELL_S', unit: 's', roles: ['boat'] },
+      { label: 'holdForStart', value: config.sim.holdForStart, envVar: 'SIM_HOLD_FOR_START', roles: ['boat'] },
+      { label: 'foulTest', value: config.sim.foulTest, envVar: 'SIM_FOUL', roles: ['boat'] },
+      { label: 'foulWindwardM', value: config.sim.foulWindwardM, envVar: 'SIM_FOUL_WINDWARD_M', unit: 'm', roles: ['boat'] },
       // These live in course.js, not config.sim - only take effect on a
       // fresh course (see "Changing the course" in the README); a published
       // course already in Redis keeps whatever it was created with
@@ -55,15 +67,17 @@ const sections = [
         envVar: 'SIM_COURSE_LENGTH_NM',
         unit: 'nm',
         note: 'which pair races is SIM_COURSE_MARKS, shown in the label',
+        roles: ['boat'],
       },
-      { label: 'startLinePosition', value: START_LINE_POSITION, envVar: 'SIM_START_LINE_POSITION', unit: '%' },
-      { label: 'startLineLengthM', value: START_SIDE_LENGTH_M, unit: 'm' },
-      { label: 'finishLineLengthM', value: FINISH_SIDE_LENGTH_M, unit: 'm' },
-      { label: 'committeeGapM', value: COMMITTEE_GAP_M, envVar: 'SIM_COMMITTEE_GAP_M', unit: 'm' },
+      { label: 'startLinePosition', value: START_LINE_POSITION, envVar: 'SIM_START_LINE_POSITION', unit: '%', roles: ['boat'] },
+      { label: 'startLineLengthM', value: START_SIDE_LENGTH_M, unit: 'm', roles: ['boat'] },
+      { label: 'finishLineLengthM', value: FINISH_SIDE_LENGTH_M, unit: 'm', roles: ['boat'] },
+      { label: 'committeeGapM', value: COMMITTEE_GAP_M, envVar: 'SIM_COMMITTEE_GAP_M', unit: 'm', roles: ['boat'] },
     ],
   },
   {
     title: 'Local UDP broadcast (base and boat both)',
+    roles: ['base', 'boat'],
     rows: [
       { label: 'format', value: config.localBroadcast.format, envVar: 'GPS_OUTPUT_FORMAT' },
       { label: 'address', value: config.localBroadcast.address, envVar: 'UDP_BROADCAST_ADDR' },
@@ -73,17 +87,26 @@ const sections = [
   {
     title: 'GPS (simpleRTK2B LR)',
     rows: [
-      { label: 'port', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX' },
-      { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud' },
-      { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG' },
-      { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE' },
-      { label: 'logRtcm', value: config.gps.logRtcm, envVar: 'GPS_LOG_RTCM' },
-      { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's' },
-      { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm' },
+      // Shared by all three modes: the boat's own GPS, an optional GPS
+      // wired directly to the base, and rtkStation.js's entire reason to
+      // exist - see config.js's own comment on this section.
+      { label: 'port', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX', roles: ['base', 'boat', 'rtk'] },
+      { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud', roles: ['base', 'boat', 'rtk'] },
+      { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG', roles: ['base', 'boat', 'rtk'] },
+      { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE', roles: ['base', 'boat', 'rtk'] },
+      { label: 'logRtcm', value: config.gps.logRtcm, envVar: 'GPS_LOG_RTCM', roles: ['boat'] },
+      // rtk only - plain `npm run base` opens the same GPS_PORT but never
+      // wires the TMODE3/survey-in controls that actually read these (see
+      // baseStation.js's rtkControlsEnabled); `basertk` sees them via the
+      // rtk half of renderConfigPage's base∪rtk union, not this tag.
+      { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's', roles: ['rtk'] },
+      { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm', roles: ['rtk'] },
     ],
   },
   {
     title: 'Radio (telemetry)',
+    // Not rtk - that mode never opens the telemetry radio at all.
+    roles: ['base', 'boat'],
     rows: [
       { label: 'enabled', value: config.radio.enabled, envVar: 'RADIO_ENABLED' },
       { label: 'port', value: config.radio.port, envVar: 'RADIO_PORT', note: 'macOS: /dev/cu.usbserial-XXXX' },
@@ -92,6 +115,9 @@ const sections = [
   },
   {
     title: 'Identity & timing',
+    // Not rtk - none of these apply once there's no telemetry radio/course
+    // marks in the picture at all.
+    roles: ['base', 'boat'],
     rows: [
       {
         label: 'boatId',
@@ -105,50 +131,61 @@ const sections = [
           process.env.BOAT_ID === undefined
             ? `from ${config.logDir}/boat_id.txt (this device's own persisted id)`
             : undefined,
+        roles: ['boat'],
       },
-      { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm' },
+      { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
         label: 'txIntervalMs',
         value: config.txIntervalMs,
         envVar: 'TX_INTERVAL_S',
         unit: 'ms',
         note: 'env var is in seconds; 0 disables the heartbeat (distance gate only)',
+        roles: ['boat'],
       },
       {
         label: 'marksBroadcastIntervalMs',
         value: config.marksBroadcastIntervalMs,
         envVar: 'MARKS_BROADCAST_INTERVAL_MS',
         unit: 'ms',
+        roles: ['base'],
       },
-      { label: 'logMarksBroadcast', value: config.logMarksBroadcast, envVar: 'LOG_MARKS_BROADCAST' },
+      { label: 'logMarksBroadcast', value: config.logMarksBroadcast, envVar: 'LOG_MARKS_BROADCAST', roles: ['base'] },
     ],
   },
   {
     title: 'Local logging',
+    // Not rtk - it writes no CSV logs at all (no telemetry frames, no
+    // course, nothing to log).
+    roles: ['base', 'boat'],
     rows: [
       { label: 'logDir', value: config.logDir, envVar: 'LOG_DIR' },
       { label: 'logRetentionDays', value: config.logRetentionDays, envVar: 'LOG_RETENTION_DAYS', unit: 'days' },
-      { label: 'logChunkMinutes', value: config.logChunkMinutes, envVar: 'LOG_CHUNK_MINUTES', unit: 'min' },
+      { label: 'logChunkMinutes', value: config.logChunkMinutes, envVar: 'LOG_CHUNK_MINUTES', unit: 'min', roles: ['boat'] },
     ],
   },
   {
     title: 'Log upload over WiFi',
+    // Not rtk - it has no SD-card logs to upload and doesn't serve uploads.
+    roles: ['base', 'boat'],
     rows: [
-      { label: 'enabled', value: config.upload.enabled, envVar: 'UPLOAD_ENABLED' },
+      { label: 'enabled', value: config.upload.enabled, envVar: 'UPLOAD_ENABLED', roles: ['boat'] },
       { label: 'logSuccess', value: config.upload.logSuccess, envVar: 'UPLOAD_LOG' },
-      { label: 'port', value: config.upload.port, envVar: 'UPLOAD_PORT' },
-      { label: 'dir', value: config.upload.dir, envVar: 'UPLOAD_DIR' },
-      { label: 'baseIp', value: config.upload.baseIp || '(auto-detect)', envVar: 'BASE_IP' },
-      { label: 'checkIntervalMs', value: config.upload.checkIntervalMs, envVar: 'UPLOAD_CHECK_INTERVAL_MS', unit: 'ms' },
-      { label: 'timeoutMs', value: config.upload.timeoutMs, envVar: 'UPLOAD_TIMEOUT_MS', unit: 'ms' },
+      { label: 'port', value: config.upload.port, envVar: 'UPLOAD_PORT', roles: ['base'] },
+      { label: 'dir', value: config.upload.dir, envVar: 'UPLOAD_DIR', roles: ['base'] },
+      { label: 'baseIp', value: config.upload.baseIp || '(auto-detect)', envVar: 'BASE_IP', roles: ['base'] },
+      { label: 'checkIntervalMs', value: config.upload.checkIntervalMs, envVar: 'UPLOAD_CHECK_INTERVAL_MS', unit: 'ms', roles: ['boat'] },
+      { label: 'timeoutMs', value: config.upload.timeoutMs, envVar: 'UPLOAD_TIMEOUT_MS', unit: 'ms', roles: ['boat'] },
     ],
   },
   {
     title: 'Admin dashboard',
+    // Shared by all three - each mode has its own dashboard on this port.
+    roles: ['base', 'boat', 'rtk'],
     rows: [{ label: 'port', value: config.admin.port, envVar: 'ADMIN_PORT' }],
   },
   {
     title: 'Redis (base station only)',
+    roles: ['base'],
     rows: [
       { label: 'url', value: config.redis.url || '(unset)', envVar: 'REDIS_URL' },
       { label: 'env preset', value: process.env.REDIS_ENV || 'local', envVar: 'REDIS_ENV' },
@@ -173,6 +210,7 @@ const sections = [
   },
   {
     title: 'RegattaUp webhooks - lap + on-grid + mark rounding (base station only)',
+    roles: ['base'],
     rows: [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
       { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_ENABLED' },
@@ -258,14 +296,46 @@ function overrideTag(envVar, inverted) {
   return `(${rawState}, ${isSet ? 'overridden' : 'default'})`;
 }
 
-// HTML rendering shared by both admin dashboards' GET /config (see
-// adminServer.js, roverAdminServer.js) - same dark theme as the rest of
-// the admin UI. No stats snapshot needed here (unlike renderDashboard/
-// renderMap elsewhere) - config is resolved once at process startup from
-// env vars, not something that changes while the process runs, so there's
-// nothing to poll/refresh.
-function renderConfigPage() {
-  const sectionsHtml = sections
+// HTML rendering shared by all three admin dashboards' GET /config (see
+// adminServer.js, roverAdminServer.js, rtkAdminServer.js) - same dark theme
+// as the rest of the admin UI. No stats snapshot needed here (unlike
+// renderDashboard/renderMap elsewhere) - config is resolved once at process
+// startup from env vars, not something that changes while the process
+// runs, so there's nothing to poll/refresh.
+//
+// role ('base' | 'boat' | 'rtk' | 'basertk'), when given, keeps only the
+// sections/rows tagged for it (see each row/section's own `roles` above;
+// untagged means every role sees it) - a section that ends up with zero
+// visible rows is dropped entirely rather than shown empty. Each dashboard
+// passes its own role so an operator only ever sees settings that process
+// actually reads, not the other modes' unrelated knobs (radio/course for
+// rtk, Redis/RegattaUp for boat, sim-race tuning for base, ...).
+//
+// 'basertk' (npm run basertk - see baseStation.js's rtkControlsEnabled) is
+// deliberately NOT its own tag scattered across rows below: it's exactly
+// "everything 'base' reads, plus everything 'rtk' reads" (the same base
+// station, with the TMODE3/survey-in controls additionally wired in), so
+// visibleTo treats it as matching either tag rather than requiring every
+// row to also carry a third label that would always just mirror the union
+// of the other two.
+//
+// Omit role to show everything unfiltered - printConfig.js uses `sections`
+// directly instead of this function, so nothing currently relies on that
+// default, but it's the safe fallback for any future caller that isn't a
+// specific role.
+function renderConfigPage({ role } = {}) {
+  const visibleTo = (item) => {
+    if (!item.roles) return true;
+    if (item.roles.includes(role)) return true;
+    return role === 'basertk' && (item.roles.includes('base') || item.roles.includes('rtk'));
+  };
+  const sectionsToRender = role
+    ? sections
+        .filter(visibleTo)
+        .map((section) => ({ ...section, rows: section.rows.filter(visibleTo) }))
+        .filter((section) => section.rows.length > 0)
+    : sections;
+  const sectionsHtml = sectionsToRender
     .map((section) => {
       const rows = section.rows
         .map(({ label, value, envVar, inverted, unit, note }) => {

@@ -113,8 +113,11 @@ else
   echo "no REGATTAUP_REGATTA_ID given - it'll pick up regatta-id.txt if present, otherwise auto-select the closest active/future regatta to today."
   echo "change it any time from the admin dashboard's Regatta card."
 fi
-echo "  status:  systemctl status $SERVICE_NAME"
-echo "  logs:    ./base-logs.sh   (or: journalctl -u $SERVICE_NAME -f)"
-echo "  restart: sudo ./base-restart.sh   (or: sudo systemctl restart $SERVICE_NAME)"
+echo "  status:    systemctl status $SERVICE_NAME"
+echo "  logs:      ./base-logs.sh   (or: journalctl -u $SERVICE_NAME -f)"
+echo "  restart:   sudo ./base-restart.sh   (or: sudo systemctl restart $SERVICE_NAME)"
+echo "  stop:      sudo ./base-stop.sh   (or: sudo systemctl stop $SERVICE_NAME)"
+echo "  start:     sudo ./base-start.sh   (or: sudo systemctl start $SERVICE_NAME)"
+echo "  autostart: sudo ./base-autostart.sh [on|off]   (or: sudo systemctl enable|disable $SERVICE_NAME)"
 echo
 echo "To change REGATTAUP_REGATTA_ID later, just re-run this script (or pick a different one from the admin dashboard - no restart needed for that)."

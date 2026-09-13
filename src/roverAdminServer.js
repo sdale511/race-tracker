@@ -992,7 +992,7 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
 
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConfigPage());
+      res.end(renderConfigPage({ role: 'boat' }));
       return;
     }
 

@@ -141,11 +141,13 @@ normally used for RTCM3 correction data between your RTK base and this
 rover, not for the position telemetry this app sends. Nothing here touches
 that link.
 
-### Base station: enabling RTCM3 output (one-time)
+### RTK base GPS: enabling RTCM3 output (one-time)
 
 Don't assume a board "ships ready to go" actually has every RTCM3 message
 enabled - `TMODE3` (fixed/survey-in position mode, set from this app's own
-admin dashboard) and RTCM3 *output* are two entirely separate config groups
+`npm run rtk`/`npm run basertk` admin dashboard - see "RTK-only mode"/"Base
++ RTK combined" below; plain `npm run base` doesn't have this control at
+all) and RTCM3 *output* are two entirely separate config groups
 on the receiver. Setting a fixed position only controls what position gets
 *used* in any RTCM3 messages the receiver happens to send - it doesn't turn
 sending them on. Some kits ship with only `1005` (station coordinates)
@@ -195,9 +197,9 @@ actually arrived corrupted and got dropped. Seeing nothing here doesn't by
 itself mean no corrections are arriving - only that this message hasn't
 been turned on yet to report it.
 
-### Base station: enabling the survey-in status card (optional)
+### RTK base GPS: enabling the survey-in status card (optional)
 
-If the base's admin dashboard's "Base GPS survey-in" card (see "Admin
+If `npm run rtk`/`npm run basertk`'s "Base GPS survey-in" card (see "Admin
 dashboard" below) is showing "no base GPS, or not polled yet" even with
 `GPS_PORT` set and TMODE3 actually configured for survey-in, it's usually
 because `UBX-NAV-SVIN` isn't enabled as an output message - unlike
@@ -330,6 +332,23 @@ real racing distance.
 
 ## Running
 
+Four modes, each its own `npm run` script - pick whichever matches how a
+given machine is actually being used:
+
+| Mode | Command | Runs on | What it does |
+|---|---|---|---|
+| Boat | `npm run boat` | Each boat's own Pi | Reads that boat's GPS, transmits position over the telemetry radio, logs to SD, serves that boat's own rover dashboard |
+| Base | `npm run base` | Shore/committee machine | Receives every boat's telemetry, tracks the course/fleet/laps, reports to RegattaUp, serves the fleet dashboard. Also reads an optional GPS of its own for planting course marks at a real surveyed position (see "Editing mark positions from the map" below) - but not RTK correction control |
+| RTK-only | `npm run rtk` | A machine with just the RTK correction-source GPS attached | Monitors/configures that GPS's TMODE3/survey-in state and serves a small dedicated dashboard for it - no telemetry radio, course, fleet, or RegattaUp reporting at all |
+| Base + RTK combined | `npm run basertk` | A single machine acting as both the telemetry base AND the RTK correction source | Everything `base` does, plus RTK-only's TMODE3/survey-in controls, in one process/dashboard |
+
+Base and RTK-only are two ends of a deliberate split: run them together on
+one machine (`basertk`) when that's simplest, or split the RTK correction
+source onto its own separate machine/process (plain `base` + separate
+`rtk`) when the telemetry base and the correction-source GPS aren't
+physically the same box. See "RTK-only mode" and "Base + RTK combined"
+below for the split/combined cases in detail.
+
 Boat (Pi Zero 2 W):
 ```
 cd race-tracker
@@ -428,6 +447,68 @@ that live). `./base-logs.sh` (shorthand for `journalctl -u base-station -f`,
 extra args pass through) follows the logs, `sudo ./base-restart.sh`
 (shorthand for `sudo systemctl restart base-station`, then prints status)
 restarts it, and `systemctl status base-station` works as usual too.
+`sudo ./base-stop.sh` and `sudo ./base-start.sh` stop/start it without
+touching whether it auto-starts on boot; `sudo ./base-autostart.sh on|off`
+(no argument shows current status) controls that separately - same set of
+scripts as the boat service above, just for `base-station`.
+
+### RTK-only mode
+
+For a setup where the RTK correction source (the ArduSimpleRTK/ZED-F9P
+board and its TMODE3/survey-in state) needs its own dashboard on its own
+machine/process, separate from telemetry/course/regatta concerns entirely -
+e.g. the correction-radio Pi sitting apart from whatever runs `npm run
+base`:
+```
+GPS_PORT=/dev/ttyACM0 npm run rtk
+```
+This is `src/rtkStation.js` - a much smaller entry point than
+`baseStation.js` that only opens the base GPS and serves a dashboard with
+the Base GPS / Base GPS survey-in / manual-fixed-position cards (same
+underlying code as the ones `npm run basertk`'s dashboard shows - see
+`src/baseGps.js`/`src/rtkAdminCards.js`, not a second copy of the logic; NOT
+shown on plain `npm run base`, which has no TMODE3/survey-in controls at
+all - see "Base + RTK combined" below). No telemetry radio, no course
+marks, no fleet table, no Redis, no RegattaUp reporting - none of that is
+opened or connected to at all in this mode. Unlike plain `npm run base`
+(which only opens its GPS once `GPS_PORT` is *explicitly* set, since most
+base stations have no GPS hardware attached), this mode always opens one -
+falling back to the same `GPS_PORT`/`GPS_BAUD` defaults a boat's own GPS
+uses if not overridden - since monitoring/configuring that GPS is this
+mode's entire job. Uses the same `ADMIN_PORT` (default `8092`) as the other
+dashboards; run only one mode per machine unless `ADMIN_PORT` is set
+differently for each. Has its own `GET /config` page too (same
+fully-resolved-config view `npm run print-config`/the other dashboards
+show, see "Tuning knobs" below - filtered down to just the settings this
+mode actually reads, GPS and admin-port, not the full unfiltered list).
+
+### Base + RTK combined
+
+For a single machine acting as both the telemetry base AND the RTK
+correction source - the common case where there's no reason to split them
+onto separate hardware:
+```
+RADIO_PORT=/dev/ttyUSB0 GPS_PORT=/dev/ttyACM0 npm run basertk
+```
+This is `src/baseRtkStation.js` - a thin wrapper, not a second copy of
+`baseStation.js`'s ~2000 lines: it just sets an internal flag
+(`RTK_CONTROLS_ENABLED=1`) that `baseStation.js` already checks, then
+requires it. The result is exactly `npm run base`'s full dashboard (fleet,
+course, regatta, uploads, everything) with the RTK-only mode's TMODE3/
+survey-in/manual-fixed-position cards and their `/api/gps/survey/...`
+routes additionally wired in - the same shared code `npm run rtk` uses (see
+"RTK-only mode" above), not a separate implementation. Its `GET /config`
+page shows the union of what plain `base` and `rtk` each show.
+
+Plain `npm run base` (no `RTK_CONTROLS_ENABLED`) still opens `GPS_PORT` when
+set, but only for the ordinary "Base GPS" fix card (the map's "plant a mark
+at my real position" feature, see "Editing mark positions from the map"
+below) - it has no TMODE3/survey-in cards, and its `/api/gps/survey/mode`
+and `/api/gps/save-config` routes aren't registered at all (a request to
+either 404s, the same as if the card were never there). Use `basertk`
+instead of plain `base` whenever this machine's own GPS is meant to
+actually control what RTCM gets broadcast to the fleet, not just supply a
+one-off position reading.
 
 ### Scheduled shutdown (boat, battery-saving)
 
@@ -1532,7 +1613,10 @@ tracks recorded, tracks and lap counts per boat, radio link quality
 successes, failures, bytes sent, and each boat's self-reported pending
 count). It reloads itself every 5 seconds; there's also a `GET
 /api/stats` JSON endpoint if you want to pull the same data into something
-else.
+else. Everything in this section applies to both `npm run base` and
+`npm run basertk` (the same dashboard code, `basertk` just also wires in
+the TMODE3/survey-in cards described further below) - `npm run rtk`'s own
+much smaller dashboard is covered separately under "RTK-only mode" above.
 
 This is a live "what's happening right now" view, not a historical
 record - the counters (`src/stats.js`) are in-memory only and reset on
@@ -1644,7 +1728,9 @@ labeled excellent/good/fair/poor rather than a bare number), ground speed
 antenna isn't drifting), and the receiver's own satellite-derived UTC
 clock, once valid.
 
-The dashboard also shows a "Base GPS survey-in" card: the receiver's current TMODE3 mode
+Under `npm run rtk` or `npm run basertk` specifically (not plain `npm run
+base` - see "RTK-only mode"/"Base + RTK combined" above), the dashboard
+also shows a "Base GPS survey-in" card: the receiver's current TMODE3 mode
 (disabled / survey-in / fixed - whether it's even trying to establish its
 own fixed reference position at all), and while in survey-in mode, live
 progress against both of survey-in's own completion conditions - elapsed
@@ -1702,7 +1788,9 @@ exact numbers about to be sent rather than a generic "are you sure," so a
 typo (wrong sign, transposed digits) is visible one last time before it
 reconfigures RTK corrections for every boat.
 
-All three actions POST to `/api/gps/survey/mode` (base-only, no CORS - unlike
+All three actions POST to `/api/gps/survey/mode` (only registered at all
+under `npm run rtk`/`basertk` - plain `npm run base` 404s it, same as the
+card itself not existing there; no CORS either way - unlike
 `/api/marks/:name`, there's no rover-side equivalent that needs to call it
 cross-origin) with `{"mode": "survey-in"}`, `{"mode": "fixed"}`, or
 `{"mode": "fixed", "lat": ..., "lon": ..., "heightM": ...}` for a manual
@@ -1925,12 +2013,12 @@ given `boat`/`base` run will actually use, instead of reading through
 | `SIMULATE_GPS` | unset | Fakes just the GPS track while still using real radio hardware on both ends - for bench-testing an actual radio link (range, packet loss) without needing a real GPS fix or being outdoors. Implied by `SIMULATE=1`; only needed on its own when you want simulated GPS with a real radio specifically, see "Simulated GPS with real radio hardware" above |
 | `GPS_OUTPUT_FORMAT` | `ubx` | Base and boat both — format of the local UDP broadcast, see "Connecting to your race committee software" above. `ubx` (default) sends a synthetic `UBX-NAV-PVT` message; `nmea` sends a standard `$GPGGA` sentence instead, for tools that only speak NMEA |
 | `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base and boat both — where each process's own local UDP broadcast (see `GPS_OUTPUT_FORMAT` above) is sent. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`); the base only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
-| `GPS_LOG` | unset (on) | Both roles — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. Every fix is logged, not just ones that clear `TX_DISTANCE_M` — the console is a live "is this thing still getting fixes" view, independent of what's actually sent over radio/written to SD. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
-| `GPS_LOG_REPLACE` | unset (on) | Both roles — when watching a real interactive terminal (not piped/redirected, e.g. to a file or `systemd`/journald), each fix overwrites the same console line instead of scrolling, so a stationary boat/base doesn't flood the screen. On the boat, a fix that actually clears `TX_DISTANCE_M` (a real radio send) still commits to scrollback instead of being overwritten. Set to `0` to always scroll instead (one line per logged fix) — e.g. if something else is tailing/grepping this process's own terminal output directly, where overwritten lines would never actually appear to it |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base`/`basertk` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat and `npm run rtk`/`basertk` (see "RTK-only mode"/"Base + RTK combined" above) always open a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`, boat only); plain `npm run base` only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
+| `GPS_LOG` | unset (on) | All three modes — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. Every fix is logged, not just ones that clear `TX_DISTANCE_M` — the console is a live "is this thing still getting fixes" view, independent of what's actually sent over radio/written to SD. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
+| `GPS_LOG_REPLACE` | unset (on) | All three modes — when watching a real interactive terminal (not piped/redirected, e.g. to a file or `systemd`/journald), each fix overwrites the same console line instead of scrolling, so a stationary boat/base/RTK-only process doesn't flood the screen. On the boat, a fix that actually clears `TX_DISTANCE_M` (a real radio send) still commits to scrollback instead of being overwritten. Set to `0` to always scroll instead (one line per logged fix) — e.g. if something else is tailing/grepping this process's own terminal output directly, where overwritten lines would never actually appear to it |
 | `GPS_LOG_RTCM` | unset (off) | Boat only — set to `1` to log a `[rtcm]` line for every `UBX-RXM-RTCM` message the receiver reports (RTCM message type, whether it was applied, CRC failures) — see "Wiring notes" above. Also requires `UBX-RXM-RTCM` to be enabled as an output on the receiver itself, a separate one-time step |
-| `GPS_SVIN_MIN_DUR_S` | 60 | Base station only — minimum duration (seconds) the base GPS must spend surveying before the "Start survey-in" dashboard button's request can complete, regardless of how quickly the accuracy estimate converges — see "Admin dashboard" above |
-| `GPS_SVIN_ACC_LIMIT_MM` | 2000 | Base station only — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
+| `GPS_SVIN_MIN_DUR_S` | 60 | `npm run rtk` or `basertk` only (not plain `base`) — minimum duration (seconds) the base GPS must spend surveying before the "Start survey-in" dashboard button's request can complete, regardless of how quickly the accuracy estimate converges — see "Admin dashboard" above |
+| `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `npm run rtk` or `basertk` only (not plain `base`) — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
 | `RADIO_ENABLED` | unset (on) | Set to `0` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
@@ -1953,7 +2041,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `UPLOAD_DIR` | `race-uploads` (next to `LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
 | `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |
 | `UPLOAD_CHECK_INTERVAL_MS` / `UPLOAD_TIMEOUT_MS` | 15000 / 5000 | Boat only — how often to check whether the base is reachable, and how long to wait for a response before giving up on that attempt |
-| `ADMIN_PORT` | 8092 (boat: 8093 under `SIMULATE=1`) | Both roles — port the admin dashboard listens on (base's fleet view, or a boat's own rover view), see "Admin dashboard" above. The dashboards report their actual port to each other at runtime, so the cross-links work correctly regardless of what this is set to on either side |
+| `ADMIN_PORT` | 8092 (boat: 8093 under `SIMULATE=1`) | Every mode — port the admin dashboard listens on (base's fleet view, a boat's own rover view, `npm run rtk`'s RTK-only view, or `npm run basertk`'s combined view), see "Admin dashboard" above. The base/boat dashboards report their actual port to each other at runtime, so the cross-links work correctly regardless of what this is set to on either side |
 | `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Switching between Redis servers" above. Ignored entirely if `REDIS_URL` is set |
 | `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
 | `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |

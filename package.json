@@ -8,6 +8,8 @@
     "boat": "node src/boatAgent.js",
     "fleet": "node src/fleetSim.js",
     "base": "node src/baseStation.js",
+    "rtk": "node src/rtkStation.js",
+    "basertk": "node src/baseRtkStation.js",
     "clear-boats": "node src/clearBoats.js",
     "reset-course": "node src/resetCourse.js",
     "reset-regatta": "node src/resetRegatta.js",
