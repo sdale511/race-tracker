@@ -376,6 +376,12 @@ function renderDashboard(s) {
       // expected instead of surprising - see the sort comment above for why
       // that's normal for a stationary boat.
       const viaWifi = b.pendingReportedAt != null && (b.lastSeen == null || b.pendingReportedAt > b.lastSeen);
+      // Radio only, unlike "Last seen" above (which also counts the WiFi
+      // health-check ping - see viaWifi) - a boat whose radio link is down
+      // but whose WiFi still reaches the base looks deceptively "recent"
+      // in that combined column; this one can't be fooled that way, since
+      // it's exactly b.lastSeen with nothing else mixed in.
+      const lastSeenRadio = b.lastSeen != null ? formatAgo(b.lastSeen) : '<span class="muted">—</span>';
       const tracks = (s.redis && s.redis.tracksByBoat && s.redis.tracksByBoat[id]) || 0;
       const laps = s.lapCounts[id] || 0;
       // The boat's own rover dashboard (see roverAdminServer.js) - IP and
@@ -430,6 +436,7 @@ function renderDashboard(s) {
         <tr>
           <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}</td>
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
+          <td>${lastSeenRadio}</td>
           <td>${fixRate}</td>
           <td>${fixCell}</td>
           <td>${tracks.toLocaleString()}</td>
@@ -624,7 +631,19 @@ function renderDashboard(s) {
         ? '<div class="card empty">No boats heard from yet.</div>'
         : `<table>
       <thead>
-        <tr><th>Boat</th><th>Last seen</th><th>Fix rate</th><th>Fix</th><th>Tracks</th><th>Laps</th><th>Uploads this session</th><th>Pending</th><th>Files on disk (all-time)</th><th>Rover dashboard</th></tr>
+        <tr>
+          <th title="Green dot = heard from (radio or WiFi) within the last minute">Boat</th>
+          <th title="Most recent activity from either the radio link or the WiFi health-check ping, whichever is more recent - marked (WiFi) when that ping is the only reason this looks current">Last seen</th>
+          <th title="Most recent actual position frame received over radio specifically - unlike &quot;Last seen&quot;, not satisfied by the WiFi health-check ping alone, so a boat with a dead radio link but working WiFi shows stale here even while Last seen looks current">Last seen (radio)</th>
+          <th title="How often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Fix rate</th>
+          <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count in parentheses">Fix</th>
+          <th title="Number of position points stored in Redis for this boat this session">Tracks</th>
+          <th title="Completed lap count for this boat this race">Laps</th>
+          <th title="Successful vs. attempted SD-card log uploads since this base station started">Uploads this session</th>
+          <th title="Log files this boat says are still waiting to upload, self-reported on its own last health-check ping">Pending</th>
+          <th title="Total files ever received from this boat, from a one-time scan of race-uploads at startup - includes previous sessions, not just this one">Files on disk (all-time)</th>
+          <th title="Link to this boat's own admin dashboard - appears once it has self-reported its IP/port via a health check">Rover dashboard</th>
+        </tr>
       </thead>
       <tbody>${boatRows}</tbody>
     </table>`
