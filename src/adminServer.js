@@ -78,38 +78,44 @@ function renderBaseGpsCard(fix, gpsPort, connected) {
   // Shown first, ahead of Position - the whole point is that it's visible
   // even at a glance, not buried under a screenful of otherwise-current-
   // looking (but possibly stale) numbers.
-  if (statusHtml) rows.push({ label: 'Status', value: statusHtml });
-  rows.push({ label: 'Position', value: `${fix.lat.toFixed(7)}, ${fix.lon.toFixed(7)}` });
+  if (statusHtml) rows.push({ label: 'Status', title: 'Whether the base GPS serial link is actively connected right now, independent of whether the fix data below is still fresh', value: statusHtml });
+  rows.push({ label: 'Position', title: "Base antenna's own reported lat/lon - NOT the surveyed/fixed reference position broadcast to rovers, see the Base GPS survey-in card below for that", value: `${fix.lat.toFixed(7)}, ${fix.lon.toFixed(7)}` });
   if (fix.hMSLMm != null) {
     const ellipsoidM = fix.heightMm != null ? ` / ${(fix.heightMm / 1000).toFixed(2)}m ellipsoid` : '';
-    rows.push({ label: 'Altitude', value: `${(fix.hMSLMm / 1000).toFixed(2)}m MSL${ellipsoidM}` });
+    rows.push({ label: 'Altitude', title: 'Height above mean sea level, and ellipsoid height if reported', value: `${(fix.hMSLMm / 1000).toFixed(2)}m MSL${ellipsoidM}` });
   }
-  rows.push({ label: 'Satellites', value: `${fix.numSV}` });
+  rows.push({ label: 'Satellites', title: 'Number of satellites used in this fix', value: `${fix.numSV}` });
   if (fix.hAccMm != null) {
     const vAccPart = fix.vAccMm != null ? ` / ±${(fix.vAccMm / 1000).toFixed(2)}m vert` : '';
-    rows.push({ label: 'Accuracy', value: `±${(fix.hAccMm / 1000).toFixed(2)}m horiz${vAccPart}` });
+    rows.push({ label: 'Accuracy', title: 'Estimated 1-sigma position error, as reported by the receiver itself', value: `±${(fix.hAccMm / 1000).toFixed(2)}m horiz${vAccPart}` });
   }
-  if (fix.pDOP != null) rows.push({ label: 'DOP', value: `${fix.pDOP.toFixed(2)} (${dopQualityText(fix.pDOP)})` });
+  if (fix.pDOP != null)
+    rows.push({
+      label: 'DOP',
+      title: 'Dilution of precision - how much the current satellite geometry is amplifying measurement error, independent of the Accuracy figure above',
+      value: `${fix.pDOP.toFixed(2)} (${dopQualityText(fix.pDOP)})`,
+    });
   if (fix.gSpeedMmS != null) {
     const speedKn = (fix.gSpeedMmS / 1000 / 1852) * 3600;
     // A stationary base reading ~0.0kn is itself a useful sanity check
     // (confirms the antenna isn't drifting/slipping), so this is shown
     // even at zero rather than only when actually moving.
-    rows.push({ label: 'Speed', value: `${speedKn.toFixed(1)}kn` });
+    rows.push({ label: 'Speed', title: 'Ground speed - should read ~0kn for a stationary base antenna, as a sanity check', value: `${speedKn.toFixed(1)}kn` });
   }
   if (fix.utcValid) {
     const p2 = (n) => String(n).padStart(2, '0');
     rows.push({
       label: 'GPS time (UTC)',
+      title: "The GPS receiver's own clock, independent of this machine's system clock",
       value: `${fix.utcYear}-${p2(fix.utcMonth)}-${p2(fix.utcDay)} ${p2(fix.utcHour)}:${p2(fix.utcMin)}:${p2(fix.utcSec)}`,
     });
   }
-  if (portLine) rows.push({ label: 'Port', value: portLine });
+  if (portLine) rows.push({ label: 'Port', title: 'Serial port and baud rate this GPS module is connected on', value: portLine });
   const rowsHtml = rows
-    .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+    .map((r) => `<div class="stat-row"><span class="name" title="${r.title || ''}">${r.label}</span><span class="val">${r.value}</span></div>`)
     .join('');
   return `<div class="card">
-      <div class="label">Base GPS</div>
+      <div class="label" title="RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix">Base GPS</div>
       <div class="value">${fixQualityText(fix)}</div>
       <div class="stat-rows">${rowsHtml}</div>
     </div>`;

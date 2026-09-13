@@ -202,22 +202,40 @@ function renderDashboard(s, power) {
       }</div>
     </div>
     <div class="card">
-      <div class="label">Fix quality</div>
+      <div class="label" title="RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix">Fix quality</div>
       <div class="value">${fix ? fixQualityText(fix) : '—'}</div>
       <div class="stat-rows">${
         fix
           ? [
-              { label: 'diffSoln', value: `${fix.diffSoln}` },
-              { label: 'carrSoln', value: `${fix.carrSoln}` },
-              { label: 'Satellites', value: `${fix.numSV}` },
+              {
+                label: 'diffSoln',
+                title: 'Whether this fix uses any differential correction data at all - goes true as soon as RTCM corrections from the base start being applied, even before carrSoln below reaches float/fixed',
+                value: `${fix.diffSoln}`,
+              },
+              {
+                label: 'carrSoln',
+                title: '0 = no RTK carrier-phase solution, 1 = RTK float (decimeter-level, still resolving), 2 = RTK fixed (centimeter-level)',
+                value: `${fix.carrSoln}`,
+              },
+              { label: 'Satellites', title: 'Number of satellites used in this fix', value: `${fix.numSV}` },
               {
                 label: 'Accuracy',
+                title: "Estimated 1-sigma position error, as reported by the receiver itself",
                 value: `&plusmn;${(fix.hAccMm / 1000).toFixed(2)}m horiz${fix.vAccMm != null ? ` / &plusmn;${(fix.vAccMm / 1000).toFixed(2)}m vert` : ''}`,
               },
-              fix.pDOP != null ? { label: 'DOP', value: `${fix.pDOP.toFixed(2)} (${dopQualityText(fix.pDOP)})` } : null,
+              fix.pDOP != null
+                ? {
+                    label: 'DOP',
+                    title: 'Dilution of precision - how much the current satellite geometry is amplifying measurement error, independent of the Accuracy figure above',
+                    value: `${fix.pDOP.toFixed(2)} (${dopQualityText(fix.pDOP)})`,
+                  }
+                : null,
             ]
               .filter(Boolean)
-              .map((r) => `<div class="stat-row"><span class="name">${r.label}</span><span class="val">${r.value}</span></div>`)
+              .map(
+                (r) =>
+                  `<div class="stat-row"><span class="name" title="${r.title || ''}">${r.label}</span><span class="val">${r.value}</span></div>`
+              )
               .join('')
           : ''
       }</div>
