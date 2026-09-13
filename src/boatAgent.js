@@ -353,6 +353,26 @@ let lastPvt = null;
 // information.
 let stationaryLineLogged = false;
 
+// A receiver with no satellite lock yet (no antenna, freshly powered on,
+// antenna damage) reports gnssFixOk=false, but lat/lon aren't necessarily
+// undefined in that state - a real rig was once seen sending an exact
+// (0,0) "null island" fix this way. Transmitting that over radio would put
+// it on the base's map and, via redisStore.recordFix, on RegattaUp's live
+// map too - checked before every send below rather than trusting fixType
+// alone, since (0,0) specifically should never be a legitimate reading for
+// this boat regardless of what fixType claims.
+function hasValidFix(pvt) {
+  return pvt.gnssFixOk && !(pvt.lat === 0 && pvt.lon === 0);
+}
+
+// Rate-limits the "no valid fix, not transmitting" warning below - without
+// this, a boat with a genuinely dead/disconnected antenna would log one of
+// these per GPS fix (up to GPS_HZ), since clearedTxGate never actually
+// clears (lastTxPosition never advances - see transmitFix). Same pattern as
+// baseStation.js's own NO_REGATTA_WARN_INTERVAL_MS.
+const INVALID_FIX_WARN_INTERVAL_MS = 30000;
+let lastInvalidFixWarnAt = 0;
+
 function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
@@ -444,7 +464,17 @@ function handlePvt(pvt) {
     }
   }
 
-  if (clearedTxGate) transmitFix(pvt);
+  if (clearedTxGate) {
+    if (hasValidFix(pvt)) {
+      transmitFix(pvt);
+    } else {
+      const now = Date.now();
+      if (now - lastInvalidFixWarnAt > INVALID_FIX_WARN_INTERVAL_MS) {
+        console.warn(`[gps] no valid fix (gnssFixOk=${pvt.gnssFixOk} lat=${pvt.lat} lon=${pvt.lon}) - not transmitting`);
+        lastInvalidFixWarnAt = now;
+      }
+    }
+  }
 }
 
 // Actually sends a fix over the radio (real or simulated) and logs it to
@@ -494,7 +524,7 @@ function transmitFix(pvt) {
 // config.pingResponseJitterMs so an entire fleet doesn't all key up over
 // each other on the same shared channel the instant they hear the request.
 radio.on('ping', () => {
-  if (!lastPvt) return; // no fix yet at all - nothing to report
+  if (!lastPvt || !hasValidFix(lastPvt)) return; // no fix yet, or not a valid one - nothing to report
   const delayMs = Math.random() * config.pingResponseJitterMs;
   setTimeout(() => transmitFix(lastPvt), delayMs);
 });

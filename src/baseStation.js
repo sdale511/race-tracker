@@ -1459,6 +1459,19 @@ function main() {
       }
       return;
     }
+    // A frame reporting lat=0,lon=0 is never a genuine fix - "null island"
+    // only happens when a receiver has no antenna/no lock, and boatAgent.js's
+    // own handlePvt already refuses to transmit that. Checked again here
+    // (not just trusted on the sender's word) so a stray frame that somehow
+    // reaches this base some other way can't land on the map or, via
+    // redisStore.recordFix below, on RegattaUp's live map either. Not
+    // confused with the legitimate marks-ping sentinel (isMarksPing below),
+    // which is deliberately positioned at the pin<->committeeStart midpoint,
+    // never (0,0).
+    if (decoded.lat === 0 && decoded.lon === 0) {
+      console.warn(`[baseStation] ignoring frame from boat=${decoded.boatId} - lat/lon both 0 (no GPS fix)`);
+      return;
+    }
     stats.recordFrame(
       decoded.boatId,
       { lat: decoded.lat, lon: decoded.lon },
