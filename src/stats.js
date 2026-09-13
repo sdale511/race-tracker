@@ -18,6 +18,12 @@ let uploadBytesTotal = 0;
 
 const boatLastSeen = new Map(); // boatId -> timestamp of last position frame
 const boatLastPosition = new Map(); // boatId -> {lat, lon} of last position frame - in-memory only, see recordFrame
+// boatId -> {carrSoln, gnssFixOk, numSV} of last position frame - same
+// in-memory-only, this-session-only treatment as boatLastPosition, for the
+// fleet table's Fix column. Deliberately doesn't include fixType (3D/2D/
+// dead-reckoning) - that field isn't in the wire protocol at all (see
+// protocol.js's decode), only what's actually transmitted.
+const boatLastFix = new Map();
 // boatId -> recent frame-receipt timestamps, trimmed to the last
 // FIX_RATE_WINDOW_MS on every recordFrame call - see fixHz() below.
 const boatFrameTimes = new Map();
@@ -59,13 +65,15 @@ function normalizeBoatId(boatId) {
 // map (adminServer.js's renderMap) only ever plots a boat once it's
 // actually heard from this session, never from a boat's uploaded/on-disk
 // history (see baseStation.js's uploadDirBaseline, which is deliberately
-// kept separate from this).
-function recordFrame(boatId, position) {
+// kept separate from this). fix is likewise optional ({carrSoln,
+// gnssFixOk, numSV} off the decoded frame) - see boatLastFix's own comment.
+function recordFrame(boatId, position, fix) {
   framesReceived++;
   const id = normalizeBoatId(boatId);
   const now = Date.now();
   boatLastSeen.set(id, now);
   if (position) boatLastPosition.set(id, position);
+  if (fix) boatLastFix.set(id, fix);
 
   let times = boatFrameTimes.get(id);
   if (!times) {
@@ -149,6 +157,7 @@ function snapshot() {
     boats[boatId] = {
       lastSeen: boatLastSeen.get(boatId) || null,
       lastPosition: boatLastPosition.get(boatId) || null,
+      lastFix: boatLastFix.get(boatId) || null,
       fixHz: fixHz(boatId),
       upload,
       pending: pendingInfo ? pendingInfo.pending : null,

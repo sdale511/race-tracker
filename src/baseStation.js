@@ -1459,7 +1459,11 @@ function main() {
       }
       return;
     }
-    stats.recordFrame(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
+    stats.recordFrame(
+      decoded.boatId,
+      { lat: decoded.lat, lon: decoded.lon },
+      { carrSoln: decoded.carrSoln, gnssFixOk: decoded.gnssFixOk, numSV: decoded.numSV }
+    );
     logToConsole(decoded);
     logToCsv(decoded);
     // recordFix never rejects - a write failure (Redis full, network blip,

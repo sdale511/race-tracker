@@ -406,16 +406,36 @@ function renderDashboard(s) {
       // before any frame has arrived and for a stationary boat that
       // legitimately has nothing new to send right now.
       const fixRate = b.fixHz != null ? `${b.fixHz.toFixed(1)} Hz` : '<span class="muted">—</span>';
+      // b.lastFix is {carrSoln, gnssFixOk, numSV} off the last decoded
+      // frame (see stats.js's recordFrame) - null until the first frame
+      // arrives. No fixType here (RTK-fixed/float vs. plain 3D/2D) - that
+      // field never crosses the wire at all (see protocol.js's decode),
+      // so this is coarser than boatAgent.js's own [status] line, but
+      // still the actual RTK state, which is what matters for a fleet
+      // overview. Same color convention as the online dot above (green =
+      // good, orange = degraded-but-useful, red = not fixed at all).
+      const fixDotClass = !b.lastFix
+        ? 'dot-gray'
+        : b.lastFix.carrSoln === 2
+        ? 'dot-green'
+        : b.lastFix.carrSoln === 1
+        ? 'dot-orange'
+        : b.lastFix.gnssFixOk
+        ? 'dot-orange'
+        : 'dot-red';
+      const fixCell = b.lastFix
+        ? `<span class="dot ${fixDotClass}"></span>${fixQualityText(b.lastFix)} <span class="muted">(${b.lastFix.numSV} sv)</span>`
+        : '<span class="muted">—</span>';
       return `
         <tr>
           <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}</td>
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
           <td>${fixRate}</td>
+          <td>${fixCell}</td>
           <td>${tracks.toLocaleString()}</td>
           <td>${laps}</td>
           <td>${b.upload.successes} / ${b.upload.attempts} <span class="muted">(${pct(b.upload.successes, b.upload.attempts)})</span></td>
           <td>${b.pending ?? '—'}</td>
-          <td>${formatBytes(b.upload.bytes)}</td>
           <td>${diskHistory}</td>
           <td>${statsLink}</td>
         </tr>`;
@@ -604,7 +624,7 @@ function renderDashboard(s) {
         ? '<div class="card empty">No boats heard from yet.</div>'
         : `<table>
       <thead>
-        <tr><th>Boat</th><th>Last seen</th><th>Fix rate</th><th>Tracks</th><th>Laps</th><th>Uploads this session</th><th>Pending</th><th>Bytes sent (session)</th><th>Files on disk (all-time)</th><th>Rover dashboard</th></tr>
+        <tr><th>Boat</th><th>Last seen</th><th>Fix rate</th><th>Fix</th><th>Tracks</th><th>Laps</th><th>Uploads this session</th><th>Pending</th><th>Files on disk (all-time)</th><th>Rover dashboard</th></tr>
       </thead>
       <tbody>${boatRows}</tbody>
     </table>`
