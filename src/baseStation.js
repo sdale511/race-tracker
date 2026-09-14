@@ -320,6 +320,16 @@ function main() {
   // actually informative.
   let framesOk = 0;
   let syncErrors = 0;
+  // Tracks the last sync-error count actually logged, so a steady-state
+  // error rate (e.g. 2 sync errors every window, forever, on a marginal
+  // link) only gets one line, not a repeat every 30s - the interesting
+  // event is the count CHANGING (a new problem, or an existing one getting
+  // better/worse), not it merely being nonzero on yet another window. Reset
+  // to null on a clean window so a later recurrence - even the exact same
+  // count as before - is treated as new news and logged again, since a
+  // clean patch in between means whatever caused it was genuinely gone for
+  // a while, not just this same ongoing issue continuing to log itself.
+  let lastLoggedSyncErrors = null;
   radio.on('frame', () => framesOk++);
   radio.on('sync-error', () => {
     syncErrors++;
@@ -328,8 +338,13 @@ function main() {
   setInterval(() => {
     const total = framesOk + syncErrors;
     if (total === 0) return; // nothing heard at all this interval - not a quality signal, just silence
-    const errorPct = ((syncErrors / total) * 100).toFixed(1);
-    console.log(`[radio] link quality: ${framesOk} ok, ${syncErrors} sync errors (${errorPct}%) in the last 30s`);
+    if (syncErrors === 0) {
+      lastLoggedSyncErrors = null;
+    } else if (syncErrors !== lastLoggedSyncErrors) {
+      const errorPct = ((syncErrors / total) * 100).toFixed(1);
+      console.log(`[radio] link quality: ${framesOk} ok, ${syncErrors} sync errors (${errorPct}%) in the last 30s`);
+      lastLoggedSyncErrors = syncErrors;
+    }
     framesOk = 0;
     syncErrors = 0;
   }, 30000);
