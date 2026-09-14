@@ -1406,7 +1406,12 @@ function main() {
       { lat: decoded.lat, lon: decoded.lon },
       { carrSoln: decoded.carrSoln, gnssFixOk: decoded.gnssFixOk, numSV: decoded.numSV }
     );
-    logToConsole(decoded);
+    // logToCsv, redisStore.recordFix, and detectRaceEvents below all still
+    // run regardless of LOG_RECEIVED_FIXES - this only silences the routine
+    // per-fix console echo, not the durable record or lap/on-grid/mark-
+    // rounding/foul detection those actually drive (see config.js's own
+    // comment on logReceivedFrames).
+    if (config.logReceivedFrames) logToConsole(decoded);
     logToCsv(decoded);
     // recordFix never rejects - a write failure (Redis full, network blip,
     // ...) is caught, tracked, and rate-limit logged inside redisStore.js

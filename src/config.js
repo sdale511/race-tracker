@@ -402,6 +402,17 @@ module.exports = {
   // Base station only - off by default (see baseStation.js's
   // broadcastMarksNow), set LOG_MARKS_BROADCAST=1 to log every broadcast.
   logMarksBroadcast: process.env.LOG_MARKS_BROADCAST === '1' || process.env.LOG_MARKS_BROADCAST === 'true',
+  // Base station only - on by default, gates the `[base] boat=... lat,lon
+  // ...` console line baseStation.js's logToConsole prints for every single
+  // received radio frame from every boat - a full fleet at a normal GPS
+  // rate floods the console fast. Set LOG_RECEIVED_FIXES=0 to silence it.
+  // Deliberately independent of everything else that frame still does
+  // regardless of this flag: it's still written to this base's own CSV log
+  // (logToCsv), still recorded to Redis, and still checked for
+  // laps/on-grid/mark-roundings/fouls (detectRaceEvents) - this only
+  // silences the routine per-fix console echo, not the actual race-event
+  // detection those fixes drive.
+  logReceivedFrames: process.env.LOG_RECEIVED_FIXES !== '0' && process.env.LOG_RECEIVED_FIXES !== 'false',
 
   // --- Local logging (microSD) ---
   logDir,

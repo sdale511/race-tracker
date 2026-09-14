@@ -150,6 +150,7 @@ const sections = [
         roles: ['base'],
       },
       { label: 'logMarksBroadcast', value: config.logMarksBroadcast, envVar: 'LOG_MARKS_BROADCAST', roles: ['base'] },
+      { label: 'logReceivedFrames', value: config.logReceivedFrames, envVar: 'LOG_RECEIVED_FIXES', roles: ['base'] },
     ],
   },
   {
