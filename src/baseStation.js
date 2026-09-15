@@ -271,7 +271,13 @@ function main() {
   // own standalone "RTK-only" mode (see README's "RTK-only mode" section) -
   // this is the same GPS handled the same way regardless of which process
   // happens to be running it.
-  const gpsEnabled = !!process.env.GPS_PORT;
+  //
+  // marksetMode (npm run markset, see markSetStation.js/README's "Mark-set
+  // mode") always opens this GPS regardless of GPS_PORT, same as a boat -
+  // that GPS reading IS the whole point of walking the course with this
+  // mode running, not an optional extra.
+  const marksetMode = process.env.MARKSET_MODE === '1';
+  const gpsEnabled = marksetMode || !!process.env.GPS_PORT;
   if (gpsEnabled) {
     console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
   }
@@ -1786,6 +1792,15 @@ function main() {
           saveBaseGpsConfig: baseGps.saveConfig,
         }
       : {}),
+    // See markSetStation.js/README's "Mark-set mode" - swaps this
+    // dashboard's default/only page from the fleet dashboard to the course
+    // map (the "edit marks" column, powered by the always-on GPS above),
+    // since that's this mode's entire reason to run. Everything else about
+    // this process (radio, fleet tracking, Redis, RegattaUp reporting) is
+    // untouched - a real radio, if attached, still broadcasts a mark edit
+    // to any boats already on the water, exactly as it would under plain
+    // `npm run base`.
+    mapOnly: marksetMode,
   });
 
   if (config.simulate) {

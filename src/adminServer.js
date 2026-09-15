@@ -574,11 +574,16 @@ function buildCourseInfoHtml(marks) {
   const startLineBearing = bearingDeg(marks.committeeStart, marks.pin);
   const finishLineM = distanceMeters(marks.committeeFinish, marks.finish);
   const finishLineBearing = bearingDeg(marks.committeeFinish, marks.finish);
+  // Distance/bearing from committeeStart - the same start-line reference
+  // point the "Start line" row above already measures from, so this reads
+  // as "how far/which way from the line" for every mark, not a second,
+  // differently-anchored set of numbers to reconcile against the first.
   const headingRows = ['windwardBlack', 'windwardGreen', 'leewardGreen', 'leewardBlack']
     .map((name) => {
       const label = name[0].toUpperCase() + name.slice(1);
+      const distM = distanceMeters(marks.committeeStart, marks[name]);
       const bearing = bearingDeg(marks.committeeStart, marks[name]);
-      return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">Hdg &rarr; ${label}</span><span class="value">${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
+      return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">${label}</span><span class="value">${Math.round(distM)} m &middot; ${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
     })
     .join('');
   // Only shown when the operator's pin boundary gate checkbox is actually
@@ -1247,6 +1252,12 @@ function startAdminServer({
   setBaseGpsSurveyIn,
   setBaseGpsFixed,
   saveBaseGpsConfig,
+  // See baseStation.js's marksetMode - true only under `npm run markset`.
+  // Swaps GET / from the fleet dashboard to the course map, since a
+  // mark-setting run has no use for the fleet/radio/upload view as its
+  // default page. Every other route (including /map itself, so the two
+  // are just aliases of each other under this mode) is unchanged.
+  mapOnly,
 }) {
   const rtkControlsEnabled = !!setBaseGpsSurveyIn;
   const server = http.createServer(async (req, res) => {
@@ -1422,7 +1433,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(renderDashboard(s, rtkControlsEnabled));
+        res.end(mapOnly ? renderMap(s) : renderDashboard(s, rtkControlsEnabled));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);

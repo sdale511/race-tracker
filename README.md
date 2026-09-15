@@ -332,7 +332,7 @@ real racing distance.
 
 ## Running
 
-Four modes, each its own `npm run` script - pick whichever matches how a
+Five modes, each its own `npm run` script - pick whichever matches how a
 given machine is actually being used:
 
 | Mode | Command | Runs on | What it does |
@@ -341,6 +341,7 @@ given machine is actually being used:
 | Base | `npm run base` | Shore/committee machine | Receives every boat's telemetry, tracks the course/fleet/laps, reports to RegattaUp, serves the fleet dashboard. Also reads an optional GPS of its own for planting course marks at a real surveyed position (see "Editing mark positions from the map" below) - but not RTK correction control |
 | RTK-only | `npm run rtk` | A machine with just the RTK correction-source GPS attached | Monitors/configures that GPS's TMODE3/survey-in state and serves a small dedicated dashboard for it - no telemetry radio, course, fleet, or RegattaUp reporting at all |
 | Base + RTK combined | `npm run basertk` | A single machine acting as both the telemetry base AND the RTK correction source | Everything `base` does, plus RTK-only's TMODE3/survey-in controls, in one process/dashboard |
+| Mark-set | `npm run markset` | A handheld/backpack RTK unit carried out to each mark | Everything `base` does under the hood (same regatta/course/Redis/radio), but its GPS is always on (like a boat's, not gated on `GPS_PORT`) and its dashboard opens straight to the course map instead of the fleet view - see "Mark-set mode" below |
 
 Base and RTK-only are two ends of a deliberate split: run them together on
 one machine (`basertk`) when that's simplest, or split the RTK correction
@@ -509,6 +510,41 @@ either 404s, the same as if the card were never there). Use `basertk`
 instead of plain `base` whenever this machine's own GPS is meant to
 actually control what RTCM gets broadcast to the fleet, not just supply a
 one-off position reading.
+
+### Mark-set mode
+
+For physically walking (or sailing) the course with a real RTK GPS unit and
+setting each mark's position from wherever you're actually standing/
+sitting - the normal way a committee lays out marks before racing starts,
+or corrects one mid-event:
+```
+GPS_PORT=/dev/ttyACM0 npm run markset
+```
+This is `src/markSetStation.js` - the same thin-wrapper pattern as
+`basertk` (see above): it sets an internal flag (`MARKSET_MODE=1`) that
+`baseStation.js` already checks, then requires it. Two things change from
+plain `npm run base`, nothing else:
+
+- **The GPS is always on**, the same way a boat's own always is - not
+  gated on `GPS_PORT` being *explicitly* set, since reading this unit's own
+  live position is this mode's entire reason to run. Falls back to the same
+  `GPS_PORT`/`GPS_BAUD` defaults a boat uses if not overridden.
+- **The dashboard opens straight to the course map** (`GET /` renders the
+  same page `GET /map` does, instead of the fleet dashboard) - see "Editing
+  mark positions from the map" below for the actual workflow (toggle "edit
+  marks", walk/sail to a mark, use the "Recenter on base GPS" button and
+  readout to confirm you're standing on it, tap "Set"). `/map` itself still
+  works too, they're just aliases of each other under this mode.
+
+Everything else is untouched: this is still a full `baseStation.js`
+process - same regatta selection, same Redis-backed course storage, same
+optional telemetry radio (a real one, if attached, still re-broadcasts a
+mark edit to any boats already on the water, exactly as plain `base`
+would), same fleet/lap/RegattaUp-webhook machinery running in the
+background even though this mode's own UI never shows it. If a leaner,
+radio/fleet-free process is what you actually want for course setup, run
+`RADIO_ENABLED=0 npm run markset` instead - the radio simply won't open, the
+rest of this mode is unchanged.
 
 ### Scheduled shutdown (boat, battery-saving)
 
