@@ -28,6 +28,53 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Tri-state, not the plain connected/disconnected a dot might otherwise
+// show - isConnected() only reflects the TCP/auth connection, which stays
+// "connected" even while Redis is up but refusing writes (out of memory
+// under a noeviction policy, most likely - see README's "If Redis runs out
+// of space"). writeHealth is undefined before the very first fix this
+// session has ever tried to record (nothing to report yet), treated the
+// same as healthy rather than as a third "unknown" state - there's no
+// failure to warn about yet either way. Shared by renderDashboard's own
+// subtitle dot and renderMap's topbar (under mapOnly - see its own
+// comment) - the same connection, same meaning, wherever it's shown.
+function redisStatusFor(s) {
+  const writeHealth = s.redis && s.redis.writeHealth;
+  return !s.base.redisConnected
+    ? { dot: 'dot-red', text: 'disconnected' }
+    : writeHealth && !writeHealth.healthy
+    ? { dot: 'dot-orange', text: `connected, track writes failing (${writeHealth.failureCount} in a row - ${escapeHtml(writeHealth.lastError)})` }
+    : { dot: 'dot-green', text: 'connected' };
+}
+
+// Persists the operator's regatta choice (see baseStation.js's
+// selectRegatta) - no confirm(), just picking which of possibly several
+// concurrent RegattaUp regattas this base station reports events against.
+// Reloads so every other regatta-dependent bit of whichever page embeds
+// this (the dashboard's own warning banner, or markset's map/course data)
+// reflects the new selection. Shared between renderDashboard's own select
+// and renderMap's compact one (under mapOnly) - same request, same
+// behavior, wherever it's triggered from.
+const SELECT_REGATTA_JS = `
+    async function selectRegatta(select) {
+      const id = select.value;
+      if (!id) return;
+      select.disabled = true;
+      try {
+        const res = await fetch('/api/regattas/selected', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        select.disabled = false;
+      }
+    }`;
+
 // fixQualityText/dopQualityText/connectionDot/renderBaseGpsCard/
 // renderBaseGpsSurveyCard/renderManualFixedPositionCard now live in
 // rtkAdminCards.js, shared with rtkAdminServer.js's own RTK-only dashboard
@@ -135,22 +182,7 @@ function renderDashboard(s, rtkControlsEnabled) {
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (s.boats[id].pending || 0), 0);
 
-  // Tri-state, not the plain connected/disconnected the dot used to show -
-  // isConnected() only reflects the TCP/auth connection, which stays
-  // "connected" even while Redis is up but refusing writes (out of memory
-  // under a noeviction policy, most likely - see README's "If Redis runs
-  // out of space"). Without this, a full Redis silently drops every new
-  // track write with nothing on this page saying so - the dot itself would
-  // keep reading green. writeHealth is undefined before the very first fix
-  // this session has ever tried to record (nothing to report yet), treated
-  // the same as healthy rather than as a third "unknown" state - there's no
-  // failure to warn about yet either way.
-  const writeHealth = s.redis && s.redis.writeHealth;
-  const redisStatus = !s.base.redisConnected
-    ? { dot: 'dot-red', text: 'disconnected' }
-    : writeHealth && !writeHealth.healthy
-    ? { dot: 'dot-orange', text: `connected, track writes failing (${writeHealth.failureCount} in a row - ${escapeHtml(writeHealth.lastError)})` }
-    : { dot: 'dot-green', text: 'connected' };
+  const redisStatus = redisStatusFor(s);
 
   const boatRows = boatIds
     .map((id) => {
@@ -452,30 +484,7 @@ function renderDashboard(s, rtkControlsEnabled) {
     // npm run basertk) - on plain base there'd be nothing to wire these
     // functions to.
     ${rtkControlsEnabled ? RTK_CLIENT_JS : ''}
-
-    // Persists the operator's regatta choice (see baseStation.js's
-    // selectRegatta) - no confirm(), just picking which of possibly several
-    // concurrent RegattaUp regattas this base station reports events
-    // against. Reloads so the "Reporting for ..." line and the warning
-    // banner both reflect the new selection.
-    async function selectRegatta(select) {
-      const id = select.value;
-      if (!id) return;
-      select.disabled = true;
-      try {
-        const res = await fetch('/api/regattas/selected', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id }),
-        });
-        const result = await res.json();
-        if (!result.ok) throw new Error(result.error || 'request failed');
-        location.reload();
-      } catch (err) {
-        alert('Failed: ' + err.message);
-        select.disabled = false;
-      }
-    }
+    ${SELECT_REGATTA_JS}
 
     // Broadcasts a ping (see baseStation.js's pingFleet) - no confirm()
     // needed, unlike setTmode3Mode above: this has no destructive
@@ -569,11 +578,22 @@ function renderDashboard(s, rtkControlsEnabled) {
 // mark, two fits both into view (a line, not a single point). Built here
 // rather than guessed client-side from the label text, so the click target
 // can never drift out of sync with what the row is actually showing.
+// Distance text is deliberately NOT baked in here as a fixed string -
+// each row instead carries the raw distance in meters (data-dist-m) plus
+// which unit pair it should ever be shown in (data-dist-kind: "small" =
+// meters/feet, for the two line lengths, which stay short regardless of
+// course size; "large" = km/mi, for mark distances, which don't). The
+// client-side unit toggle (see renderMap's own <script>) is what actually
+// writes the visible text, from these attributes - one formatting
+// implementation, not a server copy that could drift from the client one.
+// Server-rendered text below is just the metric default, so the card still
+// looks right for the instant before that script runs.
 function buildCourseInfoHtml(marks) {
   const startLineM = distanceMeters(marks.pin, marks.committeeStart);
   const startLineBearing = bearingDeg(marks.committeeStart, marks.pin);
   const finishLineM = distanceMeters(marks.committeeFinish, marks.finish);
   const finishLineBearing = bearingDeg(marks.committeeFinish, marks.finish);
+  const bearingText = (bearing) => `${Math.round(bearing)}&deg; ${compassDir(bearing)}`;
   // Distance/bearing from committeeStart - the same start-line reference
   // point the "Start line" row above already measures from, so this reads
   // as "how far/which way from the line" for every mark, not a second,
@@ -583,7 +603,7 @@ function buildCourseInfoHtml(marks) {
       const label = name[0].toUpperCase() + name.slice(1);
       const distM = distanceMeters(marks.committeeStart, marks[name]);
       const bearing = bearingDeg(marks.committeeStart, marks[name]);
-      return `<div class="course-info-row zoomable" data-marks="${name}"><span class="label">${label}</span><span class="value">${Math.round(distM)} m &middot; ${Math.round(bearing)}&deg; ${compassDir(bearing)}</span></div>`;
+      return `<div class="course-info-row zoomable" data-marks="${name}" data-dist-m="${distM}" data-dist-kind="large" data-bearing="${bearingText(bearing)}"><span class="label">${label}</span><span class="value">${(distM / 1000).toFixed(2)} km &middot; ${bearingText(bearing)}</span></div>`;
     })
     .join('');
   // Only shown when the operator's pin boundary gate checkbox is actually
@@ -595,15 +615,59 @@ function buildCourseInfoHtml(marks) {
     ? '<div class="course-info-row zoomable" data-marks="pin"><span class="label">Pin boundary gate</span><span class="value">ON &middot; extends past pin</span></div>'
     : '';
   return `<div class="course-info-card">
-    <div class="course-info-title">Course</div>
-    <div class="course-info-row zoomable" data-marks="pin,committeeStart"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${Math.round(startLineBearing)}&deg; ${compassDir(startLineBearing)}</span></div>
-    <div class="course-info-row zoomable" data-marks="committeeFinish,finish"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${Math.round(finishLineBearing)}&deg; ${compassDir(finishLineBearing)}</span></div>
+    <div class="course-info-title-row">
+      <span class="course-info-title">Course</span>
+      <label class="unit-toggle-label" title="Start/finish always show meters/feet - this only switches the mark-distance rows below between km and mi">
+        <input type="checkbox" id="unitToggle"> mi/ft
+      </label>
+    </div>
+    <div class="course-info-row zoomable" data-marks="pin,committeeStart" data-dist-m="${startLineM}" data-dist-kind="small" data-bearing="${bearingText(startLineBearing)}"><span class="label">Start line</span><span class="value">${Math.round(startLineM)} m &middot; ${bearingText(startLineBearing)}</span></div>
+    <div class="course-info-row zoomable" data-marks="committeeFinish,finish" data-dist-m="${finishLineM}" data-dist-kind="small" data-bearing="${bearingText(finishLineBearing)}"><span class="label">Finish line</span><span class="value">${Math.round(finishLineM)} m &middot; ${bearingText(finishLineBearing)}</span></div>
     ${pinBoundaryRow}
     ${headingRows}
   </div>`;
 }
 
-function renderMap(s) {
+// mapOnly (see baseStation.js's marksetMode/adminServer.js's own
+// startAdminServer param) hides every "back to dashboard" link - under
+// `npm run markset` there IS no separate dashboard page at all (`/` and
+// `/map` are aliases of this exact page), so a link back to itself would
+// just be confusing, not merely redundant.
+function renderMap(s, { mapOnly } = {}) {
+  const backToDashboardLink = mapOnly ? '' : '<a href="/">&larr; back to dashboard</a>';
+  // Under mapOnly (markset - see baseStation.js's marksetMode) this page IS
+  // the only UI, with no dashboard reachable at all to show the Regatta
+  // card or the Redis status dot that would normally live there - both are
+  // shown compactly here instead, in the topbar, since marks are useless
+  // without the right regatta selected and Redis is the actual store
+  // setMark writes to. Plain base/basertk skip this entirely - they still
+  // have the real Regatta/Redis cards one click away on the dashboard, so
+  // duplicating a second, smaller copy of them here would just be clutter.
+  // Computed before the early "no course yet" return below too, since a
+  // freshly-started markset with no regatta selected yet is exactly the
+  // moment this control is most needed - that's the one state with
+  // nothing else on the page to reach it from otherwise.
+  const redisStatus = redisStatusFor(s);
+  const regattaControlsHtml = mapOnly
+    ? `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:16px;font-size:12px;color:#8b94a3;white-space:nowrap;">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${
+          redisStatus.dot === 'dot-green' ? '#3fb950' : redisStatus.dot === 'dot-orange' ? '#e3b341' : '#f85149'
+        };" title="${escapeHtml(redisStatus.text)}"></span>Redis ${escapeHtml(redisStatus.text)}
+      </span>
+      <select
+        onchange="selectRegatta(this)"
+        style="margin-left:10px;background:#161b22;color:#e6e9ef;border:1px solid #262c36;border-radius:6px;padding:4px 8px;font-size:12px;max-width:240px;"
+        title="${s.regatta.selected ? 'Reporting for ' + escapeHtml(s.regatta.selected.name) : 'No regatta selected - marks/course have nowhere to be stored until one is picked'}"
+      >
+        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
+        ${s.regatta.regattas
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)}</option>`
+          )
+          .join('')}
+      </select>`
+    : '';
   if (!s.course) {
     return `<!doctype html>
 <html>
@@ -613,7 +677,7 @@ function renderMap(s) {
 <style>
   :root { color-scheme: dark; }
   body {
-    margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+    margin: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
     background: #0f1216; color: #8b94a3;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
@@ -621,7 +685,11 @@ function renderMap(s) {
   a:hover { text-decoration: underline; }
 </style>
 </head>
-<body>No course marks published yet.<a href="/">&larr; back to dashboard</a></body>
+<body>
+  <div>No course marks published yet.${backToDashboardLink}</div>
+  ${regattaControlsHtml ? `<div>${regattaControlsHtml}</div>` : ''}
+  <script>${mapOnly ? SELECT_REGATTA_JS : ''}</script>
+</body>
 </html>`;
   }
 
@@ -723,7 +791,13 @@ function renderMap(s) {
     padding: 14px 18px; min-width: 230px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
-  .course-info-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
+  .course-info-title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .course-info-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .unit-toggle-label {
+    display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.03em; color: #8a94a3; cursor: pointer; user-select: none;
+  }
+  .unit-toggle-label input { accent-color: #3a5169; cursor: pointer; }
   .course-info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; padding: 4px 0; font-size: 13px; }
   .course-info-row .label { color: #8a94a3; }
   .course-info-row .value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -792,7 +866,8 @@ function renderMap(s) {
 <body>
   <div class="topbar">
     <h1>Course map</h1>
-    <a href="/">&larr; back to dashboard</a>
+    ${backToDashboardLink}
+    ${regattaControlsHtml}
     <div class="spacer"></div>
     <label class="refresh-toggle">
       <input type="checkbox" id="editToggle">
@@ -816,8 +891,15 @@ function renderMap(s) {
         <div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
         <button type="button" class="recenter-btn" id="recenterGps">Recenter on my GPS</button>
 
-        <div class="gps-readout"><span>Base RTK GPS</span><span class="value" id="baseGpsReadout">—</span></div>
-        <button type="button" class="recenter-btn" id="recenterBaseGps">Recenter on base GPS</button>
+        ${
+          s.baseGpsPort
+            ? `<div class="gps-readout"><span>Base RTK GPS</span><span class="value" id="baseGpsReadout">—</span></div>
+        <button type="button" class="recenter-btn" id="recenterBaseGps">Recenter on base GPS</button>`
+            : '' /* No GPS_PORT configured on this process at all (the common case for plain base) - omitted
+                    entirely rather than shown as a permanent "unavailable"/"unreachable" row with nothing to
+                    do. Present whenever a GPS actually is configured - base with GPS_PORT set, basertk, and
+                    always under markset (see baseStation.js's marksetMode). */
+        }
 
         <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
         ${markSetRowsHtml}
@@ -865,6 +947,36 @@ function renderMap(s) {
         }
       });
     });
+
+    // Course-card unit toggle: "small" rows (start/finish line lengths)
+    // always show meters/feet regardless of this toggle - they're short
+    // enough that km/mi would read as an unhelpful "0.06 km" - only
+    // "large" rows (mark distances) actually switch between km and mi.
+    // One conversion implementation here, not a duplicate server-side copy
+    // that could drift from it - see buildCourseInfoHtml's own comment.
+    (function () {
+      const KEY = 'raceTrackerMapUnits';
+      const toggle = document.getElementById('unitToggle');
+      if (!toggle) return; // no course card at all (e.g. the "no marks yet" page)
+      function applyUnits(imperial) {
+        document.querySelectorAll('.course-info-row[data-dist-m]').forEach((row) => {
+          const m = parseFloat(row.dataset.distM);
+          const bearing = row.dataset.bearing || '';
+          const text =
+            row.dataset.distKind === 'small'
+              ? Math.round(imperial ? m * 3.28084 : m) + (imperial ? ' ft' : ' m')
+              : (imperial ? m / 1609.344 : m / 1000).toFixed(2) + (imperial ? ' mi' : ' km');
+          row.querySelector('.value').textContent = bearing ? text + ' · ' + bearing : text;
+        });
+      }
+      toggle.checked = localStorage.getItem(KEY) === '1'; // off (metric) by default
+      applyUnits(toggle.checked);
+      toggle.addEventListener('change', () => {
+        localStorage.setItem(KEY, toggle.checked ? '1' : '0');
+        applyUnits(toggle.checked);
+      });
+    })();
+
     // Satellite imagery, not a street/vector basemap - these courses are
     // typically raced on a dry lake bed (Black Rock Desert-style playa)
     // with no roads or buildings for a vector basemap to draw, which made
@@ -1034,6 +1146,7 @@ function renderMap(s) {
     // here (never an error - see baseStation.js's getBaseGpsFix) is the
     // expected, common case, not a failure.
     async function pollBaseGps() {
+      if (!baseGpsReadout) return; // no GPS configured on this process at all - row isn't in the DOM
       let fix;
       try {
         fix = await (await fetch('/api/gps')).json();
@@ -1054,7 +1167,7 @@ function renderMap(s) {
       if (baseGpsTimer) clearInterval(baseGpsTimer);
       baseGpsTimer = null;
       lastBaseGpsFix = null;
-      baseGpsReadout.textContent = '—';
+      if (baseGpsReadout) baseGpsReadout.textContent = '—';
     }
 
     function applyEditMode(checked) {
@@ -1093,13 +1206,18 @@ function renderMap(s) {
       map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
     });
 
-    document.getElementById('recenterBaseGps').addEventListener('click', () => {
-      if (!lastBaseGpsFix) {
-        alert('No GPS is attached to this base station (set GPS_PORT to enable one when running the base), or it hasn\\'t produced a fix yet.');
-        return;
-      }
-      map.setView([lastBaseGpsFix.lat, lastBaseGpsFix.lon], map.getZoom());
-    });
+    // The button itself isn't in the DOM at all when this process has no
+    // GPS configured (see the edit-column HTML above) - nothing to wire up.
+    const recenterBaseGpsBtn = document.getElementById('recenterBaseGps');
+    if (recenterBaseGpsBtn) {
+      recenterBaseGpsBtn.addEventListener('click', () => {
+        if (!lastBaseGpsFix) {
+          alert('No GPS is attached to this base station (set GPS_PORT to enable one when running the base), or it hasn\\'t produced a fix yet.');
+          return;
+        }
+        map.setView([lastBaseGpsFix.lat, lastBaseGpsFix.lon], map.getZoom());
+      });
+    }
 
     // Snaps back to the whole course - useful after either GPS button
     // walked the view away, or after just panning around to line up a
@@ -1176,6 +1294,7 @@ function renderMap(s) {
         e.target.disabled = false;
       }
     });
+    ${mapOnly ? SELECT_REGATTA_JS : ''}
   </script>
 </body>
 </html>`;
@@ -1433,7 +1552,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(mapOnly ? renderMap(s) : renderDashboard(s, rtkControlsEnabled));
+        res.end(mapOnly ? renderMap(s, { mapOnly }) : renderDashboard(s, rtkControlsEnabled));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);
@@ -1445,7 +1564,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(renderMap(s));
+        res.end(renderMap(s, { mapOnly }));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);

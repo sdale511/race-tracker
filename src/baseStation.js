@@ -176,14 +176,33 @@ function main() {
   // upload-server setup.
   console.log(`[adminServer] dashboard at http://localhost:${config.admin.port}`);
 
+  // Set only by src/markSetStation.js (npm run markset) - see its own
+  // comment and README's "Mark-set mode". Declared this early because it
+  // gates the real telemetry radio below, not just the GPS/dashboard
+  // behavior further down this function.
+  const marksetMode = process.env.MARKSET_MODE === '1';
+
   let radio;
   // Tracked alongside the radio object itself so the dashboard's "Radio
   // frames" card (see adminServer.js) can show which port/mode is actually
   // in play, not just the frame/error counters - useful for confirming
   // this process picked up the port you expected, especially with
   // SIMULATE=1 or RADIO_ENABLED=0 around to override the default.
-  const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
-  if (config.simulate) {
+  //
+  // marksetMode forces this off entirely, ahead of both the real-radio and
+  // SIMULATE checks - this mode should never process a GPS fix that arrived
+  // over the telemetry radio, real OR simulated (a SimRadioLink under
+  // SIMULATE=1 would otherwise still receive and process fake boat frames
+  // from a separately-running `npm run fleet`, which is exactly the kind of
+  // radio-sourced processing this mode has no business doing). markset's
+  // own GPS reading (baseGps.js, below) is a completely separate, always-
+  // real serial connection - unaffected by any of this.
+  const radioMode = marksetMode ? 'none' : config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
+  if (marksetMode) {
+    radio = new EventEmitter(); // never emits 'frame'/'marks' - see radioMode's own comment
+    radio.send = () => false;
+    radio.broadcast = () => false;
+  } else if (config.simulate) {
     const { SimRadioLink } = require('./simRadioLink');
     radio = new SimRadioLink({ port: config.sim.port });
   } else if (config.radio.enabled) {
@@ -272,11 +291,10 @@ function main() {
   // this is the same GPS handled the same way regardless of which process
   // happens to be running it.
   //
-  // marksetMode (npm run markset, see markSetStation.js/README's "Mark-set
-  // mode") always opens this GPS regardless of GPS_PORT, same as a boat -
-  // that GPS reading IS the whole point of walking the course with this
-  // mode running, not an optional extra.
-  const marksetMode = process.env.MARKSET_MODE === '1';
+  // marksetMode (declared above, see its own comment - npm run markset)
+  // always opens this GPS regardless of GPS_PORT, same as a boat - that GPS
+  // reading IS the whole point of walking the course with this mode
+  // running, not an optional extra.
   const gpsEnabled = marksetMode || !!process.env.GPS_PORT;
   if (gpsEnabled) {
     console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
@@ -300,21 +318,27 @@ function main() {
   // Receives boat log uploads over WiFi whenever a boat happens to be in
   // range (see uploadServer.js/uploadClient.js) - its address is what gets
   // published in the marks broadcast below (broadcastMarksNow), so this
-  // needs to be resolved before that's ever called.
-  const baseIp = config.upload.baseIp || detectLocalIp();
-  if (!baseIp) {
-    console.warn('[baseStation] could not detect a LAN IP - log uploads from boats will be unavailable (set BASE_IP to override)');
-  } else {
-    console.log(`[baseStation] log upload address: ${baseIp}:${config.upload.port}`);
+  // needs to be resolved before that's ever called. Skipped entirely under
+  // marksetMode - marks are never broadcast in this mode (radio's off), and
+  // there's no fleet whose logs would ever reach this upload server anyway.
+  const baseIp = marksetMode ? null : config.upload.baseIp || detectLocalIp();
+  if (!marksetMode) {
+    if (!baseIp) {
+      console.warn('[baseStation] could not detect a LAN IP - log uploads from boats will be unavailable (set BASE_IP to override)');
+    } else {
+      console.log(`[baseStation] log upload address: ${baseIp}:${config.upload.port}`);
+    }
+    startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir, logSuccess: config.upload.logSuccess });
   }
-  startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir, logSuccess: config.upload.logSuccess });
 
   // Scanned once at startup (see scanUploadDir's own comment on why this
   // stays cheap regardless of how many files have piled up over a season)
   // so the admin dashboard can show a boat's real uploaded history even
   // before it's said anything this session - stats.js only knows about
-  // this session's activity, not what happened in prior ones.
-  const uploadDirBaseline = scanUploadDir(config.upload.dir);
+  // this session's activity, not what happened in prior ones. Markset's own
+  // map-only dashboard has no fleet table to show this on, so it's skipped
+  // too - an empty baseline, same shape getFullStats already expects.
+  const uploadDirBaseline = marksetMode ? {} : scanUploadDir(config.upload.dir);
 
   // Passive signal-quality feel, without interrupting the data stream to
   // query the radio for RSSI: a rising 'sync-error' rate (bytes that arrive
@@ -851,7 +875,14 @@ function main() {
         const marks = await redisStore.getMarks();
         if (marks.committeeFinish && marks.finish) {
           marks.pinBoundaryEnabled = await redisStore.getPinBoundaryEnabled();
-          console.log('[baseStation] finish line resolved (Redis) - lap crossings will be reported');
+          // Under marksetMode this is just "the course is loaded and
+          // editable on the map" - there's no radio, so no lap crossing
+          // will ever actually be detected/reported, unlike plain base.
+          console.log(
+            marksetMode
+              ? '[baseStation] course marks resolved (Redis)'
+              : '[baseStation] finish line resolved (Redis) - lap crossings will be reported'
+          );
           return marks;
         }
         return null;
@@ -882,8 +913,14 @@ function main() {
         // out-of-band Redis edit (or a version of this app that didn't yet
         // keep it in sync), rather than trusting whatever's already there.
         await republishPinBoundaryMark();
+        // Under marksetMode this is just describing course DATA (the gate
+        // flag and its derived Redis mark, both still genuinely maintained
+        // here - see republishPinBoundaryMark above) - "will be reported as
+        // fouls" is misleading with no radio ever running foul detection.
         console.log(
-          raceMarks.pinBoundaryEnabled
+          marksetMode
+            ? `[baseStation] pin boundary gate is ${raceMarks.pinBoundaryEnabled ? 'ON' : 'off'} (toggle it from the map if needed)`
+            : raceMarks.pinBoundaryEnabled
             ? '[baseStation] pin boundary gate is ON - downwind crossings beyond pin will be reported as fouls, the whole pin side of the course is off-limits'
             : '[baseStation] pin boundary gate is off (optional - toggle it from the admin map if you want it)'
         );
@@ -1182,17 +1219,24 @@ function main() {
   let lapWebhookQueue = null;
   let bufferedLaps = [];
 
-  (async () => {
-    try {
-      lapWebhookQueue = await LapWebhookQueue.create(config.regattaup.queueDbPath);
-      console.log(`[baseStation] webhook queues stored in ${webhookQueueDir}`);
-      console.log(`[baseStation] lap webhook queue ready (${queueFileLabel(config.regattaup.queueDbPath)})`);
-      for (const lap of bufferedLaps) enqueueLap(lap);
-      bufferedLaps = [];
-    } catch (err) {
-      console.error(red(`[regattaup] failed to initialize lap webhook queue: ${err.message}`));
-    }
-  })();
+  // Skipped entirely under marksetMode - see mapOnly's own comment above:
+  // with the radio off, detectRaceEvents (the only thing that would ever
+  // enqueueLap) never runs, so there's nothing for this queue to do. Left
+  // permanently null, same as before this queue has finished opening on a
+  // normal run - every call site already treats that as "not ready."
+  if (!marksetMode) {
+    (async () => {
+      try {
+        lapWebhookQueue = await LapWebhookQueue.create(config.regattaup.queueDbPath);
+        console.log(`[baseStation] webhook queues stored in ${webhookQueueDir}`);
+        console.log(`[baseStation] lap webhook queue ready (${queueFileLabel(config.regattaup.queueDbPath)})`);
+        for (const lap of bufferedLaps) enqueueLap(lap);
+        bufferedLaps = [];
+      } catch (err) {
+        console.error(red(`[regattaup] failed to initialize lap webhook queue: ${err.message}`));
+      }
+    })();
+  }
 
   // Same buffer-then-flush pattern as the lap queue above, for on-grid/
   // off-grid transitions (see onGridWatcher.js) - its own separate queue
@@ -1200,16 +1244,18 @@ function main() {
   let onGridWebhookQueue = null;
   let bufferedOnGrid = [];
 
-  (async () => {
-    try {
-      onGridWebhookQueue = await OnGridWebhookQueue.create(config.regattaup.onGridQueueDbPath);
-      console.log(`[baseStation] on-grid webhook queue ready (${queueFileLabel(config.regattaup.onGridQueueDbPath)})`);
-      for (const event of bufferedOnGrid) enqueueOnGrid(event);
-      bufferedOnGrid = [];
-    } catch (err) {
-      console.error(red(`[regattaup] failed to initialize on-grid webhook queue: ${err.message}`));
-    }
-  })();
+  if (!marksetMode) {
+    (async () => {
+      try {
+        onGridWebhookQueue = await OnGridWebhookQueue.create(config.regattaup.onGridQueueDbPath);
+        console.log(`[baseStation] on-grid webhook queue ready (${queueFileLabel(config.regattaup.onGridQueueDbPath)})`);
+        for (const event of bufferedOnGrid) enqueueOnGrid(event);
+        bufferedOnGrid = [];
+      } catch (err) {
+        console.error(red(`[regattaup] failed to initialize on-grid webhook queue: ${err.message}`));
+      }
+    })();
+  }
 
   // Same buffer-then-flush pattern again, for mark roundings (see
   // markRoundingWatcher.js) - its own separate queue file, same reasoning
@@ -1222,16 +1268,18 @@ function main() {
   let markRoundingWebhookQueue = null;
   let bufferedMarkRoundings = [];
 
-  (async () => {
-    try {
-      markRoundingWebhookQueue = await MarkRoundingWebhookQueue.create(config.regattaup.markRoundingQueueDbPath);
-      console.log(`[baseStation] mark-rounding webhook queue ready (${queueFileLabel(config.regattaup.markRoundingQueueDbPath)})`);
-      for (const event of bufferedMarkRoundings) enqueueMarkRounding(event);
-      bufferedMarkRoundings = [];
-    } catch (err) {
-      console.error(red(`[regattaup] failed to initialize mark-rounding webhook queue: ${err.message}`));
-    }
-  })();
+  if (!marksetMode) {
+    (async () => {
+      try {
+        markRoundingWebhookQueue = await MarkRoundingWebhookQueue.create(config.regattaup.markRoundingQueueDbPath);
+        console.log(`[baseStation] mark-rounding webhook queue ready (${queueFileLabel(config.regattaup.markRoundingQueueDbPath)})`);
+        for (const event of bufferedMarkRoundings) enqueueMarkRounding(event);
+        bufferedMarkRoundings = [];
+      } catch (err) {
+        console.error(red(`[regattaup] failed to initialize mark-rounding webhook queue: ${err.message}`));
+      }
+    })();
+  }
 
   // Same buffer-then-flush pattern again, for fouls (see foulWatcher.js) -
   // its own separate queue file, same reasoning as onGridWebhookQueue.js's
@@ -1240,16 +1288,18 @@ function main() {
   let foulWebhookQueue = null;
   let bufferedFouls = [];
 
-  (async () => {
-    try {
-      foulWebhookQueue = await FoulWebhookQueue.create(config.regattaup.foulQueueDbPath);
-      console.log(`[baseStation] foul webhook queue ready (${queueFileLabel(config.regattaup.foulQueueDbPath)})`);
-      for (const event of bufferedFouls) enqueueFoul(event);
-      bufferedFouls = [];
-    } catch (err) {
-      console.error(red(`[regattaup] failed to initialize foul webhook queue: ${err.message}`));
-    }
-  })();
+  if (!marksetMode) {
+    (async () => {
+      try {
+        foulWebhookQueue = await FoulWebhookQueue.create(config.regattaup.foulQueueDbPath);
+        console.log(`[baseStation] foul webhook queue ready (${queueFileLabel(config.regattaup.foulQueueDbPath)})`);
+        for (const event of bufferedFouls) enqueueFoul(event);
+        bufferedFouls = [];
+      } catch (err) {
+        console.error(red(`[regattaup] failed to initialize foul webhook queue: ${err.message}`));
+      }
+    })();
+  }
 
   // Every queued lap/on-grid/mark-rounding/foul event, first attempt or
   // retry alike, is sent through this single shared loop instead of ever
@@ -1297,7 +1347,9 @@ function main() {
     }
   }
 
-  setInterval(drainOneWebhook, config.regattaup.postIntervalMs);
+  // Pointless under marksetMode - all four queues above are permanently
+  // null there, so every tick would just walk the list finding nothing.
+  if (!marksetMode) setInterval(drainOneWebhook, config.regattaup.postIntervalMs);
 
   // A boat that starts up (or reconnects) after marks already resolved and
   // already broadcast would otherwise wait out a full
@@ -1795,15 +1847,32 @@ function main() {
     // See markSetStation.js/README's "Mark-set mode" - swaps this
     // dashboard's default/only page from the fleet dashboard to the course
     // map (the "edit marks" column, powered by the always-on GPS above),
-    // since that's this mode's entire reason to run. Everything else about
-    // this process (radio, fleet tracking, Redis, RegattaUp reporting) is
-    // untouched - a real radio, if attached, still broadcasts a mark edit
-    // to any boats already on the water, exactly as it would under plain
-    // `npm run base`.
+    // since that's this mode's entire reason to run, and (see
+    // marksetMode's own declaration above) forces the real telemetry radio
+    // off regardless of RADIO_ENABLED - mark edits still persist to Redis
+    // and are picked up by base/basertk's own next regatta-select or
+    // restart, just not live-broadcast from this process. With the radio
+    // off there's nothing for fleet tracking/RegattaUp lap-on-grid-mark-
+    // rounding-foul detection to ever receive either, so this mode also
+    // skips starting those subsystems at all (webhook queues, upload
+    // server, local UDP broadcast - see further down this function) rather
+    // than leaving them running unused.
     mapOnly: marksetMode,
   });
 
-  if (config.simulate) {
+  if (marksetMode) {
+    console.log('[baseStation] MARKSET_MODE=1 - telemetry radio disabled (real or simulated), GPS always on, dashboard opens to the course map');
+    // Marks (and the pin boundary gate) live in Redis - this is the one
+    // subsystem markset genuinely depends on, unlike everything else this
+    // startup summary normally logs (see the big `if (!marksetMode)` block
+    // further down, which this mode skips entirely) - worth its own line
+    // rather than folding it into that skipped block.
+    console.log(
+      `[baseStation] marks stored in Redis at ${
+        config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`
+      }`
+    );
+  } else if (config.simulate) {
     console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);
   } else if (config.radio.enabled) {
     // Always logs the deferred form here - this line runs synchronously,
@@ -1814,32 +1883,41 @@ function main() {
   } else {
     console.log('[baseStation] Radio disabled (RADIO_ENABLED=0) - no frames will arrive, other outputs still testable');
   }
-  console.log(`[baseStation] logging to ${csvPath}`);
-  console.log(
-    `[baseStation] recording fixes to Redis at ${
-      config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`
-    }`
-  );
-  console.log(
-    `[baseStation] broadcasting ${config.localBroadcast.format.toUpperCase()} over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`
-  );
-  console.log(
-    config.regattaup.enabled
-      ? `[baseStation] lap crossings post to RegattaUp at ${config.regattaup.webhookUrl}`
-      : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_ENABLED=0)'
-  );
-  if (config.regattaup.enabled) {
-    console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m behind the pin<->committeeStart line`);
+  // None of this - received-frame CSV logging, Redis fix recording, the
+  // local UDP position broadcast, RegattaUp lap/on-grid/mark-rounding/foul
+  // reporting - ever has anything to do under marksetMode (the radio being
+  // off means detectRaceEvents/the frame handler that would drive all of
+  // it never fires - see mapOnly's own comment above), so it's skipped and
+  // not even logged as configured, rather than describing several
+  // subsystems that will sit permanently idle.
+  if (!marksetMode) {
+    console.log(`[baseStation] logging to ${csvPath}`);
     console.log(
-      config.regattaup.markRoundingEnabled
-        ? `[baseStation] mark roundings post to RegattaUp (gate extends ${config.regattaup.markRoundingExtensionM}m beyond each mark)`
-        : '[baseStation] mark-rounding webhook disabled (set REGATTAUP_MARK_ROUNDING_ENABLED=1 to enable)'
+      `[baseStation] recording fixes to Redis at ${
+        config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`
+      }`
     );
     console.log(
-      config.regattaup.foulEnabled
-        ? '[baseStation] fouls (downwind start/finish line crossings, committee gap, pin boundary gate if on) post to RegattaUp'
-        : '[baseStation] foul webhook disabled (set REGATTAUP_FOUL_ENABLED=1 to enable)'
+      `[baseStation] broadcasting ${config.localBroadcast.format.toUpperCase()} over UDP ${UDP_BROADCAST_ADDR}:${UDP_PORT}`
     );
+    console.log(
+      config.regattaup.enabled
+        ? `[baseStation] lap crossings post to RegattaUp at ${config.regattaup.webhookUrl}`
+        : '[baseStation] RegattaUp lap webhook disabled (REGATTAUP_WEBHOOK_ENABLED=0)'
+    );
+    if (config.regattaup.enabled) {
+      console.log(`[baseStation] on-grid zone: ${config.regattaup.onGridZoneM}m behind the pin<->committeeStart line`);
+      console.log(
+        config.regattaup.markRoundingEnabled
+          ? `[baseStation] mark roundings post to RegattaUp (gate extends ${config.regattaup.markRoundingExtensionM}m beyond each mark)`
+          : '[baseStation] mark-rounding webhook disabled (set REGATTAUP_MARK_ROUNDING_ENABLED=1 to enable)'
+      );
+      console.log(
+        config.regattaup.foulEnabled
+          ? '[baseStation] fouls (downwind start/finish line crossings, committee gap, pin boundary gate if on) post to RegattaUp'
+          : '[baseStation] foul webhook disabled (set REGATTAUP_FOUL_ENABLED=1 to enable)'
+      );
+    }
   }
 }
 

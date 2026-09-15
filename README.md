@@ -1792,31 +1792,35 @@ configured and enabled as an output message. Also available standalone as
 `GET /api/gps/survey` (same null-means-not-available contract as
 `/api/gps`).
 
-Two buttons on the card let you switch TMODE3 mode directly from the
+Two buttons on the card let you (re)start survey-in directly from the
 dashboard, each behind a `confirm()` since this reconfigures what the base
 itself broadcasts as RTCM correction data - not something to fire by
 accident mid-race:
-- **Start survey-in** - (re)starts survey-in using `GPS_SVIN_MIN_DUR_S` /
-  `GPS_SVIN_ACC_LIMIT_MM`. Also the way to restart one - TMODE3 has no
-  separate "restart" command, sending the same request again is how u-blox
-  receivers do it, useful if conditions changed or a first attempt is
-  taking too long (see the progress-vs-target reading above).
-- **Use as fixed position** - locks TMODE3 to a fixed reference position,
-  preferring the completed survey-in's own result if one exists (the
-  normal flow: survey in, then lock to it) and otherwise falling back to
-  the base's current ordinary GPS fix - usable for bench testing, but
-  nowhere near RTK-base-grade precision that way, since it's a single fix's
-  accuracy rather than an averaged one.
+- **Survey-in** - (re)starts survey-in using `GPS_SVIN_MIN_DUR_S` /
+  `GPS_SVIN_ACC_LIMIT_MM`, RAM only (see the save note below - this one does
+  NOT survive a reboot on its own). Also the way to restart one - TMODE3
+  has no separate "restart" command, sending the same request again is how
+  u-blox receivers do it, useful if conditions changed or a first attempt
+  is taking too long (see the progress-vs-target reading above).
+- **Survey-in & save** - the same request, immediately persisted (see the
+  save note below) - the mode that's saved is "survey-in," not whatever
+  position it eventually converges to, so this is the button that actually
+  fixes a receiver that keeps rebooting back into a bad `Fixed` position
+  (see "Base + RTK combined" above's own troubleshooting note): it makes
+  survey-in the boot-time default going forward, regardless of how long
+  this particular run takes to finish.
 
-Below those, a small form lets you type in a known position instead -
-useful if the base's location has already been surveyed independently
-(e.g. a club's own benchmark for a permanent committee boat mooring), which
-is more trustworthy than anything survey-in or a live fix can produce
-itself. The three fields prefill from whatever position is already known
-(currently-fixed position, then a completed survey's result, then the
-base's live fix, in that order) so you're editing a real nearby value
-rather than typing from scratch, but any of them can be overwritten
-outright. Validated both client-side (range checks, for a fast error) and
+There's no "lock to my current fix" button on this card - that's the
+manual-position form below's job instead, not a second, separate control
+for the same thing. Its three fields prefill from whatever position is
+already known (currently-fixed position, then a completed survey's result,
+then the base's live fix, in that order), so locking to whatever's
+currently live is already just "click Set and save" there with the
+pre-filled values as-is - useful if the base's location has already been
+surveyed independently too (e.g. a club's own benchmark for a permanent
+committee boat mooring, typed in overwriting the prefill), which is more
+trustworthy than anything survey-in or a live fix can produce itself.
+Validated both client-side (range checks, for a fast error) and
 server-side in `setBaseGpsFixed` (the check that actually matters, since a
 request could reach it some other way) - lat within ±90°, lon within
 ±180°, height between -500m and 9000m. The confirm dialog spells out the
@@ -1824,30 +1828,35 @@ exact numbers about to be sent rather than a generic "are you sure," so a
 typo (wrong sign, transposed digits) is visible one last time before it
 reconfigures RTK corrections for every boat.
 
-All three actions POST to `/api/gps/survey/mode` (only registered at all
-under `npm run rtk`/`basertk` - plain `npm run base` 404s it, same as the
-card itself not existing there; no CORS either way - unlike
+Every button on this card POSTs to `/api/gps/survey/mode` (only registered
+at all under `npm run rtk`/`basertk` - plain `npm run base` 404s it, same
+as the card itself not existing there; no CORS either way - unlike
 `/api/marks/:name`, there's no rover-side equivalent that needs to call it
-cross-origin) with `{"mode": "survey-in"}`, `{"mode": "fixed"}`, or
-`{"mode": "fixed", "lat": ..., "lon": ..., "heightM": ...}` for a manual
-position.
+cross-origin) with `{"mode": "survey-in"}` or `{"mode": "fixed"}`; the
+manual-position form below sends `{"mode": "fixed", "lat": ..., "lon": ...,
+"heightM": ...}` instead.
 
-A fourth button, **Save config**, is a separate, explicit step - none of
-the three actions above survive a power cycle on their own. They send a
-`UBX-CFG-TMODE3` message, and like every other legacy `UBX-CFG-*` message
-(as opposed to the newer `CFG-VALSET` interface the one-time `ubxtool`
-setup commands earlier in this README use, with their own explicit
-`RAM|BBR|Flash` layer flag), that only ever changes the receiver's live RAM
-config - without a save, TMODE3 silently reverts to whatever was last saved
-(or the factory default) on every restart. Save config sends a
-`UBX-CFG-CFG` message instead, persisting whatever's currently active to
-both BBR and flash (`src/ubxParser.js`'s `encodeSaveConfig`) - ArduSimple's
-simpleRTK2B boards typically have no SPI flash at all and rely on BBR
-(kept alive by an onboard supercap, or a coin cell if one's fitted)
-instead, but targeting flash too is harmless when it's absent and covers
-boards that do have it. BBR persistence only lasts as long as its own
-backup power does - a long enough full power-down can still lose it even
-after a save. POSTs to `/api/gps/save-config`, no body.
+There is no separate, standalone "save" button anywhere on this page -
+saving is always a modifier on the action you're already taking (the
+"& save" buttons above and on the manual-position form below), never its
+own step. This matters because the underlying `UBX-CFG-TMODE3` message
+(unlike the newer `CFG-VALSET` interface the one-time `ubxtool` setup
+commands earlier in this README use, with their own explicit
+`RAM|BBR|Flash` layer flag) only ever changes the receiver's live RAM
+config on its own - **Survey-in** and **Use live fix** without "& save"
+leave TMODE3 silently reverting to whatever was last saved (or the factory
+default) on every restart, which is exactly how a receiver ends up stuck
+rebooting into a stale `Fixed` position from an earlier test: someone
+clicked survey-in (or it was never explicitly saved after being set to
+Fixed) without the save variant, so the next power cycle reverted right
+back. Any "& save" button sends a follow-up `UBX-CFG-CFG` message,
+persisting whatever's now active to both BBR and flash
+(`src/ubxParser.js`'s `encodeSaveConfig`) - ArduSimple's simpleRTK2B boards
+typically have no SPI flash at all and rely on BBR (kept alive by an
+onboard supercap, or a coin cell if one's fitted) instead, but targeting
+flash too is harmless when it's absent and covers boards that do have it.
+BBR persistence only lasts as long as its own backup power does - a long
+enough full power-down can still lose it even after a save.
 
 A boat's "pending uploads" figure is self-reported: it rides along on the
 same periodic health check the boat already does to test reachability

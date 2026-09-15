@@ -182,7 +182,7 @@ function renderBaseGpsSurveyCard(survey, fix) {
       <div class="stat-rows">${rowsHtml}</div>
       <div class="card-actions">
         <button type="button" class="card-btn" onclick="setTmode3Mode('survey-in', this)">Survey-in</button>
-        <button type="button" class="card-btn" onclick="setTmode3Mode('fixed', this, true)">Set and save</button>
+        <button type="button" class="card-btn" onclick="setTmode3Mode('survey-in', this, true)">Survey-in &amp; save</button>
       </div>
     </div>`;
 }
