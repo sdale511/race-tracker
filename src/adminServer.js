@@ -633,7 +633,7 @@ function buildCourseInfoHtml(marks) {
 // `npm run markset` there IS no separate dashboard page at all (`/` and
 // `/map` are aliases of this exact page), so a link back to itself would
 // just be confusing, not merely redundant.
-function renderMap(s, { mapOnly } = {}) {
+function renderMap(s, { mapOnly, markMode } = {}) {
   const backToDashboardLink = mapOnly ? '' : '<a href="/">&larr; back to dashboard</a>';
   // Under mapOnly (markset - see baseStation.js's marksetMode) this page IS
   // the only UI, with no dashboard reachable at all to show the Regatta
@@ -694,9 +694,14 @@ function renderMap(s, { mapOnly } = {}) {
   }
 
   const marks = s.course.marks;
+  // Kept in markMarkers (not just addTo(map) and forgotten), same as
+  // boatMarkersJs already does for boats below - refreshMarks further down
+  // this page's own <script> needs a handle on each one to move it live
+  // when that mark's position changes, instead of only ever drawing it once
+  // at page load.
   const markersJs = MARK_NAMES.map(
     (name) =>
-      `L.circleMarker([${marks[name].lat}, ${marks[name].lon}], { radius: 8, color: '${markStroke(name)}', weight: 2, fillColor: '${MARK_COLORS[name]}', fillOpacity: 0.85 })
+      `markMarkers['${name}'] = L.circleMarker([${marks[name].lat}, ${marks[name].lon}], { radius: 8, color: '${markStroke(name)}', weight: 2, fillColor: '${MARK_COLORS[name]}', fillOpacity: 0.85 })
         .addTo(map)
         .bindTooltip('${name}', { permanent: true, direction: 'top', offset: [0, -8], className: 'mark-label' });`
   ).join('\n    ');
@@ -735,17 +740,32 @@ function renderMap(s, { mapOnly } = {}) {
   // swaps its "Set" button for a small badge instead - manually setting a
   // mark this device is already auto-posting for would just fight its own
   // next fix, so there's nothing useful for that button to do there. Every
-  // other row (including all of them when nothing's assigned) keeps its
-  // normal "Set" button - manually correcting a DIFFERENT mark while this
-  // one auto-tracks is still a completely normal thing to want.
+  // other row keeps its normal "Set" button - manually correcting a
+  // DIFFERENT mark while this one auto-tracks is still a completely normal
+  // thing to want.
+  //
+  // hideSetButtons is true in two cases, not just "this device already has
+  // an assignment": under `npm run mark` specifically (markMode), that
+  // mode's whole purpose is single-mark auto-tracking, not general course
+  // editing, so the list is reference-only even before anything's been
+  // assigned yet - there's nothing to prompt-and-wait for if an operator
+  // could just start clicking "Set" buttons instead. Under plain
+  // `npm run markset`, the list stays fully interactive right up until (if
+  // ever) this same device is ALSO given a mark assignment from its own
+  // dropdown - at that point it's functionally in the same state as mark
+  // mode, so the same rule applies (see README's "Mark mode" on why
+  // markset+assignment and mark are the same underlying state).
+  const hideSetButtons = mapOnly && (markMode || !!s.markAssignment);
   const markSetRowsHtml = MARK_NAMES.map((name) => {
-    const isAssigned = mapOnly && s.markAssignment === name;
+    const isAssigned = hideSetButtons && s.markAssignment === name;
     return `<div class="mark-set-row${isAssigned ? ' mark-set-row-assigned' : ''}">
         <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
         <span class="name">${name}</span>
         ${
           isAssigned
             ? `<span class="mark-assigned-badge" title="This rover auto-posts this mark's position as its own GPS moves - see the dropdown below to reassign">This rover</span>`
+            : hideSetButtons
+            ? ''
             : `<button type="button" class="set-mark-btn" data-mark="${name}">Set</button>`
         }
       </div>`;
@@ -972,6 +992,7 @@ function renderMap(s, { mapOnly } = {}) {
     const map = L.map('map', { zoomControl: false, maxZoom: 22 });
     L.control.zoom({ position: 'topright' }).addTo(map);
     const boatMarkers = {};
+    const markMarkers = {};
 
     // Course-info card rows (see buildCourseInfoHtml's own comment on
     // data-marks) zoom the map to the mark(s) they're describing on click -
@@ -980,6 +1001,13 @@ function renderMap(s, { mapOnly } = {}) {
     // markers/lines were built from, just handed to the client this once so
     // this lookup doesn't need its own separate route.
     const courseMarks = ${JSON.stringify(marks)};
+    // Captured once at page load so refreshMarks (below) can tell a mere
+    // position update (patch markers/lines in place) apart from a
+    // reassignment (this rover now represents a different mark, or none) -
+    // the latter changes which "Set" buttons/badge should show, which is
+    // easier to get right via a full reload than by re-deriving that markup
+    // client-side.
+    const initialMarkAssignment = ${JSON.stringify(s.markAssignment || null)};
     const COURSE_INFO_ZOOM = 19; // close enough to make out a single mark clearly, short of maxNativeZoom's soft upscaling
     document.querySelectorAll('.course-info-row.zoomable').forEach((row) => {
       const names = row.dataset.marks.split(',');
@@ -1000,28 +1028,103 @@ function renderMap(s, { mapOnly } = {}) {
     // "large" rows (mark distances) actually switch between km and mi.
     // One conversion implementation here, not a duplicate server-side copy
     // that could drift from it - see buildCourseInfoHtml's own comment.
-    (function () {
-      const KEY = 'raceTrackerMapUnits';
-      const toggle = document.getElementById('unitToggle');
-      if (!toggle) return; // no course card at all (e.g. the "no marks yet" page)
-      function applyUnits(imperial) {
-        document.querySelectorAll('.course-info-row[data-dist-m]').forEach((row) => {
-          const m = parseFloat(row.dataset.distM);
-          const bearing = row.dataset.bearing || '';
-          const text =
-            row.dataset.distKind === 'small'
-              ? Math.round(imperial ? m * 3.28084 : m) + (imperial ? ' ft' : ' m')
-              : (imperial ? m / 1609.344 : m / 1000).toFixed(2) + (imperial ? ' mi' : ' km');
-          row.querySelector('.value').textContent = bearing ? text + ' · ' + bearing : text;
-        });
-      }
-      toggle.checked = localStorage.getItem(KEY) === '1'; // off (metric) by default
+    //
+    // toggle/applyUnits live at this outer scope (not inside an IIFE, as
+    // before) so refreshMarks below can re-run the same formatting after it
+    // patches a row's data-dist-m/data-bearing with a fresh position - one
+    // rendering path for "unit changed" and "marks moved" instead of two.
+    const UNIT_KEY = 'raceTrackerMapUnits';
+    const toggle = document.getElementById('unitToggle');
+    function applyUnits(imperial) {
+      document.querySelectorAll('.course-info-row[data-dist-m]').forEach((row) => {
+        const m = parseFloat(row.dataset.distM);
+        const bearing = row.dataset.bearing || '';
+        const text =
+          row.dataset.distKind === 'small'
+            ? Math.round(imperial ? m * 3.28084 : m) + (imperial ? ' ft' : ' m')
+            : (imperial ? m / 1609.344 : m / 1000).toFixed(2) + (imperial ? ' mi' : ' km');
+        row.querySelector('.value').textContent = bearing ? text + ' · ' + bearing : text;
+      });
+    }
+    if (toggle) {
+      // no course card at all (e.g. the "no marks yet" page) - applyUnits
+      // still exists above but querySelectorAll finds nothing to do, so
+      // calling it elsewhere (e.g. from refreshMarks) stays harmless.
+      toggle.checked = localStorage.getItem(UNIT_KEY) === '1'; // off (metric) by default
       applyUnits(toggle.checked);
       toggle.addEventListener('change', () => {
-        localStorage.setItem(KEY, toggle.checked ? '1' : '0');
+        localStorage.setItem(UNIT_KEY, toggle.checked ? '1' : '0');
         applyUnits(toggle.checked);
       });
-    })();
+    }
+
+    // Client-side ports of course.js's own pure math - same accepted
+    // duplication as dopQualityText/fixQualityText elsewhere on this page,
+    // not a route round-trip for every refresh tick. Exact copies; keep in
+    // sync with src/course.js if either changes.
+    const METERS_PER_DEG_LAT = 111320;
+    function distanceMeters(a, b) {
+      const north = (b.lat - a.lat) * METERS_PER_DEG_LAT;
+      const east = (b.lon - a.lon) * METERS_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
+      return Math.sqrt(north * north + east * east);
+    }
+    function bearingDeg(a, b) {
+      const north = (b.lat - a.lat) * METERS_PER_DEG_LAT;
+      const east = (b.lon - a.lon) * METERS_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
+      return ((Math.atan2(east, north) * 180) / Math.PI + 360) % 360;
+    }
+    const COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    function compassDir(bearingDegrees) {
+      return COMPASS_POINTS[Math.round(bearingDegrees / 22.5) % 16];
+    }
+    function bearingText(bearing) {
+      return Math.round(bearing) + '° ' + compassDir(bearing);
+    }
+
+    // Polls for mark movement from ANY source - this rover's own auto-post
+    // (mark mode), another open tab's manual "Set", or an external script
+    // writing Redis/mark-name.txt directly - and patches the map/course
+    // card in place rather than requiring a manual reload. Runs on every
+    // mode's map page, unconditionally (not gated behind the "auto-refresh
+    // boats" checkbox below, which is a separate, boat-specific setting).
+    function updateCourseInfoRow(marksAttr, distM, bearing) {
+      const row = document.querySelector('.course-info-row[data-marks="' + marksAttr + '"]');
+      if (!row) return;
+      row.dataset.distM = distM;
+      row.dataset.bearing = bearingText(bearing);
+    }
+    function refreshMarks() {
+      fetch('/api/marks')
+        .then((res) => res.json())
+        .then((data) => {
+          // A reassignment changes which "Set" buttons/badge the page
+          // should show - simplest correct fix is a full reload rather
+          // than re-deriving that markup here.
+          if ((data.markAssignment || null) !== initialMarkAssignment) {
+            location.reload();
+            return;
+          }
+          const m = data.marks;
+          Object.keys(markMarkers).forEach((name) => {
+            if (m[name]) markMarkers[name].setLatLng([m[name].lat, m[name].lon]);
+          });
+          startLineLayer.setLatLngs([[m.pin.lat, m.pin.lon], [m.committeeStart.lat, m.committeeStart.lon]]);
+          finishLineLayer.setLatLngs([[m.committeeFinish.lat, m.committeeFinish.lon], [m.finish.lat, m.finish.lon]]);
+          courseAxisLayer.setLatLngs([[m.leewardBlack.lat, m.leewardBlack.lon], [m.windwardBlack.lat, m.windwardBlack.lon]]);
+          // Mirrors buildCourseInfoHtml's own distance/bearing math exactly
+          // (including its deliberately asymmetric bearing directions per
+          // row) - see that function's comment for why each is measured
+          // the way it is.
+          updateCourseInfoRow('pin,committeeStart', distanceMeters(m.pin, m.committeeStart), bearingDeg(m.committeeStart, m.pin));
+          updateCourseInfoRow('committeeFinish,finish', distanceMeters(m.committeeFinish, m.finish), bearingDeg(m.committeeFinish, m.finish));
+          ['windwardBlack', 'windwardGreen', 'leewardGreen', 'leewardBlack'].forEach((name) => {
+            updateCourseInfoRow(name, distanceMeters(m.committeeStart, m[name]), bearingDeg(m.committeeStart, m[name]));
+          });
+          applyUnits(toggle ? toggle.checked : false);
+        })
+        .catch(() => {}); // transient network hiccup - just try again next tick
+    }
+    setInterval(refreshMarks, 5000);
 
     // Satellite imagery, not a street/vector basemap - these courses are
     // typically raced on a dry lake bed (Black Rock Desert-style playa)
@@ -1039,15 +1142,17 @@ function renderMap(s, { mapOnly } = {}) {
 
     // Start line (pin <-> committeeStart) and finish gate (committeeFinish
     // <-> finish) - drawn as two independent lines since they no longer
-    // necessarily share an endpoint.
-    L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committeeStart.lat}, ${marks.committeeStart.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
-    L.polyline([[${marks.committeeFinish.lat}, ${marks.committeeFinish.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
+    // necessarily share an endpoint. Kept in named variables (not just
+    // addTo(map) and forgotten), same reasoning as markMarkers above -
+    // refreshMarks needs to move these when their endpoint marks do.
+    const startLineLayer = L.polyline([[${marks.pin.lat}, ${marks.pin.lon}], [${marks.committeeStart.lat}, ${marks.committeeStart.lon}]], { color: '${MARK_COLORS.pin}', weight: 2, dashArray: '6 6' }).addTo(map);
+    const finishLineLayer = L.polyline([[${marks.committeeFinish.lat}, ${marks.committeeFinish.lon}], [${marks.finish.lat}, ${marks.finish.lon}]], { color: '${MARK_COLORS.finish}', weight: 2, dashArray: '6 6' }).addTo(map);
     // Course axis (leewardBlack <-> windwardBlack) - just a visual
     // reference; boats actually tack back and forth across this, not sail
     // it directly. Drawn between the black (outer) marks rather than the
     // green ones since both pairs sit on the same axis - one line covers
     // the full extent, green marks included, since they fall on it too.
-    L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
+    const courseAxisLayer = L.polyline([[${marks.leewardBlack.lat}, ${marks.leewardBlack.lon}], [${marks.windwardBlack.lat}, ${marks.windwardBlack.lon}]], { color: '#e6e9ef', weight: 1, dashArray: '2 8' }).addTo(map);
     // On-grid detection zone - the exact quadrilateral OnGridWatcher.check
     // itself tests against (see onGridWatcher.js's zonePolygon), not a
     // separately-eyeballed approximation, so this can never show a
@@ -1443,6 +1548,7 @@ function startAdminServer({
   port,
   getStats,
   getPositions,
+  getCourseMarks,
   setMark,
   setPinBoundaryEnabled,
   pingFleet,
@@ -1454,12 +1560,18 @@ function startAdminServer({
   setBaseGpsSurveyIn,
   setBaseGpsFixed,
   saveBaseGpsConfig,
-  // See baseStation.js's marksetMode - true only under `npm run markset`.
-  // Swaps GET / from the fleet dashboard to the course map, since a
-  // mark-setting run has no use for the fleet/radio/upload view as its
-  // default page. Every other route (including /map itself, so the two
-  // are just aliases of each other under this mode) is unchanged.
+  // See baseStation.js's marksetMode - true under `npm run markset` OR
+  // `npm run mark` (mark always sets this too). Swaps GET / from the fleet
+  // dashboard to the course map, since a mark-setting run has no use for
+  // the fleet/radio/upload view as its default page. Every other route
+  // (including /map itself, so the two are just aliases of each other
+  // under this mode) is unchanged.
   mapOnly,
+  // See baseStation.js's markMode - true only under `npm run mark`
+  // specifically (never markset). Passed through to renderMap so it can
+  // hide the manual "Set" button list even before anything's assigned -
+  // see renderMap's own comment.
+  markMode,
 }) {
   const rtkControlsEnabled = !!setBaseGpsSurveyIn;
   const server = http.createServer(async (req, res) => {
@@ -1632,6 +1744,25 @@ function startAdminServer({
       return;
     }
 
+    // The map's own live-refresh loop (see renderMap's refreshMarks) polls
+    // this instead of /api/stats for the same reason /api/positions exists
+    // separately from it - a course mark can move without an operator ever
+    // reloading the page (a manual "Set" from a different browser tab, a
+    // console script writing Redis directly, or - the main reason this
+    // exists at all - mark mode's own auto-post as its GPS drifts), and the
+    // map should reflect that without needing a reload. markAssignment is
+    // bundled in the same response so the client can tell a REASSIGNMENT
+    // (this device now represents a different mark, or none) apart from an
+    // ordinary position update - the former changes enough of the page
+    // (which row is highlighted, whether "Set" buttons show at all) that a
+    // full reload is simpler and more correct than patching it all
+    // incrementally, unlike a plain position change.
+    if (req.url === '/api/marks') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ marks: getCourseMarks(), markAssignment: getMarkAssignment ? getMarkAssignment() : null }));
+      return;
+    }
+
     if (req.url === '/api/gps') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getBaseGps()));
@@ -1652,7 +1783,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(mapOnly ? renderMap(s, { mapOnly }) : renderDashboard(s, rtkControlsEnabled));
+        res.end(mapOnly ? renderMap(s, { mapOnly, markMode }) : renderDashboard(s, rtkControlsEnabled));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);
@@ -1664,7 +1795,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(renderMap(s, { mapOnly }));
+        res.end(renderMap(s, { mapOnly, markMode }));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);

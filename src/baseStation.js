@@ -4,7 +4,7 @@ const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
-const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
+const { getPersistedMarkName, persistMarkName, clearPersistedMarkName, markNameFilePath } = require('./markNameFile');
 const {
   distanceMeters,
   COURSE_LENGTH_M,
@@ -377,26 +377,63 @@ function main() {
     },
   });
 
+  // Applies a new mark assignment to this process's own in-memory state,
+  // WITHOUT touching mark-name.txt - split out from setMarkAssignment below
+  // so the file-watcher further down (which reacts to that same file
+  // changing on disk, e.g. hand-edited or written by some other script) can
+  // apply what it just read without writing it right back and re-triggering
+  // itself. No-ops (doesn't even reset lastPostedMarkPosition) if `name`
+  // already matches the current assignment, for the same reason - the
+  // watcher re-reads on every change event, including ones this process's
+  // own persistMarkName call just caused.
+  function applyMarkAssignment(name) {
+    if (name && !MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
+    const resolved = name || null;
+    if (resolved === assignedMarkName) return assignedMarkName;
+    assignedMarkName = resolved;
+    // Always resets, even when reassigning to the SAME mark by a different
+    // route - the distance gate should measure from a genuinely fresh
+    // reference, not a stale one left over from whatever this device was
+    // representing (or reporting) before.
+    lastPostedMarkPosition = null;
+    return assignedMarkName;
+  }
+
   // Sets (or clears, with a falsy name) which mark this device represents -
   // the map's own "This rover is:" dropdown (see adminServer.js's renderMap
   // under mapOnly) is the only caller. Persists so a later restart
   // remembers the assignment, same as selectRegatta's own persistRegattaId
-  // call. lastPostedMarkPosition always resets, even when reassigning to
-  // the SAME mark again - the distance gate should measure from a genuinely
-  // fresh reference, not a stale one left over from whatever this device
-  // was representing (or reporting) before.
+  // call.
   function setMarkAssignment(name) {
-    if (name && !MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
-    assignedMarkName = name || null;
-    lastPostedMarkPosition = null;
-    if (assignedMarkName) persistMarkName(assignedMarkName);
+    const resolved = applyMarkAssignment(name);
+    if (resolved) persistMarkName(resolved);
     else clearPersistedMarkName();
-    return assignedMarkName;
+    return resolved;
   }
 
   function getMarkAssignment() {
     return assignedMarkName;
   }
+
+  // Notices mark-name.txt changing on disk from OUTSIDE this process - a
+  // console script, a hand edit, some other tool entirely - and applies it
+  // live instead of only ever picking it up on the next restart. Polling
+  // (fs.watchFile), not fs.watch: more reliable across editors/scripts that
+  // replace the file via a rename rather than an in-place write, which
+  // fs.watch can miss depending on platform - not a hot path, so the
+  // latency tradeoff is a non-issue. Harmless to always run regardless of
+  // mode/marksetMode - a process with no interest in mark assignment (a
+  // plain base/boat) just never has anything meaningful change here.
+  fs.watchFile(markNameFilePath, { interval: 2000 }, () => {
+    const onDisk = getPersistedMarkName();
+    if (onDisk === assignedMarkName) return; // this process's own last write, or no real change
+    try {
+      applyMarkAssignment(onDisk);
+      console.log(`[baseStation] mark-name.txt changed on disk - this device now represents "${onDisk || '(none)'}"`);
+    } catch (err) {
+      console.error('[baseStation] mark-name.txt now contains an invalid mark name, ignoring:', err.message);
+    }
+  });
 
   // Receives boat log uploads over WiFi whenever a boat happens to be in
   // range (see uploadServer.js/uploadClient.js) - its address is what gets
@@ -1950,6 +1987,18 @@ function main() {
     return positions;
   }
 
+  // Deliberately separate from getFullStats too, same reasoning as
+  // getBoatPositions above - the map's own live-refresh loop (see
+  // adminServer.js's renderMap) only ever needs the current course marks
+  // themselves, not the full dashboard snapshot, so this stays synchronous
+  // and Redis-free (raceMarks is already this process's own in-memory copy,
+  // kept current by setMarkLocation/resolveCourseForCurrentRegatta - see
+  // their own comments). null before any course has resolved yet, same
+  // "not available yet" contract as raceMarks itself.
+  function getCourseMarks() {
+    return raceMarks;
+  }
+
   // Set only by src/baseRtkStation.js (npm run basertk) - a thin wrapper
   // around this exact file for the single-machine case where this base is
   // ALSO the RTK correction source, not split onto its own process (see
@@ -1965,6 +2014,7 @@ function main() {
     port: config.admin.port,
     getStats: getFullStats,
     getPositions: getBoatPositions,
+    getCourseMarks,
     setMark: setMarkLocation,
     setPinBoundaryEnabled,
     pingFleet,
@@ -1994,6 +2044,12 @@ function main() {
     // server, local UDP broadcast - see further down this function) rather
     // than leaving them running unused.
     mapOnly: marksetMode,
+    // See markMode's own declaration above - lets the map hide the manual
+    // "Set" button list entirely under `npm run mark` even before anything's
+    // assigned yet (that mode's whole purpose is single-mark auto-tracking,
+    // not general course editing), where plain `npm run markset` keeps
+    // showing it until (if ever) this same device gets assigned a mark too.
+    markMode,
   });
 
   if (marksetMode) {
