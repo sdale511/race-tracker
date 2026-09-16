@@ -133,6 +133,14 @@ const sections = [
             : undefined,
         roles: ['boat'],
       },
+      {
+        label: 'markName',
+        value: config.markName || '(not assigned)',
+        envVar: 'MARK_NAME',
+        note: 'see README\'s "Mark mode" - which course mark this device auto-posts its own GPS position as, if any',
+        roles: ['base'],
+      },
+      { label: 'markDistanceM', value: config.markDistanceM, envVar: 'MARK_DISTANCE_M', unit: 'm', roles: ['base'] },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
         label: 'txIntervalMs',

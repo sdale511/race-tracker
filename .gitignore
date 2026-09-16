@@ -152,6 +152,11 @@ boat_id.txt
 regatta-id.txt
 power-schedule.txt
 
+# This device's own persisted mark assignment (see src/markNameFile.js,
+# README's "Mark mode") - which course mark a given rover represents, local
+# to that physical unit, never something to commit or share between them.
+mark-name.txt
+
 # Locally-generated race data - received-fix CSVs, webhook retry queues,
 # and every boat's uploaded log history. Both directories are created on
 # demand (fs.mkdirSync in baseStation.js/sdLogger.js/uploadServer.js), so

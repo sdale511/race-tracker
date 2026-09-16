@@ -9,7 +9,7 @@ set -euo pipefail
 #   2. Configures the GPS module itself over that UART (UBX-NAV-PVT on,
 #      NMEA off) - automates README's "GPS configuration" section.
 #   3. Makes sure the user this app actually runs as (see
-#      install-boat-service.sh) can open the port at all - dialout group
+#      install-service.sh) can open the port at all - dialout group
 #      membership, not just the device node existing.
 # Idempotent and safe to re-run: each step only changes what isn't already
 # set the way it wants.
@@ -44,10 +44,11 @@ set -euo pipefail
 #                   way, so this is purely a bandwidth choice, not a
 #                   correctness one.
 #   SERVICE_USER  - the non-root user this app actually runs as (see
-#                   install-boat-service.sh) - added to the dialout group
+#                   install-service.sh) - added to the dialout group
 #                   so it can open $GPS_PORT at all. Defaults to whoever
-#                   invoked sudo, falling back to "jycadmin" (matching
-#                   install-boat-service.sh's own default) if that's unset.
+#                   invoked sudo, falling back to "jycadmin" if that's
+#                   unset (this script's own default - install-service.sh
+#                   requires a real SUDO_USER explicitly instead).
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: this needs root - run with sudo" >&2
@@ -238,5 +239,5 @@ echo "       re-run with the other UART number (GPS_UART=1 or 2)"
 echo "  GPS_PORT=$GPS_PORT GPS_BAUD=$GPS_BAUD npm run boat"
 echo "    -> the check that actually matters: watch for [gps] lines with real"
 echo "       fixType/numSV values, not just raw bytes 'looking' correct - and confirm"
-echo "       it's running as $SERVICE_USER (or whoever install-boat-service.sh set up),"
+echo "       it's running as $SERVICE_USER (or whoever install-service.sh set up),"
 echo "       not root, so the dialout group membership above actually gets exercised"

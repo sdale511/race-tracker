@@ -332,7 +332,7 @@ real racing distance.
 
 ## Running
 
-Five modes, each its own `npm run` script - pick whichever matches how a
+Six modes, each its own `npm run` script - pick whichever matches how a
 given machine is actually being used:
 
 | Mode | Command | Runs on | What it does |
@@ -341,7 +341,8 @@ given machine is actually being used:
 | Base | `npm run base` | Shore/committee machine | Receives every boat's telemetry, tracks the course/fleet/laps, reports to RegattaUp, serves the fleet dashboard. Also reads an optional GPS of its own for planting course marks at a real surveyed position (see "Editing mark positions from the map" below) - but not RTK correction control |
 | RTK-only | `npm run rtk` | A machine with just the RTK correction-source GPS attached | Monitors/configures that GPS's TMODE3/survey-in state and serves a small dedicated dashboard for it - no telemetry radio, course, fleet, or RegattaUp reporting at all |
 | Base + RTK combined | `npm run basertk` | A single machine acting as both the telemetry base AND the RTK correction source | Everything `base` does, plus RTK-only's TMODE3/survey-in controls, in one process/dashboard |
-| Mark-set | `npm run markset` | A handheld/backpack RTK unit carried out to each mark | Everything `base` does under the hood (same regatta/course/Redis/radio), but its GPS is always on (like a boat's, not gated on `GPS_PORT`) and its dashboard opens straight to the course map instead of the fleet view - see "Mark-set mode" below |
+| Mark-set | `npm run markset` | A handheld/backpack RTK unit carried between marks | Regatta/course/Redis, an always-on GPS (like a boat's, not gated on `GPS_PORT`), and a dashboard that opens straight to the course map for manually setting any mark's position - no telemetry radio, fleet tracking, uploads, or RegattaUp webhooks (all disabled outright, not just optional) - see "Mark-set mode" below |
+| Mark | `npm run mark` | A rover permanently attached to one course mark | Identical process to Mark-set - the only difference is a mark **assignment** (`MARK_NAME`, or set live from the map), which swaps the map's manual "Set" button list for automatic Redis updates as this device's own GPS moves - see "Mark mode" below |
 
 Base and RTK-only are two ends of a deliberate split: run them together on
 one machine (`basertk`) when that's simplest, or split the RTK correction
@@ -389,69 +390,63 @@ The exact suffix isn't fixed - it depends on the specific adapter and
 sometimes which USB port it's plugged into. Run `ls /dev/cu.*` before and
 after plugging in each device to see which path just appeared.
 
-Auto-start on boat boot:
-```
-sudo ./install-boat-service.sh [BOAT_ID]
-```
-Generates and installs the `boat-agent` systemd unit (`systemd/boat-agent.service`
-is kept as a static reference of what it produces, not something to copy by
-hand), enables it, and starts it. `BOAT_ID` is optional here too, same as
-running `npm run boat` by hand above - omit it and this Pi generates and
-persists its own id on first run; pass a plain number (e.g. `7`) to assign
-one deliberately instead, and the script zero-pads it to the wire protocol's
-fixed 5-character width for you (`7` becomes `BOAT_ID=00007` in the unit).
-Also sets `GPS_LOG=0`, unlike the interactive `npm run boat` default - under
-systemd stdout isn't a TTY, so the console line's in-place-overwrite never
-applies and every GPS fix would otherwise become its own permanent journal
-entry. Nothing else is overridden - `config.js`'s own defaults (see
-"Tuning knobs" below) are correct for a normal install; edit the generated
-unit directly if a given Pi genuinely needs `GPS_PORT`/`RADIO_PORT`/etc.
-overridden, or `GPS_LOG` back on for a one-off diagnostic session. Safe to
-re-run any time `BOAT_ID` needs to change - it regenerates the unit and
-restarts the service to pick it up. `./boat-logs.sh` (shorthand for
-`journalctl -u boat-agent -f`, extra args pass through) follows the logs,
-`sudo ./boat-restart.sh` (shorthand for `sudo systemctl restart
-boat-agent`, then prints status) restarts it, and `systemctl status
-boat-agent` works as usual too. `sudo ./boat-stop.sh` and
-`sudo ./boat-start.sh` stop/start it without touching whether it auto-starts
-on boot; `sudo ./boat-autostart.sh on|off` (no argument shows current
-status) controls that separately - `off` stops it from coming back on the
-next boot without stopping it right now, mirroring `systemctl enable|disable
-boat-agent`.
+### Auto-start on boot (systemd)
 
-Auto-start the base station on boot (Linux only - a Pi, or a Linux laptop;
-on macOS just run `npm run base` by hand, or use your own launchd agent):
+One script installs any of the six modes as a systemd service (Linux only -
+a Pi, or a Linux laptop; on macOS just run the npm script by hand, or use
+your own launchd agent):
 ```
-sudo ./install-base-service.sh [REGATTAUP_REGATTA_ID]
+sudo ./install-service.sh MODE [EXTRA_ARG]
 ```
-Generates and installs the `base-station` systemd unit
-(`systemd/base-station.service` is kept as a static reference of what it
-produces, not something to copy by hand), enables it, and starts it.
-Unlike the boat script, the install location isn't hardcoded - it installs
-wherever this checkout actually lives, since a base can run on any of
-several different machines rather than identical fixed-path Pis.
-`REGATTAUP_REGATTA_ID` is optional - omit it and this base picks up
-`regatta-id.txt` if one's already persisted, otherwise auto-selects
-whichever active/future regatta is closest to today the moment it first
-starts with a real RegattaUp connection (see "Selecting a regatta at
-startup" below); pass one to pin a specific regatta deliberately instead.
-Either way it's exactly as overridable afterward as any other pick, from
-the admin dashboard's own Regatta card. Also sets `GPS_LOG=0`, same
-console-noise reasoning as the boat service above. Nothing else is
-overridden - `config.js`'s own defaults are correct for a normal install;
-edit the generated unit directly if this particular machine genuinely
-needs `GPS_PORT`/`RADIO_PORT`/etc. overridden. Safe to re-run any time
-`REGATTAUP_REGATTA_ID` needs to change - it regenerates the unit and
-restarts the service to pick it up (though changing which regatta is
-selected doesn't actually need a restart at all - the admin dashboard does
-that live). `./base-logs.sh` (shorthand for `journalctl -u base-station -f`,
-extra args pass through) follows the logs, `sudo ./base-restart.sh`
-(shorthand for `sudo systemctl restart base-station`, then prints status)
-restarts it, and `systemctl status base-station` works as usual too.
-`sudo ./base-stop.sh` and `sudo ./base-start.sh` stop/start it without
-touching whether it auto-starts on boot; `sudo ./base-autostart.sh on|off`
-(no argument shows current status) controls that separately - same set of
-scripts as the boat service above, just for `base-station`.
+`MODE` is one of `boat base rtk basertk markset mark` - matches the `npm
+run` script names exactly (see "Running" above). Generates and installs
+that mode's own systemd unit (named `boat-agent`/`base-station` for those
+two, `rtk-station`/`basertk-station`/`markset-station`/`mark-station` for
+the rest - `systemd/boat-agent.service`/`systemd/base-station.service` are
+kept as static reference examples of what gets produced, not something to
+copy by hand), enables it, and starts it.
+
+`EXTRA_ARG` is optional and mode-specific - omit it and that mode resolves
+its own default at startup, exactly as running the npm script by hand
+would:
+- **boat**: `BOAT_ID` - omit it and this Pi generates and persists its own
+  id on first run; pass a plain number (e.g. `7`) to assign one
+  deliberately instead, zero-padded to the wire protocol's fixed
+  5-character width for you (`7` becomes `BOAT_ID=00007` in the unit).
+- **base, basertk**: `REGATTAUP_REGATTA_ID` - omit it and that mode picks
+  up `regatta-id.txt` if one's already persisted, otherwise auto-selects
+  whichever active/future regatta is closest to today (see "Selecting a
+  regatta at startup" below); pass one to pin a specific regatta
+  deliberately instead. Either way it's exactly as overridable afterward as
+  any other pick, from the admin dashboard's own Regatta card.
+- **mark**: `MARK_NAME` - omit it to start unassigned and pick one from the
+  map afterward (see "Mark mode" above); pass one of the real mark names to
+  assign it at install time instead.
+- **rtk, markset**: no extra argument.
+
+Also sets `GPS_LOG=0` for every mode, unlike the interactive `npm run`
+default - under systemd stdout isn't a TTY, so the console line's
+in-place-overwrite never applies and every GPS fix would otherwise become
+its own permanent journal entry. Nothing else is overridden - `config.js`'s
+own defaults (see "Tuning knobs" below) are correct for a normal install;
+edit the generated unit directly if a given machine genuinely needs
+`GPS_PORT`/`RADIO_PORT`/etc. overridden, or `GPS_LOG` back on for a one-off
+diagnostic session. Safe to re-run any time `EXTRA_ARG` needs to change -
+it regenerates the unit and restarts the service to pick it up.
+
+Four more scripts, each also taking `MODE` as their first argument, cover
+day-to-day control without needing to remember the underlying unit name:
+- `./service-logs.sh MODE` (shorthand for `journalctl -u <unit> -f`, extra
+  args pass through) follows the logs.
+- `sudo ./service-restart.sh MODE` (shorthand for `sudo systemctl restart
+  <unit>`, then prints status) restarts it - `systemctl status <unit>`
+  works as usual too.
+- `sudo ./service-stop.sh MODE` and `sudo ./service-start.sh MODE`
+  stop/start it without touching whether it auto-starts on boot.
+- `sudo ./service-autostart.sh MODE [on|off]` (no `on`/`off` shows current
+  status) controls that separately - `off` stops it from coming back on the
+  next boot without stopping it right now, mirroring `systemctl
+  enable|disable <unit>`.
 
 ### RTK-only mode
 
@@ -534,17 +529,76 @@ plain `npm run base`, nothing else:
   mark positions from the map" below for the actual workflow (toggle "edit
   marks", walk/sail to a mark, use the "Recenter on base GPS" button and
   readout to confirm you're standing on it, tap "Set"). `/map` itself still
-  works too, they're just aliases of each other under this mode.
+  works too, they're just aliases of each other under this mode. It also
+  shows a compact Redis-connected indicator and a regatta selector right in
+  the topbar - the only other place either would normally be reachable is
+  the fleet dashboard, which this mode doesn't have.
+- **The real telemetry radio is disabled outright**, real or simulated,
+  regardless of `RADIO_ENABLED`/`SIMULATE` - this mode never receives
+  telemetry or re-broadcasts marks over an actual radio link, so there's
+  nothing for it to do. A mark edited here still persists to Redis and is
+  picked up by base/basertk's own next regatta-select or restart, just not
+  live-broadcast from this process.
+- **Upload server, CSV/Redis fix-recording, local UDP broadcast, and all
+  four RegattaUp webhook queues are skipped entirely**, not just hidden
+  from the UI - with the radio off there's nothing for any of them to ever
+  receive or send, so this mode doesn't even start them (no unused sqlite
+  files, no idle retry timers).
 
-Everything else is untouched: this is still a full `baseStation.js`
-process - same regatta selection, same Redis-backed course storage, same
-optional telemetry radio (a real one, if attached, still re-broadcasts a
-mark edit to any boats already on the water, exactly as plain `base`
-would), same fleet/lap/RegattaUp-webhook machinery running in the
-background even though this mode's own UI never shows it. If a leaner,
-radio/fleet-free process is what you actually want for course setup, run
-`RADIO_ENABLED=0 npm run markset` instead - the radio simply won't open, the
-rest of this mode is unchanged.
+### Mark mode
+
+For a rover permanently attached to one course mark (a mark buoy, most
+commonly) that should keep Redis's own copy of that mark's position
+current as it drifts, instead of an operator manually walking to it and
+clicking "Set":
+```
+MARK_NAME=windwardBlack npm run mark
+```
+This is `src/markStation.js` - functionally identical to `markset` (same
+`MARKSET_MODE=1` flag, same always-on GPS, same map-only dashboard, same
+disabled radio/webhooks/uploads - see "Mark-set mode" above for all of
+that). The only thing that actually distinguishes "mark mode" from
+"markset mode" is whether a mark is currently **assigned** - that's
+runtime state, not a separate code path, so `npm run markset` and
+`npm run mark` are the same program; the second name just exists so the
+common single-mark case has its own obvious command.
+
+`MARK_NAME` is optional - omit it to start unassigned (exactly like
+`markset`) and assign one afterward from the map's own "This rover
+represents" dropdown, above the usual list of "Set" buttons in the edit
+column. Whichever way it's set, the assignment is persisted to
+`mark-name.txt` (same pattern as `boat_id.txt`/`regatta-id.txt`), so a
+later restart with no `MARK_NAME` remembers it.
+
+Once assigned, two things change on the map:
+- The manual per-mark "Set" button list disappears, replaced by a status
+  line showing what's currently stored in Redis for that mark - there's
+  nothing to manually set anymore, this device is doing it automatically.
+- Every GPS fix (`baseGps.js`'s own `onFix` - see its module comment) is
+  checked against the last position this device actually posted; once it's
+  moved `MARK_DISTANCE_M` (default 1m) or more, it calls the exact same
+  `setMarkLocation` plain markset's own "Set" button calls - same Redis
+  write, same in-memory course update, same pin-boundary republish, same
+  broadcast-if-a-radio's-attached (a no-op here, per above). Only advances
+  its own "last posted" reference once the write actually succeeds, so a
+  transient failure (no course published yet, a Redis blip) keeps retrying
+  on the next fix rather than silently giving up - same reasoning as
+  `TX_DISTANCE_M`'s own gate in `boatAgent.js`.
+
+Reassigning (or unassigning, back to "Not assigned") is a live change from
+the same dropdown - each one resets the "last posted" reference, so a
+freshly (re)assigned mark posts its very first position immediately rather
+than waiting out a stale threshold from whatever this device was
+representing before.
+
+**Known limitation:** this only covers the posting side - a *separate*,
+already-running `base`/`basertk` process has no way to notice a Redis-side
+mark change made by a different process while it's actively racing (its
+own in-memory course only refreshes on its own regatta-select/restart, or
+on an edit made through its own admin API). A moving mark tracked this way
+is reliable for course setup and between-race corrections; treating it as
+a live, race-time-moving mark that an active base immediately re-broadcasts
+to the fleet is not yet wired up.
 
 ### Scheduled shutdown (boat, battery-saving)
 
@@ -576,7 +630,7 @@ PiJuice-style HAT, a smart timer switch on the battery itself) that this
 repo has no way to know is present or how to drive. Without such hardware,
 plan on manual power-up either way.
 
-Requires the systemd service's own user (see `install-boat-service.sh`) to
+Requires the systemd service's own user (see `install-service.sh`) to
 be able to run `shutdown` without a password prompt - it can't enter one
 non-interactively. One-time setup:
 ```
@@ -2003,7 +2057,7 @@ Both also have a "console" link (`GET /console`, `src/consoleLogPage.js`)
 showing the last 100 lines this process has logged, refreshing every 5s -
 works the same whether it's an interactive session or running as a
 systemd service, where stdout goes straight to the journal (see
-`install-boat-service.sh`) rather than something this app could otherwise
+`install-service.sh`) rather than something this app could otherwise
 re-read itself. `src/logBuffer.js` is a small in-memory ring buffer fed
 from the same `console.log`/`warn`/`error` wrapper each process already
 has (originally added just to keep the in-place GPS line from getting
@@ -2069,6 +2123,8 @@ given `boat`/`base` run will actually use, instead of reading through
 | `RADIO_ENABLED` | unset (on) | Set to `0` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
 | `BOAT_ID` | this device's own persisted id (see below) | Exactly 5 characters (letters/digits, the wire protocol's boatId field is a fixed-width byte slot) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright over this device's own persisted id - see "Running" above |
+| `MARK_NAME` | unset (not assigned) | `npm run mark`/`markset` - which course mark this device auto-posts its own GPS position as, if any (must be one of the real mark names - `pin`, `committeeStart`, `committeeFinish`, `finish`, `windwardGreen`, `windwardBlack`, `leewardGreen`, `leewardBlack`). Persisted to `mark-name.txt` when set, same pattern as `BOAT_ID`/`REGATTAUP_REGATTA_ID` - a later restart with no `MARK_NAME` remembers the last assignment (from either this var or the map's own dropdown). See "Mark mode" above |
+| `MARK_DISTANCE_M` | 1 | `npm run mark`/`markset` - how far the assigned mark has to move before this device posts its new position to Redis - same distance-gated spirit as `TX_DISTANCE_M` below, for a mark instead of a boat |
 | `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
 | `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` — even a boat that hasn't moved far enough to clear the distance gate still sends (and logs) at least once every this many seconds, so a boat sitting still (at a mooring, holding on the grid) doesn't go silent on the base's dashboard for as long as it stays put. A distance-triggered send resets this timer too, so it's "at least every N seconds," not a separate clock stacking on top of frequent distance-based sends. Set to `0` to disable (distance gate only, the old behavior) |
 | `ROVER_SHUTDOWN_AT` | unset (off) | Boat only — 24h local time (`"HH:MM"`, e.g. `21:00`) after which this Pi shuts itself down once genuinely idle — see "Scheduled shutdown" below |

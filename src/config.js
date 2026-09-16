@@ -2,7 +2,9 @@ const path = require('path');
 require('dotenv').config();
 const { getOrCreatePersistentBoatId, ID_LENGTH: BOAT_ID_LENGTH } = require('./boatIdFile');
 const { getPersistedRegattaId, persistRegattaId } = require('./regattaIdFile');
+const { getPersistedMarkName, persistMarkName } = require('./markNameFile');
 const { getPersistedPowerSchedule, persistPowerSchedule } = require('./powerScheduleFile');
+const { MARK_NAMES } = require('./course');
 
 // BOAT_ID always wins outright when set (by hand, or by fleetSim.js for
 // every boat it spawns) - only falls back to this device's own persisted id
@@ -47,6 +49,29 @@ function resolveDefaultRegattaId() {
     return { id: process.env.REGATTAUP_REGATTA_ID, name: null, defaultLat: null, defaultLon: null };
   }
   return getPersistedRegattaId();
+}
+
+// MARK_NAME - which course mark this device physically represents (see
+// README's "Mark mode") - a rover permanently attached to a mark buoy that
+// auto-posts that mark's position to Redis as it drifts, instead of an
+// operator manually walking between marks and clicking "Set" (markset's own
+// normal workflow, see baseStation.js's marksetMode). Same env-wins,
+// persist-immediately spirit as resolveDefaultRegattaId above - an
+// explicit MARK_NAME becomes the new remembered default from this point on,
+// so a later restart that omits it still remembers the assignment. Falls
+// back to whatever's already persisted when unset; null (not an error, and
+// not a failure to run - see baseStation.js's assignedMarkName) if this
+// device has never been assigned one. Validated against MARK_NAMES here
+// (unlike BOAT_ID/REGATTAUP_REGATTA_ID, which have no fixed enum to check
+// against) so a typo'd env var fails loudly at startup instead of quietly
+// never matching any mark this app actually knows about.
+function resolveMarkName() {
+  const name = process.env.MARK_NAME || getPersistedMarkName();
+  if (name && !MARK_NAMES.includes(name)) {
+    throw new Error(`MARK_NAME must be one of ${MARK_NAMES.join(', ')} - got "${name}"`);
+  }
+  if (process.env.MARK_NAME) persistMarkName(name);
+  return name || null;
 }
 
 // Same env-wins spirit as resolveBoatId/resolveDefaultRegattaId above, but
@@ -362,6 +387,16 @@ module.exports = {
 
   // --- Identity & timing ---
   boatId: resolveBoatId(),
+  // Which mark this device represents, if any (see README's "Mark mode") -
+  // null is the overwhelmingly common case (plain base/boat/markset, never
+  // assigned to a mark at all).
+  markName: resolveMarkName(),
+  // How far the assigned mark has to actually move before this device
+  // posts a new position to Redis for it - same distance-gated spirit as
+  // txDistanceM below, just for a stationary/slow-drifting mark buoy
+  // instead of a moving boat, so ordinary GPS jitter on an anchored mark
+  // doesn't write to Redis on every single fix.
+  markDistanceM: parseFloat(process.env.MARK_DISTANCE_M || '1'),
   // How far the boat has to actually move before we transmit a new
   // position frame over the radio - distance-based, not time-based, so a
   // stopped boat doesn't keep re-sending the same fix and a fast-moving one

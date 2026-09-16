@@ -740,6 +740,33 @@ function renderMap(s, { mapOnly } = {}) {
       </div>`
   ).join('');
 
+  // "This rover represents..." (see README's "Mark mode") - a device
+  // physically attached to one course mark, auto-posting that mark's
+  // position to Redis as it moves (baseStation.js's onFix, gated on
+  // config.markDistanceM) instead of an operator manually walking between
+  // marks and clicking "Set" below. Only shown under mapOnly (markset/mark
+  // - see renderMap's own comment on why the Redis/regatta topbar controls
+  // are scoped the same way) - plain base/basertk's /map stays exactly as
+  // it is today, fleet-oriented, not this workflow.
+  const markAssignmentHtml = mapOnly
+    ? `<div class="mark-assignment">
+        <label for="markAssignSelect" style="display:block;font-size:11px;color:#8b94a3;margin-bottom:4px;">This rover represents</label>
+        <select id="markAssignSelect" onchange="assignMark(this)" data-current="${s.markAssignment || ''}" style="width:100%;background:#0f1216;color:#e6e9ef;border:1px solid #262c36;border-radius:6px;padding:7px 10px;font-size:13px;">
+          <option value="" ${!s.markAssignment ? 'selected' : ''}>Not assigned - edit marks manually below</option>
+          ${MARK_NAMES.map((name) => `<option value="${name}" ${s.markAssignment === name ? 'selected' : ''}>${name}</option>`).join('')}
+        </select>
+        ${
+          s.markAssignment
+            ? `<div class="muted" style="font-size:11px;margin-top:6px;">Auto-posts to Redis whenever this rover's own GPS moves &ge;${config.markDistanceM}m from the last position it posted.${
+                marks[s.markAssignment]
+                  ? ` Currently stored: ${marks[s.markAssignment].lat.toFixed(6)}, ${marks[s.markAssignment].lon.toFixed(6)}.`
+                  : ''
+              }</div>`
+            : ''
+        }
+      </div>`
+    : '';
+
   return `<!doctype html>
 <html>
 <head>
@@ -846,6 +873,7 @@ function renderMap(s, { mapOnly } = {}) {
   .recenter-btn:hover { background: #262c36; }
   .gps-readout { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: #8b94a3; margin: 2px 0 6px; gap: 6px; }
   .gps-readout .value { color: #e6e9ef; font-variant-numeric: tabular-nums; text-align: right; }
+  .mark-assignment { margin: 14px 0; padding: 10px 0; border-top: 1px solid #262c36; border-bottom: 1px solid #262c36; }
   .mark-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1c222b; font-size: 12px; }
   .mark-set-row:last-child { border-bottom: none; }
   .mark-set-row .name { flex: 1; }
@@ -902,7 +930,8 @@ function renderMap(s, { mapOnly } = {}) {
         }
 
         <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
-        ${markSetRowsHtml}
+        ${markAssignmentHtml}
+        ${mapOnly && s.markAssignment ? '' : markSetRowsHtml}
 
         <h2 style="margin-top:18px;">Pin boundary gate</h2>
         <div class="muted" style="font-size:11px;margin-bottom:10px;">When on, boats can never legally sail downwind past the pin side of the course - the whole port side becomes off-limits, indefinitely. Updates and re-broadcasts immediately, same as an edited mark.</div>
@@ -1294,7 +1323,42 @@ function renderMap(s, { mapOnly } = {}) {
         e.target.disabled = false;
       }
     });
-    ${mapOnly ? SELECT_REGATTA_JS : ''}
+    ${
+      mapOnly
+        ? `${SELECT_REGATTA_JS}
+
+    // Assigns (or clears) which mark this rover represents (see README's
+    // "Mark mode") - the "This rover represents" dropdown above. Confirmed
+    // only when actually assigning to a real mark, not when clearing back
+    // to "Not assigned" - unassigning just stops this device auto-posting,
+    // nothing to double-check there. On cancel, reverts the dropdown to
+    // whatever was actually assigned server-side (data-current, set at
+    // render time) rather than leaving it showing the choice that was just
+    // backed out of.
+    async function assignMark(select) {
+      const name = select.value;
+      if (name && !confirm('Assign this rover to represent the "' + name + '" mark? It will auto-post its own GPS position as that mark\\'s new location whenever it moves ${config.markDistanceM}m or more, until unassigned.')) {
+        select.value = select.dataset.current;
+        return;
+      }
+      select.disabled = true;
+      try {
+        const res = await fetch('/api/mark-assignment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        select.value = select.dataset.current;
+        select.disabled = false;
+      }
+    }`
+        : ''
+    }
   </script>
 </body>
 </html>`;
@@ -1366,6 +1430,8 @@ function startAdminServer({
   setPinBoundaryEnabled,
   pingFleet,
   selectRegatta,
+  getMarkAssignment,
+  setMarkAssignment,
   getBaseGps,
   getBaseGpsSurvey,
   setBaseGpsSurveyIn,
@@ -1471,6 +1537,23 @@ function startAdminServer({
         const marks = await setPinBoundaryEnabled(!!body.enabled);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, marks }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Assigns (or clears, with a falsy/absent name) which mark this device
+    // represents (see README's "Mark mode") - the map's own "This rover
+    // is:" dropdown, under mapOnly. Base-only same as /api/pin-boundary
+    // above - no rover-side equivalent needs to call this cross-origin.
+    if (req.url === '/api/mark-assignment' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        const name = setMarkAssignment(body.name || null);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, name }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));

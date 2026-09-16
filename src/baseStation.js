@@ -4,6 +4,7 @@ const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
+const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const {
   distanceMeters,
   COURSE_LENGTH_M,
@@ -299,6 +300,32 @@ function main() {
   if (gpsEnabled) {
     console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
   }
+
+  // Which mark this device physically represents, if any (see README's
+  // "Mark mode") - mutable (not just config.markName) since it's
+  // changeable live from the map's own dropdown (setMarkAssignment below),
+  // same "config supplies the initial value, a runtime setter takes over
+  // from there" pattern as selectedRegatta/currentRegattaId. null is the
+  // overwhelmingly common case - a device is never assigned a mark unless
+  // it's deliberately being used to track one.
+  let assignedMarkName = config.markName;
+  // The last position actually written to Redis for assignedMarkName, or
+  // null if nothing's been posted yet this run (including right after a
+  // (re)assignment - see setMarkAssignment below, which always resets this,
+  // so a freshly (re)assigned mark posts its very first position
+  // immediately rather than being gated by a stale threshold left over from
+  // a different mark or a previous run). Distance-gated the same way a
+  // boat's own txDistanceM is (see boatAgent.js's transmitFix) - only
+  // advances once the write actually succeeds, so a failure (no course
+  // published yet, Redis blip) keeps retrying on the next fix instead of
+  // silently giving up.
+  let lastPostedMarkPosition = null;
+  // Guards against a burst of overlapping setMarkLocation calls - onFix
+  // below fires at the GPS's own full rate (1-10Hz), and a slow Redis write
+  // taking longer than one fix interval would otherwise let several pile up
+  // concurrently, each racing to update Redis/raceMarks/broadcast.
+  let markPostInFlight = false;
+
   const baseGps = createBaseGps({
     enabled: gpsEnabled,
     port: config.gps.port,
@@ -313,7 +340,56 @@ function main() {
     onDirtyLine: () => {
       gpsLineDirty = true;
     },
+    // Auto-posts this device's own live position as assignedMarkName's new
+    // location, whenever one's actually assigned - see README's "Mark
+    // mode". Reuses setMarkLocation itself (defined further down this
+    // function) rather than writing a second, parallel "how do you update a
+    // mark" path - same Redis write, same raceMarks update, same
+    // pin-boundary republish and broadcast (a no-op under marksetMode's own
+    // disabled radio, same as any other mark edit in that mode).
+    onFix: (pvt) => {
+      if (!assignedMarkName || markPostInFlight) return;
+      // Same null-island guard as boatAgent.js's own hasValidFix - a
+      // receiver with no lock yet can report gnssFixOk=false with lat/lon
+      // still sitting at a stale or (0,0) value, which must never get
+      // written to Redis as this mark's new "position."
+      if (!pvt.gnssFixOk || (pvt.lat === 0 && pvt.lon === 0)) return;
+      const movedM = lastPostedMarkPosition ? distanceMeters(lastPostedMarkPosition, pvt) : Infinity;
+      if (movedM < config.markDistanceM) return;
+      markPostInFlight = true;
+      setMarkLocation(assignedMarkName, pvt.lat, pvt.lon)
+        .then(() => {
+          lastPostedMarkPosition = { lat: pvt.lat, lon: pvt.lon };
+        })
+        .catch((err) => {
+          console.error(`[baseStation] failed to auto-post mark "${assignedMarkName}":`, err.message);
+        })
+        .finally(() => {
+          markPostInFlight = false;
+        });
+    },
   });
+
+  // Sets (or clears, with a falsy name) which mark this device represents -
+  // the map's own "This rover is:" dropdown (see adminServer.js's renderMap
+  // under mapOnly) is the only caller. Persists so a later restart
+  // remembers the assignment, same as selectRegatta's own persistRegattaId
+  // call. lastPostedMarkPosition always resets, even when reassigning to
+  // the SAME mark again - the distance gate should measure from a genuinely
+  // fresh reference, not a stale one left over from whatever this device
+  // was representing (or reporting) before.
+  function setMarkAssignment(name) {
+    if (name && !MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
+    assignedMarkName = name || null;
+    lastPostedMarkPosition = null;
+    if (assignedMarkName) persistMarkName(assignedMarkName);
+    else clearPersistedMarkName();
+    return assignedMarkName;
+  }
+
+  function getMarkAssignment() {
+    return assignedMarkName;
+  }
 
   // Receives boat log uploads over WiFi whenever a boat happens to be in
   // range (see uploadServer.js/uploadClient.js) - its address is what gets
@@ -1792,6 +1868,7 @@ function main() {
       baseGpsConnected: gpsEnabled ? baseGps.isConnected() : null,
       baseGpsFix: baseGps.getFix(),
       baseGpsSurvey: baseGps.getSurveyStatus(),
+      markAssignment: getMarkAssignment(),
       webhook: {
         enabled: config.regattaup.enabled,
         queueReady: !!lapWebhookQueue,
@@ -1835,6 +1912,8 @@ function main() {
     setPinBoundaryEnabled,
     pingFleet,
     selectRegatta,
+    getMarkAssignment,
+    setMarkAssignment,
     getBaseGps: baseGps.getFix,
     ...(rtkControlsEnabled
       ? {

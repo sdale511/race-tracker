@@ -1,11 +1,17 @@
-# Static reference example, not meant to be copied by hand - install-boat-
-# service.sh (repo root) generates this same unit and installs it. Shown
-# here without an explicit BOAT_ID - the default now: this Pi generates and
-# persists its own id on first run (boat_id.txt), same as running `npm run
-# boat` by hand unconfigured. Pass a number to install-boat-service.sh
-# instead to assign one deliberately (e.g. `sudo ./install-boat-service.sh
-# 7`) - it comes out zero-padded to the wire protocol's fixed width, e.g.
+# Static reference example, not meant to be copied by hand -
+# install-service.sh (repo root) generates this same unit and installs it:
+#   sudo ./install-service.sh boat [BOAT_ID]
+# Shown here without an explicit BOAT_ID - the default now: this Pi
+# generates and persists its own id on first run (boat_id.txt), same as
+# running `npm run boat` by hand unconfigured. Pass a number instead to
+# assign one deliberately (e.g. `sudo ./install-service.sh boat 7`) - it
+# comes out zero-padded to the wire protocol's fixed width, e.g.
 # Environment=BOAT_ID=00007, not the bare "7" you'd type.
+#
+# User/WorkingDirectory below are placeholders - install-service.sh fills
+# these in with whoever ran it (via sudo) and wherever this checkout
+# actually lives, derived from the script's own location - there's no
+# fixed path/user assumption for any mode, boat included.
 [Unit]
 Description=Race Tracker Boat Agent
 After=network.target

@@ -36,8 +36,13 @@ const REOPEN_DELAY_MS = 3000;
 // in-place (non-scrolling) line is written, so a caller with OTHER console
 // output of its own (baseStation.js's shared gpsLineDirty wrapper) knows to
 // clear it first - harmless to omit for a caller with nothing else writing
-// to its console.
-function createBaseGps({ enabled, port, baud, svinMinDurS, svinAccLimitMm, logConsole, logReplace, onDirtyLine }) {
+// to its console. onFix, if given, is called with every decoded NAV-PVT fix
+// the instant it arrives (push, not poll) - baseStation.js's own mark-mode
+// auto-post (see its assignedMarkName) needs to react to a fix the moment
+// it lands, not on getFix()'s own pull-based "whatever's currently cached"
+// contract, the same reasoning boatAgent.js's handlePvt already has for its
+// own always-on GPS.
+function createBaseGps({ enabled, port, baud, svinMinDurS, svinAccLimitMm, logConsole, logReplace, onDirtyLine, onFix }) {
   let baseGpsFix = null;
   // TMODE3 governs how the receiver establishes its OWN fixed reference
   // position before it's trustworthy as an RTK base (disabled/survey-in/
@@ -80,6 +85,7 @@ function createBaseGps({ enabled, port, baud, svinMinDurS, svinAccLimitMm, logCo
     gpsPort.on('error', (err) => console.error('[baseGps] error:', err.message));
     parser.on('nav-pvt', (pvt) => {
       baseGpsFix = pvt;
+      if (onFix) onFix(pvt);
       if (logConsole) {
         // The base GPS is normally stationary (it's the fixed reference, not
         // something moving around a course), so unlike a boat's own

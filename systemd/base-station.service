@@ -1,16 +1,18 @@
-# Static reference example, not meant to be copied by hand - install-base-
-# service.sh (repo root) generates this same unit and installs it. Shown
-# here without an explicit REGATTAUP_REGATTA_ID - the default: this base
-# picks up regatta-id.txt if present, otherwise auto-selects the closest
-# active/future regatta to today the first time it starts (see
-# baseStation.js's pickClosestRegatta). Pass an id to install-base-
-# service.sh instead to pin one deliberately, e.g.
-# `sudo ./install-base-service.sh 6a44a2531e401d60c28afcd8`.
+# Static reference example, not meant to be copied by hand -
+# install-service.sh (repo root) generates this same unit and installs it:
+#   sudo ./install-service.sh base [REGATTAUP_REGATTA_ID]
+# Shown here without an explicit REGATTAUP_REGATTA_ID - the default: this
+# base picks up regatta-id.txt if present, otherwise auto-selects the
+# closest active/future regatta to today the first time it starts (see
+# baseStation.js's pickClosestRegatta). Pass an id instead to pin one
+# deliberately, e.g. `sudo ./install-service.sh base 6a44a2531e401d60c28afcd8`.
+# The same script also installs `rtk`, `basertk`, `markset`, and `mark` -
+# see README's "Running" section for all six modes.
 #
-# User/WorkingDirectory below are placeholders - install-base-service.sh
-# fills these in with whoever ran it and wherever the checkout actually
-# lives, since (unlike the boat units) a base station isn't pinned to one
-# fixed path/user across every machine it might run on.
+# User/WorkingDirectory below are placeholders - install-service.sh fills
+# these in with whoever ran it (via sudo) and wherever this checkout
+# actually lives, since a base station isn't pinned to one fixed path/user
+# across every machine it might run on.
 [Unit]
 Description=Race Tracker Base Station
 After=network.target

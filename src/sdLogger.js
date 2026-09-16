@@ -58,7 +58,7 @@ class SdLogger {
   // one would be wasteful SD card I/O for no benefit. Pruning here (not
   // just once in the constructor above) matters for how this actually
   // runs in production: under systemd's Restart=always (see
-  // install-boat-service.sh), this process is meant to stay up for a whole
+  // install-service.sh), this process is meant to stay up for a whole
   // season, not just one run - without a prune on every chunk rollover,
   // old CSVs past retentionDays would only ever get cleaned up on a crash/
   // restart, silently defeating LOG_RETENTION_DAYS for as long as the
