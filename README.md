@@ -557,23 +557,36 @@ MARK_NAME=windwardBlack npm run mark
 This is `src/markStation.js` - functionally identical to `markset` (same
 `MARKSET_MODE=1` flag, same always-on GPS, same map-only dashboard, same
 disabled radio/webhooks/uploads - see "Mark-set mode" above for all of
-that). The only thing that actually distinguishes "mark mode" from
-"markset mode" is whether a mark is currently **assigned** - that's
-runtime state, not a separate code path, so `npm run markset` and
-`npm run mark` are the same program; the second name just exists so the
-common single-mark case has its own obvious command.
+that), plus one addition: `MARK_MODE=1`, which makes `baseStation.js`
+prompt on the terminal for a mark assignment if nothing's assigned once
+startup settles (same shape as the existing regatta prompt - numbered
+list, type a number), rather than staying unassigned indefinitely the way
+plain `markset` is expected to. That prompt (and `MARK_NAME`, which skips
+it entirely) are genuinely the only things that distinguish "mark mode"
+from "markset mode" - which mark is currently **assigned** is runtime
+state either way, not a separate code path, so a `markset` instance can
+also be assigned a mark from its own map, same dropdown, same effect.
 
-`MARK_NAME` is optional - omit it to start unassigned (exactly like
-`markset`) and assign one afterward from the map's own "This rover
-represents" dropdown, above the usual list of "Set" buttons in the edit
-column. Whichever way it's set, the assignment is persisted to
-`mark-name.txt` (same pattern as `boat_id.txt`/`regatta-id.txt`), so a
-later restart with no `MARK_NAME` remembers it.
+`MARK_NAME` is optional - omit it to be prompted for one (with a real
+terminal attached) or to start unassigned and pick one from the map
+afterward (no TTY - e.g. running as a systemd service, see "Auto-start on
+boot" below). Whichever way it's set - the env var, the terminal prompt, or
+the map's own "This rover represents" dropdown - the assignment is
+persisted to `mark-name.txt` in the repo root, the exact same pattern
+`boat_id.txt`/`regatta-id.txt` already use (see `src/markNameFile.js`/
+`src/regattaIdFile.js`/`src/boatIdFile.js` - all three are one text file
+per identity, read at startup, rewritten whenever that identity changes),
+so a later restart with nothing else specified remembers it.
 
 Once assigned, two things change on the map:
-- The manual per-mark "Set" button list disappears, replaced by a status
-  line showing what's currently stored in Redis for that mark - there's
-  nothing to manually set anymore, this device is doing it automatically.
+- In the usual list of "Set" buttons (the edit column's per-mark list),
+  the assigned mark's row swaps its button for a small "This rover" badge
+  and a highlighted background instead - manually setting a mark this
+  device is already auto-posting for would just fight its own next fix.
+  Every other row keeps its normal "Set" button - manually correcting a
+  *different* mark while this device auto-tracks its own is still a
+  completely normal thing to want, so the rest of the list stays fully
+  usable.
 - Every GPS fix (`baseGps.js`'s own `onFix` - see its module comment) is
   checked against the last position this device actually posted; once it's
   moved `MARK_DISTANCE_M` (default 1m) or more, it calls the exact same

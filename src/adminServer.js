@@ -730,15 +730,26 @@ function renderMap(s, { mapOnly } = {}) {
   // .edit-column below) - each button sets that mark to wherever the
   // fixed center crosshair currently points, read from map.getCenter()
   // at click time (see setEditMode/set-mark-btn handler below), not
-  // anything server-rendered here.
-  const markSetRowsHtml = MARK_NAMES.map(
-    (name) =>
-      `<div class="mark-set-row">
+  // anything server-rendered here. Under mark mode (mapOnly with a mark
+  // actually assigned - see markAssignmentHtml below), the assigned row
+  // swaps its "Set" button for a small badge instead - manually setting a
+  // mark this device is already auto-posting for would just fight its own
+  // next fix, so there's nothing useful for that button to do there. Every
+  // other row (including all of them when nothing's assigned) keeps its
+  // normal "Set" button - manually correcting a DIFFERENT mark while this
+  // one auto-tracks is still a completely normal thing to want.
+  const markSetRowsHtml = MARK_NAMES.map((name) => {
+    const isAssigned = mapOnly && s.markAssignment === name;
+    return `<div class="mark-set-row${isAssigned ? ' mark-set-row-assigned' : ''}">
         <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
         <span class="name">${name}</span>
-        <button type="button" class="set-mark-btn" data-mark="${name}">Set</button>
-      </div>`
-  ).join('');
+        ${
+          isAssigned
+            ? `<span class="mark-assigned-badge" title="This rover auto-posts this mark's position as its own GPS moves - see the dropdown below to reassign">This rover</span>`
+            : `<button type="button" class="set-mark-btn" data-mark="${name}">Set</button>`
+        }
+      </div>`;
+  }).join('');
 
   // "This rover represents..." (see README's "Mark mode") - a device
   // physically attached to one course mark, auto-posting that mark's
@@ -883,6 +894,12 @@ function renderMap(s, { mapOnly } = {}) {
   }
   .mark-set-row button:hover { background: #262c36; }
   .mark-set-row button:disabled { opacity: 0.5; cursor: default; }
+  .mark-set-row-assigned { background: #1c2f1c; margin: 0 -8px; padding: 6px 8px; border-radius: 6px; border-bottom-color: transparent; }
+  .mark-set-row-assigned .name { font-weight: 600; }
+  .mark-assigned-badge {
+    padding: 4px 10px; border-radius: 4px; border: 1px solid #3fb95055;
+    background: #3fb95022; color: #3fb950; font-size: 11px; font-weight: 600;
+  }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .pin-boundary-toggle {
     display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
@@ -931,7 +948,7 @@ function renderMap(s, { mapOnly } = {}) {
 
         <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
         ${markAssignmentHtml}
-        ${mapOnly && s.markAssignment ? '' : markSetRowsHtml}
+        ${markSetRowsHtml}
 
         <h2 style="margin-top:18px;">Pin boundary gate</h2>
         <div class="muted" style="font-size:11px;margin-bottom:10px;">When on, boats can never legally sail downwind past the pin side of the course - the whole port side becomes off-limits, indefinitely. Updates and re-broadcasts immediately, same as an edited mark.</div>

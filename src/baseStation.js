@@ -182,6 +182,13 @@ function main() {
   // gates the real telemetry radio below, not just the GPS/dashboard
   // behavior further down this function.
   const marksetMode = process.env.MARKSET_MODE === '1';
+  // Set only by src/markStation.js (npm run mark) - markset's own superset
+  // (always sets marksetMode too). The one thing this adds on top: if
+  // still unassigned once startup settles, prompt for a mark on the
+  // terminal the same way promptForRegatta already does for a regatta -
+  // see the startup IIFE further down. markset itself never prompts,
+  // staying unassigned is a completely normal, common state there.
+  const markMode = process.env.MARK_MODE === '1';
 
   let radio;
   // Tracked alongside the radio object itself so the dashboard's "Radio
@@ -1066,6 +1073,46 @@ function main() {
     })();
   }
 
+  // Prompts on the terminal for which mark this device represents, when
+  // markMode is on and nothing's assigned yet (see the startup IIFE
+  // further down) - same shape as promptForRegatta above, just over the
+  // fixed MARK_NAMES list instead of a live RegattaUp fetch. Only possible
+  // with a real TTY attached, same reasoning as promptForRegatta. Returns
+  // the assigned mark name, or null if there's no TTY to prompt on.
+  function promptForMark() {
+    if (!process.stdin.isTTY) {
+      console.warn(
+        '[baseStation] MARK_MODE=1 but no mark assigned and no interactive terminal to prompt on - pick one from the map before this device starts auto-posting'
+      );
+      return Promise.resolve(null);
+    }
+    console.log('\n[baseStation] no mark assigned - which mark does this device represent?');
+    MARK_NAMES.forEach((name, i) => {
+      console.log(`  ${i + 1}. ${name}`);
+    });
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = () => new Promise((resolve) => rl.question('[baseStation] enter a number: ', resolve));
+    return (async () => {
+      let choice = null;
+      while (!choice) {
+        const answer = (await ask()).trim();
+        const n = parseInt(answer, 10);
+        if (Number.isInteger(n) && n >= 1 && n <= MARK_NAMES.length) choice = MARK_NAMES[n - 1];
+        else console.log(`[baseStation] enter a number between 1 and ${MARK_NAMES.length}`);
+      }
+      rl.close();
+      try {
+        const name = setMarkAssignment(choice);
+        console.log(`[baseStation] this device now represents "${name}" - change it any time from the map's own dropdown`);
+        return name;
+      } catch (err) {
+        console.error('[baseStation] failed to assign mark:', err.message);
+        return null;
+      }
+    })();
+  }
+
   // Picks whichever active/future regatta's date range sits closest to
   // today - 0 "distance" if it's currently running (start_date <= today <=
   // end_date), otherwise however far off the nearer boundary is. Used only
@@ -1177,6 +1224,16 @@ function main() {
       // is already true) resolves its course then, same as any other live switch.
       console.log('[baseStation] no regatta selected - not reading/writing any course, and ignoring any boat fixes, until one is picked on the admin dashboard');
     }
+
+    // markMode's own equivalent of the regatta prompt above - run after it,
+    // not concurrently with it, since both use the same readline/stdin and
+    // two prompts racing each other would be unusable. Only ever fires once
+    // per process (assignedMarkName only starts null; setMarkAssignment,
+    // called either by this prompt or the map's own dropdown, is what sets
+    // it from here on) - a later restart with nothing assigned would prompt
+    // again, but a restart with a persisted mark-name.txt (or MARK_NAME) has
+    // nothing to prompt for.
+    if (markMode && !assignedMarkName) await promptForMark();
   })();
 
   // Periodic heartbeat re-broadcast, for a boat that missed the immediate
