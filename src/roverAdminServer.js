@@ -643,10 +643,20 @@ function renderMap(s) {
         }</span></div>
         <button type="button" class="recenter-btn" id="recenterBoatGps">Recenter on boat GPS</button>
 
-        <div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
+        ${
+          // Only useful when this boat has no real onboard GPS of its own
+          // (GPS_PORT unset - s.gpsMode isn't 'real') to recenter on
+          // instead - once real GPS_PORT hardware is actually driving
+          // "Recenter on boat GPS" above, the browser's own much coarser
+          // geolocation has nothing to add, just UI clutter and an extra
+          // permission prompt for no benefit.
+          s.gpsMode !== 'real'
+            ? `<div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
         <button type="button" class="recenter-btn" id="recenterGps">Recenter on my GPS</button>
 
-        <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
+        `
+            : ''
+        }<button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
         ${markSetRowsHtml}
       </div>
     </div>`
@@ -785,6 +795,10 @@ function renderMap(s) {
     // whether it's actually gotten a fix yet, and by the time you go to
     // click "Recenter" a fresh position is usually already sitting there.
     function startBrowserGpsWatch() {
+      // Not rendered at all when this boat has real GPS_PORT hardware of
+      // its own (see this page's own server-side s.gpsMode check) -
+      // nothing to watch in that case.
+      if (!browserGpsReadout) return;
       if (!navigator.geolocation) {
         browserGpsReadout.textContent = 'not available';
         return;
@@ -806,7 +820,7 @@ function renderMap(s) {
       if (geoWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(geoWatchId);
       geoWatchId = null;
       lastBrowserPos = null;
-      browserGpsReadout.textContent = '—';
+      if (browserGpsReadout) browserGpsReadout.textContent = '—';
     }
 
     function applyEditMode(checked) {
@@ -826,24 +840,33 @@ function renderMap(s) {
       }
     }
 
-    // Persisted like auto-refresh above (localStorage, off by default) -
-    // setting a mark still requires its own explicit confirm() further
-    // down, so remembering the column's open/closed state across reloads
-    // doesn't risk an accidental edit, just saves re-opening it every visit.
-    editToggle.checked = localStorage.getItem(editModeKey) === '1';
+    // Persisted like auto-refresh above (localStorage), but opt-OUT rather
+    // than opt-in - on by default (crosshair + recenter buttons visible
+    // the moment this page loads, no manual toggle needed) unless
+    // explicitly turned off before, since setting a mark still requires
+    // its own explicit confirm() further down, so showing this by default
+    // doesn't risk an accidental edit, just saves a click on every visit.
+    editToggle.checked = localStorage.getItem(editModeKey) !== '0';
     applyEditMode(editToggle.checked);
     editToggle.addEventListener('change', () => {
       localStorage.setItem(editModeKey, editToggle.checked ? '1' : '0');
       applyEditMode(editToggle.checked);
     });
 
-    document.getElementById('recenterGps').addEventListener('click', () => {
-      if (!lastBrowserPos) {
-        alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
-        return;
-      }
-      map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
-    });
+    // Not rendered at all when this boat has real GPS_PORT hardware (see
+    // this page's own server-side s.gpsMode check) - browserGpsReadout's
+    // own null check on the readout is enough to tell us the button's
+    // missing too, same server-side condition either way.
+    const recenterGpsBtn = document.getElementById('recenterGps');
+    if (recenterGpsBtn) {
+      recenterGpsBtn.addEventListener('click', () => {
+        if (!lastBrowserPos) {
+          alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
+          return;
+        }
+        map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
+      });
+    }
 
     // This boat's own GPS, kept live by refreshBoat() above - already
     // flowing regardless of edit mode, so this just reuses whatever it

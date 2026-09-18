@@ -361,7 +361,21 @@ class RedisStore {
     await this.ready;
     const h = await this.client.hgetall(`${this._prefix()}mark:${name}`);
     if (!h || h.lat === undefined) return null;
-    return { lat: parseFloat(h.lat), lon: parseFloat(h.lon) };
+    return {
+      lat: parseFloat(h.lat),
+      lon: parseFloat(h.lon),
+      // Only present while some rover's own mark-mode is actively
+      // auto-posting this mark's position (see baseStation.js's own
+      // onFix/heartbeat) - absent (undefined, not null, so a plain object
+      // spread/JSON round-trip drops the key entirely rather than writing
+      // out an explicit null) whenever the last write was a manual "Set"
+      // instead, or nothing's ever auto-posted here. assignedAt is a plain
+      // epoch-ms number, not a Date, so callers can freely JSON-serialize
+      // this (the admin dashboard's own API routes already do) without
+      // needing a custom reviver.
+      assignedBoatId: h.assignedBoatId,
+      assignedAt: h.assignedAt !== undefined ? parseInt(h.assignedAt, 10) : undefined,
+    };
   }
 
   // Removes a single mark:* hash - unlike clearCourseMarks (bulk, for a full
@@ -372,6 +386,32 @@ class RedisStore {
   async deleteMark(name) {
     await this.ready;
     await this.client.del(`${this._prefix()}mark:${name}`);
+  }
+
+  // Records that boatId's own mark-mode is CURRENTLY auto-posting this
+  // mark's position - a separate hset from setMark above (never touches
+  // lat/lon), called both right after a real position write and on its own
+  // periodic heartbeat (see baseStation.js's MARK_ASSIGNMENT_HEARTBEAT_MS)
+  // so a mark that's stopped MOVING (the normal, expected case once a mark
+  // buoy is anchored) doesn't look unassigned just because
+  // MARK_DISTANCE_M hasn't fired in a while. assignedAt is this write's own
+  // timestamp, not the position's - it's a liveness signal ("still here as
+  // of T"), not a position-change record.
+  async setMarkAssignment(name, boatId) {
+    await this.ready;
+    await this.client.hset(`${this._prefix()}mark:${name}`, { assignedBoatId: boatId, assignedAt: String(Date.now()) });
+  }
+
+  // Removes just the assignment fields (hdel, not the whole hash) - called
+  // when a mark-mode rover is reassigned/unassigned (see baseStation.js's
+  // applyMarkAssignment) and when an operator manually overrides a mark's
+  // position from the admin map (see setMarkLocation) - either way, the
+  // PREVIOUS attribution is now stale/wrong and shouldn't linger showing a
+  // rover that's no longer actually representing this mark. Leaves
+  // lat/lon completely untouched.
+  async clearMarkAssignment(name) {
+    await this.ready;
+    await this.client.hdel(`${this._prefix()}mark:${name}`, 'assignedBoatId', 'assignedAt');
   }
 
   async getMarks() {

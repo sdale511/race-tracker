@@ -42,6 +42,54 @@ function escapeHtml(s) {
 // show - isConnected() only reflects the TCP/auth connection, which stays
 // "connected" even while Redis is up but refusing writes (out of memory
 // under a noeviction policy, most likely - see README's "If Redis runs out
+// A mark's own m.assignedBoatId/assignedAt (see redisStore.js's
+// setMarkAssignment/baseStation.js's refreshMarkAssignmentHeartbeat) -
+// whether some rover's own mark-mode is currently, actively auto-posting
+// this mark's position, as opposed to a plain manually-set (or never
+// touched) mark, which has neither field at all. Live vs. stale is judged
+// against MARK_ASSIGNMENT_STALE_MS - 3x baseStation.js's own
+// MARK_ASSIGNMENT_HEARTBEAT_MS (20s), one missed heartbeat's worth of
+// grace before treating an assignment as abandoned rather than reacting to
+// every single skipped tick. Stale (not live, but still attributed) means
+// that rover's own process most likely died or lost connectivity without
+// cleanly unassigning - worth surfacing differently than "still live,"
+// since a manual edit right now would actually stick either way, but an
+// operator investigating why a mark looks wrong still wants to know a
+// rover was the last thing to touch it. Shared by both the dashboard's own
+// Course marks card and the map's mark list (see markSetRowsHtml) - same
+// meaning wherever it's shown.
+const MARK_ASSIGNMENT_STALE_MS = 60000;
+function markAssignmentBadge(mark) {
+  if (!mark.assignedBoatId) return '';
+  const ageMs = Date.now() - mark.assignedAt;
+  const live = ageMs < MARK_ASSIGNMENT_STALE_MS;
+  const title = live
+    ? `Actively auto-posted by boat ${mark.assignedBoatId}'s own mark mode, updated ${formatAgo(mark.assignedAt)}`
+    : `Last auto-posted by boat ${mark.assignedBoatId}'s own mark mode, ${formatAgo(mark.assignedAt)} - that device may be offline; a manual edit here will stick unless it comes back`;
+  return `<span class="mark-assignment-badge${live ? ' live' : ' stale'}" title="${escapeHtml(title)}">${live ? '●' : '○'} ${escapeHtml(mark.assignedBoatId)}</span>`;
+}
+
+// The inverse lookup of markAssignmentBadge above - by boatId instead of
+// by mark name, for the Fleet table below (renderDashboard), which lists
+// boats, not marks. A mark-mode rover has no radio/WiFi presence at all
+// (see README's "Mark-set mode"/"Mark mode" - both disable the telemetry
+// radio and uploadClient.js outright), so it never appears in s.boats on
+// its own; this is what lets the Fleet table show it anyway. At most one
+// entry per boatId in practice (a single running mark-mode process only
+// ever represents one mark at a time), so last-write-wins on a
+// theoretical duplicate is an acceptable, harmless simplification.
+function markAssignmentsByBoatId(courseMarks) {
+  const byBoatId = {};
+  if (!courseMarks) return byBoatId;
+  for (const name of MARK_NAMES) {
+    const mark = courseMarks[name];
+    if (mark && mark.assignedBoatId) {
+      byBoatId[mark.assignedBoatId] = { markName: name, assignedAt: mark.assignedAt, live: Date.now() - mark.assignedAt < MARK_ASSIGNMENT_STALE_MS };
+    }
+  }
+  return byBoatId;
+}
+
 // of space"). writeHealth is undefined before the very first fix this
 // session has ever tried to record (nothing to report yet), treated the
 // same as healthy rather than as a third "unknown" state - there's no
@@ -176,27 +224,65 @@ function renderDashboard(s, rtkControlsEnabled) {
   // noise an operator glancing at a live table shouldn't have to parse.
   // Same ONLINE_THRESHOLD_MS boundary as the per-row dot below, so a
   // boat's tier and its dot color always agree.
+  // A mark-mode rover assigned to a mark right now (see
+  // markAssignmentsByBoatId above) has no radio/WiFi presence of its own -
+  // it never appears in s.boats at all - so it's merged in here with an
+  // all-"no telemetry" stub, rather than only ever being visible from the
+  // Course marks card's own side. Real boats (already in s.boats) are left
+  // completely untouched by this merge; markAssignments is only consulted
+  // separately, for the "Acting as" badge below.
+  const markAssignments = markAssignmentsByBoatId(s.course && s.course.marks);
+  const boats = { ...s.boats };
+  for (const boatId of Object.keys(markAssignments)) {
+    if (!boats[boatId]) {
+      boats[boatId] = {
+        lastSeen: null,
+        lastPosition: null,
+        lastFix: null,
+        fixHz: null,
+        upload: { attempts: 0, successes: 0, failures: 0, bytes: 0 },
+        pending: null,
+        pendingReportedAt: null,
+        ip: null,
+        adminPort: null,
+        filesOnDisk: null,
+        lastUploadOnDisk: null,
+      };
+    }
+  }
   const lastActivity = (b) => Math.max(b.lastSeen || 0, b.pendingReportedAt || 0) || null;
   const activityTier = (b) => {
     const activity = lastActivity(b);
     if (activity == null) return 2; // never seen
     return Date.now() - activity < ONLINE_THRESHOLD_MS ? 0 : 1; // online / stale
   };
-  const boatIds = Object.keys(s.boats).sort((a, b) => {
-    const tierDiff = activityTier(s.boats[a]) - activityTier(s.boats[b]);
+  const boatIds = Object.keys(boats).sort((a, b) => {
+    const tierDiff = activityTier(boats[a]) - activityTier(boats[b]);
     if (tierDiff !== 0) return tierDiff;
     // Plain string comparison, not Number(a) - Number(b) - BOAT_ID is a
     // fixed-width alphanumeric string now (see boatIdFile.js), not
     // guaranteed numeric, and Number() on a letters-containing id is NaN.
     return a < b ? -1 : a > b ? 1 : 0;
   });
-  const totalPending = boatIds.reduce((sum, id) => sum + (s.boats[id].pending || 0), 0);
+  const totalPending = boatIds.reduce((sum, id) => sum + (boats[id].pending || 0), 0);
 
   const redisStatus = redisStatusFor(s);
 
   const boatRows = boatIds
     .map((id) => {
-      const b = s.boats[id];
+      const b = boats[id];
+      // See markAssignmentsByBoatId's own comment above - this boat's
+      // mark-mode is (or, if stale, recently was) representing this mark.
+      // Absent for the overwhelming majority of ordinary racing boats,
+      // never assigned to anything.
+      const assignment = markAssignments[id];
+      const assignmentBadge = assignment
+        ? `<span class="mark-assignment-badge${assignment.live ? ' live' : ' stale'}" title="${
+            assignment.live
+              ? `Actively auto-posting ${escapeHtml(assignment.markName)}'s position, updated ${formatAgo(assignment.assignedAt)}`
+              : `Last auto-posted ${escapeHtml(assignment.markName)}'s position ${formatAgo(assignment.assignedAt)} - may be offline`
+          }">${assignment.live ? '●' : '○'} acting as ${escapeHtml(assignment.markName)}</span>`
+        : '';
       // Same combined signal as the sort above - a stationary boat still
       // phoning home over WiFi shouldn't show as offline just because it
       // has nothing new to say over radio.
@@ -265,7 +351,7 @@ function renderDashboard(s, rtkControlsEnabled) {
         : '<span class="muted">—</span>';
       return `
         <tr>
-          <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}</td>
+          <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
           <td>${lastSeenRadio}</td>
           <td>${fixRate}</td>
@@ -314,6 +400,11 @@ function renderDashboard(s, rtkControlsEnabled) {
   .marks-mini .mark-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
   .marks-mini .mark-row .name { flex-shrink: 0; }
   .marks-mini .mark-row .coords { color: #8b94a3; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+  .mark-assignment-badge {
+    padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; white-space: nowrap; flex-shrink: 0;
+  }
+  .mark-assignment-badge.live { border: 1px solid #3fb95055; background: #3fb95022; color: #3fb950; }
+  .mark-assignment-badge.stale { border: 1px solid #e3b34155; background: #e3b34122; color: #e3b341; }
   .stat-rows { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
   .stat-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
   .stat-row .name { flex-shrink: 0; color: #8b94a3; }
@@ -412,7 +503,7 @@ function renderDashboard(s, rtkControlsEnabled) {
       <div class="marks-mini">
         ${MARK_NAMES.map((name) => {
           const m = s.course.marks[name];
-          return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span></div>`;
+          return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span>${markAssignmentBadge(m)}</div>`;
         }).join('')}
         <div class="mark-row"><span class="dot" style="background:${MARK_COLORS.pinBoundary}"></span><span class="name">pin boundary gate</span><span class="coords">${s.course.marks.pinBoundaryEnabled ? 'ON' : 'off'}</span></div>
       </div>
@@ -963,10 +1054,20 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       <div class="edit-column-inner">
         <h2>Edit course marks</h2>
 
-        <div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
+        ${
+          // Only useful when this base has no real GPS of its own
+          // (GPS_PORT unset - s.baseGpsPort null) to recenter on instead -
+          // once real base GPS hardware is actually driving "Recenter on
+          // base GPS" below, the browser's own much coarser geolocation
+          // has nothing to add, just UI clutter and an extra permission
+          // prompt for no benefit.
+          !s.baseGpsPort
+            ? `<div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
         <button type="button" class="recenter-btn" id="recenterGps">Recenter on my GPS</button>
 
-        ${
+        `
+            : ''
+        }${
           s.baseGpsPort
             ? `<div class="gps-readout"><span>Base RTK GPS</span><span class="value" id="baseGpsReadout">—</span></div>
         <button type="button" class="recenter-btn" id="recenterBaseGps">Recenter on base GPS</button>`
@@ -986,6 +1087,10 @@ function renderMap(s, { mapOnly, markMode } = {}) {
           <input type="checkbox" id="pinBoundaryToggle" ${marks.pinBoundaryEnabled ? 'checked' : ''}>
           Enable pin boundary gate
         </label>
+
+        <h2 style="margin-top:18px;">Danger zone</h2>
+        <div class="muted" style="font-size:11px;margin-bottom:10px;">Wipes every mark and republishes a fresh course from scratch (centered on the selected regatta's own venue, if one's selected) - same as running <code>npm run reset-course</code>. Any manual edits to any mark are lost.</div>
+        <button type="button" class="recenter-btn" id="resetCourseBtn" style="border-color:#f85149;color:#f85149;">Reset to default course</button>
       </div>
     </div>
   </div>
@@ -1276,6 +1381,10 @@ function renderMap(s, { mapOnly, markMode } = {}) {
     // click "Recenter" a fresh position is usually already sitting there
     // instead of starting cold at click time.
     function startBrowserGpsWatch() {
+      // Not rendered at all when this base has real GPS_PORT hardware of
+      // its own (see this page's own server-side s.baseGpsPort check) -
+      // nothing to watch in that case.
+      if (!browserGpsReadout) return;
       if (!navigator.geolocation) {
         browserGpsReadout.textContent = 'not available';
         return;
@@ -1297,7 +1406,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       if (geoWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(geoWatchId);
       geoWatchId = null;
       lastBrowserPos = null;
-      browserGpsReadout.textContent = '—';
+      if (browserGpsReadout) browserGpsReadout.textContent = '—';
     }
 
     // A GPS module wired directly to this base station (config.js's gps
@@ -1331,9 +1440,15 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       if (baseGpsReadout) baseGpsReadout.textContent = '—';
     }
 
+    // Always visible, independent of edit mode below - it marks the exact
+    // center of the current view regardless of whether the edit column
+    // (and the "set this mark here" actions that actually use it) happen
+    // to be open, so panning around to see where you are on the course
+    // doesn't require opening edit mode first.
+    crosshair.classList.add('visible');
+
     function applyEditMode(checked) {
       editColumn.classList.toggle('visible', checked);
-      crosshair.classList.toggle('visible', checked);
       // The column's width transitions via CSS, not instantly - Leaflet
       // caches its container size and won't notice the map-wrap resizing
       // on its own, so it has to be told explicitly once the transition
@@ -1359,15 +1474,22 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       applyEditMode(editToggle.checked);
     });
 
-    document.getElementById('recenterGps').addEventListener('click', () => {
-      if (!lastBrowserPos) {
-        alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
-        return;
-      }
-      map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
-    });
+    // Not rendered at all when this base has real GPS_PORT hardware (see
+    // this page's own server-side s.baseGpsPort check) - browserGpsReadout's
+    // own null check above already covers the readout; the button needs
+    // its own guard here too, same condition either way.
+    const recenterGpsBtn = document.getElementById('recenterGps');
+    if (recenterGpsBtn) {
+      recenterGpsBtn.addEventListener('click', () => {
+        if (!lastBrowserPos) {
+          alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
+          return;
+        }
+        map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
+      });
+    }
 
-    // The button itself isn't in the DOM at all when this process has no
+    // The base-GPS button itself isn't in the DOM at all when this process has no
     // GPS configured (see the edit-column HTML above) - nothing to wire up.
     const recenterBaseGpsBtn = document.getElementById('recenterBaseGps');
     if (recenterBaseGpsBtn) {
@@ -1422,6 +1544,32 @@ function renderMap(s, { mapOnly, markMode } = {}) {
           btn.disabled = false;
         }
       });
+    });
+
+    // Wipes and republishes the whole course from scratch (see
+    // baseStation.js's resetCourseToDefault) - by far the most destructive
+    // action on this page (every mark, not just one), so this confirm() is
+    // more insistent than the single-mark one above. Reloads on success,
+    // same reasoning as every other course-changing action here.
+    document.getElementById('resetCourseBtn').addEventListener('click', async () => {
+      if (
+        !confirm(
+          'Reset the ENTIRE course to its default layout?\\n\\nEvery mark is wiped and republished from scratch - any manual edits are lost. This updates the live course and re-broadcasts it to every boat immediately.'
+        )
+      ) {
+        return;
+      }
+      const btn = document.getElementById('resetCourseBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/reset-course', { method: 'POST' });
+        const body = await res.json();
+        if (!res.ok || !body.ok) throw new Error(body.error || 'HTTP ' + res.status);
+        location.reload();
+      } catch (err) {
+        alert('Failed to reset course: ' + err.message);
+        btn.disabled = false;
+      }
     });
 
     // Turns the pin boundary gate on/off (see baseStation.js's
@@ -1561,6 +1709,7 @@ function startAdminServer({
   getCourseMarks,
   setMark,
   setPinBoundaryEnabled,
+  resetCourseToDefault,
   pingFleet,
   selectRegatta,
   getMarkAssignment,
@@ -1674,6 +1823,22 @@ function startAdminServer({
       try {
         const body = await readJsonBody(req);
         const marks = await setPinBoundaryEnabled(!!body.enabled);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, marks }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Wipes and republishes a fresh course from course.js's own geometry
+    // (see baseStation.js's resetCourseToDefault) - the map's own "Reset
+    // to default course" button. Base-only same as /api/pin-boundary
+    // above - no rover-side equivalent needs to call this cross-origin.
+    if (req.url === '/api/reset-course' && req.method === 'POST') {
+      try {
+        const marks = await resetCourseToDefault();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, marks }));
       } catch (err) {

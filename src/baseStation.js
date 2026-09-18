@@ -345,6 +345,31 @@ function main() {
   // taking longer than one fix interval would otherwise let several pile up
   // concurrently, each racing to update Redis/raceMarks/broadcast.
   let markPostInFlight = false;
+  // How often the current assignment's "still here" heartbeat refreshes in
+  // Redis (see refreshMarkAssignmentHeartbeat/redisStore.setMarkAssignment)
+  // - deliberately independent of MARK_DISTANCE_M's own position-change
+  // gate, since a properly anchored mark buoy is EXPECTED to stop moving
+  // once placed, and without a separate heartbeat its assignment would look
+  // stale/abandoned within moments of the last real movement even though
+  // the rover is still very much online and correctly representing it.
+  const MARK_ASSIGNMENT_HEARTBEAT_MS = 20000;
+  let markAssignmentHeartbeatId = null;
+
+  // Refreshes assignedMarkName's "assigned to config.boatId, as of now"
+  // record - called immediately on a fresh assignment (so the admin
+  // dashboard doesn't have to wait out a full heartbeat interval to learn
+  // about it) and on the recurring timer started/stopped alongside it (see
+  // applyMarkAssignment below). A no-op with nothing assigned.
+  function refreshMarkAssignmentHeartbeat() {
+    if (!assignedMarkName) return;
+    redisStore.setMarkAssignment(assignedMarkName, config.boatId).catch((err) => {
+      console.error(`[baseStation] failed to refresh mark assignment heartbeat for "${assignedMarkName}":`, err.message);
+    });
+    if (raceMarks && raceMarks[assignedMarkName]) {
+      raceMarks[assignedMarkName].assignedBoatId = config.boatId;
+      raceMarks[assignedMarkName].assignedAt = Date.now();
+    }
+  }
 
   const baseGps = createBaseGps({
     enabled: gpsEnabled,
@@ -377,7 +402,7 @@ function main() {
       const movedM = lastPostedMarkPosition ? distanceMeters(lastPostedMarkPosition, pvt) : Infinity;
       if (movedM < config.markDistanceM) return;
       markPostInFlight = true;
-      setMarkLocation(assignedMarkName, pvt.lat, pvt.lon)
+      setMarkLocation(assignedMarkName, pvt.lat, pvt.lon, { assignedByBoatId: config.boatId })
         .then(() => {
           lastPostedMarkPosition = { lat: pvt.lat, lon: pvt.lon };
         })
@@ -403,12 +428,37 @@ function main() {
     if (name && !MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
     const resolved = name || null;
     if (resolved === assignedMarkName) return assignedMarkName;
+    const previous = assignedMarkName;
     assignedMarkName = resolved;
     // Always resets, even when reassigning to the SAME mark by a different
     // route - the distance gate should measure from a genuinely fresh
     // reference, not a stale one left over from whatever this device was
     // representing (or reporting) before.
     lastPostedMarkPosition = null;
+
+    // The PREVIOUS mark (if any) is no longer represented by this device -
+    // its own "assigned to me" attribution is now stale and would keep
+    // showing this rover as live on a mark it's already left, right up
+    // until whatever picks it up next happens to overwrite it (or forever,
+    // if nothing ever does).
+    if (previous) {
+      redisStore.clearMarkAssignment(previous).catch((err) => {
+        console.error(`[baseStation] failed to clear stale mark assignment for "${previous}":`, err.message);
+      });
+      if (raceMarks && raceMarks[previous]) {
+        delete raceMarks[previous].assignedBoatId;
+        delete raceMarks[previous].assignedAt;
+      }
+    }
+
+    if (markAssignmentHeartbeatId) {
+      clearInterval(markAssignmentHeartbeatId);
+      markAssignmentHeartbeatId = null;
+    }
+    if (assignedMarkName) {
+      refreshMarkAssignmentHeartbeat();
+      markAssignmentHeartbeatId = setInterval(refreshMarkAssignmentHeartbeat, MARK_ASSIGNMENT_HEARTBEAT_MS);
+    }
     return assignedMarkName;
   }
 
@@ -796,7 +846,19 @@ function main() {
   // wrong. Persists to Redis (so it survives a base restart the same way
   // an initially-resolved course does) and re-broadcasts immediately,
   // same as any other course change.
-  async function setMarkLocation(name, lat, lon) {
+  //
+  // assignedByBoatId (optional) - only ever passed by the onFix auto-post
+  // handler above, never by a manual edit (the admin map's own /api/marks
+  // route calls this with just name/lat/lon). Present: records this write
+  // as coming from that rover's own mark-mode (see redisStore.js's
+  // setMarkAssignment). Absent: this is a manual override - any existing
+  // attribution on this mark is now wrong (a human just took over,
+  // whatever rover set it last isn't the current source of truth anymore)
+  // and gets cleared, even though that rover's own next heartbeat/movement
+  // will silently reassert it if it's still actively assigned - manually
+  // editing a mark a live rover still represents doesn't stick, and this
+  // deliberately doesn't try to hide that from the admin dashboard.
+  async function setMarkLocation(name, lat, lon, { assignedByBoatId } = {}) {
     if (!MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
     if (!raceMarks) throw new Error('no course published yet - nothing to edit');
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
@@ -804,6 +866,13 @@ function main() {
     }
     const pos = { lat, lon };
     await redisStore.setMark(name, pos);
+    if (assignedByBoatId) {
+      await redisStore.setMarkAssignment(name, assignedByBoatId);
+      pos.assignedBoatId = assignedByBoatId;
+      pos.assignedAt = Date.now();
+    } else {
+      await redisStore.clearMarkAssignment(name);
+    }
     raceMarks[name] = pos;
     // Existing finish-line watchers cached committeeFinish/finish's
     // position at whatever it was when a given boat's first fix arrived
@@ -863,6 +932,41 @@ function main() {
     // elsewhere in this file, though harmless either way.
     if (wasEnabled !== raceMarks.pinBoundaryEnabled) clearRaceWatchers();
     broadcastMarksNow(true);
+    return raceMarks;
+  }
+
+  // Wipes every mark and republishes a fresh course from course.js's own
+  // geometry, live from the running base - the admin map's own "Reset to
+  // default course" button. Same effect as `npm run reset-course`, just
+  // callable without SSH access to the base, and reusing this already-
+  // connected redisStore/selectedRegatta instead of a second standalone
+  // process's own. Center resolution matches resolveMarks' own simulate
+  // branch and resetCourse.js exactly (see either's own comment): an
+  // operator's explicit SIM_CENTER_LAT/SIM_CENTER_LON always wins,
+  // otherwise the selected regatta's own venue coordinates, otherwise the
+  // hardcoded Black Rock Desert fallback - so this never needs a regatta
+  // selected to mean something, but uses the regatta's real location when
+  // one is.
+  async function resetCourseToDefault() {
+    await redisStore.clearCourseMarks();
+    const explicitCenterOverride = process.env.SIM_CENTER_LAT !== undefined || process.env.SIM_CENTER_LON !== undefined;
+    const { lat: centerLat, lon: centerLon } = resolveCourseCenter(
+      explicitCenterOverride ? undefined : selectedRegatta && selectedRegatta.default_lat,
+      explicitCenterOverride ? undefined : selectedRegatta && selectedRegatta.default_lon,
+      config.sim.centerLat,
+      config.sim.centerLon
+    );
+    const marks = await redisStore.getOrCreateMarks(centerLat, centerLon);
+    await redisStore.setOnGridZone(zonePolygon(marks, config.regattaup.onGridZoneM));
+    // clearCourseMarks above already deleted the pin boundary gate's own
+    // flag/published endpoint - pinBoundaryEnabled starts false on a fresh
+    // course, same as npm run reset-course, not carried over from whatever
+    // it was before this reset.
+    marks.pinBoundaryEnabled = false;
+    raceMarks = marks;
+    clearRaceWatchers();
+    broadcastMarksNow(true);
+    console.log(`[baseStation] course reset to default (center: ${centerLat}, ${centerLon})`);
     return raceMarks;
   }
 
@@ -1095,6 +1199,22 @@ function main() {
             : '[baseStation] pin boundary gate is off (optional - toggle it from the admin map if you want it)'
         );
         broadcastMarksNow();
+        // raceMarks is a fresh object every time this resolves (startup, or
+        // any later regatta switch) - if this device already has a
+        // persisted assignment (config.markName, e.g. surviving a restart)
+        // it wasn't reached through applyMarkAssignment at all, so nothing
+        // else would populate the new raceMarks[assignedMarkName]'s own
+        // assignedBoatId/assignedAt, or start the heartbeat that keeps it
+        // fresh. Always refreshes immediately (cheap, and raceMarks itself
+        // just changed even if the assignment didn't), but only starts the
+        // recurring timer once - applyMarkAssignment's own start/stop
+        // already guards against a second one from a live reassignment.
+        if (assignedMarkName) {
+          refreshMarkAssignmentHeartbeat();
+          if (!markAssignmentHeartbeatId) {
+            markAssignmentHeartbeatId = setInterval(refreshMarkAssignmentHeartbeat, MARK_ASSIGNMENT_HEARTBEAT_MS);
+          }
+        }
         // Replay whatever arrived too early to be detected live (see
         // pendingFrames' own comment, above the radio.on('frame') handler) -
         // through the exact same detectRaceEvents logic a live frame goes
@@ -2091,6 +2211,7 @@ function main() {
     getCourseMarks,
     setMark: setMarkLocation,
     setPinBoundaryEnabled,
+    resetCourseToDefault,
     pingFleet,
     selectRegatta,
     getMarkAssignment,

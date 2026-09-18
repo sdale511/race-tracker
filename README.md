@@ -649,6 +649,41 @@ is reliable for course setup and between-race corrections; treating it as
 a live, race-time-moving mark that an active base immediately re-broadcasts
 to the fleet is not yet wired up.
 
+**Seeing which rover is currently representing a mark**, from the *base's*
+own dashboard - without needing to go find that rover's own map page (see
+"Where can I look on the boat side" just below for that side): every mark
+carries `assignedBoatId`/`assignedAt` in Redis whenever some rover's own
+mark mode is actively auto-posting it (`src/redisStore.js`'s
+`setMarkAssignment`), refreshed on every real position write *and* on its
+own independent heartbeat every 20s (`MARK_ASSIGNMENT_HEARTBEAT_MS` in
+`src/baseStation.js`) - separate from `MARK_DISTANCE_M`'s own
+movement-gated writes, since a properly anchored mark buoy is expected to
+stop moving once placed, and without a separate heartbeat its assignment
+would look abandoned within moments of the last real movement even though
+the rover is still online and correctly representing it. Shown in two
+places on the base's regular (non-map) dashboard:
+
+- The **Course marks** card - a small badge next to any mark currently (or
+  recently) attributed to a rover: a solid green dot and boat id while the
+  heartbeat is fresh (within 60s, `MARK_ASSIGNMENT_STALE_MS` in
+  `src/adminServer.js`), or a hollow amber dot once it's gone stale -
+  that rover's process most likely died or lost connectivity without
+  cleanly unassigning. Hovering either shows exactly when it last updated.
+- The **Fleet table** - the inverse lookup, by boat instead of by mark: a
+  rover currently assigned to a mark gets the same badge next to its own
+  name (`acting as windwardBlack`), including rovers that have *no* other
+  radio/WiFi presence at all (mark mode disables both entirely - see
+  "Mark-set mode" above), which would otherwise never appear in this table
+  since every other column here is built from radio/WiFi activity that
+  mode never generates.
+
+A manual "Set" from the admin map always clears a mark's existing
+attribution, even if a rover is still actively assigned to it - editing a
+mark a live rover represents doesn't actually stick, though (that rover's
+own next heartbeat/movement silently reasserts it), so the badge is the
+tool for noticing *why* a manual edit didn't take before re-editing it
+again: reassign (or unassign) that rover from its own map first.
+
 ### Scheduled shutdown (boat, battery-saving)
 
 The rover dashboard's own "Scheduled shutdown" card (`http://<boat>:<port>/`)
@@ -1430,7 +1465,9 @@ same key names, each silently overwriting or mixing into the other's data.
 Within one regatta's namespace:
 
 - `regattas:<id>:mark:<name>` — one Redis hash per course mark (`lat`/`lon`
-  fields) - see "Editing mark positions from the map" below.
+  fields, plus `assignedBoatId`/`assignedAt` while some rover's own mark
+  mode is actively auto-posting this mark's position - see "Mark mode"
+  below) - see "Editing mark positions from the map" below.
   `regattas:<id>:course:pin_boundary_enabled` is a plain on/off flag (see
   "Pin boundary gate" above) - when on, its computed endpoint is *also*
   published as `regattas:<id>:mark:pinBoundary`, in the same `mark:<name>`
