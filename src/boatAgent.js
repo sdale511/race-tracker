@@ -97,7 +97,7 @@ console.log(
 );
 
 // config.boatLogDir (default boat-logs/, see config.js's own comment) - a
-// completely separate directory from the base's own LOG_DIR (fleet-logs/),
+// completely separate directory from the base's own BASE_LOG_DIR (base-logs/),
 // not a subdirectory of it, so the two never end up sharing a directory
 // even when both roles happen to run from the same checkout on the same
 // machine. Every other boatLogDir consumer below (pruneForDiskSpace,
@@ -154,12 +154,12 @@ if (config.simulate) {
     packetLossPct: config.sim.packetLossPct,
   });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
-  radio.on('connected', () => { radioConnected = true; });
+  radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
 } else if (config.radio.enabled) {
   radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
-  radio.on('connected', () => { radioConnected = true; });
+  radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
 } else {
   radio = new EventEmitter(); // RADIO_ENABLED=0 - never emits 'frame'/'marks', other outputs still testable
@@ -519,6 +519,41 @@ function transmitFix(pvt) {
   } else if (radioExpected) {
     console.warn('[radio] not connected, dropped a frame (still logged to SD)');
   }
+}
+
+// Announces this boat's presence the moment the radio connects, well
+// before a first GPS fix necessarily exists - a cold GPS start can take
+// minutes, and without this the base has no way to know this boat's radio
+// is even alive until that first real fix goes out (see protocol.js's own
+// comment on encodeHello for the full reasoning, and baseStation.js's
+// radio.on('hello', ...) for what the base does with it - just a live
+// dashboard "last seen," never written to CSV/Redis/RegattaUp the way a
+// real fix is). Sent immediately, then retried every HELLO_RETRY_MS in
+// case the base wasn't listening yet or the frame was lost - stops on its
+// own the moment a real fix actually transmits (lastTxTime goes non-null,
+// see transmitFix above), since the base then has much better information
+// than a bare hello and there's nothing left for this to usefully add.
+const HELLO_RETRY_MS = 5000;
+let helloIntervalId = null;
+
+function sendHello() {
+  if (lastTxTime !== null) {
+    clearInterval(helloIntervalId);
+    helloIntervalId = null;
+    return;
+  }
+  const sent = radio.send(protocol.encodeHello(config.boatId));
+  if (!sent && radioExpected) console.warn('[radio] not connected, dropped a hello frame (will keep retrying)');
+}
+
+function startHelloAnnounce() {
+  // A real radio reconnecting mid-run (see radio.on('disconnected', ...)
+  // above) fires 'connected' again - clear any interval from the previous
+  // connection first, so a reconnect before the first real fix doesn't
+  // leave two intervals both calling sendHello.
+  if (helloIntervalId !== null) clearInterval(helloIntervalId);
+  sendHello();
+  if (lastTxTime === null) helloIntervalId = setInterval(sendHello, HELLO_RETRY_MS);
 }
 
 // Base-triggered "report your current position now" (see protocol.js's

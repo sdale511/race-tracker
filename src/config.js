@@ -150,17 +150,21 @@ const testLapNumber = parseInt(process.env.TEST_LAP_NUMBER || '0', 10);
 // The BASE's own received-fix CSV log (see baseStation.js's ensureCsvFile).
 // Override to point at wherever a long-running base station's disk should
 // hold it. Default is relative to this package (not the shell's cwd), so it
-// works the same on a Pi or a laptop.
-const logDir = process.env.LOG_DIR || path.join(__dirname, '..', 'fleet-logs');
+// works the same on a Pi or a laptop. BASE_LOG_DIR/BASE_UPLOAD_DIR (this and
+// upload.dir below) are named to match this app's own run-mode names
+// (`npm run base`/`npm run boat`), same as BOAT_LOG_DIR - so which var
+// controls which role's directory is obvious from the name alone, not
+// something you have to remember.
+const logDir = process.env.BASE_LOG_DIR || path.join(__dirname, '..', 'base-logs');
 
 // The BOAT's own chunked SD-card log (see sdLogger.js) - deliberately a
-// completely separate directory from LOG_DIR above, not a subdirectory of
-// it, so the two never end up sharing one directory even when both roles
-// happen to run from the same checkout on the same machine (a boat's own
-// track history and a base's received-fix log are different data with
-// different retention/pruning, and mixing them under one shared LOG_DIR was
-// genuinely confusing - see README's "File layout"). On the boat Pi,
-// override BOAT_LOG_DIR to point at the SD card mount.
+// completely separate directory from BASE_LOG_DIR above, not a
+// subdirectory of it, so the two never end up sharing one directory even
+// when both roles happen to run from the same checkout on the same machine
+// (a boat's own track history and a base's received-fix log are different
+// data with different retention/pruning, and mixing them under one shared
+// directory was genuinely confusing - see README's "File layout"). On the
+// boat Pi, override BOAT_LOG_DIR to point at the SD card mount.
 const boatLogDir = process.env.BOAT_LOG_DIR || path.join(__dirname, '..', 'boat-logs');
 
 // Where every small piece of persisted config/state lives - the webhook
@@ -168,11 +172,11 @@ const boatLogDir = process.env.BOAT_LOG_DIR || path.join(__dirname, '..', 'boat-
 // plus (independently redeclared in each of their own modules, to avoid a
 // circular require back into this file - see boatIdFile.js's own comment)
 // boat_id.txt/regatta-id.txt/mark-name.txt/power-schedule.txt. Deliberately
-// NOT redirectable via LOG_DIR - unlike fleet-logs (raw track data, fine to
-// point at a swappable SD card), this is small, low-write-volume state that
-// should survive independently of wherever LOG_DIR happens to be pointed
-// this run, same reasoning boatIdFile.js already used for its own identity
-// file before this directory existed.
+// NOT redirectable via BASE_LOG_DIR - unlike base-logs (raw track data,
+// fine to point at a swappable SD card), this is small, low-write-volume
+// state that should survive independently of wherever BASE_LOG_DIR happens
+// to be pointed this run, same reasoning boatIdFile.js already used for
+// its own identity file before this directory existed.
 const configDir = path.join(__dirname, '..', 'race-config');
 fs.mkdirSync(configDir, { recursive: true });
 
@@ -481,7 +485,7 @@ module.exports = {
   // logDir above, see this const's own comment.
   boatLogDir,
   // See this const's own comment above - persisted config/state, not raw
-  // log data, deliberately NOT redirectable via LOG_DIR.
+  // log data, deliberately NOT redirectable via BASE_LOG_DIR.
   configDir,
   // CSV logs (boat SD card, base station's received-fix log) older than
   // this many days are deleted automatically - see logRotation.js. Keeps
@@ -506,10 +510,10 @@ module.exports = {
     // on, and publishes in the marks broadcast.
     port: parseInt(process.env.UPLOAD_PORT || '8090', 10),
     // Base station only - where uploaded logs land, deliberately separate
-    // from LOG_DIR/fleet-logs (that's this machine's own received-fix log,
-    // not a dumping ground for every boat's SD card backup). Defaults to
-    // a `fleet-uploads` directory next to LOG_DIR.
-    dir: process.env.UPLOAD_DIR || path.join(path.dirname(logDir), 'fleet-uploads'),
+    // from BASE_LOG_DIR/base-logs (that's this machine's own received-fix
+    // log, not a dumping ground for every boat's SD card backup). Defaults
+    // to a `base-uploads` directory next to BASE_LOG_DIR.
+    dir: process.env.BASE_UPLOAD_DIR || path.join(path.dirname(logDir), 'base-uploads'),
     // Base station only - override auto-detecting this machine's own LAN
     // IP (see uploadServer.js's detectLocalIp) if it picks the wrong
     // interface, or none at all.
@@ -546,7 +550,7 @@ module.exports = {
   // A small live-stats web UI (src/adminServer.js) - boats seen, tracks
   // recorded, lap counts, upload activity, radio link quality. In-memory
   // only (see stats.js), so it resets on restart; not a substitute for
-  // Redis/fleet-uploads as the durable record, just a "what's happening
+  // Redis/base-uploads as the durable record, just a "what's happening
   // right now" view for whoever's running the base station.
   admin: {
     port: parseInt(process.env.ADMIN_PORT || '8092', 10),
@@ -576,7 +580,7 @@ module.exports = {
     // not a rolling day after the last one. 48h by default - covers
     // reviewing a race day into the next, without tracks piling up in Redis
     // forever (there's no other cleanup for these besides `npm run
-    // clear-fleet-logs`, which is manual).
+    // clear-base-logs`, which is manual).
     trackRetentionHours: parseFloat(process.env.REDIS_TRACK_RETENTION_HOURS || '48'),
     // The admin dashboard's "Redis memory" card divides usedBytes by this to
     // show a percentage/ALERT status, the same way the disk-space card does

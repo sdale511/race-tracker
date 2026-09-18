@@ -3,14 +3,21 @@
 xbee_read_id.py
 
 Connects to a Digi XBee radio over AT Command Mode and prints its Network
-ID (ATID) plus a few other universal identifying parameters. Deliberately
-generic - unlike xbee_configure_at.py (written for the XBee-PRO 900HP/S3B
-telemetry radios specifically, using CFG keys like TO/CE that don't
-necessarily exist on other Digi product lines), this only reads parameters
-present on essentially every Digi XBee model (ID, BD, NI, SH/SL) - safe to
-point at any XBee, including a different module family (e.g. the XBee
-SX-based correction radio ArduSimple's LR kits use), without assuming
-anything about its specific command set beyond these basics.
+ID (ATID) plus a few other identifying parameters, in two groups. The first
+group is deliberately generic - parameters present on essentially every
+Digi XBee model (ID, BD, NI, SH/SL) - safe to point at any XBee, including
+a different module family (e.g. the XBee SX-based correction radio
+ArduSimple's LR kits use), without assuming anything about its specific
+command set. The second group reads exactly the parameters
+xbee_configure_at.py's own CONFIG dict sets on the telemetry radios
+specifically (TO/DH/DL/HP/MT/CE), printed alongside each one's expected
+value, so a radio's actual live config can be checked against CONFIG at a
+glance instead of re-running xbee_configure_at.py's own --dry-run just to
+look. Only meaningful on a radio xbee_configure_at.py has actually been run
+against - pointed at a different module family (the SX correction radio),
+these params may not exist at all, or exist with an entirely different
+meaning, so treat that second group as informational-only off telemetry
+radios.
 
 Read-only in AT/transparent mode. The one exception: if --detect-baud finds
 nothing in AT mode and falls back to checking API mode (see try_api_mode's
@@ -249,6 +256,30 @@ def main():
         print(f"  {'SH/SL (Serial number)':22s} {sh.upper()}{sl.upper()}")
         print(f"  {'D6 (RTS enable)':22s} {d6 or '?'}")
         print(f"  {'D7 (CTS enable)':22s} {d7 or '?'}")
+
+        # Everything above is generic - present on essentially any Digi
+        # XBee, correction radio included (see this file's own module
+        # comment). Everything below is specific to xbee_configure_at.py's
+        # own CONFIG dict (the telemetry radios' actual settings) - same
+        # param names, same order, so a mismatch against CONFIG's own
+        # values is easy to spot at a glance without cross-referencing the
+        # other script by hand. Meaningless on a radio xbee_configure_at.py
+        # was never run against (e.g. the SX correction radio) - it'll just
+        # read back whatever that module's own factory defaults are.
+        to = query(ser, "TO")
+        dh = query(ser, "DH")
+        dl = query(ser, "DL")
+        hp = query(ser, "HP")
+        mt = query(ser, "MT")
+        ce = query(ser, "CE")
+
+        print(f"\n  xbee_configure_at.py's own CONFIG (expected value in parens):")
+        print(f"  {'TO (Transmit Options)':22s} 0x{to.upper() or '?':<6} (0xC0 = DigiMesh)")
+        print(f"  {'DH (Dest. address high)':22s} {dh.upper() or '?':<8} (0 = broadcast)")
+        print(f"  {'DL (Dest. address low)':22s} {dl.upper() or '?':<8} (FFFF = broadcast)")
+        print(f"  {'HP (Preamble ID)':22s} {hp or '?':<8} (0)")
+        print(f"  {'MT (Broadcast multi-tx)':22s} {mt or '?':<8} (0 = no extra repeats)")
+        print(f"  {'CE (Node messaging opts)':22s} {ce or '?':<8} (2 = routing disabled)")
 
         send_at(ser, "ATCN")
     finally:

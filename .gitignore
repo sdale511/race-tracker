@@ -153,14 +153,14 @@ vite.config.ts.timestamp-*
 # directory exist in a fresh checkout.
 race-config/
 
-# Locally-generated race data. fleet-logs/ is the BASE's own received-fix
+# Locally-generated race data. base-logs/ is the BASE's own received-fix
 # CSV log; boat-logs/ is a BOAT's own chunked SD-card log - deliberately two
 # separate directories, not one shared between roles (see config.js's own
-# boatLogDir comment); fleet-uploads/ is where the base collects boats'
+# boatLogDir comment); base-uploads/ is where the base collects boats'
 # uploaded copies of their own boat-logs/ files. All three are created on
 # demand (fs.mkdirSync in baseStation.js/sdLogger.js/uploadServer.js), so
 # there's no need to keep an empty placeholder tracked just to make the
 # directory exist in a fresh checkout.
-fleet-logs/
+base-logs/
 boat-logs/
-fleet-uploads/
+base-uploads/

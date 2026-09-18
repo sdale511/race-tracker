@@ -9,19 +9,19 @@ const { VALID_FILENAME } = require('./uploadServer');
 // boats/tracks left over from earlier runs - deliberately leaves the course
 // marks alone. Also clears this base's own local boat-related files for the
 // active regatta: its received-fix CSV logs
-// (LOG_DIR/<regattaId>/base_station_received_*.csv - LOG_DIR is base-only,
-// see config.js's own boatLogDir comment for why a boat's SD log lives in a
-// completely separate directory and is never touched here) and every
-// uploaded boat log under UPLOAD_DIR/<regattaId>/<boatId>/*.csv (see
-// baseStation.js's ensureCsvFile/uploadServer.js's own regatta-nested
+// (BASE_LOG_DIR/<regattaId>/base_station_received_*.csv - BASE_LOG_DIR is
+// base-only, see config.js's own boatLogDir comment for why a boat's SD log
+// lives in a completely separate directory and is never touched here) and
+// every uploaded boat log under BASE_UPLOAD_DIR/<regattaId>/<boatId>/*.csv
+// (see baseStation.js's ensureCsvFile/uploadServer.js's own regatta-nested
 // boatDir) - both now nested under whichever regatta they were recorded
 // during, the same regatta scoping Redis boat data already uses, so this
 // only ever touches the active regatta's own history, never another
 // regatta's. Also removes anything still sitting in the OLD flat layout
 // from before that nesting existed (base_station_received_*.csv directly in
-// LOG_DIR, boat-id directories directly in UPLOAD_DIR) - not
+// BASE_LOG_DIR, boat-id directories directly in BASE_UPLOAD_DIR) - not
 // regatta-scoped, since those predate the whole regatta-nesting concept and
-// there's no regatta to scope them to. Run with `npm run clear-fleet-logs`
+// there's no regatta to scope them to. Run with `npm run clear-base-logs`
 // (respects REDIS_ENV/REDIS_URL same as boatAgent/baseStation, see README's
 // "Redis track storage"). To clear a boat's own SD log instead, see
 // `npm run clear-boat-logs`.
@@ -38,10 +38,10 @@ const { VALID_FILENAME } = require('./uploadServer');
   const regattaLabel = config.regattaup.defaultRegatta
     ? `${config.regattaup.defaultRegatta.id}${config.regattaup.defaultRegatta.name ? ` (${config.regattaup.defaultRegatta.name})` : ''}`
     : 'none (no regatta selected - see REGATTAUP_REGATTA_ID or the admin dashboard)';
-  console.log(`[clearFleetLogs] regatta: ${regattaLabel}`);
+  console.log(`[clearBaseLogs] regatta: ${regattaLabel}`);
 
   const target = config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`;
-  console.log(`[clearFleetLogs] connecting to Redis at ${target}`);
+  console.log(`[clearBaseLogs] connecting to Redis at ${target}`);
   const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
   try {
     // Every boat key lives under regattas:<id>:... (see redisStore.js's own
@@ -54,14 +54,14 @@ const { VALID_FILENAME } = require('./uploadServer');
     }
     const cleared = await redisStore.clearBoatData();
     if (cleared.length === 0) {
-      console.log('[clearFleetLogs] no boat keys found in Redis - nothing to clear (marks left untouched)');
+      console.log('[clearBaseLogs] no boat keys found in Redis - nothing to clear (marks left untouched)');
     } else {
-      console.log(`[clearFleetLogs] cleared ${cleared.length} Redis key(s):`);
+      console.log(`[clearBaseLogs] cleared ${cleared.length} Redis key(s):`);
       for (const key of cleared) console.log(`  - ${key}`);
-      console.log('[clearFleetLogs] marks left untouched');
+      console.log('[clearBaseLogs] marks left untouched');
     }
   } catch (err) {
-    console.error('[clearFleetLogs] failed to clear Redis:', err.message);
+    console.error('[clearBaseLogs] failed to clear Redis:', err.message);
     process.exitCode = 1;
   } finally {
     await redisStore.close();
@@ -76,22 +76,22 @@ const { VALID_FILENAME } = require('./uploadServer');
     return true;
   }
 
-  console.log(`[clearFleetLogs] clearing local files for regatta: ${regattaLabel}`);
-  // LOG_DIR is base-only (see config.js's own boatLogDir comment) - a
+  console.log(`[clearBaseLogs] clearing local files for regatta: ${regattaLabel}`);
+  // BASE_LOG_DIR is base-only (see config.js's own boatLogDir comment) - a
   // boat's SD log lives in a completely separate directory (BOAT_LOG_DIR)
   // this script never touches.
   const baseCsvDir = path.join(config.logDir, regattaKey);
   const removedCsvDir = removeDirIfPresent(baseCsvDir);
   console.log(
     removedCsvDir
-      ? `[clearFleetLogs] removed ${baseCsvDir}`
-      : `[clearFleetLogs] no received-fix CSV logs found for this regatta - nothing to clear`
+      ? `[clearBaseLogs] removed ${baseCsvDir}`
+      : `[clearBaseLogs] no received-fix CSV logs found for this regatta - nothing to clear`
   );
   const removedUploadDir = removeDirIfPresent(path.join(config.upload.dir, regattaKey));
   console.log(
     removedUploadDir
-      ? `[clearFleetLogs] removed ${path.join(config.upload.dir, regattaKey)}`
-      : `[clearFleetLogs] no uploaded boat logs found for this regatta - nothing to clear`
+      ? `[clearBaseLogs] removed ${path.join(config.upload.dir, regattaKey)}`
+      : `[clearBaseLogs] no uploaded boat logs found for this regatta - nothing to clear`
   );
 
   // Leftovers from before CSV logs/uploads were nested under a regatta id -
@@ -103,19 +103,19 @@ const { VALID_FILENAME } = require('./uploadServer');
     const legacyCsvFiles = fs.readdirSync(config.logDir).filter((f) => csvPattern.test(f));
     for (const file of legacyCsvFiles) fs.unlinkSync(path.join(config.logDir, file));
     if (legacyCsvFiles.length > 0) {
-      console.log(`[clearFleetLogs] removed ${legacyCsvFiles.length} old-structure received-fix CSV log(s) from ${config.logDir}`);
+      console.log(`[clearBaseLogs] removed ${legacyCsvFiles.length} old-structure received-fix CSV log(s) from ${config.logDir}`);
     }
   } catch (err) {
     if (err.code !== 'ENOENT') {
-      console.error(`[clearFleetLogs] failed to clear old-structure CSV logs in ${config.logDir}:`, err.message);
+      console.error(`[clearBaseLogs] failed to clear old-structure CSV logs in ${config.logDir}:`, err.message);
       process.exitCode = 1;
     }
   }
 
   try {
-    // A directory sitting directly under UPLOAD_DIR that itself directly
-    // contains boat CSV files (VALID_FILENAME) is the OLD layout
-    // (UPLOAD_DIR/<boatId>/*.csv) - the NEW layout has an extra regattaId
+    // A directory sitting directly under BASE_UPLOAD_DIR that itself
+    // directly contains boat CSV files (VALID_FILENAME) is the OLD layout
+    // (BASE_UPLOAD_DIR/<boatId>/*.csv) - the NEW layout has an extra regattaId
     // level in between (UPLOAD_DIR/<regattaId>/<boatId>/*.csv), so a
     // regatta directory's own immediate children are further directories,
     // never CSV files directly. That structural check is what tells the
@@ -131,11 +131,11 @@ const { VALID_FILENAME } = require('./uploadServer');
       }
     }
     if (legacyBoatDirs > 0) {
-      console.log(`[clearFleetLogs] removed ${legacyBoatDirs} old-structure boat upload dir(s) from ${config.upload.dir}`);
+      console.log(`[clearBaseLogs] removed ${legacyBoatDirs} old-structure boat upload dir(s) from ${config.upload.dir}`);
     }
   } catch (err) {
     if (err.code !== 'ENOENT') {
-      console.error(`[clearFleetLogs] failed to clear old-structure uploads in ${config.upload.dir}:`, err.message);
+      console.error(`[clearBaseLogs] failed to clear old-structure uploads in ${config.upload.dir}:`, err.message);
       process.exitCode = 1;
     }
   }

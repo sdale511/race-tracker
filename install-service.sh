@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # EXTRA_ARG's meaning depends on MODE - every mode besides these two takes
 # no extra argument, reading config.js's own defaults for everything
-# (GPS_PORT, RADIO_PORT, LOG_DIR, ...) - see README's "Tuning knobs" to
+# (GPS_PORT, RADIO_PORT, BASE_LOG_DIR, ...) - see README's "Tuning knobs" to
 # override one, either by hand-editing the generated unit below afterward,
 # or exporting it before running the npm script directly instead:
 #   boat            BOAT_ID (optional - a plain number, zero-padded to the
@@ -74,7 +74,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Runs as whoever actually invoked sudo, so anything the app writes
-# (fleet-logs/, boat-logs/, race-config/, node_modules/) doesn't end up root-owned. Insisted on explicitly (not guessed/defaulted
+# (base-logs/, boat-logs/, race-config/, node_modules/) doesn't end up root-owned. Insisted on explicitly (not guessed/defaulted
 # to some fixed account) since there's no single fallback user that makes
 # sense across every machine any of these six modes might run on.
 SERVICE_USER="${SUDO_USER:-}"

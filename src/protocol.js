@@ -235,6 +235,49 @@ function decodePing(buf) {
   return { timestamp: buf.readUInt32LE(1) * 1000 };
 }
 
+// Boat -> base only, sent unprompted right at radio startup, before any
+// GPS fix exists - see boatAgent.js's own startup hello logic. The
+// opposite direction/purpose from PING above (base -> boats, "report your
+// current position now," and a boat with no fix yet can't even answer -
+// see radio.on('ping', ...)'s own hasValidFix guard): this is the boat
+// announcing itself unprompted specifically to cover the gap before a
+// first real fix exists, so the base's dashboard can show "boat online,
+// radio confirmed, still waiting on GPS" instead of nothing at all.
+// Carries just the boat's own id - there's no position to report yet, and
+// unlike a real position frame this is never written to CSV/Redis/
+// RegattaUp (see baseStation.js's own radio.on('hello', ...)) - it only
+// ever updates the live dashboard's "last seen," nothing durable.
+//
+// Layout (all little-endian):
+//   [0]    sync byte  0xDD
+//   [1..5] boatId     BOAT_ID_LEN raw ASCII bytes (same field as encode/decode above)
+//   [6]    checksum   uint8 (sum of bytes 1..5 mod 256)
+
+const HELLO_SYNC = 0xdd;
+const HELLO_FRAME_LEN = 1 + BOAT_ID_LEN + 1;
+
+function encodeHello(boatId) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  const buf = Buffer.alloc(HELLO_FRAME_LEN);
+  buf.writeUInt8(HELLO_SYNC, 0);
+  buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
+  let sum = 0;
+  for (let i = 1; i < HELLO_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, HELLO_FRAME_LEN - 1);
+  return buf;
+}
+
+// Returns { boatId }, or null if the buffer isn't a valid hello frame.
+function decodeHello(buf) {
+  if (buf.length !== HELLO_FRAME_LEN || buf[0] !== HELLO_SYNC) return null;
+  let sum = 0;
+  for (let i = 1; i < HELLO_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[HELLO_FRAME_LEN - 1]) return null;
+  return { boatId: buf.toString('ascii', 1, 1 + BOAT_ID_LEN) };
+}
+
 module.exports = {
   encode,
   decode,
@@ -249,4 +292,8 @@ module.exports = {
   decodePing,
   PING_FRAME_LEN,
   PING_SYNC,
+  encodeHello,
+  decodeHello,
+  HELLO_FRAME_LEN,
+  HELLO_SYNC,
 };

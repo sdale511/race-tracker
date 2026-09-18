@@ -63,15 +63,17 @@ class RadioLink extends EventEmitter {
     return this.send(buf);
   }
 
-  // Three frame types share this one byte stream (position frames,
-  // boat->base; mark broadcasts, base->boats; ping requests, base->boats -
-  // see protocol.js's own comment) - each with its own sync byte and
-  // length, since a single radio link hears everything broadcast on the
-  // network, not just frames addressed to "me".
+  // Four frame types share this one byte stream (position frames,
+  // boat->base; mark broadcasts, base->boats; ping requests, base->boats;
+  // hello announcements, boat->base - see protocol.js's own comment on
+  // each) - each with its own sync byte and length, since a single radio
+  // link hears everything broadcast on the network, not just frames
+  // addressed to "me".
   static FRAME_TYPES = [
     { sync: protocol.SYNC, len: protocol.FRAME_LEN, decode: protocol.decode, event: 'frame' },
     { sync: protocol.MARKS_SYNC, len: protocol.MARKS_FRAME_LEN, decode: protocol.decodeMarks, event: 'marks' },
     { sync: protocol.PING_SYNC, len: protocol.PING_FRAME_LEN, decode: protocol.decodePing, event: 'ping' },
+    { sync: protocol.HELLO_SYNC, len: protocol.HELLO_FRAME_LEN, decode: protocol.decodeHello, event: 'hello' },
   ];
 
   // Used on both ends: scans incoming bytes for valid frames of either type.

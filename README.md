@@ -816,7 +816,7 @@ station's own real-hardware path only reads marks, it won't invent a
 course (see "Connecting to your race committee software" below).
 
 CSV logs land in the same places as always regardless of mode - the base's
-own in `./fleet-logs` (`LOG_DIR`) and the boat's own in `./boat-logs`
+own in `./base-logs` (`BASE_LOG_DIR`) and the boat's own in `./boat-logs`
 (`BOAT_LOG_DIR`), see "File layout" above - and the base station's
 console/CSV/UDP local broadcast output all work exactly as they would with
 real hardware.
@@ -1364,25 +1364,25 @@ race-config/                                 - small per-device identity/state (
 boat-logs/                                   - BOAT ONLY: this boat's own chunked SD-card log (BOAT_LOG_DIR to redirect, e.g. an SD card mount)
   boat<boatId>_<chunk>.csv
 
-fleet-logs/<regattaId>/                       - BASE ONLY: base's own received-fix CSV log, nested per regatta (LOG_DIR to redirect)
+base-logs/<regattaId>/                       - BASE ONLY: base's own received-fix CSV log, nested per regatta (BASE_LOG_DIR to redirect)
   base_station_received_<date>.csv
 
-fleet-uploads/<regattaId>/<boatId>/           - BASE ONLY: each boat's uploaded SD-card logs, nested per regatta then per boat (UPLOAD_DIR to redirect)
+base-uploads/<regattaId>/<boatId>/           - BASE ONLY: each boat's uploaded SD-card logs, nested per regatta then per boat (BASE_UPLOAD_DIR to redirect)
   boat<boatId>_<chunk>.csv
 ```
 
 **`race-config/`** is shared by both roles but is a fixed location, never
-redirectable via `LOG_DIR`/`BOAT_LOG_DIR` - this is small, low-write-volume
+redirectable via `BASE_LOG_DIR`/`BOAT_LOG_DIR` - this is small, low-write-volume
 identity/state that should survive independently of wherever raw log data
 happens to be pointed this run (e.g. an SD card that gets swapped), same
 reasoning `boat_id.txt` already used before this directory existed.
 
-**`boat-logs/`** and **`fleet-logs/`** are two entirely separate directories
+**`boat-logs/`** and **`base-logs/`** are two entirely separate directories
 (not one shared parent split into subfolders) specifically so a boat's own
 track history and a base's received-fix log can never end up mixed
 together, confusingly, in one place - they're controlled by two entirely
-separate env vars (`BOAT_LOG_DIR`, `LOG_DIR`) for exactly that reason. Only
-`fleet-logs/` is further nested per regatta (`none` if nothing's selected),
+separate env vars (`BOAT_LOG_DIR`, `BASE_LOG_DIR`) for exactly that reason. Only
+`base-logs/` is further nested per regatta (`none` if nothing's selected),
 the same regatta-scoping Redis boat data already uses (see "Redis track
 storage" below) - switching regattas starts fresh local history there
 instead of interleaving two regattas' files together. `boat-logs/` is
@@ -1391,19 +1391,19 @@ regatta boundary, it only ever sees GPS fixes and course-mark broadcasts,
 never a regatta id itself - so its own SD log stays flat regardless of how
 many regattas it's raced across.
 
-**`fleet-uploads/`** follows the same regatta-nesting as `fleet-logs/`, since
+**`base-uploads/`** follows the same regatta-nesting as `base-logs/`, since
 it's inherently base-only too (uploaded *from* boats over WiFi, but only
 ever stored/organized on whichever machine receives them - a boat never
-writes to this directory itself). `npm run clear-fleet-logs` (see "Clearing
-boat data" below) clears just the active regatta's own `fleet-logs/` and
-`fleet-uploads/` - never `boat-logs/`, and never another regatta's history.
+writes to this directory itself). `npm run clear-base-logs` (see "Clearing
+boat data" below) clears just the active regatta's own `base-logs/` and
+`base-uploads/` - never `boat-logs/`, and never another regatta's history.
 `npm run clear-boat-logs` is the mirror image on the boat side: clears
 `boat-logs/` only, nothing else.
 
 The boat side, summarized: `npm run boat` only ever writes `race-config/`
 (its own `boat_id.txt`/`power-schedule.txt`/`course_marks.json`) and
 `boat-logs/` (its own chunked SD-card CSVs - see "Log rotation" below).
-Never `fleet-logs/`, never `fleet-uploads/` - those only exist on whichever
+Never `base-logs/`, never `base-uploads/` - those only exist on whichever
 machine receives uploads (the base).
 
 ## Redis track storage
@@ -1548,13 +1548,13 @@ only one is ever actually used), so there's no scenario where `REDIS_URL`
 plus one of those three combine into anything.
 
 Every process that talks to Redis (`npm run base`, `npm run reset-course`,
-`npm run clear-fleet-logs`) resolves this identically via `config.redis`, so
+`npm run clear-base-logs`) resolves this identically via `config.redis`, so
 whichever you choose applies consistently across all of them.
 
-### Clearing boat data (`clear-fleet-logs` / `clear-boat-logs`)
+### Clearing boat data (`clear-base-logs` / `clear-boat-logs`)
 
 ```
-npm run clear-fleet-logs
+npm run clear-base-logs
 ```
 
 Deletes every boat-related key for the **currently selected regatta only**
@@ -1568,8 +1568,8 @@ to the rovers" above), so point it at whichever Redis you actually want
 cleared.
 
 Also clears this base's own local files for that same regatta -
-`LOG_DIR/<regattaId>/base_station_received_*.csv` and everything under
-`UPLOAD_DIR/<regattaId>/` (see "Log rotation"/"Uploading boat logs to the
+`BASE_LOG_DIR/<regattaId>/base_station_received_*.csv` and everything under
+`BASE_UPLOAD_DIR/<regattaId>/` (see "Log rotation"/"Uploading boat logs to the
 base over WiFi" above) - so a base can be fully reset after testing (e.g. a
 `radio-congestion` run, see "Congestion-testing the radio" above) without
 leftover fake boats in its own logs or dashboard, not just Redis. Never
@@ -1577,11 +1577,11 @@ touches `BOAT_LOG_DIR` - a boat's own SD log is a completely separate
 directory (see "File layout" above), untouched even on a machine running
 both roles for testing. Also removes anything still sitting in the
 pre-regatta-nesting flat layout (`base_station_received_*.csv` directly in
-`LOG_DIR`, a boat-id directory directly in `UPLOAD_DIR`) - not
+`BASE_LOG_DIR`, a boat-id directory directly in `BASE_UPLOAD_DIR`) - not
 regatta-scoped, since those predate the whole regatta-nesting concept and
 there's nothing to scope them to.
 
-`npm run clear-fleet-logs` is a **base-side** command - it never touches
+`npm run clear-base-logs` is a **base-side** command - it never touches
 `BOAT_LOG_DIR`, and a boat has no Redis access at all (see "Broadcasting
 marks to the rovers" above), so it has nothing to clear on a boat anyway.
 To reset a **boat's** own local SD-card log instead, run this on the boat:
@@ -1595,7 +1595,7 @@ Deletes every chunked CSV file (and its `.uploaded` marker) under
 entire local track history, gone, back to a clean slate. Doesn't touch this
 device's own identity/state in `race-config/` (`boat_id.txt` included -
 this does **not** generate a new `BOAT_ID`, only clears track history) or
-`LOG_DIR` if this same machine also happens to be running the base role for
+`BASE_LOG_DIR` if this same machine also happens to be running the base role for
 testing. There's no regatta scoping here at all - a boat has no regatta
 concept (see "File layout" above), so this always clears the boat's entire
 history regardless of how many regattas it's raced across.
@@ -1641,7 +1641,7 @@ parameter that shapes the geometry before publishing (course length,
 start/finish line lengths, committee gap, ...) so it's obvious exactly
 what's about to replace the old course. Never touches any other regatta's
 own namespace. Boat tracks are left untouched — pair with `npm run
-clear-fleet-logs` if you want those cleared too.
+clear-base-logs` if you want those cleared too.
 
 **This is the only thing that ever resets published marks.** Changing
 `SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`,
@@ -1740,11 +1740,11 @@ a new one (the file is keyed by chunk, not by session). Smaller chunks mean
 each one becomes upload-eligible sooner (see "Uploading boat logs to the
 base over WiFi" below) at the cost of more, smaller files.
 
-The base station's log lives in `LOG_DIR` (default `fleet-logs/`) instead -
+The base station's log lives in `BASE_LOG_DIR` (default `base-logs/`) instead -
 a completely separate directory from `BOAT_LOG_DIR` (see "File layout"
 above), never shared even when both roles happen to run on one machine -
 and is named per day, nested under whichever regatta is currently selected
-(`LOG_DIR/<regattaId>/base_station_received_<date>.csv`, `none` if nothing
+(`BASE_LOG_DIR/<regattaId>/base_station_received_<date>.csv`, `none` if nothing
 is, same regatta-scoping Redis boat data already uses; switching regattas
 starts a fresh file even on the same day rather than interleaving two
 regattas' frames together) for the same by-age pruning to apply to it too,
@@ -1760,7 +1760,7 @@ a rotating log in the same sense.
 
 Both admin dashboards show a "Disk space" card (free space, total space,
 and a green **OK**/red **ALERT** status - alert below 10% free) for the
-filesystem holding that side's own log directory - `LOG_DIR` on the base,
+filesystem holding that side's own log directory - `BASE_LOG_DIR` on the base,
 `BOAT_LOG_DIR` on the boat - alongside a reminder of that side's own log
 rotation schedule (see "Log rotation" above). See `src/diskSpace.js`.
 
@@ -1777,7 +1777,7 @@ log rotation - every deletion is logged loudly
 (`[logRotation] disk critically low (...% free) - deleted oldest log
 file: ...`). It only ever touches this side's own rotating CSVs (the
 same files/pattern `LOG_RETENTION_DAYS` already prunes by age) - it never
-touches `fleet-uploads` (see below), webhook retry queues, or anything on
+touches `base-uploads` (see below), webhook retry queues, or anything on
 the other side of the radio link.
 
 ### Uploading boat logs to the base over WiFi
@@ -1826,17 +1826,17 @@ never to assume the connection will hold):
   while catches up in order on subsequent connections rather than skipping
   straight to the newest.
 
-Uploaded files land in `UPLOAD_DIR` (default a `fleet-uploads` directory
-next to `LOG_DIR`, deliberately separate from the base's own
-`fleet-logs` - that's this machine's own received-fix log, not a dumping
+Uploaded files land in `BASE_UPLOAD_DIR` (default a `base-uploads` directory
+next to `BASE_LOG_DIR`, deliberately separate from the base's own
+`base-logs` - that's this machine's own received-fix log, not a dumping
 ground for every boat's SD card backup), organized one subdirectory per
 regatta (whichever one is currently selected when the upload actually
 arrives - `none` if nothing is, same regatta scoping Redis boat data
 already uses), then one subdirectory per boat within that by BOAT_ID
-(`fleet-uploads/<regattaId>/<boatId>/boat<boatId>_<chunk>.csv`) so neither a
+(`base-uploads/<regattaId>/<boatId>/boat<boatId>_<chunk>.csv`) so neither a
 multi-boat fleet's files, nor two different regattas' worth of history, end
-up mixed together. Unlike `fleet-logs`,
-`fleet-uploads` is **not** pruned by `LOG_RETENTION_DAYS` (or by the
+up mixed together. Unlike `base-logs`,
+`base-uploads` is **not** pruned by `LOG_RETENTION_DAYS` (or by the
 emergency low-disk cleanup - see "Disk space" below) - it's meant to
 be the durable, centrally-collected copy that outlives whatever retention
 policy applies to each boat's own rotating SD card log, so nothing removes
@@ -1849,7 +1849,7 @@ The boat gzips each file before sending (CSV text compresses well, and a
 smaller transfer has a better chance of finishing inside a short/marginal
 WiFi window than saving bandwidth as such - these files are small either
 way). The base decompresses on the way in, so what actually lands in
-`fleet-uploads` is a plain, immediately-readable `.csv` - identical to what
+`base-uploads` is a plain, immediately-readable `.csv` - identical to what
 the boat originally wrote, not something you need to `gunzip` yourself
 before opening it.
 
@@ -1870,7 +1870,7 @@ much smaller dashboard is covered separately under "RTK-only mode" above.
 
 This is a live "what's happening right now" view, not a historical
 record - the counters (`src/stats.js`) are in-memory only and reset on
-restart. The durable records are Redis (tracks) and `fleet-uploads` (log
+restart. The durable records are Redis (tracks) and `base-uploads` (log
 files); the dashboard just reflects them plus some things Redis doesn't
 track at all, like radio link quality and upload success/failure counts.
 
@@ -1961,6 +1961,30 @@ One dashboard button acts on the whole fleet at once:
   than being silently absorbed by the "already told RegattaUp" dedup latch
   (see "On-grid detection -> RegattaUp" below) - the whole point of asking
   "where's everyone right now" is to hear back about it.
+
+### Boat startup announcement ("hello")
+
+The opposite direction and purpose from Ping fleet above: instead of the
+base asking a boat to report in, a boat announces itself to the base the
+moment its own radio connects - `src/protocol.js`'s `encodeHello`/
+`decodeHello`, `src/boatAgent.js`'s `startHelloAnnounce`. A cold GPS start
+can take minutes, and until this existed, the base had no way to know a
+boat's radio was even alive until its first real GPS-fix-based frame went
+out - a "hello" frame carries just the boat's own id, nothing else, so it
+doesn't need to wait on a fix at all.
+
+Sent immediately once the radio connects, then retried every 5s
+(`HELLO_RETRY_MS`) in case the base wasn't listening yet or a frame got
+lost, until the boat's first real fix actually transmits - at that point
+the base has much better information than a bare hello, so the retries
+stop on their own. On the base side (`src/baseStation.js`'s
+`radio.on('hello', ...)`), this only ever updates the Fleet table's own
+"last seen" for that boat - it's never written to CSV, Redis, or
+RegattaUp the way a real fix is, since there's no position to record. The
+console logs it once per boat (`boat=<id> radio online (no GPS fix yet)`),
+not on every retry. Unlike ordinary position frames, this isn't gated on a
+regatta being selected either - confirming a boat's radio is alive is
+useful before a regatta's even picked, not just after.
 
 When `GPS_PORT` is set (see "Recenter on base GPS" below), the dashboard
 also shows a "Base GPS" card - the receiver's ordinary NAV-PVT fix (the
@@ -2094,7 +2118,7 @@ is unaffected either way.
 Any boat the base has actually heard a position frame from this session
 also gets a dot (green if heard within the last minute, gray otherwise) -
 deliberately sourced only from `stats.js`'s in-memory last-known
-position, never from `fleet-uploads`' on-disk history, so the map never
+position, never from `base-uploads`' on-disk history, so the map never
 shows a boat "live" somewhere it hasn't actually reported from this run.
 A boat whose only presence is old uploaded files (see the Fleet table's
 "Files on disk" column) just doesn't get a dot.
@@ -2295,14 +2319,14 @@ given `boat`/`base` run will actually use, instead of reading through
 | `PING_RESPONSE_JITTER_MS` | 3000 | Boat only — max random delay before responding to the base's "Ping fleet" button (see "Admin dashboard" above), so a full fleet doesn't all reply over each other on the same shared channel at once |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
 | `LOG_RECEIVED_FIXES` | unset (off) | Base station only — set to `1` to turn on the `[base] boat=... lat,lon ...` console line printed for every single radio frame received from every boat (a full fleet at a normal GPS rate scrolls fast, so this stays off by default - e.g. turn it on temporarily while confirming frames are actually arriving). Only the console echo is gated - the fix is always written to this base's own CSV log, always recorded to Redis, and lap/on-grid/mark-rounding/foul detection always run regardless of this setting |
-| `LOG_DIR` | `./fleet-logs` (next to the package) | Base station only — where its own received-fix CSV log goes, override to put this on an SD card, e.g. `/home/pi/fleet-logs`. See `BOAT_LOG_DIR` below for the boat's own log — the two are deliberately separate directories, never shared, see "File layout" above |
-| `BOAT_LOG_DIR` | `./boat-logs` (next to the package) | Boat only — where this boat's own chunked SD-card log goes, override to put this on an SD card, e.g. `/home/pi/boat-logs`. Completely separate from `LOG_DIR` above, see "File layout" above |
-| `LOG_RETENTION_DAYS` | 7 | CSV files in `LOG_DIR`/`BOAT_LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
+| `BASE_LOG_DIR` | `./base-logs` (next to the package) | Base station only — where its own received-fix CSV log goes, override to put this on an SD card, e.g. `/home/pi/base-logs`. See `BOAT_LOG_DIR` below for the boat's own log — the two are deliberately separate directories, never shared, see "File layout" above |
+| `BOAT_LOG_DIR` | `./boat-logs` (next to the package) | Boat only — where this boat's own chunked SD-card log goes, override to put this on an SD card, e.g. `/home/pi/boat-logs`. Completely separate from `BASE_LOG_DIR` above, see "File layout" above |
+| `LOG_RETENTION_DAYS` | 7 | CSV files in `BASE_LOG_DIR`/`BOAT_LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
 | `LOG_CHUNK_MINUTES` | 10 | Boat only — how wide a slice of time each SD-card CSV covers before starting a new one, see "Log rotation" above. Smaller chunks upload sooner (see below) but produce more files |
 | `UPLOAD_ENABLED` | unset (on) | Boat only — set to `0` to skip attempting log uploads to the base; the periodic health-check ping (IP/admin port reporting) still runs regardless, see "Uploading boat logs to the base over WiFi" above |
 | `UPLOAD_LOG` | unset (off) | Both roles — set to `1` to log the one-line `[uploadClient]`/`[uploadServer]` message on each successful upload (a boat sends a chunk every `LOG_CHUNK_MINUTES` for the whole race, so this is off by default to avoid a steady drip of routine lines). Upload failures log regardless of this setting |
 | `UPLOAD_PORT` | 8090 | Base station only — port its log-upload HTTP server listens on, also published in the marks broadcast |
-| `UPLOAD_DIR` | `fleet-uploads` (next to `LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
+| `BASE_UPLOAD_DIR` | `base-uploads` (next to `BASE_LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
 | `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |
 | `UPLOAD_CHECK_INTERVAL_MS` / `UPLOAD_TIMEOUT_MS` | 15000 / 5000 | Boat only — how often to check whether the base is reachable, and how long to wait for a response before giving up on that attempt |
 | `ADMIN_PORT` | 8092 (boat: 8093 under `SIMULATE=1`) | Every mode — port the admin dashboard listens on (base's fleet view, a boat's own rover view, `npm run rtk`'s RTK-only view, or `npm run basertk`'s combined view), see "Admin dashboard" above. The base/boat dashboards report their actual port to each other at runtime, so the cross-links work correctly regardless of what this is set to on either side |

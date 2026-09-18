@@ -15,6 +15,8 @@ function decodeDatagram(msg) {
   if (marks) return { event: 'marks', decoded: marks };
   const ping = protocol.decodePing(msg);
   if (ping) return { event: 'ping', decoded: ping };
+  const hello = protocol.decodeHello(msg);
+  if (hello) return { event: 'hello', decoded: hello };
   return null;
 }
 

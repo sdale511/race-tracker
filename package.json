@@ -12,7 +12,7 @@
     "basertk": "node src/baseRtkStation.js",
     "markset": "node src/markSetStation.js",
     "mark": "node src/markStation.js",
-    "clear-fleet-logs": "node src/clearFleetLogs.js",
+    "clear-base-logs": "node src/clearBaseLogs.js",
     "clear-boat-logs": "node src/clearBoatLogs.js",
     "reset-course": "node src/resetCourse.js",
     "reset-regatta": "node src/resetRegatta.js",

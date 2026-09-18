@@ -2,39 +2,53 @@
 """
 xbee_configure_at.py
 
-Configure a Digi XBee-PRO S3B (900HP / DigiMesh series) radio for DigiMesh
-delivery with routing/relaying disabled on every node (this fleet is
-single-hop only - no boat ever needs to relay another boat's signal, so
-there's nothing for mesh routing to actually do), with an identical config
-on every radio in the fleet - base/committee station and every boat alike,
-no role-specific settings. Entirely over AT Command Mode (the plain "+++" /
-"ATxx" dialect any serial terminal speaks), the same way you'd do it by
-hand, just scripted with read-back verification on every parameter,
-followed by an actual soft-reset-and-reverify pass (see "Verifying
-persistence" in main()) to confirm every value survives a reboot, not
-just this session.
+Configure a Digi XBee-PRO S3B (900HP / DigiMesh series) radio for this
+fleet's telemetry link - delivery mode selectable via --mode (see MODES
+below; defaults to Point-to-Multipoint, matching this fleet's actual
+one-coordinator/many-end-devices topology). Routing/relaying is disabled
+on every node under the two single-hop modes (p2mp, digimesh - this fleet
+doesn't need it, no boat ever needs to relay another boat's signal at this
+course length) - the third mode, digimesh-routing, exists specifically to
+turn that back on, for the uncommon case a course/fleet layout genuinely
+needs multi-hop relaying. Same config on every radio in the fleet -
+base/committee station and every boat alike, no role-specific settings.
+Entirely over AT Command Mode (the plain "+++" / "ATxx" dialect any serial
+terminal speaks), the same way you'd do it by hand, just scripted with
+read-back verification on every parameter, followed by an actual
+soft-reset-and-reverify pass (see "Verifying persistence" in main()) to
+confirm every value survives a reboot, not just this session.
 
 Every command name/value below is taken from Digi's own XBee-PRO 900HP/XSC
 RF Modules S3 and S3B User Guide (docs.digi.com, document 90002173).
 
-Note: Point-to-Multipoint (TO=0x40) was tried as the default twice. The
-first time, it appeared to produce no traffic at all - that turned out to
-be an unrelated bug in this script (a baud-rate write's response went
-unchecked after the post-baud-change reconnect, so a radio whose BD didn't
-actually survive a reboot still reported success; fixed, see the reset-
-and-reverify pass below). Once that was fixed and persistence was directly
-confirmed on both radios (every parameter, including TO=0x40 itself,
-verified to survive an actual reset), traffic STILL failed between two
-correctly, persistently P2MP-configured radios - a real, reproducible P2MP
-incompatibility on this hardware, not a config or persistence issue.
-DigiMesh (0xC0) is the confirmed-working delivery method, hence the
-default here. One lead for anyone revisiting P2MP later: DigiMesh's own
-broadcasts already reuse the Directed-Broadcast/Repeater wire format
+Note on delivery mode (--mode, default p2mp - see MODES below): this
+fleet's actual topology is one coordinator (the base) talking to many
+end-devices (the boats), which never talk to each other - exactly what
+Point-to-Multipoint (P2MP, TO=0x40) is - which is why it's the default.
+
+History worth knowing before assuming P2MP "just works" here: P2MP was
+tried as the default once before and found to reproducibly fail on this
+exact hardware. The first attempt appeared to produce no traffic at all -
+that turned out to be an unrelated bug in this script (a baud-rate write's
+response went unchecked after the post-baud-change reconnect, so a radio
+whose BD didn't actually survive a reboot still reported success; fixed,
+see the reset-and-reverify pass below). Once that was fixed and persistence
+was directly confirmed on both radios (every parameter, including TO=0x40
+itself, verified to survive an actual reset), traffic STILL failed between
+two correctly, persistently P2MP-configured radios that time. DigiMesh
+(0xC0, --mode digimesh or digimesh-routing) was the confirmed-working
+delivery method as a result, and was this script's default for a while.
+If P2MP misbehaves again, that's why - re-verify with --dry-run after a
+real reset (not just this session's own memory) before assuming it's
+fixed, and fall back to --mode digimesh, which has a real working history
+on this hardware. One lead for anyone chasing a P2MP problem: DigiMesh's
+own broadcasts already reuse the Directed-Broadcast/Repeater wire format
 (0x80), not unique DigiMesh framing - real mesh-routing framing only
 applies to unicasts - and this app's traffic is 100% broadcast
-(DH=0/DL=0xFFFF), so the "working" DigiMesh config was never actually
-exercising DigiMesh-specific behavior for this app's own traffic pattern
-in the first place.
+(DH=0/DL=0xFFFF), so DigiMesh-with-routing-disabled and P2MP are
+functionally the same thing on the wire for this app's own traffic
+pattern; a difference between them pointing at TO itself, rather than
+something else entirely, would be surprising.
 
 WHY AT COMMAND MODE, NOT THE digi-xbee LIBRARY
     digi-xbee can only talk to a radio already in API mode (AP=1/2) - but
@@ -46,13 +60,10 @@ WHY AT COMMAND MODE, NOT THE digi-xbee LIBRARY
     leaves AT/transparent mode, so there's no mode to flip either way.
 
 WHAT THIS DOES
-    - Sets TO (Transmit Options) bits 6:7 to DigiMesh (0xC0) - the
-      delivery-method switch on this module (0x40 = Point-to-Multipoint,
-      0x80 = directed broadcast/repeater).
+    - Sets TO (Transmit Options) bits 6:7 and CE (Node Messaging Options,
+      bit 1 - routing/relay on this node) according to --mode - see MODES
+      below for the exact TO/CE pair each mode sets and why.
     - Sets ID, DH/DL, HP, MT, BD to the values below.
-    - Sets CE (Node Messaging Options) to disable routing on this node
-      (bit 1) - this fleet is single-hop, so no node should ever act as
-      an intermediate relay for another's traffic, regardless of TO.
     - Writes the config to non-volatile memory (so it survives power
       cycling), reads every value back within THIS session to confirm it
       stuck, then does a real soft reset and re-checks everything again
@@ -72,8 +83,10 @@ BEFORE YOU RUN THIS
     terminal session, etc.) using this same port before running this.
 
 USAGE
-    python3 xbee_configure_at.py --port /dev/ttyUSB0
-    python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run   # read current config, change nothing
+    python3 xbee_configure_at.py --port /dev/ttyUSB0                       # P2MP (default) - see MODES below
+    python3 xbee_configure_at.py --port /dev/ttyUSB0 --mode digimesh       # DigiMesh, routing/relay OFF
+    python3 xbee_configure_at.py --port /dev/ttyUSB0 --mode digimesh-routing  # DigiMesh, routing/relay ON
+    python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run             # read current config, change nothing
 """
 
 import argparse
@@ -81,6 +94,46 @@ import sys
 import time
 
 import serial
+
+# ─── MODES ──────────────────────────────────────────────────────────────
+# Delivery mode, selected with --mode (default p2mp) - each entry is the
+# TO (Transmit Options bits 6:7, the delivery-method switch)/CE (Node
+# Messaging Options bit 1, routing/relay on this node) pair that mode
+# needs. See the top-of-file Note for why p2mp is the default despite its
+# documented failure history, and when to fall back to digimesh.
+MODES = {
+    "p2mp": {
+        "TRANSMIT_OPTIONS": 0x40,  # Point-to-Multipoint
+        # P2MP end-devices don't relay for each other at all - there's no
+        # mesh-routing concept in this mode to begin with - so CE's
+        # routing-disable bit is set the same as digimesh's own
+        # single-hop config below, just for consistency/explicitness
+        # rather than because P2MP would otherwise try to relay.
+        "CE": 2,
+        "label": "Point-to-Multipoint",
+    },
+    "digimesh": {
+        "TRANSMIT_OPTIONS": 0xC0,  # DigiMesh (mesh routing)
+        # Routing/relay disabled (bit 1 set) - this fleet is single-hop
+        # only, no node should ever act as an intermediate relay for
+        # another's traffic. The confirmed-working fallback if p2mp
+        # misbehaves - see the top-of-file Note.
+        "CE": 2,
+        "label": "DigiMesh (routing/relay disabled)",
+    },
+    "digimesh-routing": {
+        "TRANSMIT_OPTIONS": 0xC0,  # DigiMesh (mesh routing)
+        # Routing/relay ENABLED (bit 1 clear) - every node will relay
+        # other nodes' DigiMesh/broadcast traffic. Not needed at this
+        # fleet's actual (single-hop, ~2mi course) range - included for
+        # completeness/future-proofing if the course or fleet layout ever
+        # genuinely needs multi-hop relaying, not because anything today
+        # requires it.
+        "CE": 0,
+        "label": "DigiMesh (routing/relay enabled)",
+    },
+}
+DEFAULT_MODE = "p2mp"
 
 # ─── CONFIG ─────────────────────────────────────────────────────────────
 
@@ -94,13 +147,11 @@ CONFIG = {
     # default too, but set explicitly so it's never left to chance.
     "NETWORK_ID": "0x7FFF",
 
-    # TO (Transmit Options), bits 6:7 are the delivery method: 0x40 =
-    # Point-to-Multipoint, 0x80 = directed broadcast/repeater, 0xC0 =
-    # DigiMesh (mesh routing) - confirmed working on real hardware, see
-    # the top-of-file Note on why this is 0xC0 rather than 0x40. Bits 0-3
-    # (ack/route-discovery/NACK/trace-route options) left at 0 - ordinary
-    # acked, routed unicasts.
-    "TRANSMIT_OPTIONS": 0xC0,
+    # TRANSMIT_OPTIONS/CE are filled in from MODES[args.mode] at the top of
+    # main(), below - not fixed here, since --mode selects between them.
+    # Placeholder values only; always overwritten before use.
+    "TRANSMIT_OPTIONS": None,
+    "CE": None,
 
     # Destination addressing: broadcast (DH=0, DL=0xFFFF) -- default.
     "DH": "0",
@@ -112,13 +163,6 @@ CONFIG = {
     # MT (Broadcast Multi-Transmits) -- how many EXTRA times a broadcast
     # is repeated (packets sent = MT+1). Was 3 by default, set to 0.
     "MT": 0,
-
-    # CE (Node Messaging Options), a bitfield for the (unused here)
-    # Indirect Messaging sleep/polling feature - bit 1 (value 2) disables
-    # routing on this node, so it won't relay other nodes' DigiMesh/
-    # broadcast traffic - this fleet is single-hop only, nothing should
-    # ever need relaying. Same value on every radio in the fleet.
-    "CE": 2,
 }
 
 # ─── End config ──────────────────────────────────────────────────────────
@@ -352,15 +396,15 @@ def open_and_enter_command_mode(port, baud):
         enter_command_mode(ser)
     except RuntimeError as e:
         print(f"Failed to enter command mode at {baud} baud: {e}")
-        print(f"  -> If this radio was already configured before (e.g. RADIO_BAUD=115200 in "
-              f"race-tracker's own .env, or a prior run of this script), it's likely no longer at the "
-              f"XBee factory default (9600) - retry with --connect-baud matching its CURRENT speed, "
-              f"e.g. --connect-baud 115200.")
-        print(f"  -> On a genuinely factory-fresh radio (9600 IS correct), a totally empty response "
-              f"more often means: wrong --port (double check with `ls /dev/cu.*` before/after "
-              f"plugging it in), TX/RX swapped on the wiring, or the radio not actually getting "
-              f"power/a solid USB connection. Try the same +++ by hand in a plain terminal (`screen "
-              f"{port} {baud}`) to see whether the problem is this script or the link itself.")
+        print(f"  -> --connect-baud defaults to 115200 (RADIO_BAUD in race-tracker's own .env, and "
+              f"every radio configured by this script or race-tracker itself, ends up here) - if this "
+              f"is a genuinely factory-fresh radio instead, it's still at Digi's own 9600 default, not "
+              f"115200 - retry with --connect-baud 9600.")
+        print(f"  -> If neither 9600 nor 115200 is it, a totally empty response more often means: "
+              f"wrong --port (double check with `ls /dev/cu.*` before/after plugging it in), TX/RX "
+              f"swapped on the wiring, or the radio not actually getting power/a solid USB connection. "
+              f"Try the same +++ by hand in a plain terminal (`screen {port} {baud}`) to see whether "
+              f"the problem is this script or the link itself.")
         ser.close()
         sys.exit(1)
     print(f"Connected at {baud} baud - command mode entered.")
@@ -370,15 +414,36 @@ def open_and_enter_command_mode(port, baud):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyUSB0 or COM5")
-    ap.add_argument("--connect-baud", type=int, default=9600,
-                     help="Baud to connect at (radio's CURRENT speed, default 9600 factory default)")
+    ap.add_argument("--connect-baud", type=int, default=115200,
+                     help="Baud to connect at (radio's CURRENT speed, default 115200 - matches RADIO_BAUD "
+                          "in race-tracker's own .env, and every radio this script or race-tracker itself "
+                          "has already touched; pass --connect-baud 9600 for a genuinely factory-fresh "
+                          "radio instead)")
     ap.add_argument("--target-baud", type=int, default=CONFIG["TARGET_BAUD"],
                      help=f"Baud to SET the radio to (BD parameter, default {CONFIG['TARGET_BAUD']}). "
                           f"Pass --target-baud 0 to leave BD untouched.")
     ap.add_argument("--dry-run", action="store_true", help="Read current config only, change nothing")
+    ap.add_argument(
+        "--mode",
+        choices=sorted(MODES.keys()),
+        default=DEFAULT_MODE,
+        help=f"Delivery mode (default {DEFAULT_MODE}) - p2mp (TO=0x40, matches this fleet's actual "
+             f"one-coordinator/many-end-devices topology), digimesh (TO=0xC0, routing/relay off - the "
+             f"confirmed-working fallback if p2mp misbehaves, see this script's own top-of-file Note), "
+             f"or digimesh-routing (TO=0xC0, routing/relay ON - only needed if a course/fleet layout ever "
+             f"genuinely requires multi-hop relaying).",
+    )
     args = ap.parse_args()
 
+    # Fills in the two MODE-dependent CONFIG values before anything below
+    # reads them - CONFIG stays the single source of truth the rest of this
+    # script (dry_run_report, the apply loop, read_config) already reads
+    # from, so nothing past this point needs to know --mode exists at all.
+    CONFIG["TRANSMIT_OPTIONS"] = MODES[args.mode]["TRANSMIT_OPTIONS"]
+    CONFIG["CE"] = MODES[args.mode]["CE"]
+
     ser = open_and_enter_command_mode(args.port, args.connect_baud)
+    print(f"Mode: {args.mode} ({MODES[args.mode]['label']}) - TO=0x{CONFIG['TRANSMIT_OPTIONS']:02X}, CE={CONFIG['CE']}")
 
     try:
         if args.dry_run:

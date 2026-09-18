@@ -546,7 +546,7 @@ function main() {
   // yet) - the exact same regatta-scoping Redis boat data already uses (see
   // redisStore.js's own `regattas:<id>:...` prefix), so switching regattas
   // starts a fresh set of received-fix logs instead of interleaving two
-  // regattas' worth of frames in the same file, and npm run clear-fleet-logs can
+  // regattas' worth of frames in the same file, and npm run clear-base-logs can
   // clear just the active regatta's own logs without touching another
   // regatta's history.
   let csvPath = null;
@@ -1744,6 +1744,31 @@ function main() {
     if (!isMarksPing) {
       if (raceMarks) detectRaceEvents(decoded);
       else pendingFrames.push(decoded);
+    }
+  });
+
+  // A boat announcing itself unprompted right at its own radio startup,
+  // before it necessarily has a GPS fix yet (see protocol.js's own comment
+  // on encodeHello, and boatAgent.js's startHelloAnnounce for why - a cold
+  // GPS start can take minutes, and without this there's no way to know a
+  // boat's radio is even alive until its first real fix goes out). Purely
+  // a live-dashboard "last seen" signal - stats.recordFrame with no
+  // position/fix data, so it updates boatLastSeen without ever touching
+  // boatLastPosition/boatLastFix - nothing here is written to CSV, Redis,
+  // or RegattaUp the way a real frame is, since there's no position to
+  // record. Deliberately not gated on a selected regatta either, unlike
+  // the frame handler above - this never touches anything
+  // regatta-namespaced, and confirming a boat's radio is alive is exactly
+  // as useful before a regatta's even picked as after. Logged once per
+  // boat (not every ~5s retry until a real fix arrives, see
+  // HELLO_RETRY_MS) - the dashboard's own "last seen" already reflects
+  // every retry; the console only needs to announce the boat once.
+  const helloLoggedBoatIds = new Set();
+  radio.on('hello', ({ boatId }) => {
+    stats.recordFrame(boatId, null, null);
+    if (!helloLoggedBoatIds.has(boatId)) {
+      helloLoggedBoatIds.add(boatId);
+      console.log(`[baseStation] boat=${boatId} radio online (no GPS fix yet)`);
     }
   });
 
