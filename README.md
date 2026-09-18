@@ -14,157 +14,116 @@ logging to microSD as a durable backup.
 ```
 
 For the complete rover → base → RegattaUp data flow - wire formats, Redis
-keys, webhook payloads, and RegattaUp's own entity fields - see
-[`docs/telemetry-pipeline.html`](docs/telemetry-pipeline.html) (open directly
-in a browser).
+keys, webhook payloads, RegattaUp's own entity fields - see
+[`docs/telemetry-pipeline.html`](docs/telemetry-pipeline.html) (open in a
+browser).
 
-- **GPS**: ZED-F9P emits `UBX-NAV-PVT` binary messages (position, speed,
-  heading, fix type, RTK carrier solution, satellite count) — parsed directly,
-  no NMEA needed.
-- **Radio**: assumed to be a transparent-serial telemetry radio (RFD900x,
-  SiK, etc). Bytes written to the boat-side UART come out the base-side UART.
-  A compact 23-byte binary frame (`src/protocol.js`) is used to minimize
-  airtime.
-- **SD log**: a fix is logged to CSV exactly when it also clears the
-  `TX_DISTANCE_M`/`TX_INTERVAL_S` gate (same gate as the radio send, see
-  below) - the SD record mirrors what actually got transmitted rather than
-  keeping an independent full-rate trace, so a dropped radio link never
-  loses data the boat itself considered worth sending - only live tracking
-  is affected, not the durable record.
+| Component | Notes |
+|---|---|
+| GPS | ZED-F9P, `UBX-NAV-PVT` binary messages (position, speed, heading, fix type, RTK carrier solution, satellite count) - no NMEA needed |
+| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 23-byte binary frame (`src/protocol.js`) minimizes airtime |
+| SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
 ## Wiring notes
 
-Default config assumes GPS over the Pi's own dedicated hardware UART
-(`/dev/ttyAMA0`, GPIO 14/15 - avoid the mini-UART, its clock is tied to the
-core clock and can glitch), leaving the Pi's one USB/OTG port free for the
-telemetry radio alone - no hub needed.
+Default config uses the Pi's own dedicated hardware UART (`/dev/ttyAMA0`,
+GPIO 14/15 - avoid the mini-UART, its clock is tied to the core clock and
+can glitch), leaving the one USB/OTG port free for the telemetry radio
+alone.
 
 ```
 sudo raspi-config   # Interface Options -> Serial Port
                      # "login shell over serial" = No
                      # "serial port hardware enabled" = Yes
 ```
-This frees `/dev/ttyAMA0` for the GPS instead of the console.
 
-If you'd rather use the simpleRTK2B LR's own USB port for GPS instead
-(shows up as `/dev/ttyACM0`) - e.g. simpler wiring, at the cost of needing
-a USB hub since the radio then also needs its own USB-to-serial adapter -
-override `GPS_PORT=/dev/ttyACM0` (and `GPS_BAUD` to match whatever that
-port is actually running at, likely different from the GPIO UART's).
-
-On any Pi with onboard Bluetooth (Zero 2 W, 3A+/3B+, 4, etc.), the step
-above alone isn't enough - GPIO14/15 default to the **mini-UART**
-(`ttyS0`), not the real hardware UART, because Bluetooth occupies the real
-one. Disable Bluetooth to free it up:
-```
-# add to /boot/firmware/config.txt (Bookworm+) or /boot/config.txt (older)
-dtoverlay=disable-bt
-```
-then disable the `hciuart`/`bluetooth` services and reboot. Without this,
-`/dev/ttyAMA0` either won't exist or will silently be the glitch-prone
-mini-UART instead.
-
-Which physical UART on the module (UART1 vs UART2) your wiring actually
-reaches depends on the board/breakout used - ArduSimple's simpleRTK2B
-routes UART2 to the XBee socket (used for RTCM correction radios, a
-separate concern from this app entirely - see below), so a direct wire to
-a general breakout pin is more likely UART1, but don't assume it - see
-"Verifying the connection" below for a way to prove it rather than guess.
+- Prefer the simpleRTK2B's own USB port (`/dev/ttyACM0`) instead? Set
+  `GPS_PORT=/dev/ttyACM0` (and matching `GPS_BAUD`) - simpler wiring, but
+  needs a USB hub since the radio then needs its own USB-to-serial adapter.
+- Any Pi with onboard Bluetooth (Zero 2 W, 3A+/3B+, 4, ...) puts GPIO14/15
+  on the glitch-prone mini-UART (`ttyS0`) by default, since Bluetooth
+  occupies the real UART. Fix:
+  ```
+  # /boot/firmware/config.txt (Bookworm+) or /boot/config.txt (older)
+  dtoverlay=disable-bt
+  ```
+  then disable `hciuart`/`bluetooth` services and reboot.
+- Which physical UART (UART1 vs UART2) your wiring reaches depends on the
+  board - ArduSimple's simpleRTK2B routes UART2 to the XBee socket (used
+  for RTCM correction radios, unrelated to this app), so a general
+  breakout pin is more likely UART1 - verify, don't assume (see below).
 
 ## GPS configuration (one-time, via u-center or ubxtool)
 
-Don't assume the UART your wiring reaches is already at this app's
-`GPS_BAUD` default or already NMEA-free just because the module's USB port
-is - each UART is configured independently, and in practice a GPIO-wired
-UART may still be sitting at factory defaults (NMEA on, UBX off, and not
-necessarily the same baud as USB) even after the USB port's been fully
-configured. Verify directly instead of assuming:
+Each UART is configured independently - a GPIO-wired UART may still be at
+factory defaults (NMEA on, UBX off) even after USB's been configured.
+Verify first:
 
 ```
 stty -F /dev/ttyAMA0 <baud> raw -echo
 cat /dev/ttyAMA0        # Ctrl-C to stop
 ```
-Try common bauds (9600, 19200, 38400, 57600, 115200) until you get clean,
-complete `$GNGGA`/`$GNRMC`/... text - that confirms both the wiring
-(TX/RX/GND all correctly connected) and the real baud in one step, since a
-wiring fault or wrong baud both just produce silence or garbage.
+Try common bauds (9600, 19200, 38400, 57600, 115200) until you see clean
+`$GNGGA`/`$GNRMC`/... text.
 
-Install `ubxtool` if it's not already there (Raspberry Pi OS, via `gpsd`'s
-client tools):
 ```
 sudo apt update
 sudo apt install -y gpsd gpsd-clients python3-gps
-sudo systemctl disable --now gpsd.socket gpsd   # stop it grabbing the port itself
+sudo systemctl disable --now gpsd.socket gpsd   # stop it grabbing the port
 ```
 
-Then, at the baud you just confirmed, enable `UBX-NAV-PVT` and disable NMEA
-on whichever UART number your wiring reaches (try `UART1` first; if
-nothing changes, undo it and try `UART2` instead - see "Verifying the
-connection" below for how to tell which one actually took effect):
+At the confirmed baud, enable `UBX-NAV-PVT` and disable NMEA (try `UART1`
+first, `UART2` if nothing changes):
 ```
 ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-MSGOUT-UBX_NAV_PVT_UART1,1,7
 ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-UART1OUTPROT-NMEA,0,7
-ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-RATE-MEAS,1000,7   # 1Hz; raise if you want faster fixes
+ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-RATE-MEAS,1000,7   # 1Hz
 ```
-The trailing `,7` is a layer bitmask (`RAM=1, BBR=2, Flash=4`) - `7` writes
-to all three at once, so the change takes effect immediately *and*
-survives a power cycle. Omit NMEA's disable step if you'd rather leave it
-on - the app's own UBX parser isn't confused by NMEA sharing the line (it
-scans for UBX's own sync bytes and reads each frame's declared length, so
-interleaved NMEA text is simply skipped over), it's purely about not
-wasting bandwidth on unneeded chatter.
+`,7` is a layer bitmask (`RAM=1, BBR=2, Flash=4`) - `7` writes to all
+three, so the change is immediate and survives a power cycle. NMEA doesn't
+need to be disabled - the app's UBX parser scans for UBX sync bytes and
+skips interleaved NMEA text - disabling it just saves bandwidth.
 
 ### Verifying the connection
 
-Raw serial first - after the NMEA-disable step above, expect quiet gaps
-with a short unreadable binary burst about once a second (the UBX-NAV-PVT
-frame), not readable text:
 ```
 stty -F /dev/ttyAMA0 115200 raw -echo
-cat /dev/ttyAMA0
+cat /dev/ttyAMA0        # expect quiet gaps + a short binary burst ~1/sec
 ```
-
-Then confirm this app itself decodes it - this is the check that actually
-matters, since raw bytes "looking" correct doesn't guarantee this app's
-parser agrees:
+Then confirm this app itself decodes it (the check that actually matters):
 ```
 GPS_PORT=/dev/ttyAMA0 GPS_BAUD=115200 npm run boat
 ```
-Watch for `[gps]` lines with real `fixType`/`numSV` values (see `GPS_LOG`
-in "Tuning knobs" below if you want to silence this once confirmed
-working). If you enabled `UBX-NAV-PVT` on the wrong UART number, this
-simply stays silent - undo that one (`CFG-MSGOUT-UBX_NAV_PVT_UARTx,0,7`)
-and try the other.
+Watch for `[gps]` lines with real `fixType`/`numSV` (see `GPS_LOG` in
+"Tuning knobs"). Silence means `UBX-NAV-PVT` went to the wrong UART number
+- undo (`CFG-MSGOUT-UBX_NAV_PVT_UARTx,0,7`) and try the other.
 
-The simpleRTK2B LR's onboard radio (in the board's XBee socket - see
-"Wiring notes" above) is a **separate concern** — that's normally used for
-RTCM3 correction data between your RTK base and this rover, not for the
-position telemetry this app sends. Nothing here touches that link. "LR"
-here is ArduSimple's own kit name ("Long Range," ~10km) for this radio,
-not a Digi product name - the underlying chip, confirmed directly off the
-module's own label, is a **Digi XBee SX** (Model: XBSX, FCC ID
-`MCQ-XBSX`); their step-up "XLR" kit uses a Digi XBee PRO SX instead, for
-longer range.
+The simpleRTK2B LR's onboard radio (in the board's XBee socket) is a
+**separate concern** - it carries RTCM3 correction data between RTK base
+and this rover, not position telemetry. "LR" is ArduSimple's own kit name
+("Long Range," ~10km), not a Digi product name - confirmed off the
+module's label, the chip is a **Digi XBee SX** (Model XBSX, FCC ID
+`MCQ-XBSX`); the step-up "XLR" kit uses a Digi XBee PRO SX for longer
+range.
 
 ### RTK base GPS: enabling RTCM3 output (one-time)
 
-Don't assume a board "ships ready to go" actually has every RTCM3 message
-enabled - `TMODE3` (fixed/survey-in position mode, set from this app's own
-`npm run rtk`/`npm run basertk` admin dashboard - see "RTK-only mode"/"Base
-+ RTK combined" below; plain `npm run base` doesn't have this control at
-all) and RTCM3 *output* are two entirely separate config groups
-on the receiver. Setting a fixed position only controls what position gets
-*used* in any RTCM3 messages the receiver happens to send - it doesn't turn
-sending them on. Some kits ship with only `1005` (station coordinates)
-enabled and no actual observation messages, which looks identical to "it's
-locked and working" on this app's own dashboard while the rover receives
-nothing usable.
+`TMODE3` (fixed/survey-in position, set from this app's `npm run
+rtk`/`basertk` dashboard) and RTCM3 *output* are separate config groups -
+setting a fixed position doesn't turn sending RTCM on. Some kits ship with
+only `1005` enabled and no observation messages, which looks like "locked
+and working" on the dashboard while the rover receives nothing usable.
 
-Check/enable directly on the base, on whichever UART its correction radio
-is wired to (`UART2` on the simpleRTK2B LR - its onboard radio (a Digi
-XBee SX, see the note just above this section) is wired internally to
-UART2 on the PCB, not something you'd have jumpered yourself, but it's the
-same interface as far as this config goes):
+Check/enable on the base's correction-radio UART (`UART2` on the
+simpleRTK2B LR - its onboard XBee SX is wired internally to UART2, not
+something you'd jumper yourself):
+
+| Message | Content |
+|---|---|
+| `1005` | Station coordinates (depends on the fixed position) |
+| `1077`/`1087`/`1097`/`1127` | MSM7 observations: GPS/GLONASS/Galileo/BeiDou |
+| `1230` | GLONASS code-phase biases (needed alongside `1087`) |
+
 ```
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1005_UART2,1,7
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1077_UART2,1,7
@@ -173,141 +132,96 @@ ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1097_UAR
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1127_UART2,1,7
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1230_UART2,1,7
 ```
-`1005` is the station coordinates message (the one message that actually
-depends on the fixed position); `1077`/`1087`/`1097`/`1127` are the MSM7
-observation messages (GPS/GLONASS/Galileo/BeiDou respectively - the actual
-correction content) and `1230` is GLONASS's code-phase biases, needed
-alongside `1087` for a healthy GLONASS solution. Only enable the
-constellations you're actually tracking - an unused one being off isn't a
-problem (see the rover's own `[rtcm]` logging below for how to tell "not
-used because not needed" apart from a real failure). The trailing `,7`
-saves to flash immediately, same convention as the NAV-PVT setup above; a
-bare `,1` writes to RAM only, useful for testing a change before
-committing it.
+Only enable constellations you're actually tracking. `,7` saves to flash
+immediately (bare `,1` is RAM-only, for testing before committing).
 
-If you want visibility into whether corrections are actually arriving on
-the rover side once this is set, enable `UBX-RXM-RTCM` as an output on the
-same UART/baud this app already reads (`GPS_PORT`/`GPS_BAUD`) and set
-`GPS_LOG_RTCM=1` (off by default - see "Tuning knobs" below). Message
-counts and CRC failures are still tracked internally regardless of that
-flag (visible via the rover's own `GET /api/stats`) - the console `[rtcm]`
-line is just the quickest way to watch it live.
+For visibility into corrections arriving rover-side, enable `UBX-RXM-RTCM`
+on the rover's own GPS UART and set `GPS_LOG_RTCM=1` (off by default):
 ```
 ubxtool -f /dev/ttyAMA0 -s <baud> -P 27.11 -z CFG-MSGOUT-UBX_RXM_RTCM_UART1,1,7
 ```
-Watch for `[rtcm]` lines (`type=1077 station=0 used=used`, etc.) alongside
-the `[gps]` ones - `type` is the RTCM3 message type, `used=not used` on its
-own is normal (plenty of message types are legitimately ignored, e.g. a
-constellation you're not tracking), but `CRC-FAILED` means a correction
-actually arrived corrupted and got dropped. Seeing nothing here doesn't by
-itself mean no corrections are arriving - only that this message hasn't
-been turned on yet to report it.
+Watch `[rtcm]` lines (`type=1077 station=0 used=used`) - `used=not used` on
+its own is normal (unused constellations), `CRC-FAILED` means a correction
+arrived corrupted. Message counts/CRC failures are always tracked
+internally (`GET /api/stats`) regardless of this flag.
 
 ### RTK base GPS: enabling the survey-in status card (optional)
 
-If `npm run rtk`/`npm run basertk`'s "Base GPS survey-in" card (see "Admin
-dashboard" below) is showing "no base GPS, or not polled yet" even with
-`GPS_PORT` set and TMODE3 actually configured for survey-in, it's usually
-because `UBX-NAV-SVIN` isn't enabled as an output message - unlike
-`UBX-CFG-TMODE3` (which this app polls for itself), NAV-SVIN only streams
-if the receiver's been told to send it:
+If the "Base GPS survey-in" card shows "no base GPS, or not polled yet"
+even with `GPS_PORT` set and TMODE3 configured for survey-in,
+`UBX-NAV-SVIN` likely isn't enabled as an output:
 ```
 ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-MSGOUT-UBX_NAV_SVIN_UART1,1,7
 ```
-Configuring TMODE3 itself for survey-in (as opposed to just reading it) is
-a separate one-time step, typically done once via u-center when the base
-station is first set up at a fixed location - see u-blox's own ZED-F9P
-integration manual for the full survey-in setup (minimum duration,
-required accuracy, etc.), since that part is receiver setup rather than
-anything this app configures.
+Configuring TMODE3 itself for survey-in (vs. just reading it) is a
+separate one-time step, typically done via u-center at setup - see
+u-blox's ZED-F9P integration manual for survey-in parameters.
 
 ## Radio configuration
 
 Pair every radio (boat + base) on the same netid/frequency/baud, in
-transparent-serial mode. `RADIO_BAUD` defaults to **115200**, not the
-radio's factory default (9600 for XBee, 57600 for RFD900x/SiK) - at fleet
-sizes beyond a couple boats, the serial link between the base station and
-its own radio becomes the bottleneck (every boat's frames funnel through
-that one port), well below the radio's actual RF capacity. Before running
-with this default, reconfigure **every** radio's serial baud to 115200 via
-XCTU (XBee) or RFD Modem Tools/Mission Planner (RFD900x) - a mismatch
-between this setting and what the radio's actually set to just means the
-port opens but nothing decodes. Also confirm all radios share the same
-Network ID (XBee `ID`, via XCTU).
+transparent-serial mode.
 
-If you're running only 1-2 boats, the extra baud doesn't buy you much and
-you can leave everything at factory defaults - just set `RADIO_BAUD` to
-match (9600 for XBee, 57600 for RFD900x). Higher baud = faster frame
-delivery but shorter range/reliability at a given power — this is a
-real-world tuning step you'll need to do on the water. **Antenna height
-matters a lot for going over water at >2mi; get both ends as high as
-practical.**
+| | Factory default | This app's default |
+|---|---|---|
+| XBee baud | 9600 | **115200** |
+| RFD900x/SiK baud | 57600 | **115200** |
+
+At fleet sizes beyond a couple boats, the base↔radio serial link (every
+boat's frames funnel through one port) becomes the bottleneck well below
+the radio's actual RF capacity - hence 115200. Reconfigure **every**
+radio's serial baud via XCTU (XBee) or RFD Modem Tools/Mission Planner
+(RFD900x) before running with this default; a mismatch just means the
+port opens but nothing decodes. Also confirm all radios share the same
+Network ID (XBee `ID`).
+
+Running only 1-2 boats? Leave everything at factory defaults and set
+`RADIO_BAUD` to match. Higher baud = faster delivery but shorter
+range/reliability at a given power - tune on the water. **Antenna height
+matters a lot for going over water at >2mi.**
 
 ### Configuring XBee radios (xbee_configure_at.py)
 
-For XBee-PRO S3B (900HP / DigiMesh) radios, `xbee_configure_at.py` (repo
-root) automates the above instead of using XCTU by hand - DigiMesh delivery
-mode (`TO` bits 6:7 = `0xC0`) with routing/relaying disabled on every node
-(`CE` bit 1, since this fleet is single-hop only - no boat ever relays
-another's signal), and matching Network ID/DH-DL/HP/MT and `BD`. Every
-command name/value it uses comes straight from Digi's own XBee-PRO
-900HP/XSC S3/S3B User Guide - **not** `MM`/`CH`/`CD`, which an earlier
-version of this script guessed at by analogy with other XBee product lines
-and don't actually exist on this module (confirmed live: both return
-`ERROR`). There's no base-vs-rover config split either - this module has no
-role-selecting command, so every radio (committee/base and every boat) gets
-the identical config. It speaks AT Command Mode directly (plain `pyserial`,
-the same "+++", then "ATxx<value>", then "ATWR" dialect any serial terminal
-speaks) - the radio never leaves the AT/transparent mode race-tracker
-itself needs (see "Pair every radio... in transparent-serial mode" above),
-so there's no mode to flip before or after running it.
-
-Point-to-Multipoint (`TO=0x40`, lower overhead in principle - no network
-header) was tried as the default twice. The first attempt appeared to
-produce no traffic at all, which turned out to be an unrelated script bug
-(a baud-rate write's response went unchecked after the post-baud-change
-reconnect, so a radio whose `BD` didn't actually survive a reboot still
-reported success - see below). Once that was fixed and persistence was
-directly confirmed on both radios - every parameter, including `TO=0x40`
-itself, verified to survive an actual reset - traffic still failed between
-two correctly, persistently P2MP-configured radios: a real, reproducible
-incompatibility on this hardware, not a config or persistence issue.
-DigiMesh is the confirmed-working delivery method, hence the default. One
-lead for revisiting P2MP later: DigiMesh's own broadcasts already reuse the
-Directed-Broadcast/Repeater wire format (`0x80`), not unique DigiMesh
-framing - real mesh-routing framing only applies to unicasts - and this
-app's traffic is 100% broadcast (`DH=0`/`DL=0xFFFF`), so the "working"
-DigiMesh config was never actually exercising DigiMesh-specific behavior
-for this app's own traffic pattern in the first place.
-
-After writing everything to non-volatile memory, a real (non-dry-run) run
-does a soft reset (`FR`) and reconnects to re-check every parameter against
-`CONFIG` again - proof the config actually survives a reboot, not just that
-it reads back correctly within the same still-running session.
+For XBee-PRO S3B (900HP/XSC) radios, `xbee_configure_at.py` (repo root)
+automates the above instead of using XCTU by hand: DigiMesh delivery mode,
+routing/relaying disabled on every node (single-hop fleet only), matching
+Network ID/DH-DL/HP/MT/BD. Every command/value comes from Digi's XBee-PRO
+900HP/XSC S3/S3B User Guide - not `MM`/`CH`/`CD`, which don't exist on
+this module (confirmed live: both `ERROR`). No base-vs-rover split - every
+radio gets identical config. Speaks plain AT Command Mode over `pyserial`
+("+++", "ATxx<value>", "ATWR") - never leaves transparent mode.
 
 ```
 pip install pyserial
 
-python3 xbee_configure_at.py --port /dev/ttyUSB0             # every radio, base or boat
-python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run    # read current config, change nothing
+python3 xbee_configure_at.py --port /dev/ttyUSB0             # every radio
+python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run    # read only
 ```
 
-Connects at `--connect-baud` (the radio's CURRENT speed, default 9600 -
-the XBee factory default; pass the radio's actual current baud if it's
-already been reconfigured) and, once `BD` is changed, automatically
-reconnects at `--target-baud` (115200 by default, matching `RADIO_BAUD`
-above, applied last since it changes how the script itself talks to the
-radio) to read the config back. Run once per radio; the config values
-themselves (network ID, DH/DL, etc.) live in the `CONFIG` dict at the top
-of the script, not as flags - edit them there if your network needs
-different values. Channel selection (`CM`, a 64-bit channel mask, not a
-simple index) isn't touched by this script at all - set it by hand first
-if your network needs to avoid specific frequencies. Only one process can
-hold a serial port at
-a time, so stop any running `npm run base`/`npm run boat`/`npm run
-radio-test` (or XCTU, another terminal session, etc.) using the same port
-before running this script, or it fails outright with a "could not
-exclusively lock port" error.
+| Flag | Default | Notes |
+|---|---|---|
+| `--connect-baud` | 9600 (factory) | The radio's CURRENT speed - pass its actual current baud if already reconfigured |
+| `--target-baud` | 115200 | Applied last (changes how the script itself talks to the radio), matches `RADIO_BAUD` |
+| `--mode` | `p2mp` | `p2mp` / `digimesh` / `digimesh-routing` |
+
+Config values (network ID, DH/DL, etc.) live in the `CONFIG` dict at the
+top of the script, not as flags. Channel selection (`CM`) isn't touched at
+all - set by hand first if avoiding specific frequencies. Only one process
+can hold a serial port - stop any running `npm run base`/`boat`/`radio-test`
+or XCTU on that port first.
+
+**Mode history**: DigiMesh (`TO=0xC0`) is confirmed-working and was the
+long-time default. Point-to-Multipoint (`TO=0x40`, lower overhead, no
+network header) failed traffic between two persistently-verified P2MP
+radios on this hardware - a real incompatibility, not config/persistence.
+As of this pass **P2MP is the new default** based on further review (one
+open lead: DigiMesh's own broadcasts already reuse Directed-Broadcast wire
+framing, not unique DigiMesh framing, since this app's traffic is 100%
+broadcast - so the earlier "working" DigiMesh test never actually
+exercised mesh-routing behavior). Fall back with `--mode digimesh` if P2MP
+doesn't work on your hardware. A real (non-dry-run) run soft-resets (`FR`)
+and reconnects to re-verify every parameter survives a reboot, not just
+reads back correctly mid-session.
 
 ### Bench-testing the radios
 
@@ -316,76 +230,57 @@ RADIO_TEST_MODE=send   RADIO_PORT=/dev/cu.usbserial-A npm run radio-test
 RADIO_TEST_MODE=listen RADIO_PORT=/dev/cu.usbserial-B npm run radio-test
 ```
 
-`src/radioTest.js` exercises the real radio link directly - no GPS, no
-Redis, no simulated anything - using the exact same `RadioLink`/`protocol.js`
-code `boatAgent.js`/`baseStation.js` use in production, so a clean result
-here is a real signal about the actual RF link (framing, checksum
-integrity, range), not just "can bytes get through at all." Run one
-instance per radio: `ls /dev/cu.*` before/after plugging in each one to
-find its device path (on macOS; use whatever your OS calls serial devices).
-`RADIO_BAUD` must match what's actually configured on both radios (see
-"Radio configuration" above) - and for XBee, confirm both share the same
-Network ID (`ATID`) via XCTU first, or the listener will just see nothing.
+`src/radioTest.js` exercises the real radio link directly (no GPS, Redis,
+or simulation) using the exact same `RadioLink`/`protocol.js` code
+production uses. One instance per radio (`ls /dev/cu.*` before/after
+plugging in to find device paths on macOS). `RADIO_BAUD` and Network ID
+(`ATID`) must match on both.
 
-The sender transmits one frame every `RADIO_TEST_INTERVAL_MS` (default
-500ms) with a sequence number piggybacked on the frame's timestamp field
-(a test-only convention, not a real GPS time). The listener logs each
-received frame and prints a running summary every 10s - received count,
-estimated missed count, and loss %. Start with both radios close together
-to confirm basic connectivity, then physically separate them to find where
-the link actually starts to degrade - that's the number that matters for
-real racing distance.
+Sender transmits one frame every `RADIO_TEST_INTERVAL_MS` (default 500ms)
+with a sequence number in the timestamp field. Listener logs received
+frames and prints a running summary every 10s (received count, estimated
+missed, loss %). Start close together to confirm connectivity, then
+separate to find where the link degrades.
 
 ### Congestion-testing the radio
 
-`npm run fleet`'s `SIMULATE=1` link is a UDP stand-in with no real airtime
-limit, so it can't show you real congestion - and running `FLEET_SIZE`
-real boat processes with `SIMULATE_GPS=1` (real radio, fake GPS) needs one
-real radio *per boat*, since only one process can ever hold a given serial
-port. If you only have the one boat-side radio a normal setup actually
-has, `src/radioCongestionTest.js` is the alternative: one process, one
-real radio, transmitting the *combined* frame traffic a whole simulated
-fleet sailing at speed would really put on the air - same
-`protocol.js`/`RadioLink` frames boatAgent.js sends, at the same per-boat
-cadence its own `TX_DISTANCE_M` gate would trigger at that speed, just
-computed directly instead of coming from a live GPS track.
+`npm run fleet`'s `SIMULATE=1` link is UDP with no airtime limit, so it
+can't show real congestion; running real `FLEET_SIZE` boats needs one real
+radio *per boat*. `src/radioCongestionTest.js` instead runs one process,
+one real radio, transmitting the *combined* frame traffic a whole
+simulated fleet at speed would put on the air - same
+`protocol.js`/`RadioLink` frames, same per-boat `TX_DISTANCE_M` cadence,
+computed directly rather than from a live GPS track.
 
 ```
 npm run base                                                   # real base, real radio - NOT SIMULATE=1
-BOAT_COUNT=30 RADIO_PORT=/dev/cu.usbserial-A npm run radio-congestion   # your one boat-side radio
+BOAT_COUNT=30 RADIO_PORT=/dev/cu.usbserial-A npm run radio-congestion
 ```
 
-Watch the base's own fleet dashboard (per-boat "last seen"/frame counts)
-and its `[radio] link quality` log line (sync-error count) as `BOAT_COUNT`
-climbs - that's the actual congestion signal; this script only generates
-realistic load; it doesn't judge the result. `CONGESTION_SPEED_KN`
-(default 6) sets the assumed boat speed that drives the per-boat send
-rate. This is a real test of airtime/throughput load and the base radio's
-own receive pipeline - it is **not** a test of real multi-transmitter RF
-collisions (hidden-node interference, simultaneous keying), since every
-frame still leaves the one real antenna you have; that would need one real
-radio per virtual boat.
+Watch the base's fleet dashboard (last-seen/frame counts) and its
+`[radio] link quality` log line (sync errors) as `BOAT_COUNT` climbs.
+`CONGESTION_SPEED_KN` (default 6) sets the assumed speed driving send
+rate. This tests airtime/throughput load on the base's real receive
+pipeline - it is **not** a test of real multi-transmitter RF collisions
+(every frame still leaves one real antenna); that needs one real radio per
+virtual boat.
 
 ## Running
 
-Six modes, each its own `npm run` script - pick whichever matches how a
-given machine is actually being used:
+Six modes, each its own `npm run` script:
 
 | Mode | Command | Runs on | What it does |
 |---|---|---|---|
-| Boat | `npm run boat` | Each boat's own Pi | Reads that boat's GPS, transmits position over the telemetry radio, logs to SD, serves that boat's own rover dashboard |
-| Base | `npm run base` | Shore/committee machine | Receives every boat's telemetry, tracks the course/fleet/laps, reports to RegattaUp, serves the fleet dashboard. Also reads an optional GPS of its own for planting course marks at a real surveyed position (see "Editing mark positions from the map" below) - but not RTK correction control |
-| RTK-only | `npm run rtk` | A machine with just the RTK correction-source GPS attached | Monitors/configures that GPS's TMODE3/survey-in state and serves a small dedicated dashboard for it - no telemetry radio, course, fleet, or RegattaUp reporting at all |
-| Base + RTK combined | `npm run basertk` | A single machine acting as both the telemetry base AND the RTK correction source | Everything `base` does, plus RTK-only's TMODE3/survey-in controls, in one process/dashboard |
-| Mark-set | `npm run markset` | A handheld/backpack RTK unit carried between marks | Regatta/course/Redis, an always-on GPS (like a boat's, not gated on `GPS_PORT`), and a dashboard that opens straight to the course map for manually setting any mark's position - no telemetry radio, fleet tracking, uploads, or RegattaUp webhooks (all disabled outright, not just optional) - see "Mark-set mode" below |
-| Mark | `npm run mark` | A rover permanently attached to one course mark | Identical process to Mark-set - the only difference is a mark **assignment** (`MARK_NAME`, or set live from the map), which swaps the map's manual "Set" button list for automatic Redis updates as this device's own GPS moves - see "Mark mode" below |
+| Boat | `npm run boat` | Each boat's Pi | Reads GPS, transmits over radio, logs to SD, serves rover dashboard |
+| Base | `npm run base` | Shore/committee machine | Receives telemetry, tracks course/fleet/laps, reports to RegattaUp, serves fleet dashboard. Optional own GPS for planting course marks at a surveyed position - not RTK control |
+| RTK-only | `npm run rtk` | Machine with just the RTK correction-source GPS | Monitors/configures TMODE3/survey-in, small dedicated dashboard - no telemetry, course, fleet, or RegattaUp |
+| Base + RTK combined | `npm run basertk` | One machine, both roles | Everything `base` does + RTK-only's TMODE3/survey-in controls, one process/dashboard |
+| Mark-set | `npm run markset` | Handheld/backpack RTK unit | Regatta/course/Redis, always-on GPS, dashboard opens to course map for manually setting mark positions - no radio/fleet/uploads/webhooks |
+| Mark | `npm run mark` | Rover attached to one mark | Identical to Mark-set, plus a mark **assignment** (`MARK_NAME` or set from the map) that auto-posts this device's GPS as that mark moves |
 
-Base and RTK-only are two ends of a deliberate split: run them together on
-one machine (`basertk`) when that's simplest, or split the RTK correction
-source onto its own separate machine/process (plain `base` + separate
-`rtk`) when the telemetry base and the correction-source GPS aren't
-physically the same box. See "RTK-only mode" and "Base + RTK combined"
-below for the split/combined cases in detail.
+Run `base` + `rtk` together on one machine (`basertk`) when simplest, or
+split them (plain `base` + separate `rtk`) when the telemetry base and
+correction GPS aren't the same box - see the mode sections below.
 
 Boat (Pi Zero 2 W):
 ```
@@ -393,383 +288,209 @@ cd race-tracker
 npm install
 RADIO_PORT=/dev/ttyUSB0 npm run boat
 ```
-(GPS defaults to the Pi's hardware UART, `/dev/ttyAMA0` - add
-`GPS_PORT=/dev/ttyACM0` if you've wired the simpleRTK2B LR's own USB port
-instead, see "Wiring notes" above.)
+(GPS defaults to `/dev/ttyAMA0`; add `GPS_PORT=/dev/ttyACM0` for the
+simpleRTK2B's own USB port instead.)
 
-`BOAT_ID` doesn't actually have to be set by hand at all - the first time
-this app runs with no `BOAT_ID` in the environment, it generates a random
-5-character id (letters and digits, e.g. `TK10X` - see `src/boatIdFile.js`),
-writes it to `race-config/boat_id.txt`, and reuses that exact
-same id on every later run from that device. An explicit `BOAT_ID` (set
-here - it must be exactly 5 characters, the wire protocol's boatId field is
-a fixed-width byte slot - or by `npm run fleet` for every boat it spawns)
-always overrides this outright and never touches that file. This is mainly
-useful for a fleet of
-physical units that would otherwise all need `BOAT_ID` flashed onto them
-by hand one at a time - each one just claims its own id the first time it
-boots instead.
+`BOAT_ID` doesn't need to be set by hand: with none in the environment,
+the app generates a random 5-character id, writes it to
+`race-config/boat_id.txt`, and reuses it on every later run from that
+device. An explicit `BOAT_ID` (exactly 5 characters - fixed-width wire
+protocol field) always overrides this and never touches the file - useful
+for a fleet that would otherwise need ids flashed by hand.
 
 Base station (another Pi, or a laptop with a USB radio):
 ```
 RADIO_PORT=/dev/ttyUSB0 npm run base
 ```
-
-On macOS, device paths look different - a USB-to-serial radio adapter
-(FTDI/CP210x-style) shows up as `/dev/cu.usbserial-XXXX`, and a GPS
-module's native USB (like the simpleRTK2B's own CDC-ACM port) as
-`/dev/cu.usbmodemXXXX`, e.g.:
+On macOS: a USB-to-serial radio adapter shows up as
+`/dev/cu.usbserial-XXXX`, a GPS module's native USB as
+`/dev/cu.usbmodemXXXX`:
 ```
 RADIO_PORT=/dev/cu.usbserial-0001 GPS_PORT=/dev/cu.usbmodem1101 npm run base
 ```
-The exact suffix isn't fixed - it depends on the specific adapter and
-sometimes which USB port it's plugged into. Run `ls /dev/cu.*` before and
-after plugging in each device to see which path just appeared.
+Run `ls /dev/cu.*` before/after plugging in each device to find its path.
 
 ### Auto-start on boot (systemd)
 
-One script installs any of the six modes as a systemd service (Linux only -
-a Pi, or a Linux laptop; on macOS just run the npm script by hand, or use
-your own launchd agent):
 ```
 sudo ./install-service.sh MODE [EXTRA_ARG]
 ```
-`MODE` is one of `boat base rtk basertk markset mark` - matches the `npm
-run` script names exactly (see "Running" above). Generates and installs
-that mode's own systemd unit (named `boat-agent`/`base-station` for those
-two, `rtk-station`/`basertk-station`/`markset-station`/`mark-station` for
-the rest - `systemd/boat-agent.service`/`systemd/base-station.service` are
-kept as static reference examples of what gets produced, not something to
-copy by hand), enables it, and starts it.
+`MODE` is one of `boat base rtk basertk markset mark` (Linux only). Named
+units: `boat-agent`/`base-station` for those two,
+`rtk-station`/`basertk-station`/`markset-station`/`mark-station` for the
+rest.
 
-`EXTRA_ARG` is optional and mode-specific - omit it and that mode resolves
-its own default at startup, exactly as running the npm script by hand
-would:
-- **boat**: `BOAT_ID` - omit it and this Pi generates and persists its own
-  id on first run; pass a plain number (e.g. `7`) to assign one
-  deliberately instead, zero-padded to the wire protocol's fixed
-  5-character width for you (`7` becomes `BOAT_ID=00007` in the unit).
-- **base, basertk**: `REGATTAUP_REGATTA_ID` - omit it and that mode picks
-  up `regatta-id.txt` if one's already persisted, otherwise auto-selects
-  whichever active/future regatta is closest to today (see "Selecting a
-  regatta at startup" below); pass one to pin a specific regatta
-  deliberately instead. Either way it's exactly as overridable afterward as
-  any other pick, from the admin dashboard's own Regatta card.
-- **mark**: `MARK_NAME` - omit it to start unassigned and pick one from the
-  map afterward (see "Mark mode" above); pass one of the real mark names to
-  assign it at install time instead.
-- **rtk, markset**: no extra argument.
+| Mode | `EXTRA_ARG` |
+|---|---|
+| `boat` | `BOAT_ID` - omit to auto-generate/persist; a plain number (`7`) zero-pads to `00007` |
+| `base`, `basertk` | `REGATTAUP_REGATTA_ID` - omit to use `regatta-id.txt` or auto-pick the nearest active/future regatta |
+| `mark` | `MARK_NAME` - omit to start unassigned |
+| `rtk`, `markset` | none |
 
-Also sets `GPS_LOG=0` for every mode, unlike the interactive `npm run`
-default - under systemd stdout isn't a TTY, so the console line's
-in-place-overwrite never applies and every GPS fix would otherwise become
-its own permanent journal entry. Nothing else is overridden - `config.js`'s
-own defaults (see "Tuning knobs" below) are correct for a normal install;
-edit the generated unit directly if a given machine genuinely needs
-`GPS_PORT`/`RADIO_PORT`/etc. overridden, or `GPS_LOG` back on for a one-off
-diagnostic session. Safe to re-run any time `EXTRA_ARG` needs to change -
-it regenerates the unit and restarts the service to pick it up.
+Also forces `GPS_LOG=0` for every mode (stdout isn't a TTY under systemd,
+so in-place overwrite doesn't apply and every fix would become a permanent
+journal entry). Nothing else is overridden - edit the generated unit
+directly for other per-machine overrides. Safe to re-run any time
+`EXTRA_ARG` changes.
 
-Four more scripts, each also taking `MODE` as their first argument, cover
-day-to-day control without needing to remember the underlying unit name:
-- `./service-logs.sh MODE` (shorthand for `journalctl -u <unit> -f`, extra
-  args pass through) follows the logs.
-- `sudo ./service-restart.sh MODE` (shorthand for `sudo systemctl restart
-  <unit>`, then prints status) restarts it - `systemctl status <unit>`
-  works as usual too.
-- `sudo ./service-stop.sh MODE` and `sudo ./service-start.sh MODE`
-  stop/start it without touching whether it auto-starts on boot.
-- `sudo ./service-autostart.sh MODE [on|off]` (no `on`/`off` shows current
-  status) controls that separately - `off` stops it from coming back on the
-  next boot without stopping it right now, mirroring `systemctl
-  enable|disable <unit>`.
+| Script | Does |
+|---|---|
+| `./service-logs.sh MODE` | Follows logs (`journalctl -u <unit> -f`) |
+| `sudo ./service-restart.sh MODE` | Restarts, prints status |
+| `sudo ./service-stop.sh MODE` / `service-start.sh MODE` | Stop/start without touching autostart |
+| `sudo ./service-autostart.sh MODE [on\|off]` | Controls autostart-on-boot separately; no arg shows status |
 
 ### RTK-only mode
 
-For a setup where the RTK correction source (the ArduSimpleRTK/ZED-F9P
-board and its TMODE3/survey-in state) needs its own dashboard on its own
-machine/process, separate from telemetry/course/regatta concerns entirely -
-e.g. the correction-radio Pi sitting apart from whatever runs `npm run
-base`:
 ```
 GPS_PORT=/dev/ttyACM0 npm run rtk
 ```
-This is `src/rtkStation.js` - a much smaller entry point than
-`baseStation.js` that only opens the base GPS and serves a dashboard with
-the Base GPS / Base GPS survey-in / manual-fixed-position cards (same
-underlying code as the ones `npm run basertk`'s dashboard shows - see
-`src/baseGps.js`/`src/rtkAdminCards.js`, not a second copy of the logic; NOT
-shown on plain `npm run base`, which has no TMODE3/survey-in controls at
-all - see "Base + RTK combined" below). No telemetry radio, no course
-marks, no fleet table, no Redis, no RegattaUp reporting - none of that is
-opened or connected to at all in this mode. Unlike plain `npm run base`
-(which only opens its GPS once `GPS_PORT` is *explicitly* set, since most
-base stations have no GPS hardware attached), this mode always opens one -
-falling back to the same `GPS_PORT`/`GPS_BAUD` defaults a boat's own GPS
-uses if not overridden - since monitoring/configuring that GPS is this
-mode's entire job. Uses the same `ADMIN_PORT` (default `8092`) as the other
-dashboards; run only one mode per machine unless `ADMIN_PORT` is set
-differently for each. Has its own `GET /config` page too (same
-fully-resolved-config view `npm run print-config`/the other dashboards
-show, see "Tuning knobs" below - filtered down to just the settings this
-mode actually reads, GPS and admin-port, not the full unfiltered list).
+`src/rtkStation.js` - a small entry point that only opens the base GPS and
+serves Base GPS / Base GPS survey-in / manual-fixed-position cards (same
+underlying code `basertk` uses, not a second copy - see
+`src/baseGps.js`/`src/rtkAdminCards.js`). No radio, course, fleet, Redis,
+or RegattaUp. Unlike plain `base` (GPS only opens if `GPS_PORT` is
+explicit), this mode always opens one, falling back to the boat GPS
+defaults. Same `ADMIN_PORT` (8092) as other dashboards - run one mode per
+machine unless overridden. Has its own filtered `GET /config`.
 
 ### Base + RTK combined
 
-For a single machine acting as both the telemetry base AND the RTK
-correction source - the common case where there's no reason to split them
-onto separate hardware:
 ```
 RADIO_PORT=/dev/ttyUSB0 GPS_PORT=/dev/ttyACM0 npm run basertk
 ```
-This is `src/baseRtkStation.js` - a thin wrapper, not a second copy of
-`baseStation.js`'s ~2000 lines: it just sets an internal flag
-(`RTK_CONTROLS_ENABLED=1`) that `baseStation.js` already checks, then
-requires it. The result is exactly `npm run base`'s full dashboard (fleet,
-course, regatta, uploads, everything) with the RTK-only mode's TMODE3/
-survey-in/manual-fixed-position cards and their `/api/gps/survey/...`
-routes additionally wired in - the same shared code `npm run rtk` uses (see
-"RTK-only mode" above), not a separate implementation. Its `GET /config`
-page shows the union of what plain `base` and `rtk` each show.
+`src/baseRtkStation.js` - a thin wrapper (not a second `baseStation.js`)
+that sets `RTK_CONTROLS_ENABLED=1` before requiring it: `base`'s full
+dashboard plus RTK-only's TMODE3/survey-in cards and
+`/api/gps/survey/...` routes. `GET /config` shows the union of both.
 
-Plain `npm run base` (no `RTK_CONTROLS_ENABLED`) still opens `GPS_PORT` when
-set, but only for the ordinary "Base GPS" fix card (the map's "plant a mark
-at my real position" feature, see "Editing mark positions from the map"
-below) - it has no TMODE3/survey-in cards, and its `/api/gps/survey/mode`
-and `/api/gps/save-config` routes aren't registered at all (a request to
-either 404s, the same as if the card were never there). Use `basertk`
-instead of plain `base` whenever this machine's own GPS is meant to
-actually control what RTCM gets broadcast to the fleet, not just supply a
-one-off position reading.
+Plain `base` still opens `GPS_PORT` when set, but only for the ordinary
+"Base GPS" fix card (map's "plant a mark at my position" feature) - no
+TMODE3/survey-in cards, and `/api/gps/survey/mode`/`/api/gps/save-config`
+404. Use `basertk` when this machine's GPS should actually control RTCM
+broadcast to the fleet, not just supply a one-off reading.
 
 ### Mark-set mode
 
-For physically walking (or sailing) the course with a real RTK GPS unit and
-setting each mark's position from wherever you're actually standing/
-sitting - the normal way a committee lays out marks before racing starts,
-or corrects one mid-event:
 ```
 GPS_PORT=/dev/ttyACM0 npm run markset
 ```
-This is `src/markSetStation.js` - the same thin-wrapper pattern as
-`basertk` (see above): it sets an internal flag (`MARKSET_MODE=1`) that
-`baseStation.js` already checks, then requires it. Two things change from
-plain `npm run base`, nothing else:
+`src/markSetStation.js` - same thin-wrapper pattern (`MARKSET_MODE=1`).
+Changes from plain `base`:
 
-- **The GPS is always on**, the same way a boat's own always is - not
-  gated on `GPS_PORT` being *explicitly* set, since reading this unit's own
-  live position is this mode's entire reason to run. Falls back to the same
-  `GPS_PORT`/`GPS_BAUD` defaults a boat uses if not overridden.
-- **The dashboard opens straight to the course map** (`GET /` renders the
-  same page `GET /map` does, instead of the fleet dashboard) - see "Editing
-  mark positions from the map" below for the actual workflow (toggle "edit
-  marks", walk/sail to a mark, use the "Recenter on base GPS" button and
-  readout to confirm you're standing on it, tap "Set"). `/map` itself still
-  works too, they're just aliases of each other under this mode. It also
-  shows a compact Redis-connected indicator and a regatta selector right in
-  the topbar - the only other place either would normally be reachable is
-  the fleet dashboard, which this mode doesn't have.
-- **The real telemetry radio is disabled outright**, real or simulated,
-  regardless of `RADIO_ENABLED`/`SIMULATE` - this mode never receives
-  telemetry or re-broadcasts marks over an actual radio link, so there's
-  nothing for it to do. A mark edited here still persists to Redis and is
-  picked up by base/basertk's own next regatta-select or restart, just not
-  live-broadcast from this process.
-- **Upload server, CSV/Redis fix-recording, local UDP broadcast, and all
-  four RegattaUp webhook queues are skipped entirely**, not just hidden
-  from the UI - with the radio off there's nothing for any of them to ever
-  receive or send, so this mode doesn't even start them (no unused sqlite
-  files, no idle retry timers).
+| Change | Detail |
+|---|---|
+| GPS always on | Not gated on `GPS_PORT` being explicit - falls back to boat GPS defaults |
+| Dashboard opens to course map | `GET /` renders `GET /map`; also shows Redis indicator + regatta selector in the topbar |
+| Radio disabled outright | Regardless of `RADIO_ENABLED`/`SIMULATE` - a mark edited here still persists to Redis, picked up on base/basertk's next regatta-select or restart |
+| Upload server, CSV/Redis fix recording, UDP broadcast, all 4 webhook queues | Skipped entirely, not just hidden |
 
 ### Mark mode
 
-For a rover permanently attached to one course mark (a mark buoy, most
-commonly) that should keep Redis's own copy of that mark's position
-current as it drifts, instead of an operator manually walking to it and
-clicking "Set":
 ```
 MARK_NAME=windwardBlack npm run mark
 ```
-This is `src/markStation.js` - functionally identical to `markset` (same
-`MARKSET_MODE=1` flag, same always-on GPS, same map-only dashboard, same
-disabled radio/webhooks/uploads - see "Mark-set mode" above for all of
-that), plus one addition: `MARK_MODE=1`, which makes `baseStation.js`
-prompt on the terminal for a mark assignment if nothing's assigned once
-startup settles (same shape as the existing regatta prompt - numbered
-list, type a number), rather than staying unassigned indefinitely the way
-plain `markset` is expected to. That prompt (and `MARK_NAME`, which skips
-it entirely) are genuinely the only things that distinguish "mark mode"
-from "markset mode" - which mark is currently **assigned** is runtime
-state either way, not a separate code path, so a `markset` instance can
-also be assigned a mark from its own map, same dropdown, same effect.
+`src/markStation.js` - identical to `markset` plus `MARK_MODE=1`, which
+prompts on the terminal for a mark assignment if unassigned once startup
+settles (same shape as the regatta prompt). That prompt (and `MARK_NAME`,
+which skips it) are the only things distinguishing "mark mode" from
+"markset mode" - the current **assignment** is runtime state either way,
+so a `markset` instance can also be assigned a mark from its own map.
 
-`MARK_NAME` is optional - omit it to be prompted for one (with a real
-terminal attached) or to start unassigned and pick one from the map
-afterward (no TTY - e.g. running as a systemd service, see "Auto-start on
-boot" below). Whichever way it's set - the env var, the terminal prompt, or
-the map's own "This rover represents" dropdown - the assignment is
-persisted to `race-config/mark-name.txt`, the exact same pattern
-`boat_id.txt`/`regatta-id.txt` already use (see `src/markNameFile.js`/
-`src/regattaIdFile.js`/`src/boatIdFile.js` - all three are one text file
-per identity, read at startup, rewritten whenever that identity changes),
-so a later restart with nothing else specified remembers it.
+`MARK_NAME` is optional - omit to be prompted (TTY) or start unassigned
+(no TTY, e.g. systemd). However set - env var, prompt, or the map's
+dropdown - it persists to `race-config/mark-name.txt` (same pattern as
+`boat_id.txt`/`regatta-id.txt`).
 
-Once assigned, two things change on the map:
-- In the usual list of "Set" buttons (the edit column's per-mark list),
-  the assigned mark's row swaps its button for a small "This rover" badge
-  and a highlighted background instead - manually setting a mark this
-  device is already auto-posting for would just fight its own next fix.
-  Every other row keeps its normal "Set" button - manually correcting a
-  *different* mark while this device auto-tracks its own is still a
-  completely normal thing to want, so the rest of the list stays fully
-  usable.
-- Every GPS fix (`baseGps.js`'s own `onFix` - see its module comment) is
-  checked against the last position this device actually posted; once it's
-  moved `MARK_DISTANCE_M` (default 1m) or more, it calls the exact same
-  `setMarkLocation` plain markset's own "Set" button calls - same Redis
-  write, same in-memory course update, same pin-boundary republish, same
-  broadcast-if-a-radio's-attached (a no-op here, per above). Only advances
-  its own "last posted" reference once the write actually succeeds, so a
-  transient failure (no course published yet, a Redis blip) keeps retrying
-  on the next fix rather than silently giving up - same reasoning as
-  `TX_DISTANCE_M`'s own gate in `boatAgent.js`.
+Once assigned, on the map:
+- The assigned mark's row swaps its "Set" button for a "This rover" badge
+  - manually setting a mark this device already auto-posts would just
+    fight its own next fix. Every other row keeps its normal button.
+- Every GPS fix is checked against the last posted position; once moved
+  `MARK_DISTANCE_M` (default 1m), it calls the same `setMarkLocation` the
+  "Set" button uses - same Redis write, in-memory update, pin-boundary
+  republish, broadcast. Only advances "last posted" on success, so a
+  transient failure keeps retrying.
 
-Reassigning (or unassigning, back to "Not assigned") is a live change from
-the same dropdown - each one resets the "last posted" reference, so a
-freshly (re)assigned mark posts its very first position immediately rather
-than waiting out a stale threshold from whatever this device was
-representing before.
+Reassigning (or unassigning) is a live change from the dropdown - each
+reset posts a first position immediately rather than waiting out a stale
+threshold.
 
-**Known limitation:** this only covers the posting side - a *separate*,
-already-running `base`/`basertk` process has no way to notice a Redis-side
-mark change made by a different process while it's actively racing (its
-own in-memory course only refreshes on its own regatta-select/restart, or
-on an edit made through its own admin API). A moving mark tracked this way
-is reliable for course setup and between-race corrections; treating it as
-a live, race-time-moving mark that an active base immediately re-broadcasts
-to the fleet is not yet wired up.
+**Known limitation:** posting-side only - a *separate*, already-running
+`base`/`basertk` process has no way to notice a Redis-side mark change
+made by another process while racing (its in-memory course only refreshes
+on regatta-select/restart, or its own admin-API edit). Reliable for course
+setup and between-race corrections; not yet wired up as a live,
+race-time-moving mark an active base re-broadcasts immediately.
 
-**Seeing which rover is currently representing a mark**, from the *base's*
-own dashboard - without needing to go find that rover's own map page (see
-"Where can I look on the boat side" just below for that side): every mark
-carries `assignedBoatId`/`assignedAt` in Redis whenever some rover's own
-mark mode is actively auto-posting it (`src/redisStore.js`'s
-`setMarkAssignment`), refreshed on every real position write *and* on its
-own independent heartbeat every 20s (`MARK_ASSIGNMENT_HEARTBEAT_MS` in
-`src/baseStation.js`) - separate from `MARK_DISTANCE_M`'s own
-movement-gated writes, since a properly anchored mark buoy is expected to
-stop moving once placed, and without a separate heartbeat its assignment
-would look abandoned within moments of the last real movement even though
-the rover is still online and correctly representing it. Shown in two
-places on the base's regular (non-map) dashboard:
+**Seeing which rover represents a mark**, from the base's own dashboard
+(no need to find the rover's own map page): every mark carries
+`assignedBoatId`/`assignedAt` in Redis while a rover's mark mode is
+actively posting it, refreshed on every position write and on its own 20s
+heartbeat (`MARK_ASSIGNMENT_HEARTBEAT_MS`) - independent of
+`MARK_DISTANCE_M`'s movement gate, so a stationary anchored mark still
+reads live.
 
-- The **Course marks** card - a small badge next to any mark currently (or
-  recently) attributed to a rover: a solid green dot and boat id while the
-  heartbeat is fresh (within 60s, `MARK_ASSIGNMENT_STALE_MS` in
-  `src/adminServer.js`), or a hollow amber dot once it's gone stale -
-  that rover's process most likely died or lost connectivity without
-  cleanly unassigning. Hovering either shows exactly when it last updated.
-- The **Fleet table** - the inverse lookup, by boat instead of by mark: a
-  rover currently assigned to a mark gets the same badge next to its own
-  name (`acting as windwardBlack`), including rovers that have *no* other
-  radio/WiFi presence at all (mark mode disables both entirely - see
-  "Mark-set mode" above), which would otherwise never appear in this table
-  since every other column here is built from radio/WiFi activity that
-  mode never generates.
+| Where | Shows |
+|---|---|
+| Course marks card | Badge per mark: green ● + boat id (heartbeat within 60s, `MARK_ASSIGNMENT_STALE_MS`) or amber ○ once stale. Hover for last-update time |
+| Fleet table | Inverse lookup: `acting as windwardBlack` badge on the rover's own row, including rovers with no other radio/WiFi presence (mark mode disables both) |
 
-A manual "Set" from the admin map always clears a mark's existing
-attribution, even if a rover is still actively assigned to it - editing a
-mark a live rover represents doesn't actually stick, though (that rover's
-own next heartbeat/movement silently reasserts it), so the badge is the
-tool for noticing *why* a manual edit didn't take before re-editing it
-again: reassign (or unassign) that rover from its own map first.
+A manual "Set" always clears a mark's attribution, but doesn't stop a
+still-live rover's next heartbeat/movement from silently reasserting it -
+the badge is how you notice a manual edit didn't stick; reassign/unassign
+that rover first.
 
 ### Scheduled shutdown (boat, battery-saving)
 
-The rover dashboard's own "Scheduled shutdown" card (`http://<boat>:<port>/`)
-is the normal way to set this up - a time, an idle threshold, and a speed
-threshold, saved with one click, no restart needed. Set `ROVER_SHUTDOWN_AT`
-(e.g. `ROVER_SHUTDOWN_AT=21:00`, in the generated `boat-agent` systemd unit
-or a boat's `.env`) instead if you'd rather configure it before the process
-ever starts; either path shuts this Pi down once BOTH the clock has passed
-that time AND the boat has been genuinely idle - stationary (under
-`ROVER_SHUTDOWN_SPEED_KN`, default 0.5kn) or with no fresh GPS fix at all -
-for `ROVER_SHUTDOWN_IDLE_MIN` continuous minutes (default 10). The idle gate
-is deliberate: it's what stops a race that's still running late from getting
-killed mid-track just because the clock crossed the configured time - it
-waits for a real lull first. Disabled (the default) means this feature does
-nothing at all. Whatever's in effect - from the env vars or the dashboard
-card - is remembered in `race-config/power-schedule.txt` (git-ignored)
-across restarts. Linux-only by design - `shutdown -h now` is a real command on
-macOS too, so this refuses to arm itself on anything other than `linux`
-(logs a warning and shows "unsupported on this platform" on the card
-instead), specifically so testing locally with a schedule left over from a
-previous run never shuts down a developer's own machine.
+Set from the rover dashboard's "Scheduled shutdown" card (time, idle
+threshold, speed threshold - no restart needed), or pre-configure via
+`ROVER_SHUTDOWN_AT` (e.g. `21:00`) before the process starts. Shuts the Pi
+down once BOTH the clock has passed that time AND the boat has been idle
+(stationary or no fresh fix) for `ROVER_SHUTDOWN_IDLE_MIN` continuous
+minutes (default 10) - the idle gate stops a race running late from being
+killed mid-track. Disabled by default. Settings persist to
+`race-config/power-schedule.txt`. **Linux-only** - refuses to arm on
+macOS, so a leftover schedule never shuts down a dev machine.
 
-**This only handles powering DOWN, never back up.** A Raspberry Pi has no
-built-in way to power itself back on after a full shutdown - that needs
-either a physical re-power (someone flips the switch/reconnects the
-battery next time out) or dedicated wake hardware (an RTC-alarm relay, a
-PiJuice-style HAT, a smart timer switch on the battery itself) that this
-repo has no way to know is present or how to drive. Without such hardware,
-plan on manual power-up either way.
+**Only handles powering DOWN, never back up** - a Pi has no built-in way
+to power itself back on; that needs a physical re-power or dedicated wake
+hardware this repo doesn't drive.
 
-Requires the systemd service's own user (see `install-service.sh`) to
-be able to run `shutdown` without a password prompt - it can't enter one
-non-interactively. One-time setup:
+Requires passwordless `shutdown` for the service's user:
 ```
 echo "jycadmin ALL=(ALL) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown" | sudo tee /etc/sudoers.d/boat-shutdown
 sudo chmod 440 /etc/sudoers.d/boat-shutdown
 ```
-(swap `jycadmin` for whatever user the service actually runs as, if
-different). Without this, the shutdown attempt fails - loudly, in the
-journal (`[power] shutdown command failed...`), not silently - and the
-Pi just stays on.
+(swap `jycadmin` for the actual service user). Without this, the attempt
+fails loudly in the journal and the Pi stays on.
 
-Setting the boat's WiFi (so it can reach the base for log uploads - see
-"Log upload over WiFi" below) from the command line, no desktop needed:
+WiFi setup, no desktop needed:
 ```
 sudo ./set-wifi.sh "<SSID>" "<PASSWORD>"
 sudo ./set-wifi.sh                     # saves every default network (JYC RC, Rustybit, Bondi-Van, JYC Outer)
 ./set-wifi.sh -list                    # lists saved networks (no sudo needed)
 ```
-Prefers `nmcli` (NetworkManager, current Raspberry Pi OS's own backend) to
-*save* the credentials as a connection profile rather than connect right
-now - the network does **not** need to be in range for this (NetworkManager
-auto-joins a saved profile itself the moment that SSID actually comes into
-range), so a no-argument run saves every default network in one pass even
-if the Pi isn't near most of them yet. Falls back to `raspi-config`'s own
-helper only if `nmcli` isn't installed (an older, non-NetworkManager Pi OS
-image), which saves to `wpa_supplicant.conf` directly - likewise
-range-independent. Leave `PASSWORD` off (or blank at the prompt) for an
-open network. Only ever adds/updates the network profile(s) given -
-existing saved networks are left alone, so running it again for a
-different SSID (e.g. a shop/home network alongside the boat's usual RC
-one) just adds that as another one, not a replacement. If the Pi won't
-associate with anything afterward, it may not have a WiFi country code
-set yet - `sudo raspi-config nonint do_wifi_country <CC>` fixes that (a
-one-time thing, not per-network, so this script doesn't set it).
+Prefers `nmcli` to *save* credentials as a connection profile - the
+network doesn't need to be in range, NetworkManager auto-joins once it is,
+so a no-arg run saves every default network in one pass. Falls back to
+`raspi-config`'s helper (older Pi OS) if `nmcli` isn't installed - also
+range-independent. Blank password = open network. Only adds/updates given
+networks, existing ones untouched. If nothing associates, set a WiFi
+country code: `sudo raspi-config nonint do_wifi_country <CC>` (one-time).
 
 ## Simulation mode (no hardware)
 
-Set `SIMULATE=1` to run `boat` and `base` with no GPS or radio hardware
-attached. In this mode:
-- `src/simGps.js` generates fake GPS fixes for a landsailer racing a
-  windward-leeward course around a configurable center point - beating
-  upwind on alternating tacks, running downwind on alternating gybes, with
-  randomized leg lengths so no two laps look the same - in place of the real
-  UBX-NAV-PVT parser. Races whichever windward/leeward mark pair
-  `SIM_COURSE_MARKS` picks (default `BB`, the long course) - see "Changing
-  the course" below.
-- `src/simRadioLink.js` replaces the serial radio link with a shared UDP
-  broadcast socket carrying the exact same frames (`src/protocol.js`), so
-  the real encode/decode/checksum path is still exercised end to end — just
-  without serial ports. Every simulated boat and the base broadcast on and
-  listen to the same port (`SIM_PORT`), mirroring how every radio shares
-  one RF channel on real hardware — no per-boat address to configure, and
-  it works the same way across a real LAN as it does on localhost.
+`SIMULATE=1` runs `boat`/`base` with no GPS or radio hardware:
+- `src/simGps.js` fakes a landsailer racing a windward-leeward course
+  (beating upwind on alternating tacks, running downwind on alternating
+  gybes, randomized leg lengths) in place of the real UBX-NAV-PVT parser.
+  Races whichever mark pair `SIM_COURSE_MARKS` picks (default `BB`).
+- `src/simRadioLink.js` replaces the serial link with a shared UDP
+  broadcast carrying the same frames (`protocol.js`) - real
+  encode/decode/checksum path exercised end to end, works the same over a
+  real LAN as localhost.
 
-Run both in separate terminals, on the same machine or over a LAN:
 ```
 # terminal 1 - base station
 SIMULATE=1 npm run base
@@ -777,58 +498,33 @@ SIMULATE=1 npm run base
 # terminal 2 - boat agent
 SIMULATE=1 npm run boat
 ```
-For multiple simulated boats, run more `npm run boat` instances with
-different `BOAT_ID` values pointed at the same base station - or use
-`npm run fleet` (`src/fleetSim.js`) to spawn several at once:
-
+For multiple boats, run more instances with different `BOAT_ID`s, or:
 ```
 FLEET_SIZE=5 npm run fleet
 ```
+Spawns `FLEET_SIZE` (default 3) boats as one command, each with a unique
+auto-generated `BOAT_ID` and its own dashboard port, output prefixed per
+boat. Each exits on its own once it finishes laps
+(`SIM_EXIT_ON_FINISH=1`, auto-set); `fleetSim` reports done once the last
+one exits. `SIMULATE=1` is assumed; any other `SIM_*` var passes through
+to every boat.
 
-Spawns `FLEET_SIZE` (default 3) boat processes as one command, each with its
-own randomly-generated, guaranteed-unique-within-this-fleet `BOAT_ID` (see
-"Boat identity" below) and its own admin dashboard port, output prefixed
-per boat (`[boat PHJVX] ...`). Each
-boat exits on its own the moment it finishes its laps
-(`SIM_EXIT_ON_FINISH=1`, set automatically for every boat this spawns) -
-`fleetSim` reports the fleet done once the last one exits. `SIMULATE=1` is
-assumed by default (this command's whole purpose is a simulated fleet); any
-other `SIM_*` env var (`SIM_LAP_COUNT`, `SIM_COURSE_MARKS`, `SIM_START_ONLY`,
-...) passes through unchanged to every boat, same as `npm run boat`.
+Ctrl+C always stops every boat cleanly. Killing by PID also works, but
+only the real `fleetSim` `node` process - `npm run fleet`'s outer `npm`
+wrapper does not reliably forward the signal. Use `pkill -f
+'src/fleetSim.js'` or Ctrl+C.
 
-Ctrl+C in the fleet's own terminal always stops every boat cleanly, whether
-it's still holding for the start signal or already racing. Killing the
-fleet by PID instead (`kill <pid>`, or a process manager's "stop") also
-works - but only if that PID is `fleetSim`'s own `node` process. `npm run
-fleet`'s outer `npm` wrapper process does **not** reliably forward that
-signal down to the actual script, so killing *npm's* PID can leave every
-spawned boat running with nothing left watching them. Target the real
-process instead - `pkill -f 'src/fleetSim.js'`, or find its PID with `pgrep
--f 'src/fleetSim.js'` - or just use Ctrl+C.
-
-By default (`SIM_HOLD_FOR_START=1`), the whole fleet gets on the grid and
-holds there, so the race committee can actually start the race server-side
-before any boat departs:
-
-```
-FLEET_SIZE=5 npm run fleet
-```
-
-Every boat sits at its start position once it's on the grid; once they're
-all ready, press SPACE in this same terminal to start the race - `fleetSim`
-forwards the signal to every boat it spawned. (Works the same way on a
-single standalone boat too: `SIMULATE=1 npm run boat`, pressing
-SPACE in that boat's own terminal.) Set `SIM_HOLD_FOR_START=0` to skip the
-hold entirely and go back to every boat auto-departing after
-`SIM_PRESTART_DWELL_S` seconds, no keypress needed.
+By default (`SIM_HOLD_FOR_START=1`) the whole fleet gets on the grid and
+holds - press SPACE in the fleet's terminal to release everyone at once
+(same for a standalone boat, its own terminal). Set
+`SIM_HOLD_FOR_START=0` to auto-depart after `SIM_PRESTART_DWELL_S`
+seconds instead.
 
 ### Simulated GPS with real radio hardware
 
-`SIMULATE_GPS=1` fakes just the GPS track, while using the real radio on
-both ends - useful for bench-testing actual radios (range, packet loss,
-antenna placement) without needing a real GPS fix or being outdoors.
-`SIMULATE=1` implies this too; use `SIMULATE_GPS=1` on its own when you
-specifically want simulated positions over real hardware radios:
+`SIMULATE_GPS=1` fakes just the GPS track, using real radios on both ends
+- for bench-testing range/loss/antenna placement without a GPS fix or
+being outdoors. `SIMULATE=1` implies this.
 
 ```
 # terminal 1 - base station, real radio
@@ -837,448 +533,228 @@ RADIO_PORT=/dev/cu.usbserial-A npm run base
 # terminal 2 - boat agent, fake GPS + real radio
 SIMULATE_GPS=1 RADIO_PORT=/dev/cu.usbserial-B npm run boat
 ```
+A boat has no Redis access, so its simulated GPS won't start until the
+base broadcasts marks - with real radio hardware and no `SIMULATE=1` on
+the base, Redis needs marks already published first.
 
-(See "Bench-testing the radios" above for a more focused radio-only test
-that doesn't involve GPS, Redis, or course logic at all.)
-
-The boat has no Redis access at all (see "Broadcasting marks to the
-rovers" above) - its simulated GPS won't start until the base actually
-broadcasts marks to it, which means the base needs marks to broadcast in
-the first place. With real radio hardware and no `SIMULATE=1` on the base,
-that means Redis needs marks already published (by a real race operator,
-or an earlier `SIMULATE=1` session) before this will do anything; the base
-station's own real-hardware path only reads marks, it won't invent a
-course (see "Connecting to your race committee software" below).
-
-CSV logs land in the same places as always regardless of mode - the base's
-own in `./base-logs` (`BASE_LOG_DIR`) and the boat's own in `./boat-logs`
-(`BOAT_LOG_DIR`), see "File layout" above - and the base station's
-console/CSV/UDP local broadcast output all work exactly as they would with
-real hardware.
+CSV logs land in the usual places (`base-logs`/`boat-logs`) regardless of
+mode.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `SIM_PORT` | `41234` | Shared port every simulated boat and the base broadcast on and listen to - see "Broadcasting marks to the rovers" above |
+| `SIM_PORT` | 41234 | Shared UDP port every simulated boat/base uses |
 | `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
-| `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Simulated landsailer speed beating vs. running - much faster downwind than up, unlike a water boat, since low rolling resistance lets apparent wind build well past true wind speed on a reach/run |
-| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | `40.8970` / `-118.3821` | Center point of the simulated racecourse - only takes effect on a truly fresh course (nothing published yet in Redis). If a course is already published and doesn't match, the base warns loudly on startup rather than changing anything - see "Changing the course" below for how to actually reset it |
-| `SIM_PACKET_LOSS` | 0 | % chance (0-100) each radio frame is dropped, to simulate range dropouts |
-| `SIM_COURSE_LENGTH_NM` | 1 | leewardBlack-to-windwardBlack distance in nautical miles - the overall/long course (see "Changing the course" below for the green/black mark pairs). Green is not independently configurable - leewardGreen/windwardGreen always sit exactly halfway between the center and their respective black mark, so the short course is always exactly half this value. Shorten this (e.g. `0.05`) to quickly test laps without waiting through a full-length beat/run each time. Like `SIM_CENTER_LAT`/`SIM_CENTER_LON` above, only takes effect on a fresh course - see "Changing the course" below |
-| `SIM_START_LINE_POSITION` | 50 | Where the start/finish complex sits along the beat, as a percentage of the overall course: `0` = right at leewardBlack, `100` = right at windwardBlack, `50` (default) = dead center - equidistant from both the green and the black marks. Only takes effect on a fresh course, same as `SIM_COURSE_LENGTH_NM` above |
-| `SIM_COMMITTEE_GAP_M` | 6 | How far east `committeeFinish` (and `finish`, which trails it by `finishLineLengthM`) sits from `committeeStart` - the default gives the two lines independent committee boats with a real gap between them, matching two actually-separate boats rather than one physically-impossible shared mark. Set to `0` to go back to a single shared committee mark (both lines meeting at the exact same point) - note that with no gap, `SIM_FOUL`'s committee-gap crossing has nothing to cross, see "Foul detection -> RegattaUp" below. Same as `SIM_COURSE_LENGTH_NM` above - only takes effect on a fresh course |
-| `SIM_COURSE_MARKS` | `BB` | Which windward/leeward mark pair a simulated boat actually races - 2 letters, windward first, each `G` (green, short course) or `B` (black, long course): `BB`/`GG` for the plain long/short course, `BG`/`GB` to mix a long beat on one end with a short one on the other. See "Changing the course" below |
-| `SIM_LAP_COUNT` | 2 | How many laps a simulated boat sails before it stops |
-| `SIM_START_ONLY` | unset | Set to `1` to skip the simulated race entirely - the boat sits forever at its normal fleet-spread start position (same per-slot placement along the pin↔committee line as a real start, just never departing), emitting a stationary but otherwise normal fix stream (fresh timestamp every tick, real fix-quality fields), instead of sailing off seconds after startup. Every slot lands reliably within on-grid range - see "On-grid detection -> RegattaUp" above for the margin that makes that robust to real-world/projection noise, not just this app's own idealized math |
-| `SIM_PRESTART_DWELL_S` | 15 | How long (seconds) a normal, non-`SIM_START_ONLY` simulated race sits at its start position before actually departing upwind - gives on-grid detection a real window to observe in an ordinary test race. `0` departs immediately (the pre-dwell behavior) - see "On-grid detection -> RegattaUp" above |
-| `SIM_HOLD_FOR_START` | `1` (on) | Holds every simulated boat at its start position indefinitely - like `SIM_START_ONLY`, but releasable instead of permanent, and overrides `SIM_PRESTART_DWELL_S`'s timer. Gets a whole fleet on the grid and lets the race committee actually start the race server-side before any boat departs: press SPACE in the terminal running `npm run boat` (standalone) or `npm run fleet` (forwarded to every boat it spawned) once everyone's ready. Set to `0` to go back to the old auto-departing-after-`SIM_PRESTART_DWELL_S` behavior |
-| `SIM_FOUL` | unset | Set to `1` to make this one boat, instead of racing normally, hold at its start position exactly like any other boat (still respects `SIM_PRESTART_DWELL_S`/`SIM_HOLD_FOR_START`), then on release sail `SIM_FOUL_WINDWARD_M` upwind before looping around and sailing straight back down through the start line, the finish line, and the committee gap (skipped only if `SIM_COMMITTEE_GAP_M=0` removes it - see above) - each crossed the wrong (downwind) way, sailing back upwind on the same lane between each one. Real, repeatable events for `foulWatcher.js` to catch, without needing a human pilot to sail the illegal paths by hand. See "Foul detection -> RegattaUp" below. Only meaningful on ONE boat at a time - setting it fleet-wide just has every boat drive the same scripted path instead of racing |
-| `SIM_FOUL_WINDWARD_M` | 150 | How far upwind (meters) a `SIM_FOUL` boat sails before turning back for the illegal return leg - only needs to look like a real departure, not actually get near the windward mark |
+| `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Landsailer speed beating vs. running |
+| `SIM_CENTER_LAT` / `SIM_CENTER_LON` | 40.8970 / -118.3821 | Course center - only takes effect on a fresh course (nothing published in Redis) |
+| `SIM_PACKET_LOSS` | 0 | % chance (0-100) each frame is dropped |
+| `SIM_COURSE_LENGTH_NM` | 1 | leewardBlack↔windwardBlack distance (nm). Green marks always sit halfway to center, so short course = half this. Fresh-course-only, like `SIM_CENTER_*` |
+| `SIM_START_LINE_POSITION` | 50 | Where start/finish sits along the beat, 0-100% (0=leewardBlack, 100=windwardBlack). Fresh-course-only |
+| `SIM_COMMITTEE_GAP_M` | 6 | Gap between `committeeStart`/`committeeFinish` (two independent committee boats). `0` = single shared mark, disables the committee-gap foul. Fresh-course-only |
+| `SIM_COURSE_MARKS` | `BB` | Which mark pair to race - 2 letters, windward first, `G`/`B` each |
+| `SIM_LAP_COUNT` | 2 | Laps before stopping |
+| `SIM_START_ONLY` | unset | `1` = sit forever at start position, emitting a stationary fix stream, instead of racing |
+| `SIM_PRESTART_DWELL_S` | 15 | Seconds sitting at start before departing (non-hold mode). `0` = depart immediately |
+| `SIM_HOLD_FOR_START` | 1 (on) | Holds fleet at start indefinitely until SPACE is pressed; overrides the dwell timer. `0` = old auto-depart behavior |
+| `SIM_FOUL` | unset | `1` = this boat sails upwind then loops back through start/finish/committee-gap the wrong way, for testing `foulWatcher.js`. One boat at a time |
+| `SIM_FOUL_WINDWARD_M` | 150 | Distance upwind before the `SIM_FOUL` boat turns back |
 
-Once `SIM_LAP_COUNT` laps complete, the simulated GPS stops producing fixes,
-but the `boat` process itself keeps running rather than exiting - so its
-upload client (see "Uploading boat logs to the base over WiFi" above)
-still gets a chance to send off any pending log chunk instead of the
-process disappearing the instant the simulated race ends. Stop it with
-Ctrl+C once you're done, same as any other run.
+Once `SIM_LAP_COUNT` laps complete, simulated GPS stops but the process
+keeps running so its upload client can flush any pending log chunk.
+Ctrl+C to stop.
 
 ## Connecting to your race committee software
 
 `src/baseStation.js` currently:
 1. Logs every decoded fix to console + CSV
-2. Records every decoded fix to Redis (see below) for querying tracks later
-3. Re-broadcasts every decoded fix locally over UDP (port 10110, the
-   conventional NMEA-over-UDP port) — as a synthetic `UBX-NAV-PVT` message
-   by default, so anything that already speaks UBX (u-center, this app's
-   own `UbxParser`) can read it directly, and it carries fields (fix type,
-   DOP, accuracy estimates) plain NMEA can't. Set `GPS_OUTPUT_FORMAT=nmea`
-   to get a standard `$GPGGA` sentence instead, for tools that only speak
-   NMEA. `src/boatAgent.js` does the exact same thing independently, on the
-   same port, for onboard instruments (chartplotter, a laptop running
-   OpenCPN) that want this boat's own fixes directly rather than waiting
-   for them to reach the base over radio — unthrottled (every fix, not
-   gated by `TX_DISTANCE_M` like the long-range radio TX), since it's a
-   local broadcast, not long-range airtime.
+2. Records every fix to Redis (see below)
+3. Re-broadcasts locally over UDP (port 10110, NMEA-over-UDP convention) -
+   synthetic `UBX-NAV-PVT` by default (`GPS_OUTPUT_FORMAT=nmea` for
+   `$GPGGA` instead). `boatAgent.js` does the same independently, on the
+   same port, unthrottled, for onboard instruments.
 
 Once you pick your race software (TracTrac, YB Tracking, RaceQs, Predict
-Wind, or in-house), the base station's `outputFrame()` function is the one
-place to change — swap it for whatever that software actually expects (an
-HTTP POST to a cloud ingestion API is common for the commercial platforms;
-check their integration docs since most of them expect a per-boat auth
-token). Happy to build that adapter once you know the target.
+Wind, in-house), `outputFrame()` is the one place to change - swap it for
+whatever that software expects (usually an HTTP POST with a per-boat auth
+token).
 
 ## Lap events -> RegattaUp
 
-Lap detection lives entirely on the base station, not the boat: a real
-rover has no Redis access to resolve course marks itself, so it only ever
-sends its raw position (the regular 23-byte position frame, unchanged) -
-`src/finishLineWatcher.js`, running inside `baseStation.js`, watches every
-incoming fix - real hardware or simulated, it makes no difference - against
-the committee/finish marks published in Redis, and detects a lap the same
-way a real race committee would: the boat's path actually crossing the
-committee<->finish segment (not just anywhere on the line) while heading
-upwind (committee to port, finish to starboard - see the module for the
-geometry). One `FinishLineWatcher` is kept per boat ID, since each needs its
-own independent crossing-state and lap counter. This works "as long as the
-finish line is set" - if the base station can't find committee/finish marks
-in Redis at startup, lap detection is just unavailable for that run, logged
-once, not retried.
-
-Whenever a crossing is detected, the base station queues it (see below) and
-POSTs to RegattaUp's lap webhook so the crossing counts as a lap there:
+Lap detection lives on the base station, not the boat - a rover has no
+Redis access, so it only sends raw position. `src/finishLineWatcher.js`
+(one instance per boat) watches every fix against the committee/finish
+marks and detects a lap the way a real committee would: crossing the
+committee↔finish segment while heading upwind (committee to port, finish
+to starboard). Unavailable (logged once, not retried) if committee/finish
+marks aren't in Redis at startup.
 
 ```json
 {
   "mode": "lap",
   "regatta_id": "6a44a2531e401d60c28afcd8",
-  "decoded": {
-    "tranCode": "51",
-    "rtcTime": 1785337740000000,
-    "strength": 2
-  },
+  "decoded": { "tranCode": "51", "rtcTime": 1785337740000000, "strength": 2 },
   "receivedAt": "2026-07-29T15:09:00.604Z"
 }
 ```
 
-- `mode` — always sent explicitly as `"lap"` here, even though the webhook
-  already defaults to it when the field is missing entirely - real
-  third-party MyLaps hardware has no concept of `mode` and never sends one,
-  so explicit here just means our own event types are never distinguished
-  by *absence* of a field, only by its value
-- `regatta_id` — the currently-selected regatta's id (see "Selecting a
-  regatta at startup" below), included whenever one is selected so
-  `mylapsWebhook` can read straight from that one regatta's own Redis cache
-  instead of enumerating every active regatta on the platform. Omitted
-  entirely when no regatta is selected (e.g. `SIMULATE=1` testing) - real
-  MyLaps hardware has no concept of this field either, and the webhook falls
-  back to its own active-regatta lookup exactly as if this app didn't send
-  it at all
-- `tranCode` — the boat's ID (as a string), matched against that boat's
-  transponder code configured in RegattaUp
-- `rtcTime` — the lap's own timestamp, converted from milliseconds to
-  microseconds (the unit RegattaUp's webhook expects)
-- `strength` — the fix's `carrSoln` (RTK solution quality) at the moment of
-  crossing, standing in for signal strength
-- `receivedAt` — the base station's wall-clock time, sent as the fallback
-  timestamp
+| Field | Meaning |
+|---|---|
+| `mode` | Always explicit `"lap"` - real MyLaps hardware never sends this field |
+| `regatta_id` | Current regatta id, omitted if none selected |
+| `tranCode` | Boat's ID (string), matched to its RegattaUp transponder code |
+| `rtcTime` | Lap timestamp, ms → µs |
+| `strength` | Fix's `carrSoln` at crossing, standing in for signal strength |
+| `receivedAt` | Base's wall-clock time, fallback timestamp |
 
 ### Durable retry queue
 
-A failed webhook POST doesn't just get logged and dropped - `src/lapWebhookQueue.js`
-durably records every lap (in a small sqlite file, via `sql.js` - a WASM
-build, so it needs no native compilation on whatever machine or Raspberry Pi
-this runs on) *before* the first send attempt, and only removes it once
-RegattaUp actually accepts it - this also means a lap survives a base
-station restart mid-retry, since the queue is a file on disk, not just
-in-memory state.
-
-Every lap/on-grid/mark-rounding event is always queued first, never POSTed
-straight away - a single shared loop (same approach as the sister
-`p3-bridge` project's own `PostQueue`) then drains at most one webhook POST
-per `REGATTAUP_POST_INTERVAL_MS` tick, round-robining across all three
-queues combined. Without this, a burst of events arriving close together (a
-full fleet all going on-grid within the same second, or a backlog of failed
-sends all becoming retry-eligible at once) would fire that many concurrent
-requests at RegattaUp with nothing pacing them. A failed send is retried
-with capped exponential backoff (2s, 4s, 8s, ... up to
-`REGATTAUP_MAX_BACKOFF_MS`) on top of that same paced loop, indefinitely.
+A failed webhook POST isn't dropped - `src/lapWebhookQueue.js` durably
+records every lap (sqlite via `sql.js`, WASM, no native build) *before*
+the first send attempt, removed only once RegattaUp accepts it - survives
+a base restart mid-retry. Every lap/on-grid/mark-rounding/foul event is
+always queued first; one shared loop drains at most one POST per
+`REGATTAUP_POST_INTERVAL_MS` tick across all queues, round-robin, so a
+burst (a whole fleet going on-grid at once) doesn't fire concurrent
+requests. Failed sends retry with capped exponential backoff (2s, 4s, 8s,
+... up to `REGATTAUP_MAX_BACKOFF_MS`), indefinitely.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override to point at a mock endpoint for testing |
-| `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Set to `0` to skip sending entirely (crossings are still detected and logged) |
-| `REGATTAUP_QUEUE_DB` | `race-config/lap_webhook_queue.sqlite` | Where the retry queue's sqlite file lives |
-| `REGATTAUP_POST_INTERVAL_MS` | 500 | How often the shared drain loop attempts one webhook POST, across all three queues combined |
-| `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Cap on the exponential backoff between retries for a single event |
+| `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override for a mock endpoint |
+| `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | `0` = skip sending, still detected/logged |
+| `REGATTAUP_QUEUE_DB` | `race-config/lap_webhook_queue.sqlite` | Retry queue file |
+| `REGATTAUP_POST_INTERVAL_MS` | 500 | Drain-loop interval, all queues combined |
+| `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Backoff cap per event |
 
 ### Testing the lap -> webhook path
 
 ```
 TEST_LAP_NUMBER=3 npm run base
 ```
-
-`TEST_LAP_NUMBER` doubles as both the on/off switch for this test mode
-and part of the payload: `0` (the default) means off - a normal run.
-Anything positive sends one synthetic lap straight into the webhook
-queue, reported as that lap number, and exits immediately - no radio, no
-GPS, no finish-line detection involved, just checking the queue ->
-RegattaUp path in isolation. It's not a count of how many laps to send
-(always exactly one, regardless of the number chosen) or how many laps a
-race has - just the "lap" field on that one synthetic event.
-`TEST_LAP_BOAT_ID` (default 1) is the other half of that payload - which
-boat the fake lap is attributed to - and only matters alongside a
-positive `TEST_LAP_NUMBER`.
+`0` (default) = off. Any positive value sends one synthetic lap straight
+into the queue (reported as that lap number) and exits - no radio/GPS/
+finish-line detection involved, just the queue → RegattaUp path. Always
+exactly one lap, regardless of the number. `TEST_LAP_BOAT_ID` (default 1)
+is the attributed boat.
 
 ## On-grid detection -> RegattaUp
 
-Separate from lap detection above: `src/onGridWatcher.js`, one instance
-per boat (same lazy-build-per-boat pattern as `FinishLineWatcher`), watches
-every incoming fix against the **start** side of the course - the
-pin<->committee segment, not committee<->finish.
+Separate from laps: `src/onGridWatcher.js` (one per boat) watches every
+fix against the **start** side - the pin↔committee segment.
 
 ![The on-grid zone: a box along the leeward side of the pin-to-committee line, with a right triangle cut from EACH end - one hypotenuse starting at committee, the other at pin, each running 55° down from the start line to the far edge of the zone, cutting off both bottom corners of the box.](docs/on-grid-zone.svg)
 
-A boat counts as on-grid when it's all of:
+On-grid requires all of:
+- Between pin and committee (1m slack at either end for float/projection noise)
+- Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line
+- Leeward side only (derived from the windwardGreen↔leewardGreen bearing - the only wind direction this app knows)
+- Not inside either corner's exclusion triangle (below)
 
-- Between the pin and committee marks (not just close to the line's
-  infinite extension past either mark) - with 1m of slack right at either
-  end, so a boat genuinely sitting at a mark isn't excluded by
-  floating-point/projection noise between whatever produced the fix (real
-  GPS, or the simulator's own independent lat/lon math) and this watcher's
-  own, and
-- Within `REGATTAUP_ONGRID_ZONE_M` (default 10m) of the line itself
-- **On the leeward side of the line only**, not the windward/course side -
-  a genuine pre-start boat sits behind the line (crossing early would be
-  OCS). "Leeward" is derived from the real windwardGreen<->leewardGreen
-  bearing (the only wind direction this app can know at all for real
-  racing - there's no live wind sensor anywhere in this codebase),
-  assuming the line was laid square to it, the standard practice.
-- **Not** inside either corner's own triangle cut - both ends of the box
-  are angled off, not just committee's:
-  - The starboard-tack triangle cut from committee's corner - a boat
-    finishing upwind on starboard tack near the committee end approaches
-    from the southwest, briefly on the geometric "pin side" of committee
-    while still south of the line, before crossing just past committee.
-    That point is unambiguously in the start zone by the checks above
-    (between pin and committee, within the zone, on the leeward side), yet
-    it's a finish approach, not pre-start queuing. Only applied when
-    `committeeFinish` is close enough to `committeeStart` (within
-    `SAFE_FINISH_SEPARATION_MULTIPLE`, 2, zone-widths) that this confusion
-    can actually happen - once an operator moves the finish mark further
-    away, a boat finishing there is nowhere near this corner and the cut
-    is skipped entirely.
-  - The mirror-image port-tack triangle cut from pin's own corner - a boat
-    rounding the leeward mark, or otherwise sailing downwind close past
-    pin, can produce the same false "queued" read on that side of the box.
-    Unlike the committee cut, this one isn't gated on any mark's distance -
-    the ambiguity is inherent to the corner itself, so it's always on.
-
-  Cut with a straight line, not an arc, at each end: `_inCommitteeTriangle`/
-  `_inPinTriangle` each exclude a right triangle whose hypotenuse starts
-  exactly at that corner's own mark and runs `HYPOTENUSE_ANGLE_DEG` (55
-  degrees) below the start line itself down into the zone, continuing until
-  it reaches the far (leeward) edge - the whole bottom corner of the on-grid
-  box on that side, one straight cut. Each triangle's two legs are the
-  zone's own edge at that end (straight down from the mark, length
-  `REGATTAUP_ONGRID_ZONE_M`) and its own bottom edge (length
-  `REGATTAUP_ONGRID_ZONE_M / tan(55°)` - about 7.0m at the 10m default),
-  capped at `COMMITTEE_TRIANGLE_MAX_FRACTION` (50%) of the actual
-  pin<->committee distance regardless of that math, independently from each
-  corner's own vertex - a real start line (tens of meters) is comfortably
-  longer than 7.0m so this cap never matters in practice, but an
-  aggressively short `SIM_COURSE_LENGTH_NM` test course can have a start
-  line shorter than a hypotenuse's own uncapped reach, in which case it
-  would otherwise sweep past the line's other mark and exclude the ENTIRE
-  zone, not just the one corner - the cap guarantees the two cuts can meet
-  at the line's own midpoint but never overlap past it, regardless of
-  course length.
-
-POSTs to the same RegattaUp webhook laps use, with its own payload shape:
+**Corner triangles**: both ends of the box are angled off, not just
+committee's. A boat finishing upwind on starboard tack near committee
+briefly reads as "on-grid" by the checks above; a boat rounding leeward
+mark close past pin can do the same on that side. Each excluded triangle's
+hypotenuse starts at that corner's mark and runs `HYPOTENUSE_ANGLE_DEG`
+(55°) down into the zone to its leeward edge. The committee-side cut only
+applies when `committeeFinish` is within `SAFE_FINISH_SEPARATION_MULTIPLE`
+(2 zone-widths) of `committeeStart`; the pin-side cut is always on. Both
+are capped at `COMMITTEE_TRIANGLE_MAX_FRACTION` (50%) of the actual
+pin↔committee distance, so an aggressively short test course never lets
+the two cuts overlap past the line's midpoint.
 
 ```json
 { "mode": "ongrid", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
-```
-```json
 { "mode": "offgrid", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337745000000 } }
 ```
 
-- `tranCode` — the boat's ID (as a string), same convention as laps
-- `rtcTime` — the fix's own timestamp, converted from milliseconds to
-  microseconds
-- `regatta_id` — same as laps above (see "Lap events -> RegattaUp"), omitted
-  when no regatta is selected
+`onGridWatcher.check()` re-fires `'ongrid'` on every fix while a boat
+stays in the zone, following `TX_DISTANCE_M`'s transmit cadence.
+`baseStation.js` throttles what's actually **sent**: only the genuine
+zone-entry transition sends by default, but a boat sitting on-grid
+continuously for `ONGRID_RESEND_INTERVAL_MS` (30s, not yet its own env
+var) gets a fresh send anyway, so a long dwell still reads as "alive."
+`offgrid` only sends once, on exit. The same reconnect detection that
+triggers a marks re-broadcast (`BOAT_RECONNECT_GAP_MS`, 10s gap) also
+clears this latch, so a restarted boat/fleet with a reused `BOAT_ID`
+doesn't inherit stale state; "Ping fleet" clears it too.
 
-`onGridWatcher.check()` itself still re-fires `'ongrid'` on **every**
-incoming fix for as long as the boat stays in the zone (not just the
-moment it enters), rides on actual fixes rather than a wall-clock timer -
-so how often it re-fires for a given boat follows `TX_DISTANCE_M` (the
-boat only transmits once it's moved that far - see "Running" above), same
-as it always has. What actually gets **sent to the webhook** is throttled
-on top of that, in `baseStation.js`: only the genuine transition into the
-zone triggers a send by default - a repeat `'ongrid'` re-affirmation of a
-state RegattaUp was already told about isn't worth another webhook call
-every single fix. That latch isn't permanent, though: a boat sitting
-on-grid continuously for `ONGRID_RESEND_INTERVAL_MS` (30s, not yet
-exposed as its own env var) without ever going offgrid still gets a fresh
-send, so a long pre-start dwell still reads as "alive" on RegattaUp's end
-rather than one static fact from whenever it first arrived. `offgrid`
-still only fires (and sends) once, on the transition out - there's no
-reason to keep affirming "still not there." A boat that's genuinely
-dead-still (e.g. `SIM_START_ONLY`, which reports zero speed) never clears
-`TX_DISTANCE_M` again on its own, so absent anything else it would only
-ever send its very first frame - in practice `TX_INTERVAL_MS` (see
-"Running" above, default 60s) clears the gate on a timer too, so it still
-gets a fresh `'ongrid'` send at least that often. It can also be pinged
-(see "Admin dashboard" above, whose "Ping fleet" button also clears this
-same latch), moved, or reconnected - the same
-"this boat looks like it just (re)started" detection that triggers an
-immediate marks re-broadcast (`BOAT_RECONNECT_GAP_MS`, 10s gap since its
-last frame) also clears this one boat's latch, so restarting a simulated
-boat or fleet with a reused `BOAT_ID` doesn't inherit stale on-grid state
-from the previous run and silently swallow its first genuine entry. The
-console log
-(`[baseStation] boat=N still on the start grid (Ns / 30s latch)`) shows
-how long since the last actual send alongside each "still on"
-re-affirmation, so it's visible at a glance whether a long-dwelling boat
-is about to get a fresh one or just did.
+Same durable-queue mechanics as laps - `src/onGridWebhookQueue.js`, own
+sqlite file (`REGATTAUP_ONGRID_QUEUE_DB`), same
+`REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS`.
+`REGATTAUP_WEBHOOK_ENABLED=0` disables lap and on-grid together (no
+separate switch). Editing pin/committee from the map clears every boat's
+watcher.
 
-Uses the exact same durable-queue-plus-retry mechanics as laps (see
-"Durable retry queue" above) - `src/onGridWebhookQueue.js`, same
-capped-exponential-backoff loop and shared paced drain, same `REGATTAUP_POST_INTERVAL_MS`/
-`REGATTAUP_MAX_BACKOFF_MS` settings - just its own separate sqlite file
-(`REGATTAUP_ONGRID_QUEUE_DB`), since `sql.js` overwrites its whole file on
-every save and two independent queue instances can't safely share one.
-`REGATTAUP_WEBHOOK_ENABLED=0` disables both lap and on-grid webhooks
-together - there's no separate on/off switch for on-grid alone. Editing
-the pin or committee mark from the map (see "Editing mark positions from
-the map" above) clears every boat's on-grid watcher, same as it already
-does for finish-line watchers, so a corrected mark position doesn't leave
-stale gate geometry active for the rest of the race.
-
-For testing without a boat sailing off the line seconds after startup,
-`SIM_START_ONLY=1` (see "Simulation mode" above) parks a simulated boat
-on the start line indefinitely:
+Test without a boat sailing off the line:
 ```
 SIM_START_ONLY=1 SIMULATE=1 npm run boat
 ```
 
-An ordinary (non-`SIM_START_ONLY`) simulated race also sits at its start
-position before actually departing, rather than launching upwind on its
-very first tick - without that dwell, on-grid never gets a real window to
-observe: the boat's very first transmitted fix would already reflect a
-full tick of movement past the line, and whether that lands inside or
-outside the zone is basically down to luck (initial tack side, timing), not
-something worth relying on for testing. By default (`SIM_HOLD_FOR_START=1`
-- see "Simulation mode" above) that dwell is indefinite, released by a
-SPACE press once you're ready to test the actual start; set
-`SIM_HOLD_FOR_START=0` to depart automatically instead, after
-`SIM_PRESTART_DWELL_S` seconds (default 15, `0` departs immediately).
-
 ## Mark-rounding detection -> RegattaUp
 
-On by default, same as laps and on-grid - set
-`REGATTAUP_MARK_ROUNDING_ENABLED=0` to turn it off on its own. It has its
-own switch separate from `REGATTAUP_WEBHOOK_ENABLED` (both still have to
-allow it - `REGATTAUP_WEBHOOK_ENABLED=0` still turns everything off, laps
-and on-grid included) since this was a newer event type than the other two
-and needed its own way to disable independently while RegattaUp's webhook
-endpoint support for it was still being confirmed.
+On by default; `REGATTAUP_MARK_ROUNDING_ENABLED=0` to disable
+independently (`REGATTAUP_WEBHOOK_ENABLED=0` still gates everything).
 
 ![A boat's track loops through a radius around windwardGreen, sweeping through a wide turning angle before exiting - a genuine rounding. A boat transiting past the same mark on a straight tack barely turns at all while inside the same radius.](docs/mark-rounding.svg)
 
-`src/markRoundingWatcher.js`, one instance per boat per mark (windward and
-leeward have no second physical mark between them to form a gate the way
-the finish line does, so it's watched per-mark rather than per-line).
-Earlier versions of this tried to synthesize a line (or pair of lines)
-through the mark and detect a rounding as a crossing - that turned out to
-be the wrong shape for the problem: a real rounding's heading sweeps
-through a wide, continuous arc (close-hauled on the approach, through
-roughly perpendicular during the clearance leg, to a reaching/running
-angle on departure - about 125 degrees total), almost entirely on ONE side
-of the course axis, and which side depends on which tack the boat happens
-to approach on - a fixed line (or pair of lines) that catches a rounding
-turning one way around the mark misses one turning the other way entirely.
+`src/markRoundingWatcher.js` (one per boat per mark - windward/leeward
+have no second mark to form a gate). Detects a rounding by cumulative
+turning angle (sign-agnostic) while within
+`REGATTAUP_MARK_ROUNDING_EXTENSION_M` (default 50m) of the mark, not by a
+synthesized crossing line - a real rounding sweeps ~125° almost entirely
+on one side of the course axis (which side depends on approach tack), so
+no fixed line catches both directions. A boat merely transiting past
+turns at most ~80° (one ordinary tack); `ROUNDING_MIN_SWEEP_DEG` (100)
+sits between the two with margin. Watched at all four
+windward/leeward marks regardless of which course is sailed.
 
-Instead: track the boat's own cumulative turning angle (sign-agnostic - a
-clockwise and a counterclockwise rounding both count the same way) for as
-long as it stays within `REGATTAUP_MARK_ROUNDING_EXTENSION_M` (default
-50m) of the mark. A boat merely transiting past the mark - e.g. racing the
-black marks (`SIM_COURSE_MARKS=BB`, see "Changing the course" above) and
-sailing straight through the green mark's own position on its way to/from
-the black one - barely turns at all while passing through that radius, at
-most one ordinary tack's worth (up to ~80 degrees in `simGps.js`'s own
-model); an actual rounding turns much further (~125 degrees) before it
-ever exits the radius again. `ROUNDING_MIN_SWEEP_DEG` (100) sits between
-those two figures, with real margin on both sides. Watched for all four
-windward/leeward marks (`windwardGreen`/`windwardBlack`/`leewardGreen`/
-`leewardBlack`) regardless of which course (green/black) is actually being
-sailed - whichever pair a boat is nowhere near just never fires.
-
-However `REGATTAUP_MARK_ROUNDING_EXTENSION_M` is configured, the green
-(inner) marks' own rounding radius never reaches anywhere near the
-corresponding black (outer) mark - capped to half the actual
-green<->black distance (`OUTER_MARK_SAFETY_FRACTION` in `baseStation.js`),
-measured fresh off the real published marks each time a watcher is built,
-not assumed from any fixed constant. Half rather than the full
-distance leaves a solid buffer on both sides, so a boat actually rounding
-the black mark stays clearly clear of the green radius too, rather than
-the two meeting exactly at the boundary. Only applies to the green marks -
-windwardBlack/leewardBlack are the outermost marks on the course, nothing
-sits beyond them for their own radius to reach.
-
-POSTs to the same RegattaUp webhook laps and on-grid use, with its own
-payload shape:
+The green (inner) marks' rounding radius is capped to half the actual
+green↔black distance (`OUTER_MARK_SAFETY_FRACTION`), measured fresh each
+time a watcher is built, so a black-mark rounding stays clear of the green
+radius. Only applies to green marks - black marks are outermost.
 
 ```json
 { "mode": "mark", "mark": "windwardGreen", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
 ```
+`mark` is which mark was rounded; other fields match laps/on-grid.
+`rtcTime` is the interpolated crossing instant, same upsampling as
+finish-line laps.
 
-- `mark` — which mark was rounded (`windwardGreen`, `windwardBlack`,
-  `leewardGreen`, or `leewardBlack`)
-- `tranCode` — the boat's ID (as a string), same convention as laps/on-grid
-- `rtcTime` — the interpolated crossing instant (same upsampling
-  finish-line laps use, not just the later fix's own timestamp), converted
-  from milliseconds to microseconds
-- `regatta_id` — same as laps above (see "Lap events -> RegattaUp"), omitted
-  when no regatta is selected
-
-Uses the exact same durable-queue-plus-retry mechanics as laps/on-grid
-(see "Durable retry queue" above) - `src/markRoundingWebhookQueue.js`, same
-capped-exponential-backoff loop and shared paced drain, same
-`REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` settings, its own separate sqlite file
-(`REGATTAUP_MARK_ROUNDING_QUEUE_DB`). Editing any mark from the map (see
-"Editing mark positions from the map" above) clears every boat's
-mark-rounding watchers, same as it already does for finish-line and
-on-grid watchers.
+Same durable-queue mechanics - `src/markRoundingWebhookQueue.js`, own
+sqlite file (`REGATTAUP_MARK_ROUNDING_QUEUE_DB`). Editing any mark clears
+every boat's mark-rounding watchers.
 
 ## Foul detection -> RegattaUp
 
-On by default, same as laps/on-grid/mark-rounding - set
-`REGATTAUP_FOUL_ENABLED=0` to turn it off on its own (`REGATTAUP_WEBHOOK_ENABLED`
-still gates it too).
+On by default; `REGATTAUP_FOUL_ENABLED=0` to disable independently
+(`REGATTAUP_WEBHOOK_ENABLED` still gates it).
 
-`src/foulWatcher.js`, one instance per boat, watches the same three
-segments that make up the start/finish line complex - `pin↔committeeStart`
-(the start line), `committeeStart↔committeeFinish` (the gap directly
-between the two committee boats - not a legal way through the complex
-either, now that they can be independently positioned, see "Changing the
-course" below), and `committeeFinish↔finish` (the finish line). The start
-and finish segments each have one legitimate crossing direction - the same
-committee-boat-on-the-left/outer-mark-on-the-right upwind convention
-`finishLineWatcher.js` already uses to count real laps. Crossing either one
-the other way (downwind) means the boat sailed straight through the line
-instead of racing around the course - reported as a foul, not a lap. The
-middle segment has no legitimate direction at all; crossing it either way
-is a foul.
-
-POSTs to the same RegattaUp webhook laps/on-grid/mark-rounding use, with
-its own payload shape:
+`src/foulWatcher.js` (one per boat) watches the three start/finish
+segments: `pin↔committeeStart` (start line), `committeeStart↔committeeFinish`
+(gap between committee boats), `committeeFinish↔finish` (finish line).
+Start/finish each have one legal (upwind) crossing direction; the middle
+segment has none - any crossing there is a foul.
 
 ```json
 { "mode": "foul", "reason": "downwind finish line", "regatta_id": "6a44a2531e401d60c28afcd8", "decoded": { "tranCode": "51", "rtcTime": 1785337740000000 } }
 ```
 
-- `reason` — which foul: `"downwind start line"`, `"downwind finish line"`,
-  `"through committee gap"`, or (only while the pin boundary gate below is
-  on) `"downwind pin boundary"`
-- `tranCode` / `rtcTime` — same conventions as laps/on-grid/mark-rounding
-- `regatta_id` — same as laps above (see "Lap events -> RegattaUp"), omitted
-  when no regatta is selected
+| `reason` |
+|---|
+| `downwind start line` |
+| `downwind finish line` |
+| `through committee gap` |
+| `downwind pin boundary` (only while the pin boundary gate, below, is on) |
 
-Uses the exact same durable-queue-plus-retry mechanics as the other three
-event types (see "Durable retry queue" above) - `src/foulWebhookQueue.js`,
-its own separate sqlite file (`REGATTAUP_FOUL_QUEUE_DB`).
+Same durable-queue mechanics - `src/foulWebhookQueue.js`, own sqlite file
+(`REGATTAUP_FOUL_QUEUE_DB`).
 
-**Not yet handled on RegattaUp's own side** - `mylapsWebhook` doesn't branch
-on `mode: "foul"` yet, so today it falls into that endpoint's existing
-"unknown mode" catch-all (logged to the transponder event log with
-`skip_reason: "unknown mode: foul"`, no other side effect - a safe no-op,
-not the intended handling). A `Foul` entity and the matching webhook branch
-are being built separately, directly on the RegattaUp platform.
+**Not yet handled on RegattaUp's side** - `mylapsWebhook` doesn't branch
+on `mode: "foul"` yet; falls into the "unknown mode" catch-all
+(`skip_reason: "unknown mode: foul"`, safe no-op). A `Foul` entity and
+matching webhook branch are being built separately on the RegattaUp
+platform.
 
 ### Testing with SIM_FOUL
-
-`SIM_FOUL=1` scripts one boat through the illegal path end to end, so you
-don't need to sail it by hand to see a foul fire:
 
 ```
 # terminal 1 - base station
@@ -1287,111 +763,61 @@ SIMULATE=1 npm run base
 # terminal 2 - the boat, in foul-test mode
 SIMULATE=1 SIM_FOUL=1 npm run boat
 ```
+Holds on the grid (press SPACE to release), sails `SIM_FOUL_WINDWARD_M`
+upwind, loops back through start line, finish line, committee gap (if a
+real gap exists), and the pin boundary (if the gate was on when the boat
+started) - each the wrong way. Watch terminal 1 for orange
+`[baseStation] boat=... foul - ...` lines, followed by
+`[regattaup] foul webhook sent...`. Add `REGATTAUP_WEBHOOK_ENABLED=0` to
+see detection without posting.
 
-The boat holds on the grid like any other simulated boat
-(`SIM_HOLD_FOR_START=1` by default) - press SPACE in terminal 2 to release
-it. It sails `SIM_FOUL_WINDWARD_M` (default 150m) upwind, then loops around
-and crosses back down through the start line, the finish line, the
-committee gap (real by default - see `SIM_COMMITTEE_GAP_M` above), and -
-only if the pin boundary gate (see below) is on when the boat starts -
-the gate itself, each the wrong way, sailing back upwind between each one.
-Watch terminal 1 for three (or four, with the gate on) orange lines:
+To include the pin-boundary line, turn the gate on (checkbox on `/map`,
+or `curl -X POST http://localhost:8092/api/pin-boundary -H 'Content-Type:
+application/json' -d '{"enabled": true}'`) *before* starting the boat -
+the simulator reads the flag once at startup.
 
-```
-[baseStation] boat=TK10X foul - downwind start line
-[baseStation] boat=TK10X foul - downwind finish line
-[baseStation] boat=TK10X foul - through committee gap
-[baseStation] boat=TK10X foul - downwind pin boundary
-```
-
-followed by a `[regattaup] foul webhook sent...` line for each, once it
-posts. Add `REGATTAUP_WEBHOOK_ENABLED=0` to the base station command to
-see the detection/queueing without actually posting anywhere.
-
-To include the fourth line, turn the pin boundary gate on (either the
-checkbox on the base's `/map`, or `curl -X POST
-http://localhost:8092/api/pin-boundary -H 'Content-Type: application/json'
--d '{"enabled": true}'`) *before* starting the boat in terminal 2 - the
-simulator reads the flag once, at startup, same as every other course mark
-(see "Pin boundary gate" below), so turning it on after the boat's already
-running won't add the fourth crossing to an already-in-progress test.
-There's no separate env var to force this lane on its own - it's simply
-included in the loop whenever the course it starts against already has the
-gate enabled, the same way the committee-gap lane is only included when
-there's a real gap to cross (see below).
-
-If you're missing crossings, check that both processes actually picked up
-the course you expect - both `npm run base` and `npm run boat` need a
-fresh start (or at least a Redis course-mark cache that hasn't been left
-over from an earlier run with different settings) for their published
-marks/gate state to actually match what you just configured. Specifically:
-`SIM_COMMITTEE_GAP_M=0` on either command goes back to a single shared
-committee mark, in which case the committee-gap crossing correctly never
-fires - there's nothing to cross; and the pin boundary crossing only
-appears at all when the boat itself started with the gate already on, per
-above.
+Missing crossings? Confirm both processes started fresh against the
+course you expect - `SIM_COMMITTEE_GAP_M=0` means no committee-gap
+crossing (nothing to cross), and the pin-boundary crossing only appears
+if the gate was already on when the boat started.
 
 ### Pin boundary gate
 
-An optional, off-by-default extension of the start line's own foul rule
-(above): a checkbox on the base admin map (`/map`, in the "edit marks"
-column) that, when on, makes the entire pin side of the course illegal to
-sail through downwind - indefinitely, not just the pin↔committeeStart line
-itself. Real committee courses sometimes need this: without it, a boat
-running downwind can legally escape past the pin end of the line (nothing
-currently stops a boat from swinging wide of pin and coming back around
-outside it), which this closes off entirely. Effectively, the whole port
-side of the course stops being an option for a boat sailing downwind - it
-has to come back through the finish gate to the starboard side like every
-other lap.
+Optional, off by default: a checkbox on the base admin map that makes the
+entire pin side of the course illegal to sail through downwind,
+indefinitely - without it, a boat can legally escape past the pin end of
+the line. On: the whole port side stops being an option downwind; a boat
+must come back through the finish gate.
 
-There's no position to set - just on or off. Toggling it immediately
-persists to Redis, re-broadcasts to every boat, and re-draws a dashed red
-line on the map continuing the committeeStart→pin bearing (the start line's
-own axis) way out past pin (`src/course.js`'s `getPinBoundaryFarPoint` -
-50x the start line's own length, floored at 500m, so it reads as
-"effectively unbounded" regardless of course size). That line is just a
-visual/foul-detection convenience, though - the actual rule enforced by
-`foulWatcher.js` and avoided by `simGps.js` has no far edge at all; a boat
-can never clear it by sailing further west, only by turning back through
-the finish gate.
+No position to set, just on/off. Toggling persists to Redis immediately,
+re-broadcasts, and draws a dashed red line continuing the
+committeeStart→pin bearing far past pin (`getPinBoundaryFarPoint` - 50x
+the start line's length, floored at 500m). The line is a visual
+convenience only - the actual rule has no far edge; a boat can only clear
+it by turning back through the finish gate. `simGps.js` treats this as a
+hard constraint once on (tack selection, line-clearing, and the
+finished-boat parking route all account for it, parking east of finish
+regardless of the gate).
 
-`simGps.js` treats this as a hard constraint once on: its downwind
-tack-selection pre-check, its reactive line-clearing logic, and its
-finished-boat parking route (which switched to always parking east of
-finish, never west of pin, so it's never at risk of routing through this
-side regardless of whether the gate happens to be on) all account for it,
-so a simulated fleet races normally with the gate on, never getting stuck
-"reaching back to clear the finish line to the starboard side" as it would
-with a naive implementation.
-
-`npm run reset-course` always turns this back off, same as it clears every
-other mark - it's meant to be a deliberate, per-course operator choice, not
-something that survives a reset by default (see "Changing the course"
-above). Synced to RegattaUp with no backend changes needed there: on,
-`baseStation.js` publishes a *computed* `mark:pinBoundary` entry (its far
-endpoint, recomputed automatically any time pin/committeeStart move or the
-checkbox changes) that RegattaUp's own `saveRaceMarks` function picks up
-through its ordinary generic `mark:*` scan; its map draws the same dashed
-line the base's own map does. Off, that key is simply absent, and nothing
-extra renders.
+`npm run reset-course` always turns this back off, same as every other
+mark. Synced to RegattaUp with no backend changes: on, `baseStation.js`
+publishes a computed `mark:pinBoundary` entry that RegattaUp's generic
+`mark:*` scan picks up automatically; off, the key is simply absent.
 
 ## File layout
 
-Everything this app writes to disk lands in one of four git-ignored
-directories, all relative to the repo root by default. Which ones a given
-process actually touches depends entirely on its role - **a boat and a
-base never share a directory with each other**, even when both happen to
-run from the same checkout on the same machine (e.g. testing):
+Everything lands in one of four git-ignored directories, all relative to
+the repo root by default. **A boat and a base never share a directory**,
+even on the same machine:
 
 ```
 race-config/                                 - small per-device identity/state (fixed location, not redirectable)
-  boat_id.txt                                  this device's own persistent BOAT_ID, auto-generated if unset (see "Running" below)
-  mark-name.txt                                this device's mark assignment, if any (see "Mark mode" below)
-  regatta-id.txt                               this base's default regatta selection (see "Selecting a regatta at startup" below)
-  power-schedule.txt                           this boat's scheduled-shutdown settings (see "Scheduled shutdown (boat, battery-saving)" below)
-  course_marks.json                            a boat's local cache of the last-broadcast course (see "Broadcasting marks to the rovers" below)
-  lap_webhook_queue.sqlite                      RegattaUp webhook retry queues (see "Lap events -> RegattaUp" below)
+  boat_id.txt                                  this device's own persistent BOAT_ID, auto-generated if unset
+  mark-name.txt                                this device's mark assignment, if any
+  regatta-id.txt                               this base's default regatta selection
+  power-schedule.txt                           this boat's scheduled-shutdown settings
+  course_marks.json                            a boat's local cache of the last-broadcast course
+  lap_webhook_queue.sqlite                      RegattaUp webhook retry queues
   ongrid_webhook_queue.sqlite
   mark_rounding_webhook_queue.sqlite
   foul_webhook_queue.sqlite
@@ -1406,1001 +832,481 @@ base-uploads/<regattaId>/<boatId>/           - BASE ONLY: each boat's uploaded S
   boat<boatId>_<chunk>.csv
 ```
 
-**`race-config/`** is shared by both roles but is a fixed location, never
-redirectable via `BASE_LOG_DIR`/`BOAT_LOG_DIR` - this is small, low-write-volume
-identity/state that should survive independently of wherever raw log data
-happens to be pointed this run (e.g. an SD card that gets swapped), same
-reasoning `boat_id.txt` already used before this directory existed.
+| Dir | Redirectable | Regatta-nested | Notes |
+|---|---|---|---|
+| `race-config/` | No (fixed) | No | Small, low-write identity/state; survives independent of wherever raw log data is pointed (e.g. a swapped SD card) |
+| `boat-logs/` | `BOAT_LOG_DIR` | No | A boat can't reliably know a regatta boundary - it only sees fixes and broadcasts |
+| `base-logs/` | `BASE_LOG_DIR` | Yes (`none` if unselected) | Switching regattas starts fresh local history |
+| `base-uploads/` | `BASE_UPLOAD_DIR` | Yes | Base-only even though uploaded *from* boats |
 
-**`boat-logs/`** and **`base-logs/`** are two entirely separate directories
-(not one shared parent split into subfolders) specifically so a boat's own
-track history and a base's received-fix log can never end up mixed
-together, confusingly, in one place - they're controlled by two entirely
-separate env vars (`BOAT_LOG_DIR`, `BASE_LOG_DIR`) for exactly that reason. Only
-`base-logs/` is further nested per regatta (`none` if nothing's selected),
-the same regatta-scoping Redis boat data already uses (see "Redis track
-storage" below) - switching regattas starts fresh local history there
-instead of interleaving two regattas' files together. `boat-logs/` is
-**not** regatta-nested at all - a boat has no reliable way to know a
-regatta boundary, it only ever sees GPS fixes and course-mark broadcasts,
-never a regatta id itself - so its own SD log stays flat regardless of how
-many regattas it's raced across.
-
-**`base-uploads/`** follows the same regatta-nesting as `base-logs/`, since
-it's inherently base-only too (uploaded *from* boats over WiFi, but only
-ever stored/organized on whichever machine receives them - a boat never
-writes to this directory itself). `npm run clear-base-logs` (see "Clearing
-boat data" below) clears just the active regatta's own `base-logs/` and
-`base-uploads/` - never `boat-logs/`, and never another regatta's history.
-`npm run clear-boat-logs` is the mirror image on the boat side: clears
-`boat-logs/` only, nothing else.
-
-The boat side, summarized: `npm run boat` only ever writes `race-config/`
-(its own `boat_id.txt`/`power-schedule.txt`/`course_marks.json`) and
-`boat-logs/` (its own chunked SD-card CSVs - see "Log rotation" below).
-Never `base-logs/`, never `base-uploads/` - those only exist on whichever
-machine receives uploads (the base).
+`npm run clear-base-logs` clears the active regatta's `base-logs/` +
+`base-uploads/` only, never `boat-logs/`. `npm run clear-boat-logs` clears
+`boat-logs/` only. `npm run boat` never writes `base-logs/` or
+`base-uploads/`.
 
 ## Redis track storage
 
-Every fix the base station decodes is recorded into Redis by `src/redisStore.js`
-(`REDIS_URL`, default `redis://127.0.0.1:6379`). **Everything this app stores in
-Redis lives under `regattas:<regattaId>:...`** - one complete, self-contained
-namespace per regatta, with no exceptions. Which regatta is currently selected
-is never itself stored in Redis - see "Selecting a regatta at startup" below
-for why and where that lives instead. Switching the selected regatta is switching to a fully independent workspace:
-a regatta that's never been raced before starts with no marks, no known
-boats, nothing, exactly as if this were a brand new Redis; an
-already-configured regatta picks up exactly where its own namespace left off.
-`<regattaId>` is `none` for anything recorded/created while no regatta is
-selected at all (e.g. `SIMULATE=1` testing without ever touching the regatta
-selector, a normal workflow this app still fully supports).
+Every fix the base decodes is recorded via `src/redisStore.js`
+(`REDIS_URL`, default `redis://127.0.0.1:6379`). **Everything lives under
+`regattas:<regattaId>:...`** - one self-contained namespace per regatta,
+no exceptions, so multiple regattas (or base stations) can share one
+Redis instance without collisions. Which regatta is selected is never
+itself stored in Redis (see "Selecting a regatta at startup"). `<regattaId>`
+is `none` for anything recorded with no regatta selected.
 
-This exists because a single Redis instance can genuinely be shared by
-multiple regattas happening at once - multiple base stations/locations, or
-one base switching between regattas across a season. Without full
-namespacing, two regattas' marks/tracks/boats would collide under the exact
-same key names, each silently overwriting or mixing into the other's data.
+| Key | Contents |
+|---|---|
+| `regattas:<id>:mark:<name>` | Hash: `lat`/`lon`, plus `assignedBoatId`/`assignedAt` while a mark-mode rover actively posts it |
+| `regattas:<id>:course:pin_boundary_enabled` | On/off flag; when on, also publishes `mark:pinBoundary` (computed) for RegattaUp's generic scan |
+| `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
+| `regattas:<id>:boat:<boatId>:track` | Sorted set per boat, scored by fix timestamp. `getBoatTrack(boatId, fromMs, toMs, regattaId)` |
+| `regattas:<id>:all:track` | Sorted set, every boat's fixes for the regatta. `getAllTrack(fromMs, toMs, regattaId)` |
+| `regattas:<id>:boats:known` | Set of boat IDs that reported in. `knownBoatIds()` |
+| `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
 
-Within one regatta's namespace:
-
-- `regattas:<id>:mark:<name>` — one Redis hash per course mark (`lat`/`lon`
-  fields, plus `assignedBoatId`/`assignedAt` while some rover's own mark
-  mode is actively auto-posting this mark's position - see "Mark mode"
-  below) - see "Editing mark positions from the map" below.
-  `regattas:<id>:course:pin_boundary_enabled` is a plain on/off flag (see
-  "Pin boundary gate" above) - when on, its computed endpoint is *also*
-  published as `regattas:<id>:mark:pinBoundary`, in the same `mark:<name>`
-  shape as every real mark, purely so RegattaUp's generic mark scan (scoped
-  to the same regatta id) picks it up too; it's never itself a source of
-  truth for anything in this app.
-- `regattas:<id>:course:on_grid_zone` — the on-grid detection zone's own
-  boundary, as a JSON array of `{lat, lon}` points
-  (`setOnGridZone`/`getOnGridZone`) - the exact quadrilateral
-  `OnGridWatcher.check` tests against (see `onGridWatcher.js`'s
-  `zonePolygon`), republished every time marks are broadcast (initial
-  resolve, an edit, the periodic heartbeat), so anything reading it -
-  RegattaUp, another dashboard - sees the same zone the base is actually
-  detecting against, not a separately-derived approximation.
-- `regattas:<id>:boat:<boatId>:track` — one sorted set per boat, scored by
-  the fix's own GPS timestamp (ms since epoch). Use `getBoatTrack(boatId,
-  fromMs, toMs, regattaId)` (regattaId optional, defaults to whichever is
-  currently selected) to get that boat's track, optionally within a
-  timeframe.
-- `regattas:<id>:all:track` — one sorted set holding every boat's fixes for
-  that regatta, same scoring. Use `getAllTrack(fromMs, toMs, regattaId)` to
-  get all boats' positions within a timeframe for one regatta, without
-  knowing boat IDs up front.
-- `regattas:<id>:boats:known` — a set of every boat ID that's reported in
-  for that regatta (`knownBoatIds()`), for discovering which boats exist
-  without scanning keys.
-- `regattas:<id>:boats:start_slots` / `regattas:<id>:boats:start_slot_counter`
-  — each boat's assigned start-line slot (`getOrAssignStartSlot`).
-
-Each stored fix entry is the decoded frame (`boatId, timestamp, lat, lon,
-speedKnots, headingDeg, gnssFixOk, carrSoln, numSV`) plus `receivedAt` (the
-base's own wall-clock time, useful for spotting radio-link latency/drops).
-If Redis is unreachable, `baseStation.js` logs the error and keeps running —
-console/CSV/UDP output are unaffected, matching this app's "SD/console never
-blocks on the network" philosophy elsewhere.
+Each stored fix: decoded frame (`boatId, timestamp, lat, lon, speedKnots,
+headingDeg, gnssFixOk, carrSoln, numSV`) + `receivedAt`. If Redis is
+unreachable, `baseStation.js` logs and keeps running - console/CSV/UDP
+unaffected.
 
 ### If Redis runs out of space
 
-Fixes are recorded continuously whenever a boat is transmitting, not just
-while a race is actually running — a fleet roaming around for practice
-between races adds up too. Two things keep this from becoming a real
-problem:
+- **Auto-expiry**: track keys get a TTL (`REDIS_TRACK_RETENTION_HOURS`,
+  default 48h) set once, on the first write of each day - not refreshed
+  per-write, so a day's races age out together ~2 days after that day's
+  *first* fix. Marks/regatta selection/on-grid zone/pin boundary never
+  expire.
+- **Graceful degradation**: a failed track write is caught in
+  `redisStore.js`, never thrown - console/CSV/UDP and lap/on-grid/
+  mark-rounding/foul detection (in-memory watchers + sqlite queues, not
+  live Redis reads) are unaffected. Only new track history stops
+  accumulating. Rate-limited console warnings (once, then ≤1/30s) and an
+  amber Redis-status dot on the dashboard.
 
-- **Auto-expiry.** Track keys (`regattas:<id>:boat:<boatId>:track`/
-  `regattas:<id>:all:track`) get a TTL
-  (`REDIS_TRACK_RETENTION_HOURS`, default 48h) set once, the first time
-  each is written on a given day - not refreshed on every later write, so a
-  whole day's races age out together roughly two days after the *first* fix
-  of the day, not a rolling window after the most recent one. Nothing else
-  this app stores in Redis (marks, the selected regatta, the on-grid zone,
-  the pin boundary flag) has a TTL at all, ever — this only ever touches
-  track history.
-- **Graceful degradation if it still fills up.** A track write that fails
-  (Redis genuinely out of room, a network blip, whatever) is caught inside
-  `redisStore.js` itself, never thrown - console/CSV/UDP output for that
-  same fix are completely unaffected, and so is lap/on-grid/mark-rounding/
-  foul detection, which run off in-memory watchers and SQLite-backed
-  webhook queues, not live Redis reads. RegattaUp keeps getting real-time
-  events even if Redis is completely full; only new *track history* (the
-  map/replay data) silently stops accumulating until there's room again.
-  Failures are rate-limited in the console (one immediately, then at most
-  once per 30s while it keeps happening, so a full Redis doesn't bury the
-  console under one line per fix) and surfaced on the admin dashboard: the
-  subtitle's Redis dot turns amber ("connected, track writes failing")
-  instead of staying green, and the "Redis memory" card shows the same
-  failure count.
+The "Redis memory" card shows usage against `REDIS_MEMORY_LIMIT_MB`
+(default 250) - set to your actual plan size; a managed instance typically
+won't report its own limit via `CONFIG GET`.
 
-The "Redis memory" card (`adminServer.js`'s `renderRedisMemoryCard`) shows
-current usage against `REDIS_MEMORY_LIMIT_MB` (default 250) - set this to
-your actual plan size. A managed instance (Redis Cloud and similar)
-typically won't report its own configured limit via `CONFIG GET` (it's
-enforced by the platform's plan size, not a queryable Redis setting), so
-there's no way for this app to detect it on its own the way `diskSpace.js`
-can ask the OS directly for real free space.
-
-**Eviction policy**: if you want Redis to proactively free room on its own
-before writes start failing, set `volatile-ttl` on the instance (Redis
-Cloud console → your database's configuration, not something this app can
-set for you — `CONFIG SET` is typically restricted the same way `CONFIG
-GET maxmemory`/`maxmemory-policy` usually are on a managed instance).
-`volatile-ttl` only ever evicts keys that actually have a TTL - which, per
-above, means only track history, never marks/regatta selection/the on-grid
-zone - and it evicts whichever key is closest to expiring first, i.e. the
-*oldest* day's data goes first. Avoid `allkeys-lru`/`allkeys-random` here -
-those can evict anything, including a currently-in-progress race's own
-track key, which is real data loss, not just a delayed write.
+**Eviction policy**: for proactive eviction before writes fail, set
+`volatile-ttl` on the instance (via the provider's console, not this app)
+- only evicts keys with a TTL (i.e. only track history, oldest day first).
+Avoid `allkeys-lru`/`allkeys-random` - those can evict an in-progress
+race's own track key.
 
 ### Switching between Redis servers
 
-Two ways to point this at a Redis server, and they don't combine — if
-`REDIS_URL` is set, it wins outright and `REDIS_ENV` (plus everything
-under it) is ignored entirely, not merged with it.
-
-`REDIS_ENV` picks a connection preset in `config.js` (default `local`,
-`127.0.0.1:6379`). `production` points at the Redis Cloud instance; its
-host/port are fine to keep in source, but credentials never are — set these
-in your environment (or a git-ignored `.env`), not in the repo:
+`REDIS_URL`, if set, wins outright over `REDIS_ENV` (not merged).
+`REDIS_ENV` picks a preset in `config.js` (default `local`,
+`127.0.0.1:6379`; `production` points at Redis Cloud - credentials go in
+environment/`.env`, never source):
 
 ```
 REDIS_ENV=production REDIS_PASSWORD=<password> npm run base
 ```
 
-- `REDIS_USERNAME` — defaults to `default` (Redis Cloud's default ACL user)
-- `REDIS_PASSWORD` — required for `production`, no default
-- `REDIS_TLS` — set to `1` if your database requires TLS (this one currently doesn't)
+| Var | Default | Notes |
+|---|---|---|
+| `REDIS_USERNAME` | `default` | Redis Cloud's default ACL user |
+| `REDIS_PASSWORD` | none | Required for `production` |
+| `REDIS_TLS` | unset | `1` if the database requires TLS |
 
-For anything outside the two presets, `REDIS_URL` still works — a full
-connection string (e.g. `REDIS_URL=redis://host:port npm run base`)
-passed straight to `ioredis` in place of a preset. Setting it overrides
-`REDIS_ENV` *and* makes `REDIS_USERNAME`/`REDIS_PASSWORD`/`REDIS_TLS`
-irrelevant even if they're also set — those three are only ever read as
-part of building the preset's own connection object
-(`redisStore.js`'s constructor branches on `url` vs `connection` and
-only one is ever actually used), so there's no scenario where `REDIS_URL`
-plus one of those three combine into anything.
-
-Every process that talks to Redis (`npm run base`, `npm run reset-course`,
-`npm run clear-base-logs`) resolves this identically via `config.redis`, so
-whichever you choose applies consistently across all of them.
+`REDIS_URL` works for anything outside the two presets - a full connection
+string, overriding `REDIS_ENV` and making the three vars above irrelevant.
+Every Redis-talking process (`base`, `reset-course`, `clear-base-logs`)
+resolves identically via `config.redis`.
 
 ### Clearing boat data (`clear-base-logs` / `clear-boat-logs`)
 
 ```
 npm run clear-base-logs
 ```
-
-Deletes every boat-related key for the **currently selected regatta only**
-(each boat's own track, `all:track`, `boats:known`, and start-slot
-assignments - see "Redis track storage" above for the full key shapes) so a
-fresh fleet can race the same course without stale boats/tracks left over
-from earlier runs. Never touches any other regatta's own namespace. The
-course marks are left untouched. Respects `REDIS_ENV`/`REDIS_URL` the same
-way `base` does (`boat` doesn't touch Redis at all - see "Broadcasting marks
-to the rovers" above), so point it at whichever Redis you actually want
-cleared.
-
-Also clears this base's own local files for that same regatta -
-`BASE_LOG_DIR/<regattaId>/base_station_received_*.csv` and everything under
-`BASE_UPLOAD_DIR/<regattaId>/` (see "Log rotation"/"Uploading boat logs to the
-base over WiFi" above) - so a base can be fully reset after testing (e.g. a
-`radio-congestion` run, see "Congestion-testing the radio" above) without
-leftover fake boats in its own logs or dashboard, not just Redis. Never
-touches `BOAT_LOG_DIR` - a boat's own SD log is a completely separate
-directory (see "File layout" above), untouched even on a machine running
-both roles for testing. Also removes anything still sitting in the
-pre-regatta-nesting flat layout (`base_station_received_*.csv` directly in
-`BASE_LOG_DIR`, a boat-id directory directly in `BASE_UPLOAD_DIR`) - not
-regatta-scoped, since those predate the whole regatta-nesting concept and
-there's nothing to scope them to.
-
-`npm run clear-base-logs` is a **base-side** command - it never touches
-`BOAT_LOG_DIR`, and a boat has no Redis access at all (see "Broadcasting
-marks to the rovers" above), so it has nothing to clear on a boat anyway.
-To reset a **boat's** own local SD-card log instead, run this on the boat:
+Deletes every boat-related Redis key (tracks, `all:track`, `boats:known`,
+start-slot assignments) for the **currently selected regatta only** -
+course marks untouched, other regattas untouched. Also clears this base's
+own local files for that regatta
+(`BASE_LOG_DIR/<regattaId>/base_station_received_*.csv`,
+`BASE_UPLOAD_DIR/<regattaId>/`) plus anything left in the old
+pre-regatta-nesting flat layout. Never touches `BOAT_LOG_DIR`. Respects
+`REDIS_ENV`/`REDIS_URL`.
 
 ```
 npm run clear-boat-logs
 ```
-
-Deletes every chunked CSV file (and its `.uploaded` marker) under
-`BOAT_LOG_DIR` (default `boat-logs/`, see `src/sdLogger.js`) - this boat's
-entire local track history, gone, back to a clean slate. Doesn't touch this
-device's own identity/state in `race-config/` (`boat_id.txt` included -
-this does **not** generate a new `BOAT_ID`, only clears track history) or
-`BASE_LOG_DIR` if this same machine also happens to be running the base role for
-testing. There's no regatta scoping here at all - a boat has no regatta
-concept (see "File layout" above), so this always clears the boat's entire
-history regardless of how many regattas it's raced across.
+Run on the boat: deletes every chunked CSV (and `.uploaded` marker) under
+`BOAT_LOG_DIR` - full local history reset. Doesn't touch `boat_id.txt` (no
+new `BOAT_ID`) or `BASE_LOG_DIR`. No regatta scoping - a boat has no
+regatta concept.
 
 ### Changing the course
 
-The course has eight marks (`src/course.js`'s `MARK_NAMES`): `pin`,
-`committeeStart`, `committeeFinish`, and `finish` make up the start/finish
-complex (two independently-positioned committee boats - see
-`SIM_COMMITTEE_GAP_M` above, and `SIM_START_LINE_POSITION` for where along
-the beat it sits), and there are
-two windward marks and two leeward marks - a closer **green** pair (the
-short course) and a further-out **black** pair (the long course), matching
-how a real committee lays two mark pairs on the same axis so either course
-can be called without re-laying anything. `SIM_COURSE_LENGTH_NM` sets the
-overall, black-pair length; green isn't independently configurable -
-`windwardGreen`/`leewardGreen` always sit exactly halfway between the
-course's center and their respective black mark, so the short course is
-always exactly half the long course's length, no separate knob to put the
-two pairs out of that proportion. **Which pair the simulator (`simGps.js`)
-actually races is `SIM_COURSE_MARKS`** (default `BB`, the plain long course
-- see the env var table above for the other three combinations) -
-`pin`/`committeeStart`/`committeeFinish`/`finish` are never targeted
-directly by the tacking logic regardless.
+Eight marks (`src/course.js`'s `MARK_NAMES`): `pin`, `committeeStart`,
+`committeeFinish`, `finish` (start/finish complex, two independent
+committee boats), plus green (short course) and black (long course)
+windward/leeward pairs on the same axis. `SIM_COURSE_LENGTH_NM` sets the
+black-pair length; green always sits halfway to center. `SIM_COURSE_MARKS`
+picks which pair the simulator actually races.
 
 ```
 npm run reset-course
 ```
+Deletes all eight `mark:*` keys plus the on-grid zone and pin-boundary
+flag for the currently-resolved regatta, then immediately republishes a
+fresh course from current `SIM_*` defaults - one atomic command, never a
+gap where marks are just gone. Prints every geometry parameter before
+publishing. Never touches other regattas or boat tracks (pair with
+`clear-base-logs` for that).
 
-Deletes all eight `mark:*` keys plus the on-grid zone and the pin boundary
-gate's own flag, for whichever regatta `REGATTAUP_REGATTA_ID`/regatta-id.txt
-currently resolves to (see "Selecting a regatta at startup" below - this
-script has no base station process to inherit a live selection from, so it's
-the only source it has; prints exactly which regatta it's about to touch
-before doing anything), then immediately
-republishes a fresh course from current defaults (`SIM_CENTER_LAT`/
-`SIM_CENTER_LON`/`SIM_COURSE_LENGTH_NM`/`SIM_START_LINE_POSITION`/
-`SIM_COMMITTEE_GAP_M`) - one command, not a delete followed by hoping
-something else republishes it later. There's no
-scenario where the marks should just be *gone*: a boat or the admin
-dashboard querying in that gap would see no course at all. Prints every
-parameter that shapes the geometry before publishing (course length,
-start/finish line lengths, committee gap, ...) so it's obvious exactly
-what's about to replace the old course. Never touches any other regatta's
-own namespace. Boat tracks are left untouched — pair with `npm run
-clear-base-logs` if you want those cleared too.
-
-**This is the only thing that ever resets published marks.** Changing
-`SIM_COURSE_LENGTH_NM`, `SIM_CENTER_LAT`, `SIM_CENTER_LON`,
-`SIM_START_LINE_POSITION`, or `SIM_COMMITTEE_GAP_M` does nothing to a
-course that's already
-published - `base` checks the *actual* published course against what
-you've requested on startup and, if they genuinely differ, warns loudly on
-the console rather than changing anything. Run `reset-course` yourself
-first, then restart `base`, to actually apply new values. This is
-deliberate, not a missing feature: this Redis instance can be the same one
-a real committee's real course is published on (`REDIS_ENV=production` is
-one env var away - see "Switching between Redis servers" above), and a
-routine test restart with one env var set must never be able to silently
-wipe that out. (If you're upgrading from a version of this app that only
-had a single windward/leeward mark, or a single shared `committee` mark
-instead of independent `committeeStart`/`committeeFinish`, a boat's old
-`course_marks.json` cache in that shape is detected and ignored
-automatically - no crash, it just waits for a fresh broadcast in the
-current shape.)
+**This is the only thing that resets published marks.** Changing
+`SIM_COURSE_LENGTH_NM`/`SIM_CENTER_LAT`/`SIM_CENTER_LON`/
+`SIM_START_LINE_POSITION`/`SIM_COMMITTEE_GAP_M` does nothing to an
+already-published course - `base` checks the actual published course
+against requested values on startup and warns loudly rather than changing
+anything, since this Redis can be the same one a real committee's course
+is published on. Run `reset-course` first, then restart. (An older
+single-mark/single-committee `course_marks.json` cache on a boat is
+detected and ignored automatically, no crash.)
 
 ### Broadcasting marks to the rovers
 
-A real rover has no Redis access of its own (see `finishLineWatcher.js`'s
-module comment), so the base station periodically radios the current course
-marks out to every boat, using a second frame type alongside the regular
-position frame (`protocol.js`'s `encodeMarks`/`decodeMarks`, its own sync
-byte since it isn't the same length). Every boat's `radioLink.js` byte
-stream already recognizes both frame types, so nothing else needs wiring up.
+A rover has no Redis access, so the base periodically radios the current
+marks out using a second frame type (`protocol.js`'s
+`encodeMarks`/`decodeMarks`, own sync byte). Each boat keeps marks in
+memory and writes them to `race-config/course_marks.json`, so a
+reboot/restart has a last-known course immediately. Best-effort, not
+guaranteed sync - a missed broadcast just waits for the next one.
 
-Each boat keeps the latest marks in memory and also writes them to
-`race-config/course_marks.json`, so a reboot or restart has a last-known
-course immediately on the next boot, without waiting for the next
-broadcast. This is best-effort, not a guaranteed sync - if a boat misses one
-broadcast (radio dropout, powered on late), it just gets the next one; no
-ack/retry, since marks essentially never change mid-race and the persisted
-copy already covers the "just missed it" case.
+The base broadcasts the moment marks resolve (polls Redis every 5s until
+published, not a one-shot check) and again immediately whenever a
+previously-unseen `boatId` is heard from. `MARKS_BROADCAST_INTERVAL_MS`
+(default 60000) governs the ongoing heartbeat re-send as a safety net.
 
-The base doesn't wait for a fixed interval to send the *first* one: it
-broadcasts the moment marks actually resolve (real hardware polls Redis
-every 5s until an operator publishes them, rather than giving up after one
-look - an operator setting up the course after the base is already running
-is a normal sequence, not an error), and again immediately whenever a
-previously-unseen boatId is heard from, so a boat joining after the base
-already knows the course doesn't have to wait either.
-`MARKS_BROADCAST_INTERVAL_MS` (default 60000) governs the ongoing
-heartbeat re-send after that, purely as a safety net for a boat that missed
-both of the above - see "Tuning knobs" below.
+Works the same in `SIMULATE=1` - `simRadioLink.js` has every simulated
+boat and the base bind the same shared UDP port (`SIM_PORT`), mirroring
+real RF sharing (no per-boat host tracking), and works unchanged over a
+real LAN, not just localhost.
 
-This also works in `SIMULATE=1` mode, no real radios needed to test it, and
-mirrors the real radio model exactly rather than approximating it:
-`simRadioLink.js` has every simulated boat and the base bind the *same*
-shared UDP port (`SIM_PORT`) and broadcast to it, the same way every real
-radio shares one RF channel - there's no per-boat host/address tracking at
-this layer at all, on either side, the same as real hardware (a boat's
-`boatId` lives in the frame payload, not the radio addressing - see
-`protocol.js`). That also means this works unchanged across a real LAN,
-not just localhost: put the boat on a different machine on the same
-subnet and it just works, no host/IP to configure - broadcast reaches it
-either way.
-
-The "immediately whenever a previously-unseen boatId is heard from" path
-above still leaves a chicken-and-egg gap for a boat's own very first
-start, though: the base only re-broadcasts once it's actually heard from
-that boatId, but `SIMULATE_GPS` waits for fresh marks before it'll send
-anything at all. `src/boatAgent.js` closes that gap itself: with
-`config.simulateGps` set, it sends one throwaway frame at startup, before
-it even has real marks, using the exact same encode/send path a real fix
-would - just enough for the base to hear this boatId and broadcast right
-away, rather than this boat sitting idle for up to
-`MARKS_BROADCAST_INTERVAL_MS` waiting on the periodic heartbeat. Its
-position is a best guess (last-known marks from disk if this boat has run
-before, else `SIM_CENTER_LAT`/`SIM_CENTER_LON`) rather than an arbitrary
-sentinel like `(0,0)` - every position-based watcher on the base only
-compares a boat's fixes against its own previous one, so keeping this
-close to where the boat will actually start avoids a spurious crossing on
-the real fix that follows it. With this in place you shouldn't need to
-wait on `MARKS_BROADCAST_INTERVAL_MS` at all to see a simulated boat get
-the course - if you do, something's stuck (see the base's console log for
-what it's currently waiting on).
+A boat's very first start with `SIMULATE_GPS`/no real GPS closes a
+chicken-and-egg gap itself: `boatAgent.js` sends one throwaway frame at
+startup (before real marks exist) so the base hears the `boatId` and
+broadcasts right away, using a best-guess position (last-known marks from
+disk, or `SIM_CENTER_LAT`/`SIM_CENTER_LON`) rather than `(0,0)`, avoiding
+a spurious crossing on the first real fix.
 
 ### Log rotation
 
-CSV logs (the boat's SD card log, and the base station's received-fix log)
-are pruned automatically: anything older than `LOG_RETENTION_DAYS` (default
-7) gets deleted, checked at startup and, for the base station, again on
-every write (so a laptop left running for a multi-day regatta still rotates
-at midnight instead of growing one file forever). See `src/logRotation.js`.
+CSV logs (boat SD log, base received-fix log) are pruned automatically:
+anything older than `LOG_RETENTION_DAYS` (default 7) is deleted, checked
+at startup and on every write. See `src/logRotation.js`.
 
-The boat's log lives in `BOAT_LOG_DIR` (default `boat-logs/`) and is
-segmented per boat *and* per time chunk (`boat<id>_<YYYY-MM-DDTHH-MM>.csv`,
-chunk width set by `LOG_CHUNK_MINUTES` - default 10 minutes, see
-`src/sdLogger.js`) - every fix is appended to whichever chunk's file its own
-GPS timestamp falls into, not wall-clock write time, and a restarted
-process resumes appending to the current chunk's file rather than starting
-a new one (the file is keyed by chunk, not by session). Smaller chunks mean
-each one becomes upload-eligible sooner (see "Uploading boat logs to the
-base over WiFi" below) at the cost of more, smaller files.
+| | Location | Segmented by |
+|---|---|---|
+| Boat log | `BOAT_LOG_DIR` (default `boat-logs/`) | Per boat + time chunk (`boat<id>_<YYYY-MM-DDTHH-MM>.csv`, `LOG_CHUNK_MINUTES` wide, default 10min). Keyed by the fix's own GPS timestamp, not wall-clock write time - a restart resumes the current chunk |
+| Base log | `BASE_LOG_DIR` (default `base-logs/`) | Per day, nested per regatta (`none` if unselected) - switching regattas starts a fresh file even same-day |
 
-The base station's log lives in `BASE_LOG_DIR` (default `base-logs/`) instead -
-a completely separate directory from `BOAT_LOG_DIR` (see "File layout"
-above), never shared even when both roles happen to run on one machine -
-and is named per day, nested under whichever regatta is currently selected
-(`BASE_LOG_DIR/<regattaId>/base_station_received_<date>.csv`, `none` if nothing
-is, same regatta-scoping Redis boat data already uses; switching regattas
-starts a fresh file even on the same day rather than interleaving two
-regattas' frames together) for the same by-age pruning to apply to it too,
-instead of one file growing without bound across an entire season. Neither
-ever prunes rows *within* a file that's still being actively written, only
-whole files once they age out.
-
-The lap webhook retry queue (`lapWebhookQueue.js`'s sqlite file) isn't
-touched by this - it already self-cleans on successful delivery, and isn't
-a rotating log in the same sense.
+Neither prunes rows within a file still being written, only whole aged-out
+files. The webhook retry queues aren't touched here - they self-clean on
+delivery.
 
 ### Disk space
 
-Both admin dashboards show a "Disk space" card (free space, total space,
-and a green **OK**/red **ALERT** status - alert below 10% free) for the
-filesystem holding that side's own log directory - `BASE_LOG_DIR` on the base,
-`BOAT_LOG_DIR` on the boat - alongside a reminder of that side's own log
-rotation schedule (see "Log rotation" above). See `src/diskSpace.js`.
+Both dashboards show a "Disk space" card (free/total, green **OK**/red
+**ALERT** below 10% free) for the filesystem holding that side's log
+directory. See `src/diskSpace.js`.
 
-If free space still drops to **5%** despite `LOG_RETENTION_DAYS`'s normal
-age-based pruning - a longer-than-planned race day, retention set too
-generously, some other process eating the same disk - both the boat and
-the base run an independent check every 60 seconds
-(`src/logRotation.js`'s `pruneForDiskSpace`) that starts **deleting the
-oldest of that side's own CSV log files** (by last-modified time, one at a
-time, re-checking free space after each) until back above 5% or there's
-nothing left to delete. This is a last-resort safety valve against a full
-disk silently breaking log writes and webhook queues, not a normal part of
-log rotation - every deletion is logged loudly
-(`[logRotation] disk critically low (...% free) - deleted oldest log
-file: ...`). It only ever touches this side's own rotating CSVs (the
-same files/pattern `LOG_RETENTION_DAYS` already prunes by age) - it never
-touches `base-uploads` (see below), webhook retry queues, or anything on
-the other side of the radio link.
+If free space drops to **5%** despite age-based pruning, both sides run an
+independent check every 60s (`pruneForDiskSpace`) that starts **deleting
+the oldest CSV log files** (one at a time, re-checking after each) until
+back above 5% or nothing's left. Last-resort safety valve, logged loudly
+each time. Never touches `base-uploads`, webhook queues, or the other side
+of the radio link.
 
 ### Uploading boat logs to the base over WiFi
 
-A boat's SD card log (`src/sdLogger.js`) is the durable backup if the
-telemetry radio drops out, but it only exists on that one boat's SD card.
-If the boat's own WiFi happens to reach the base station at some point
-(dockside, back at the trailer, wherever), it pushes its completed chunked
-log files there too, as a second, off-boat copy - `src/uploadServer.js`
-(base) and `src/uploadClient.js` (boat).
+A boat's SD card log is the durable backup if the radio drops - if the
+boat's WiFi reaches the base (dockside, at the trailer), it also pushes
+completed chunk files there as an off-boat copy
+(`src/uploadServer.js`/`src/uploadClient.js`).
 
-**How the boat finds the base**: the base doesn't need to be configured
-into the boat at all - it publishes its own LAN IP and upload port
-alongside the course marks broadcast (`protocol.js`'s `encodeMarks`,
-auto-detected via the first non-internal IPv4 interface it finds, override
-with `BASE_IP` if that picks the wrong one). A boat that's never received
-a broadcast, or received one with no IP in it (`0.0.0.0` - the base
-couldn't detect one), just doesn't attempt uploads until it does.
+**Discovery**: the base doesn't need to be configured into the boat - it
+publishes its own LAN IP and upload port alongside the marks broadcast
+(auto-detected, override with `BASE_IP` if wrong interface picked). A boat
+that's never received a broadcast (or got `0.0.0.0`) just doesn't attempt
+uploads yet.
 
-**`UPLOAD_ENABLED`** (default on, set to `0` to turn off) only gates the
-actual file transfer - the periodic health-check ping underneath it always
-runs regardless, since that ping is also the only way the base ever learns
-a boat's IP/admin port (see the admin dashboard's per-boat "dashboard"
-link below). Turning off log uploads on a boat doesn't make it disappear
-from the base's own dashboard.
+`UPLOAD_ENABLED` (default on) only gates the file transfer - the periodic
+health-check ping (also how the base learns a boat's IP/admin port) always
+runs.
 
-**Fault tolerance** (a boat is expected to drift in and out of WiFi range
-constantly, so every part of this is built to fail safely and just retry,
-never to assume the connection will hold):
-- The boat polls (`UPLOAD_CHECK_INTERVAL_MS`, default 15s) rather than
-  holding a persistent connection - "try, fail, try again shortly" instead
-  of needing to detect a disconnect.
-- Each attempt has its own timeout (`UPLOAD_TIMEOUT_MS`, default 5s) so a
-  boat that's just driven out of range doesn't hang on a dead connection.
-- The base writes incoming uploads to a `.part` file and only renames it
-  into place once the full body has actually arrived - a connection
-  dropping mid-upload leaves a stray `.part` file, never a truncated file
-  under the real name that could be mistaken for a complete one.
-- The boat only marks a file as uploaded (a companion `<file>.csv.uploaded`
-  marker, checked before ever attempting that file again) after the base
-  has actually acknowledged it with a 200 - a lost acknowledgment just
-  means a harmless, idempotent re-upload next time, not a lost file.
-- The file currently being written (the current chunk) is never an upload
-  candidate - only completed, fixed chunk files are.
-- One file at a time, oldest first - a boat that's been out of range for a
-  while catches up in order on subsequent connections rather than skipping
-  straight to the newest.
+**Fault tolerance**:
+- Boat polls (`UPLOAD_CHECK_INTERVAL_MS`, 15s) rather than holding a connection
+- Each attempt times out (`UPLOAD_TIMEOUT_MS`, 5s)
+- Base writes to `.part` and only renames on full arrival - a dropped connection never leaves a truncated real file
+- Boat only marks a file uploaded (`<file>.csv.uploaded` marker) after a 200 - a lost ack just means a harmless re-upload
+- The chunk currently being written is never a candidate
+- One file at a time, oldest first
 
-Uploaded files land in `BASE_UPLOAD_DIR` (default a `base-uploads` directory
-next to `BASE_LOG_DIR`, deliberately separate from the base's own
-`base-logs` - that's this machine's own received-fix log, not a dumping
-ground for every boat's SD card backup), organized one subdirectory per
-regatta (whichever one is currently selected when the upload actually
-arrives - `none` if nothing is, same regatta scoping Redis boat data
-already uses), then one subdirectory per boat within that by BOAT_ID
-(`base-uploads/<regattaId>/<boatId>/boat<boatId>_<chunk>.csv`) so neither a
-multi-boat fleet's files, nor two different regattas' worth of history, end
-up mixed together. Unlike `base-logs`,
-`base-uploads` is **not** pruned by `LOG_RETENTION_DAYS` (or by the
-emergency low-disk cleanup - see "Disk space" below) - it's meant to
-be the durable, centrally-collected copy that outlives whatever retention
-policy applies to each boat's own rotating SD card log, so nothing removes
-it automatically. Set `UPLOAD_ENABLED=0` on a boat to skip attempting
-uploads entirely (the periodic health-check ping that reports this boat's
-IP/admin port to the base still runs regardless - see "`UPLOAD_ENABLED`"
-above).
+Lands in `BASE_UPLOAD_DIR` (default `base-uploads`, separate from
+`base-logs`), nested `<regattaId>/<boatId>/`. **Not** pruned by
+`LOG_RETENTION_DAYS` or emergency low-disk cleanup - meant to be the
+durable centrally-collected copy. `UPLOAD_ENABLED=0` skips uploads only
+(health-check ping still runs).
 
-The boat gzips each file before sending (CSV text compresses well, and a
-smaller transfer has a better chance of finishing inside a short/marginal
-WiFi window than saving bandwidth as such - these files are small either
-way). The base decompresses on the way in, so what actually lands in
-`base-uploads` is a plain, immediately-readable `.csv` - identical to what
-the boat originally wrote, not something you need to `gunzip` yourself
-before opening it.
+The boat gzips each file before sending (small files, but a better chance
+of finishing inside a marginal WiFi window); the base decompresses on
+arrival, so `base-uploads` holds plain readable `.csv` files.
 
 ### Admin dashboard
 
-A small live-stats web page on the base station (`src/adminServer.js`,
-default port 8092 - open `http://<base-ip>:8092` in a browser) for a
-glanceable view of what's happening during a race: boats seen, total
-tracks recorded, tracks and lap counts per boat, radio link quality
-(frames received / sync errors), and upload activity (attempts,
-successes, failures, bytes sent, and each boat's self-reported pending
-count). It reloads itself every 5 seconds; there's also a `GET
-/api/stats` JSON endpoint if you want to pull the same data into something
-else. Everything in this section applies to both `npm run base` and
-`npm run basertk` (the same dashboard code, `basertk` just also wires in
-the TMODE3/survey-in cards described further below) - `npm run rtk`'s own
-much smaller dashboard is covered separately under "RTK-only mode" above.
+Live-stats page on the base station (`src/adminServer.js`, default port
+8092, `http://<base-ip>:8092`): boats seen, tracks recorded, tracks/laps
+per boat, radio link quality, upload activity. Reloads every 5s; `GET
+/api/stats` for the same data as JSON. Applies to both `npm run base` and
+`npm run basertk` (`rtk`'s own smaller dashboard is separate, see
+"RTK-only mode").
 
-This is a live "what's happening right now" view, not a historical
-record - the counters (`src/stats.js`) are in-memory only and reset on
-restart. The durable records are Redis (tracks) and `base-uploads` (log
-files); the dashboard just reflects them plus some things Redis doesn't
-track at all, like radio link quality and upload success/failure counts.
+In-memory only (`src/stats.js`) - resets on restart. Durable records are
+Redis (tracks) and `base-uploads` (files); the dashboard reflects both
+plus things Redis doesn't track (link quality, upload counts).
 
-A **Regatta** card lets an operator pick which RegattaUp regatta this base
-station is currently reporting for - fetched from `POST
-/api/functions/getActiveRegattas` (`src/baseStation.js`'s
-`refreshActiveRegattas`, no auth, refreshed every
-`REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` in the background) and persisted
-locally to `regatta-id.txt` on this base (`src/baseStation.js`'s
-`selectRegatta`, via `regattaIdFile.js` - see "Selecting a regatta at
-startup" below) so it survives a base restart. If nothing's selected, the card shows a warning - pick one before
-racing. The whole regatta object (not just its id) is stored, so if the
-selected regatta later drops out of RegattaUp's own "active" list before its
-own `end_date`, this base keeps reporting for it right up until that date -
-only once `end_date` actually passes does the selection get cleared
-automatically, with a console warning to pick another one.
+**Regatta card**: picks which RegattaUp regatta this base reports for
+(`POST /api/functions/getActiveRegattas`, refreshed every
+`REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS`), persisted to `regatta-id.txt`.
+Shows a warning if nothing's selected. The whole regatta object is stored,
+so a regatta that later drops off RegattaUp's "active" list still gets
+reported for until its own `end_date` passes, then auto-clears with a
+console warning.
 
 ### Selecting a regatta at startup
 
-Since every mark/on-grid-zone/pin-boundary/track key now lives under
-`regattas:<id>:...` (see "Redis track storage" above), the base resolves
-which regatta to use *before* touching the course at all, in this order,
-logged clearly (`[baseStation] regatta: ...`) as early as this resolution
-itself happens. **Which regatta is selected is never stored in Redis** - a
-single Redis instance can be shared by multiple base stations at once (see
-"Redis track storage" above), and a Redis-side selection key would be one
-global value every base sharing that Redis would fight over, exactly the
-collision this whole namespacing scheme exists to avoid for marks/tracks/
-boats. Instead, selection is entirely local to this process and this
-machine:
+Resolved before touching the course at all, logged as
+`[baseStation] regatta: ...`. Never stored in Redis - a shared Redis
+instance would otherwise have every base fighting over one global value;
+selection is entirely local to this process/machine.
 
-1. **`REGATTAUP_REGATTA_ID`**, if set - persisted to `regatta-id.txt`
-   immediately (see below) and applied, as long as it matches one of
-   RegattaUp's currently active/future regattas.
-2. **Whatever's persisted in `regatta-id.txt`** - the same file
-   `REGATTAUP_REGATTA_ID` writes to, so whichever was used most recently (an
-   explicit env var on an earlier run, or a pick from the dashboard/terminal
-   prompt) is what a later run defaults to without needing the env var
-   repeated every time. Stores `{"id": ..., "name": ...}` - the name is
-   display-only (a startup log line, the prompt below), matching is always
-   by id against RegattaUp's live list.
-3. **An interactive terminal prompt**, if none of the above resolved anything
-   and this process has a real TTY attached (a systemd/piped/background run
-   has no one to answer, so this step is skipped there, falling to the
-   automatic pick below instead): fetches and lists the current
-   active/future regattas, asks for a number, re-prompts on anything that
-   doesn't parse to a valid choice.
-4. **Automatically, the closest active/future regatta to today** - only
-   reached with no TTY (a systemd/piped/background run, since the prompt
-   above blocks until answered whenever one's attached): 0 distance if a
-   regatta is currently running (`start_date <= today <= end_date`),
-   otherwise however far off the nearer boundary is. Exists so a freshly-
-   installed service starts reporting immediately instead of sitting idle
-   until someone finds the admin dashboard - it's exactly as overridable
-   afterward as any other pick.
+| Order | Source | Notes |
+|---|---|---|
+| 1 | `REGATTAUP_REGATTA_ID` env var | Persisted to `regatta-id.txt` immediately, must match an active/future regatta |
+| 2 | `regatta-id.txt` | Whatever was last used (env var or a pick) |
+| 3 | Interactive terminal prompt | Only with a real TTY attached; lists active/future regattas, re-prompts on invalid input |
+| 4 | Auto-pick nearest active/future regatta | Only with no TTY (systemd/piped) - 0 distance if currently running, else distance to nearer boundary |
 
-If nothing resolves at all (no TTY *and* RegattaUp returned an empty
-active/future list), the base starts up anyway with no regatta selected -
-the operator picks one from the admin dashboard's own Regatta card before
-racing, same as before any of this existed.
+If nothing resolves (no TTY and an empty active/future list), the base
+starts with no regatta selected - pick one from the dashboard. Whichever
+gets selected, by any path, persists to `regatta-id.txt` on this machine
+only; a different base keeps its own independent selection.
 
-Whichever regatta actually gets selected - by any of the four paths above,
-or later from the dashboard - is persisted to `regatta-id.txt` (id and
-name) on this machine only, so it's what every later run of this same base
-defaults to. A different base station, even sharing the same Redis, keeps
-its own independent `regatta-id.txt` and its own selection.
-
-One dashboard button acts on the whole fleet at once:
-
-- **Ping fleet** - broadcasts a request for every boat to report its
-  current position right now (`POST /api/ping-fleet`, `src/protocol.js`'s
-  `encodePing`, over the same radio/UDP link as everything else). Mainly
-  for a boat that's been sitting stationary since before the base/dashboard
-  was even up: a stationary boat only clears the movement-gated
-  `TX_DISTANCE_M` threshold once (see "Lap events -> RegattaUp" above) and
-  otherwise waits on `TX_INTERVAL_S`'s own heartbeat (default 60s) to
-  report again, so pinging it gets an immediate answer instead of waiting
-  out that timer. Each boat waits its own random delay up to
-  `PING_RESPONSE_JITTER_MS`
-  (default 3000, `src/boatAgent.js`'s own `radio.on('ping', ...)` handler)
-  before replying, so a full fleet doesn't all key up over each other on
-  the same shared channel the instant they hear the request - replies
-  trickle in as ordinary position frames over the next few seconds and show
-  up in the Fleet table on this page's own next 5s refresh. Also clears
-  every boat's on-grid state (not lap counts or mark roundings) right
-  before broadcasting, so whatever on-grid status comes back in each
-  reply is treated as a fresh entry and actually sent to RegattaUp, rather
-  than being silently absorbed by the "already told RegattaUp" dedup latch
-  (see "On-grid detection -> RegattaUp" below) - the whole point of asking
-  "where's everyone right now" is to hear back about it.
+**Ping fleet** button: broadcasts a request for every boat to report its
+position now (`POST /api/ping-fleet`, `protocol.js`'s `encodePing`) -
+useful for a boat stationary since before the dashboard came up (past its
+one-time `TX_DISTANCE_M` clear, waiting on the 60s `TX_INTERVAL_S`
+heartbeat). Each boat replies after a random `PING_RESPONSE_JITTER_MS`
+delay (default 3000) so a full fleet doesn't key up at once. Also clears
+every boat's on-grid dedup latch, so the reply's on-grid status is
+actually sent to RegattaUp.
 
 ### Boat startup announcement ("hello")
 
-The opposite direction and purpose from Ping fleet above: instead of the
-base asking a boat to report in, a boat announces itself to the base the
-moment its own radio connects - `src/protocol.js`'s `encodeHello`/
-`decodeHello`, `src/boatAgent.js`'s `startHelloAnnounce`. A cold GPS start
-can take minutes, and until this existed, the base had no way to know a
-boat's radio was even alive until its first real GPS-fix-based frame went
-out - a "hello" frame carries just the boat's own id, nothing else, so it
-doesn't need to wait on a fix at all.
+Opposite direction from Ping fleet: a boat announces itself the moment its
+radio connects (`protocol.js`'s `encodeHello`/`decodeHello`,
+`boatAgent.js`'s `startHelloAnnounce`) - a cold GPS start can take
+minutes, and without this the base had no way to know a boat's radio was
+alive until its first real fix. Carries just the boat's id, sent
+immediately then retried every 5s (`HELLO_RETRY_MS`) until the first real
+fix transmits. Base-side, only updates the Fleet table's "last seen" -
+never written to CSV/Redis/RegattaUp. Not gated on a regatta being
+selected.
 
-Sent immediately once the radio connects, then retried every 5s
-(`HELLO_RETRY_MS`) in case the base wasn't listening yet or a frame got
-lost, until the boat's first real fix actually transmits - at that point
-the base has much better information than a bare hello, so the retries
-stop on their own. On the base side (`src/baseStation.js`'s
-`radio.on('hello', ...)`), this only ever updates the Fleet table's own
-"last seen" for that boat - it's never written to CSV, Redis, or
-RegattaUp the way a real fix is, since there's no position to record. The
-console logs it once per boat (`boat=<id> radio online (no GPS fix yet)`),
-not on every retry. Unlike ordinary position frames, this isn't gated on a
-regatta being selected either - confirming a boat's radio is alive is
-useful before a regatta's even picked, not just after.
+**Base GPS card** (when `GPS_PORT` is set): the receiver's ordinary
+NAV-PVT fix - fix quality, position, altitude (both MSL and WGS84
+ellipsoid), satellite count, h/v accuracy, DOP (labeled
+excellent/good/fair/poor), ground speed, satellite-derived UTC clock.
 
-When `GPS_PORT` is set (see "Recenter on base GPS" below), the dashboard
-also shows a "Base GPS" card - the receiver's ordinary NAV-PVT fix (the
-same message a boat's own rover dashboard is built from), useful mainly as
-a quick "is the base's GPS module even alive and locked on" check
-independent of TMODE3/survey-in state: fix quality (RTK fixed / RTK float
-/ GPS / no fix), position, altitude (both above mean sea level and above
-the WGS84 ellipsoid - GPS height is normally ellipsoid-referenced, which
-reads oddly to anyone expecting "altitude" to mean sea level, so both are
-shown), satellite count, horizontal/vertical accuracy, dilution of
-precision (DOP - how much the current satellite geometry itself is
-amplifying measurement error, independent of the accuracy estimates,
-labeled excellent/good/fair/poor rather than a bare number), ground speed
-(a stationary base reading ~0.0kn is itself a useful sanity check that the
-antenna isn't drifting), and the receiver's own satellite-derived UTC
-clock, once valid.
+**Base GPS survey-in card** (`rtk`/`basertk` only): current TMODE3 mode
+(disabled/survey-in/fixed), and while surveying, progress against both
+completion conditions - elapsed vs. `GPS_SVIN_MIN_DUR_S`, accuracy vs.
+`GPS_SVIN_ACC_LIMIT_MM` (e.g. `27835s / 60s, ±19.83m / 2.00m`). Once
+`fixed`, shows the position TMODE3 is actually fixed to (read back from
+the poll, reflecting reality regardless of what configured it). Polled
+once on connect and every 15s (`UBX-CFG-TMODE3`); NAV-SVIN streams on its
+own once enabled.
 
-Under `npm run rtk` or `npm run basertk` specifically (not plain `npm run
-base` - see "RTK-only mode"/"Base + RTK combined" above), the dashboard
-also shows a "Base GPS survey-in" card: the receiver's current TMODE3 mode
-(disabled / survey-in / fixed - whether it's even trying to establish its
-own fixed reference position at all), and while in survey-in mode, live
-progress against both of survey-in's own completion conditions - elapsed
-duration vs. the configured minimum (`GPS_SVIN_MIN_DUR_S`), and current
-accuracy vs. the configured limit (`GPS_SVIN_ACC_LIMIT_MM`), e.g. `27835s /
-60s, ±19.83m / 2.00m` - since survey-in only finishes once
-*both* clear, and a run that's long past its minimum duration but nowhere
-near its accuracy target (usually an obstructed antenna, indoor testing, or
-too few satellites) reads very differently from one that just needs a few
-more seconds. Once the survey finishes (`valid` in `UBX-NAV-SVIN`), the
-resulting lat/lon/height it settled on is shown too. Once mode is actually
-`fixed`, the card instead shows whatever position TMODE3 is currently fixed
-to - read back from the poll response itself (which echoes the position
-back, not just the mode), so it reflects reality regardless of whether this
-app set it or it was configured some other way (e.g. u-center) before this
-app ever connected - so you can tell from the dashboard alone whether the
-base is actually ready to be trusted as an RTK reference yet, without
-needing u-center or ubxtool. The receiver only
-reports its TMODE3 mode when polled, not on its own, so
-`src/baseStation.js` sends a `UBX-CFG-TMODE3` poll request once on connect
-and every 15s after; NAV-SVIN itself streams on its own once survey-in is
-configured and enabled as an output message. Also available standalone as
-`GET /api/gps/survey` (same null-means-not-available contract as
-`/api/gps`).
+| Button | Does |
+|---|---|
+| Survey-in | (Re)starts survey-in with `GPS_SVIN_MIN_DUR_S`/`GPS_SVIN_ACC_LIMIT_MM`, RAM only |
+| Survey-in & save | Same, persisted immediately - fixes a receiver that reboots back into a bad `Fixed` position |
 
-Two buttons on the card let you (re)start survey-in directly from the
-dashboard, each behind a `confirm()` since this reconfigures what the base
-itself broadcasts as RTCM correction data - not something to fire by
-accident mid-race:
-- **Survey-in** - (re)starts survey-in using `GPS_SVIN_MIN_DUR_S` /
-  `GPS_SVIN_ACC_LIMIT_MM`, RAM only (see the save note below - this one does
-  NOT survive a reboot on its own). Also the way to restart one - TMODE3
-  has no separate "restart" command, sending the same request again is how
-  u-blox receivers do it, useful if conditions changed or a first attempt
-  is taking too long (see the progress-vs-target reading above).
-- **Survey-in & save** - the same request, immediately persisted (see the
-  save note below) - the mode that's saved is "survey-in," not whatever
-  position it eventually converges to, so this is the button that actually
-  fixes a receiver that keeps rebooting back into a bad `Fixed` position
-  (see "Base + RTK combined" above's own troubleshooting note): it makes
-  survey-in the boot-time default going forward, regardless of how long
-  this particular run takes to finish.
+Manual-position form: no separate "lock to my current fix" button - the
+three fields prefill from whatever's known (fixed position → completed
+survey → live fix), so "click Set and save" with the prefill *is* that.
+Validated client-side (fast) and server-side in `setBaseGpsFixed` (lat
+±90°, lon ±180°, height -500-9000m). Confirm dialog spells out the exact
+numbers being sent.
 
-There's no "lock to my current fix" button on this card - that's the
-manual-position form below's job instead, not a second, separate control
-for the same thing. Its three fields prefill from whatever position is
-already known (currently-fixed position, then a completed survey's result,
-then the base's live fix, in that order), so locking to whatever's
-currently live is already just "click Set and save" there with the
-pre-filled values as-is - useful if the base's location has already been
-surveyed independently too (e.g. a club's own benchmark for a permanent
-committee boat mooring, typed in overwriting the prefill), which is more
-trustworthy than anything survey-in or a live fix can produce itself.
-Validated both client-side (range checks, for a fast error) and
-server-side in `setBaseGpsFixed` (the check that actually matters, since a
-request could reach it some other way) - lat within ±90°, lon within
-±180°, height between -500m and 9000m. The confirm dialog spells out the
-exact numbers about to be sent rather than a generic "are you sure," so a
-typo (wrong sign, transposed digits) is visible one last time before it
-reconfigures RTK corrections for every boat.
+Every button POSTs `/api/gps/survey/mode` (only registered under
+`rtk`/`basertk`) with `{"mode": "survey-in"}` or `{"mode": "fixed", lat,
+lon, heightM}`.
 
-Every button on this card POSTs to `/api/gps/survey/mode` (only registered
-at all under `npm run rtk`/`basertk` - plain `npm run base` 404s it, same
-as the card itself not existing there; no CORS either way - unlike
-`/api/marks/:name`, there's no rover-side equivalent that needs to call it
-cross-origin) with `{"mode": "survey-in"}` or `{"mode": "fixed"}`; the
-manual-position form below sends `{"mode": "fixed", "lat": ..., "lon": ...,
-"heightM": ...}` instead.
+**No standalone "save" button** - saving is always a modifier on the
+action ("& save" variants), since raw `UBX-CFG-TMODE3` only changes live
+RAM config; without saving, TMODE3 silently reverts on restart (the exact
+mechanism behind a receiver stuck rebooting into a stale `Fixed`
+position). Any "& save" sends a follow-up `UBX-CFG-CFG`, persisting to
+both BBR and flash - ArduSimple boards typically rely on BBR (supercap or
+coin cell backed), targeting flash too is harmless when absent. BBR
+persistence only lasts as long as its backup power does.
 
-There is no separate, standalone "save" button anywhere on this page -
-saving is always a modifier on the action you're already taking (the
-"& save" buttons above and on the manual-position form below), never its
-own step. This matters because the underlying `UBX-CFG-TMODE3` message
-(unlike the newer `CFG-VALSET` interface the one-time `ubxtool` setup
-commands earlier in this README use, with their own explicit
-`RAM|BBR|Flash` layer flag) only ever changes the receiver's live RAM
-config on its own - **Survey-in** and **Use live fix** without "& save"
-leave TMODE3 silently reverting to whatever was last saved (or the factory
-default) on every restart, which is exactly how a receiver ends up stuck
-rebooting into a stale `Fixed` position from an earlier test: someone
-clicked survey-in (or it was never explicitly saved after being set to
-Fixed) without the save variant, so the next power cycle reverted right
-back. Any "& save" button sends a follow-up `UBX-CFG-CFG` message,
-persisting whatever's now active to both BBR and flash
-(`src/ubxParser.js`'s `encodeSaveConfig`) - ArduSimple's simpleRTK2B boards
-typically have no SPI flash at all and rely on BBR (kept alive by an
-onboard supercap, or a coin cell if one's fitted) instead, but targeting
-flash too is harmless when it's absent and covers boards that do have it.
-BBR persistence only lasts as long as its own backup power does - a long
-enough full power-down can still lose it even after a save.
+A boat's "pending uploads" figure rides on the same health-check ping used
+for reachability - the base has no other way to see what's unsent on an
+SD card.
 
-A boat's "pending uploads" figure is self-reported: it rides along on the
-same periodic health check the boat already does to test reachability
-(see "Uploading boat logs to the base over WiFi" above), since the base
-has no other way to see what's still sitting unsent on a boat's own SD
-card.
+**Map** (`GET /map`, linked as "map ↗" once marks are known): all seven
+marks over Esri World Imagery satellite tiles (no street basemap - these
+courses are dry lake beds), black marks outlined for contrast, start/finish
+lines drawn in, auto-fit to the course. Needs internet access in the
+viewing browser (not the base's own connectivity). Any boat heard this
+session gets a dot (green within the last minute, gray otherwise) - sourced
+only from in-memory `stats.js`, never `base-uploads` history.
 
-Once the course marks are known, the dashboard also shows a compact
-lat/lon table for them, plus a "map ↗" link (`GET /map`) to a full-page
-map view - all seven marks plotted over satellite imagery (not a street
-basemap - these courses are typically raced on a dry lake bed with no
-roads or buildings for a vector basemap to draw), black marks rendered
-with a light outline so they don't disappear against the dark UI/imagery,
-with the start line (pin↔committee) and finish gate (committee↔finish)
-drawn in, auto-fit to
-the course's extent. It pulls map tiles from a public CDN (Esri World
-Imagery) at request time, so the browser viewing it needs internet
-access - the base station's own connectivity for publishing marks/tracks
-is unaffected either way.
-
-Any boat the base has actually heard a position frame from this session
-also gets a dot (green if heard within the last minute, gray otherwise) -
-deliberately sourced only from `stats.js`'s in-memory last-known
-position, never from `base-uploads`' on-disk history, so the map never
-shows a boat "live" somewhere it hasn't actually reported from this run.
-A boat whose only presence is old uploaded files (see the Fleet table's
-"Files on disk" column) just doesn't get a dot.
-
-An "auto-refresh boats (5s)" checkbox in the top bar (on by default,
-remembered per-browser via `localStorage`) polls `GET /api/positions`
-every 5 seconds and moves each boat's dot to its latest position - it
-does *not* reload the page, so panning/zooming in to watch a boat isn't
-undone every few seconds the way the main dashboard's full-page refresh
-would. `/api/positions` is a separate, leaner endpoint from `/api/stats`
-- it's synchronous and reads only `stats.js`'s in-memory boat positions,
-deliberately skipping the Redis track-count query `/api/stats` does for
-the Fleet table, since the map has no use for it and watching the map
-shouldn't cost a Redis round trip every 5 seconds. Course marks aren't
-re-fetched at all, since they don't move mid-race. The boat's own rover
-dashboard has the same toggle on its `GET /map` (see below), polling its
-own equally-lean `GET /api/position` to move just its own marker.
+"Auto-refresh boats (5s)" checkbox (on by default, `localStorage`) polls
+`GET /api/positions` (leaner than `/api/stats`, no Redis track-count
+query) without reloading the page, so panning/zooming isn't undone. A
+boat's own `GET /map` has the same toggle, polling `GET /api/position`
+for just its own marker.
 
 #### Editing mark positions from the map
 
-An "edit marks" checkbox in the top bar of both the base's `/map` and
-each boat's own `/map` reveals a column listing all seven marks, each
-with its own "Set" button, plus a fixed crosshair at the exact center of
-the map. The workflow this is built for: walk (or sail) out to the
-actual mark, snap the map to your current position, fine-tune by panning
-if needed (the crosshair always shows `map.getCenter()` - wherever it
-points is what gets set), then tap "Set" next to that mark. It asks for
-confirmation first, since this immediately updates the live course and
-re-broadcasts it to every boat - not something to fire by accident. The
-checkbox state itself is persisted (`localStorage`, like auto-refresh
-below) so the column stays open across a page reload instead of
-resetting closed every visit - the confirm step on "Set" is what guards
-against an accidental edit, not this.
+"Edit marks" checkbox reveals a column of all seven marks with "Set"
+buttons, plus a fixed crosshair at map center. Workflow: walk/sail to the
+mark, snap the map to your position, fine-tune by panning (crosshair
+always shows `map.getCenter()`), tap "Set" - confirms first, since it
+immediately updates the live course and re-broadcasts. Checkbox state
+persists across reloads; the confirm step is what guards against
+accidental edits.
 
-The base's own edit column has one more control at the bottom, not
-mirrored on any boat's map: the pin boundary gate checkbox (see "Pin
-boundary gate" above). Unlike every "Set" button, there's no position to
-place - just on or off - so it's a plain checkbox with its own confirm,
-not a crosshair workflow.
+The base's edit column has one more control at the bottom (not on a
+boat's map): the pin boundary gate checkbox (see above) - plain on/off,
+its own confirm, no crosshair.
 
-Each GPS-based recenter button has a live coordinate readout above it
-(updated continuously while edit mode is on, cleared when it's turned
-back off) rather than being a blind one-shot lookup - `getCurrentPosition()`
-defaults to low accuracy with no timeout and can hang or return a slow,
-coarse fix, which made this button occasionally look broken with no
-feedback at all. Instead, toggling edit mode starts a continuous
-`watchPosition()` (`enableHighAccuracy: true`) that keeps refining the
-browser's own location in the background the whole time the column is
-open, so by the time you actually click "Recenter" a fresh position is
-already sitting there - the readout doubles as visible proof it's
-actually working (or a clear "permission denied"/"unavailable" if not),
-rather than a button that might just silently do nothing. The RTK-based
-readouts (base GPS, boat GPS) also show fix quality - "RTK fixed"/"RTK
-float"/"GPS"/"no fix" from `carrSoln`/`gnssFixOk` - and horizontal
-accuracy (`hAcc`), the same signal the `[baseGps]`/`[gps]` console lines
-report, so you can judge whether a mark is actually worth setting from
-the readout alone, before ever tapping "Set."
+Each GPS-recenter button has a live coordinate readout above it, updated
+continuously while edit mode is on (`watchPosition()`,
+`enableHighAccuracy: true`) rather than a blind one-shot lookup - the
+readout doubles as proof it's working. RTK-based readouts (base/boat GPS)
+also show fix quality and `hAcc`.
 
-Recenter buttons, all optional to use:
-- **Recenter on my GPS** - the *viewing device's* location, via the
-  browser's Geolocation API. Requires a secure context (HTTPS, or
-  `localhost`) in most browsers, so it may be silently blocked when
-  viewing the dashboard over plain HTTP on your LAN from a phone - pan
-  manually if so, the crosshair-based "set" flow doesn't depend on it.
-- **Recenter on marks** - snaps back to fit the whole course, useful
-  after a GPS recenter walked the view away or after panning to line up
-  a shot with the crosshair.
-- **Recenter on base GPS** (base's map only) - a GPS module wired
-  directly to whatever machine is running the base station (reuses
-  `GPS_PORT`/`GPS_BAUD`, see below - the same vars the boat's own GPS
-  uses, since base and boat are always separate processes and there's no
-  actual conflict in sharing them) - not for tracking the base itself,
-  but so an operator can plant a mark at their own position with real
-  RTK precision instead of a phone's much coarser Geolocation API. Most
-  base stations don't have one attached, which is the expected common
-  case, not an error - the readout just says "unavailable."
-- **Recenter on boat GPS** (a boat's own map only) - that boat's own
-  already-flowing GPS fix (the same one driving its live marker on this
-  same map) - the obvious choice for a boat that's physically sailed out
-  to survey a mark, and needs no separate polling since the position was
-  already being tracked regardless of edit mode.
+| Recenter button | Source |
+|---|---|
+| Recenter on my GPS | Viewing device's location (browser Geolocation API) - needs a secure context (HTTPS/localhost), may be blocked over plain HTTP on a LAN |
+| Recenter on marks | Snaps back to fit the whole course |
+| Recenter on base GPS (base map only) | GPS wired to the base machine (`GPS_PORT`/`GPS_BAUD`) - for planting a mark with RTK precision, not tracking the base |
+| Recenter on boat GPS (boat map only) | That boat's own already-flowing fix |
 
-Setting a mark persists it to Redis the same way the initial course
-does, clears any cached finish-line watchers so lap detection picks up a
-corrected `committee`/`finish` position instead of silently keeping
-stale gate geometry for the rest of the race, and calls the same
-immediate-broadcast path used when the course first resolves
-(`POST /api/marks/:name`, see `baseStation.js`'s `setMarkLocation`).
+Setting a mark persists to Redis, clears cached finish-line watchers (so
+lap detection picks up a corrected committee/finish position), and
+re-broadcasts (`POST /api/marks/:name`). A boat's own "Set" has no local
+Redis access, so it POSTs cross-origin to the base's `/api/marks/:name`
+(CORS-enabled) - only works while the boat has WiFi to the base. A
+successful edit doesn't repaint the boat's own marker immediately (marks
+don't live-poll) - reload after the next broadcast.
 
-A boat has no Redis access of its own (same reason it can't resolve the
-course itself), so "Set" on a boat's own map doesn't write anything
-locally - it POSTs cross-origin straight to the base's
-`/api/marks/:name` (CORS-enabled specifically for this), using the
-base's address it already learned from the marks broadcast. This only
-works while that boat currently has WiFi connectivity to the base - same
-requirement as log uploads, nothing to do with the radio link - and the
-edit column says so, and which base address it's pointed at, right in
-the panel. Since a boat's own view of the course doesn't live-poll the
-way boat positions do (marks "don't move mid-race" is the working
-assumption elsewhere on these maps too), a successful edit doesn't
-repaint that boat's own marker immediately - reload the page after the
-next broadcast reaches it (usually within moments) to see it reflected.
+Fleet table sorts most-recently-seen first; boats never heard from this
+session sink to the bottom, ordered by ID.
 
-Boats in the Fleet table are sorted most-recently-seen first, so an
-active fleet naturally floats to the top instead of being scattered
-through however boat IDs happen to be numbered - a boat this base hasn't
-heard from this session (`lastSeen` unset - e.g. known only via the
-on-disk upload-history scan) sinks to the bottom, ordered by boat ID
-among themselves.
+Both dashboards also have:
+- **config** (`GET /config`) - fully-resolved config, same data as `npm
+  run print-config`, overridden rows called out (`src/configReport.js`)
+- **console** (`GET /console`) - last 100 log lines, refreshes every 5s,
+  works the same under systemd (`src/logBuffer.js` ring buffer, fed from
+  the shared `console.log`/`warn`/`error` wrapper)
 
-Both dashboards also have a "config" link (`GET /config`) showing the
-fully-resolved configuration that process is actually running with -
-every default plus whatever's been overridden via environment variables
-or `.env`, with overridden rows called out - the same data
-`npm run print-config` prints to the console (see below), just without
-needing to shell into the Pi to check it. `src/configReport.js` is the
-one shared source for both.
-
-Both also have a "console" link (`GET /console`, `src/consoleLogPage.js`)
-showing the last 100 lines this process has logged, refreshing every 5s -
-works the same whether it's an interactive session or running as a
-systemd service, where stdout goes straight to the journal (see
-`install-service.sh`) rather than something this app could otherwise
-re-read itself. `src/logBuffer.js` is a small in-memory ring buffer fed
-from the same `console.log`/`warn`/`error` wrapper each process already
-has (originally added just to keep the in-place GPS line from getting
-scribbled on), so it captures everything either process logs without
-needing every call site updated - nothing here is persisted, it resets on
-restart same as the rest of the in-memory stats these dashboards show.
-
-Each boat also runs its own matching dashboard (`src/roverAdminServer.js`,
-default port 8092, same as the base - `http://<boat-ip>:8092`), scoped to
-that one boat: a "Last fix" card (position, altitude, speed, heading) and
-a "Fix quality" card (RTK fixed/float/GPS/no fix, `diffSoln`/`carrSoln`,
-satellite count, horizontal/vertical accuracy, DOP), both in the same
-row-per-field format as the base's own "Base GPS" card, plus whether the
-course has been received, frames sent, a "Base station" card (address,
-dashboard link, upload port, and last successful health check - "not
-discovered" until the first course marks broadcast, since that's how a
-boat learns the base's address at all), and its own upload history. It
-has its own `GET /map` too - same course view as the base's, but since
-this one is scoped to a single boat, it also plots that boat's own last
-known position (a solid dot once a fix has come in within the last 10s,
-gray if it's gone stale) rather than leaving the map as a static course
-reference. When running with `SIMULATE=1`, a boat defaults to port 8093 instead, so
-`npm run base` and `npm run boat` can run on the same machine (as they do
-in "Simulation mode (no hardware)" above) without an `ADMIN_PORT`
-override to avoid an `EADDRINUSE` - a real base and boat are always
-separate machines, so this only matters for local testing. `ADMIN_PORT`
-always overrides both defaults explicitly if you set it.
-
-The dashboards link to each other automatically, and don't assume either
-side is on any particular port: each learns the other's actual IP and
-admin port at runtime and links to that - a boat reports its own admin
-port on the same periodic health check it already uses to report its
-pending-upload count (see above), and the base reports its own IP and
-admin port in the same course-marks broadcast it already uses for the
-log-upload address (see "Broadcasting marks to the rovers" above). A
-link only appears once that information has actually arrived - the
-base's Fleet table shows "—" for a boat it hasn't heard a health check
-from yet, and a boat's dashboard omits the base link until it's received
-at least one marks broadcast.
+Each boat runs its own matching dashboard (`src/roverAdminServer.js`,
+also port 8092, `8093` under `SIMULATE=1` to coexist with a local base):
+"Last fix" and "Fix quality" cards (same row-per-field format as the
+base's "Base GPS" card), course-received status, frames sent, "Base
+station" card (address, dashboard link, upload port, last health check),
+upload history, and its own `GET /map` (plots that boat's own position
+too). The dashboards link to each other automatically - each learns the
+other's IP/port at runtime (boat reports its own on the health-check
+ping; base reports its own on the marks broadcast) - a link only appears
+once that information has arrived.
 
 ## Tuning knobs (env vars)
 
-With this many knobs, `npm run print-config` prints the fully-resolved
-config - every default plus whatever you've actually overridden via
-environment variables or `.env` - so there's one place to check what a
-given `boat`/`base` run will actually use, instead of reading through
-`config.js`'s fallbacks by hand. The Redis password is redacted even here.
+`npm run print-config` prints the fully-resolved config - every default
+plus overrides via environment/`.env` - one place to check what a run will
+actually use. Redis password is redacted.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `SIMULATE` | unset | Set to `1` to run `boat`/`base` with no GPS or radio hardware at all - fake GPS track + a UDP-broadcast stand-in for the radio, see "Simulation mode (no hardware)" above |
-| `SIMULATE_GPS` | unset | Fakes just the GPS track while still using real radio hardware on both ends - for bench-testing an actual radio link (range, packet loss) without needing a real GPS fix or being outdoors. Implied by `SIMULATE=1`; only needed on its own when you want simulated GPS with a real radio specifically, see "Simulated GPS with real radio hardware" above |
-| `GPS_OUTPUT_FORMAT` | `ubx` | Base and boat both — format of the local UDP broadcast, see "Connecting to your race committee software" above. `ubx` (default) sends a synthetic `UBX-NAV-PVT` message; `nmea` sends a standard `$GPGGA` sentence instead, for tools that only speak NMEA |
-| `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base and boat both — where each process's own local UDP broadcast (see `GPS_OUTPUT_FORMAT` above) is sent. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base`/`basertk` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`). `npm run rtk`/`basertk` (see "RTK-only mode"/"Base + RTK combined" above) always try `GPS_PORT` regardless of `SIMULATE` — their whole purpose is exercising the real RTK receiver. Plain `npm run base` only tries when `GPS_PORT` is explicitly set AND `SIMULATE` isn't `1` — most base stations have none attached, and `SIMULATE=1` is assumed to mean no hardware is attached at all, same as it already does for the radio |
-| `GPS_LOG` | unset (on) | All three modes — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. Every fix is logged, not just ones that clear `TX_DISTANCE_M` — the console is a live "is this thing still getting fixes" view, independent of what's actually sent over radio/written to SD. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
-| `GPS_LOG_REPLACE` | unset (on) | All three modes — when watching a real interactive terminal (not piped/redirected, e.g. to a file or `systemd`/journald), each fix overwrites the same console line instead of scrolling, so a stationary boat/base/RTK-only process doesn't flood the screen. On the boat, a fix that actually clears `TX_DISTANCE_M` (a real radio send) still commits to scrollback instead of being overwritten. Set to `0` to always scroll instead (one line per logged fix) — e.g. if something else is tailing/grepping this process's own terminal output directly, where overwritten lines would never actually appear to it |
-| `GPS_LOG_RTCM` | unset (off) | Boat only — set to `1` to log a `[rtcm]` line for every `UBX-RXM-RTCM` message the receiver reports (RTCM message type, whether it was applied, CRC failures) — see "Wiring notes" above. Also requires `UBX-RXM-RTCM` to be enabled as an output on the receiver itself, a separate one-time step |
-| `GPS_SVIN_MIN_DUR_S` | 60 | `npm run rtk` or `basertk` only (not plain `base`) — minimum duration (seconds) the base GPS must spend surveying before the "Start survey-in" dashboard button's request can complete, regardless of how quickly the accuracy estimate converges — see "Admin dashboard" above |
-| `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `npm run rtk` or `basertk` only (not plain `base`) — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
-| `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
-| `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
-| `BOAT_COUNT` / `CONGESTION_SPEED_KN` | 30 / 6 | `npm run radio-congestion` only — how many virtual boats' worth of frame traffic to transmit, and the assumed boat speed (drives the per-boat send rate via the real `TX_DISTANCE_M` gate), see "Congestion-testing the radio" above |
-| `RADIO_ENABLED` | unset (on) | Set to `0` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
-| `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
-| `BOAT_ID` | this device's own persisted id (see below) | Exactly 5 characters (letters/digits, the wire protocol's boatId field is a fixed-width byte slot) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright over this device's own persisted id - see "Running" above |
-| `MARK_NAME` | unset (not assigned) | `npm run mark`/`markset` - which course mark this device auto-posts its own GPS position as, if any (must be one of the real mark names - `pin`, `committeeStart`, `committeeFinish`, `finish`, `windwardGreen`, `windwardBlack`, `leewardGreen`, `leewardBlack`). Persisted to `mark-name.txt` when set, same pattern as `BOAT_ID`/`REGATTAUP_REGATTA_ID` - a later restart with no `MARK_NAME` remembers the last assignment (from either this var or the map's own dropdown). See "Mark mode" above |
-| `MARK_DISTANCE_M` | 1 | `npm run mark`/`markset` - how far the assigned mark has to move before this device posts its new position to Redis - same distance-gated spirit as `TX_DISTANCE_M` below, for a mark instead of a boat |
-| `TX_DISTANCE_M` | 1 | How far the boat has to move before a new frame is sent over radio *and* logged to the SD card (same gate for both) — distance-based, not time-based, so a stopped boat doesn't keep re-sending/re-logging the same fix. Keep this smaller than the finish gate/start-finish strip width (see course.js) — the base station's lap detection only sees transmitted positions, so a gap much wider than the gate risks jumping over it entirely without a lap being detected |
-| `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` — even a boat that hasn't moved far enough to clear the distance gate still sends (and logs) at least once every this many seconds, so a boat sitting still (at a mooring, holding on the grid) doesn't go silent on the base's dashboard for as long as it stays put. A distance-triggered send resets this timer too, so it's "at least every N seconds," not a separate clock stacking on top of frequent distance-based sends. Set to `0` to disable (distance gate only, the old behavior) |
-| `ROVER_SHUTDOWN_AT` | unset (off) | Boat only — 24h local time (`"HH:MM"`, e.g. `21:00`) after which this Pi shuts itself down once genuinely idle — see "Scheduled shutdown" below |
-| `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only — continuous minutes below `ROVER_SHUTDOWN_SPEED_KN` (or with no fresh fix at all) required, once `ROVER_SHUTDOWN_AT` has passed, before actually shutting down — any real movement resets this back to zero |
-| `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only — ground speed below which a fix counts as "stationary" for the gate above |
-| `ROVER_SHUTDOWN_CHECK_INTERVAL_MS` | 30000 | Boat only — how often the shutdown gate is re-evaluated |
-| `PING_RESPONSE_JITTER_MS` | 3000 | Boat only — max random delay before responding to the base's "Ping fleet" button (see "Admin dashboard" above), so a full fleet doesn't all reply over each other on the same shared channel at once |
-| `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base station only — how often the current course marks are re-broadcast to every boat, see "Broadcasting marks to the rovers" above |
-| `LOG_RECEIVED_FIXES` | unset (off) | Base station only — set to `1` to turn on the `[base] boat=... lat,lon ...` console line printed for every single radio frame received from every boat (a full fleet at a normal GPS rate scrolls fast, so this stays off by default - e.g. turn it on temporarily while confirming frames are actually arriving). Only the console echo is gated - the fix is always written to this base's own CSV log, always recorded to Redis, and lap/on-grid/mark-rounding/foul detection always run regardless of this setting |
-| `BASE_LOG_DIR` | `./base-logs` (next to the package) | Base station only — where its own received-fix CSV log goes, override to put this on an SD card, e.g. `/home/pi/base-logs`. See `BOAT_LOG_DIR` below for the boat's own log — the two are deliberately separate directories, never shared, see "File layout" above |
-| `BOAT_LOG_DIR` | `./boat-logs` (next to the package) | Boat only — where this boat's own chunked SD-card log goes, override to put this on an SD card, e.g. `/home/pi/boat-logs`. Completely separate from `BASE_LOG_DIR` above, see "File layout" above |
-| `LOG_RETENTION_DAYS` | 7 | CSV files in `BASE_LOG_DIR`/`BOAT_LOG_DIR` older than this are deleted automatically (see "Log rotation" below) — keeps a boat's microSD card or an always-running base station laptop from filling up over a season |
-| `LOG_CHUNK_MINUTES` | 10 | Boat only — how wide a slice of time each SD-card CSV covers before starting a new one, see "Log rotation" above. Smaller chunks upload sooner (see below) but produce more files |
-| `UPLOAD_ENABLED` | unset (on) | Boat only — set to `0` to skip attempting log uploads to the base; the periodic health-check ping (IP/admin port reporting) still runs regardless, see "Uploading boat logs to the base over WiFi" above |
-| `UPLOAD_LOG` | unset (off) | Both roles — set to `1` to log the one-line `[uploadClient]`/`[uploadServer]` message on each successful upload (a boat sends a chunk every `LOG_CHUNK_MINUTES` for the whole race, so this is off by default to avoid a steady drip of routine lines). Upload failures log regardless of this setting |
-| `UPLOAD_PORT` | 8090 | Base station only — port its log-upload HTTP server listens on, also published in the marks broadcast |
-| `BASE_UPLOAD_DIR` | `base-uploads` (next to `BASE_LOG_DIR`) | Base station only — where uploaded boat logs land, see "Uploading boat logs to the base over WiFi" above |
-| `BASE_IP` | unset (auto-detected) | Base station only — override auto-detecting this machine's own LAN IP if it picks the wrong interface |
-| `UPLOAD_CHECK_INTERVAL_MS` / `UPLOAD_TIMEOUT_MS` | 15000 / 5000 | Boat only — how often to check whether the base is reachable, and how long to wait for a response before giving up on that attempt |
-| `ADMIN_PORT` | 8092 (boat: 8093 under `SIMULATE=1`) | Every mode — port the admin dashboard listens on (base's fleet view, a boat's own rover view, `npm run rtk`'s RTK-only view, or `npm run basertk`'s combined view), see "Admin dashboard" above. The base/boat dashboards report their actual port to each other at runtime, so the cross-links work correctly regardless of what this is set to on either side |
-| `REDIS_ENV` | `local` | Base station only — selects a Redis connection preset (`local` or `production`), see "Switching between Redis servers" above. Ignored entirely if `REDIS_URL` is set |
-| `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | Credentials for the `production` Redis preset — never hardcode these, set via environment. Ignored entirely if `REDIS_URL` is set, even if these are also set |
-| `REDIS_URL` | unset | Base station only — a full connection string for ad-hoc targets outside the two presets. When set, it wins outright over `REDIS_ENV` and the credential vars above, not merged with them |
-| `REDIS_MIN_MOVEMENT_M` | 1 | Base station only — skip a Redis write (SD/console/UDP output unaffected) unless a boat has moved at least this many meters since its last recorded fix, so a stopped or barely-drifting boat doesn't fill Redis with near-duplicate fixes. Matches `TX_DISTANCE_M`'s own default (1m), so Redis records essentially every fix a boat actually transmits |
-| `REDIS_TRACK_RETENTION_HOURS` | 48 | Base station only — how long a `boat:<id>:track`/`all:track:<regattaId>` key lives before Redis expires it on its own, set once on that key's first write of the day (not refreshed on every later write) — see "If Redis runs out of space" above |
-| `REDIS_MEMORY_LIMIT_MB` | 250 | Base station only — the admin dashboard's "Redis memory" card divides current usage by this to show a percentage/ALERT status. A managed Redis instance (Redis Cloud and similar) commonly won't report its own configured limit via `CONFIG GET`, so this has to be told explicitly — set it to your actual plan size in MB if it isn't 250MB |
-| `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base station only — see "Lap events -> RegattaUp" above. Independent of `REGATTAUP_ACTIVE_REGATTAS_URL` below — overriding this to a mock/staging endpoint for testing does NOT also redirect the active-regattas list |
-| `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Base station only — set to `0` to skip posting lap crossings to RegattaUp entirely |
-| `REGATTAUP_ACTIVE_REGATTAS_URL` | `https://regattaup.com/api/functions/getActiveRegattas` | Base station only — where the admin dashboard's regatta selector (see "Admin dashboard" above) fetches the active/future regatta list. Override only if you need to mock the regatta list itself for testing — see `REGATTAUP_WEBHOOK_URL` above |
-| `REGATTAUP_REGATTA_ID` | unset | Base station only — selects this regatta at startup (always wins over whatever's persisted), and persists it to `regatta-id.txt` immediately so it becomes the new remembered default even on a later run that omits this var — see "Selecting a regatta at startup" above |
-| `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` | 300000 (5 min) | Base station only — how often the admin dashboard's active-regattas list is refreshed in the background, see "Admin dashboard" above |
-| `REGATTAUP_LOG_ACTIVE_REGATTAS` | unset (off) | Base station only — set to `1` to log a line every time that background refresh succeeds. Off by default since a successful fetch is the expected outcome of an indefinite heartbeat, not something worth a line every cycle; a failed fetch always logs regardless |
-| `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
-| `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
-| `REGATTAUP_ONGRID_QUEUE_DB` | `race-config/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
-| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base station only — set to `0` to turn off mark-rounding webhooks. On by default, same as laps and on-grid; independent of `REGATTAUP_WEBHOOK_ENABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
-| `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base station only — how far (meters) beyond each windward/leeward mark, along the course axis, the virtual rounding gate extends — capped to half the distance to the corresponding outer (black) mark regardless of this setting — see "Mark-rounding detection -> RegattaUp" above |
-| `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `race-config/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
-| `REGATTAUP_FOUL_ENABLED` | unset (on) | Base station only — set to `0` to turn off foul webhooks. On by default, same as laps/on-grid/mark-rounding; independent of `REGATTAUP_WEBHOOK_ENABLED` (which still gates it too) — see "Foul detection -> RegattaUp" above |
-| `REGATTAUP_FOUL_QUEUE_DB` | `race-config/foul_webhook_queue.sqlite` | Base station only — where the foul webhook's own retry queue sqlite file lives, separate from the lap/on-grid/mark-rounding queues' |
-| `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
-| `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |
+| `SIMULATE` | unset | `1` = no GPS/radio hardware - fake GPS + UDP radio stand-in |
+| `SIMULATE_GPS` | unset | Fake GPS only, real radio on both ends. Implied by `SIMULATE=1` |
+| `GPS_OUTPUT_FORMAT` | `ubx` | Local UDP broadcast format: `ubx` (synthetic NAV-PVT) or `nmea` (`$GPGGA`) |
+| `UDP_PORT` / `UDP_BROADCAST_ADDR` | 10110 / `255.255.255.255` | Local UDP broadcast target, both roles |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART. Boat always opens it unless `SIMULATE`/`NO_GPS`. `rtk`/`basertk` always try it. Plain `base` only if explicitly set and not `SIMULATE=1` |
+| `GPS_LOG` | unset (on) | `0` = silence the per-fix `[gps]`/`[baseGps]` console line |
+| `GPS_LOG_REPLACE` | unset (on) | In-place overwrite of the console line on a real TTY (a real radio-send commit still scrolls). `0` = always scroll |
+| `GPS_LOG_RTCM` | unset (off) | Boat only - `1` logs `[rtcm]` per `UBX-RXM-RTCM` message; also needs that message enabled on the receiver |
+| `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
+| `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
+| `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |
+| `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `radio-test` only - `send`/`listen`, send interval |
+| `BOAT_COUNT` / `CONGESTION_SPEED_KN` | 30 / 6 | `radio-congestion` only - simulated boat count, assumed speed |
+| `RADIO_ENABLED` | unset (on) | `0` = skip opening the radio port entirely |
+| `NO_GPS` | unset | Boat only - `1` skips any GPS source, real or simulated |
+| `BOAT_ID` | auto-persisted | Exactly 5 chars, overrides this device's persisted id |
+| `MARK_NAME` | unset | `mark`/`markset` - which mark this device auto-posts, persisted to `mark-name.txt` |
+| `MARK_DISTANCE_M` | 1 | `mark`/`markset` - movement gate before posting a mark update |
+| `TX_DISTANCE_M` | 1 | Movement gate for radio send + SD log. Keep smaller than the finish-gate width - lap detection only sees transmitted positions |
+| `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` - always sends at least this often. `0` disables (distance gate only) |
+| `ROVER_SHUTDOWN_AT` | unset (off) | Boat only - 24h local time (`"HH:MM"`) after which shutdown can trigger |
+| `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only - continuous idle minutes required after `ROVER_SHUTDOWN_AT` |
+| `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only - speed below which a fix counts as stationary |
+| `ROVER_SHUTDOWN_CHECK_INTERVAL_MS` | 30000 | Boat only - shutdown gate re-check interval |
+| `PING_RESPONSE_JITTER_MS` | 3000 | Boat only - max random delay replying to "Ping fleet" |
+| `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
+| `LOG_RECEIVED_FIXES` | unset (off) | Base only - `1` = console-echo every received frame. CSV/Redis/detection always run regardless |
+| `BASE_LOG_DIR` | `./base-logs` | Base only - received-fix CSV location |
+| `BOAT_LOG_DIR` | `./boat-logs` | Boat only - SD-card CSV location |
+| `LOG_RETENTION_DAYS` | 7 | CSV files older than this are auto-deleted |
+| `LOG_CHUNK_MINUTES` | 10 | Boat only - CSV chunk width |
+| `UPLOAD_ENABLED` | unset (on) | Boat only - `0` skips log uploads (health-check ping still runs) |
+| `UPLOAD_LOG` | unset (off) | Both roles - `1` logs each successful upload |
+| `UPLOAD_PORT` | 8090 | Base only - log-upload HTTP server port |
+| `BASE_UPLOAD_DIR` | `base-uploads` | Base only - uploaded boat logs location |
+| `BASE_IP` | unset (auto) | Base only - override auto-detected LAN IP |
+| `UPLOAD_CHECK_INTERVAL_MS` / `UPLOAD_TIMEOUT_MS` | 15000 / 5000 | Boat only - base-reachability poll interval/timeout |
+| `ADMIN_PORT` | 8092 (boat: 8093 under `SIMULATE=1`) | Every mode - dashboard port |
+| `REDIS_ENV` | `local` | Base only - `local`/`production` preset. Ignored if `REDIS_URL` set |
+| `REDIS_USERNAME` / `REDIS_PASSWORD` / `REDIS_TLS` | `default` / unset / unset | `production` preset credentials - never hardcode |
+| `REDIS_URL` | unset | Base only - full connection string, wins over `REDIS_ENV` and the credential vars |
+| `REDIS_MIN_MOVEMENT_M` | 1 | Base only - skip a Redis track write below this movement |
+| `REDIS_TRACK_RETENTION_HOURS` | 48 | Base only - track key TTL |
+| `REDIS_MEMORY_LIMIT_MB` | 250 | Base only - "Redis memory" card's usage denominator |
+| `REGATTAUP_WEBHOOK_URL` | RegattaUp's lap webhook | Base only - independent of `REGATTAUP_ACTIVE_REGATTAS_URL` |
+| `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Base only - `0` disables all four webhook types |
+| `REGATTAUP_ACTIVE_REGATTAS_URL` | `.../getActiveRegattas` | Base only - regatta-selector fetch source |
+| `REGATTAUP_REGATTA_ID` | unset | Base only - selects at startup, persists to `regatta-id.txt` |
+| `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` | 300000 (5 min) | Base only - active-regattas background refresh |
+| `REGATTAUP_LOG_ACTIVE_REGATTAS` | unset (off) | Base only - `1` logs each successful background refresh |
+| `REGATTAUP_QUEUE_DB` / `POST_INTERVAL_MS` / `MAX_BACKOFF_MS` | see "Durable retry queue" | Lap webhook queue tuning; interval/backoff shared with on-grid and mark-rounding |
+| `REGATTAUP_ONGRID_ZONE_M` | 10 | Base only - on-grid zone width (m) |
+| `REGATTAUP_ONGRID_QUEUE_DB` | `race-config/ongrid_webhook_queue.sqlite` | On-grid retry queue file |
+| `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base only - `0` disables independently |
+| `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base only - rounding-gate radius (m), capped to half the green↔black distance |
+| `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `race-config/mark_rounding_webhook_queue.sqlite` | Mark-rounding retry queue file |
+| `REGATTAUP_FOUL_ENABLED` | unset (on) | Base only - `0` disables independently |
+| `REGATTAUP_FOUL_QUEUE_DB` | `race-config/foul_webhook_queue.sqlite` | Foul retry queue file |
+| `TEST_LAP_NUMBER` | 0 | `base` only - positive value sends one synthetic lap and exits |
+| `TEST_LAP_BOAT_ID` | 1 | `base` only - attributed boat for the synthetic lap |
 
 ## What still needs real-hardware testing
 
 - Actual achievable baud/range tradeoff for your specific radio model
-- Whether the Pi's hardware UART (`/dev/ttyAMA0`, the default) holds up as
-  reliably over a full race day as the simpleRTK2B LR's own USB port
-  (`/dev/ttyACM0`) did before this wiring change
+- Whether the Pi's hardware UART (`/dev/ttyAMA0`) holds up as reliably over
+  a full race day as the simpleRTK2B LR's own USB port did before this
+  wiring change
 - UBX checksum/frame-sync robustness over a long noisy USB-serial run (the
-  parser resyncs on bad frames, but hasn't been stress-tested on real RF
-  noise)
+  parser resyncs on bad frames, but untested against real RF noise)
 - The actual ingestion format for whichever race software you land on
 - The "Base GPS survey-in" dashboard card (`UBX-NAV-SVIN`/`UBX-CFG-TMODE3`
-  parsing, ECEF-to-lat/lon conversion, and the TMODE3 poll request) - built
-  and verified against synthetic UBX frames only, never against a real
-  ZED-F9P actually running survey-in
+  parsing, ECEF-to-lat/lon conversion, TMODE3 poll) - verified against
+  synthetic UBX frames only, never a real ZED-F9P running survey-in
