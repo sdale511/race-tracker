@@ -400,7 +400,7 @@ instead, see "Wiring notes" above.)
 `BOAT_ID` doesn't actually have to be set by hand at all - the first time
 this app runs with no `BOAT_ID` in the environment, it generates a random
 5-character id (letters and digits, e.g. `TK10X` - see `src/boatIdFile.js`),
-writes it to `boat_id.txt` in the project root, and reuses that exact
+writes it to `race-config/boat_id.txt`, and reuses that exact
 same id on every later run from that device. An explicit `BOAT_ID` (set
 here - it must be exactly 5 characters, the wire protocol's boatId field is
 a fixed-width byte slot - or by `npm run fleet` for every boat it spawns)
@@ -608,7 +608,7 @@ terminal attached) or to start unassigned and pick one from the map
 afterward (no TTY - e.g. running as a systemd service, see "Auto-start on
 boot" below). Whichever way it's set - the env var, the terminal prompt, or
 the map's own "This rover represents" dropdown - the assignment is
-persisted to `mark-name.txt` in the repo root, the exact same pattern
+persisted to `race-config/mark-name.txt`, the exact same pattern
 `boat_id.txt`/`regatta-id.txt` already use (see `src/markNameFile.js`/
 `src/regattaIdFile.js`/`src/boatIdFile.js` - all three are one text file
 per identity, read at startup, rewritten whenever that identity changes),
@@ -664,8 +664,8 @@ is deliberate: it's what stops a race that's still running late from getting
 killed mid-track just because the clock crossed the configured time - it
 waits for a real lull first. Disabled (the default) means this feature does
 nothing at all. Whatever's in effect - from the env vars or the dashboard
-card - is remembered in `power-schedule.txt` (repo root, git-ignored) across
-restarts. Linux-only by design - `shutdown -h now` is a real command on
+card - is remembered in `race-config/power-schedule.txt` (git-ignored)
+across restarts. Linux-only by design - `shutdown -h now` is a real command on
 macOS too, so this refuses to arm itself on anything other than `linux`
 (logs a warning and shows "unsupported on this platform" on the card
 instead), specifically so testing locally with a schedule left over from a
@@ -949,7 +949,7 @@ with capped exponential backoff (2s, 4s, 8s, ... up to
 |---|---|---|
 | `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override to point at a mock endpoint for testing |
 | `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Set to `0` to skip sending entirely (crossings are still detected and logged) |
-| `REGATTAUP_QUEUE_DB` | `<LOG_DIR>/lap_webhook_queue.sqlite` | Where the retry queue's sqlite file lives |
+| `REGATTAUP_QUEUE_DB` | `race-config/lap_webhook_queue.sqlite` | Where the retry queue's sqlite file lives |
 | `REGATTAUP_POST_INTERVAL_MS` | 500 | How often the shared drain loop attempts one webhook POST, across all three queues combined |
 | `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Cap on the exponential backoff between retries for a single event |
 
@@ -1572,7 +1572,7 @@ byte since it isn't the same length). Every boat's `radioLink.js` byte
 stream already recognizes both frame types, so nothing else needs wiring up.
 
 Each boat keeps the latest marks in memory and also writes them to
-`<LOG_DIR>/course_marks.json`, so a reboot or restart has a last-known
+`race-config/course_marks.json`, so a reboot or restart has a last-known
 course immediately on the next boot, without waiting for the next
 broadcast. This is best-effort, not a guaranteed sync - if a boat misses one
 broadcast (radio dropout, powered on late), it just gets the next one; no
@@ -2208,12 +2208,12 @@ given `boat`/`base` run will actually use, instead of reading through
 | `REGATTAUP_LOG_ACTIVE_REGATTAS` | unset (off) | Base station only — set to `1` to log a line every time that background refresh succeeds. Off by default since a successful fetch is the expected outcome of an indefinite heartbeat, not something worth a line every cycle; a failed fetch always logs regardless |
 | `REGATTAUP_QUEUE_DB` / `REGATTAUP_POST_INTERVAL_MS` / `REGATTAUP_MAX_BACKOFF_MS` | see "Durable retry queue" above | Base station only — tune the lap webhook's local retry queue. `REGATTAUP_POST_INTERVAL_MS`/`REGATTAUP_MAX_BACKOFF_MS` are shared with the on-grid and mark-rounding webhooks' queues too |
 | `REGATTAUP_ONGRID_ZONE_M` | 10 | Base station only — how close (meters) to the pin↔committee start line, while still between the two marks, counts as "on-grid" — see "On-grid detection -> RegattaUp" above |
-| `REGATTAUP_ONGRID_QUEUE_DB` | `<LOG_DIR>/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
+| `REGATTAUP_ONGRID_QUEUE_DB` | `race-config/ongrid_webhook_queue.sqlite` | Base station only — where the on-grid webhook's own retry queue sqlite file lives, separate from the lap queue's |
 | `REGATTAUP_MARK_ROUNDING_ENABLED` | unset (on) | Base station only — set to `0` to turn off mark-rounding webhooks. On by default, same as laps and on-grid; independent of `REGATTAUP_WEBHOOK_ENABLED` (which still gates it too) — see "Mark-rounding detection -> RegattaUp" above |
 | `REGATTAUP_MARK_ROUNDING_EXTENSION_M` | 50 | Base station only — how far (meters) beyond each windward/leeward mark, along the course axis, the virtual rounding gate extends — capped to half the distance to the corresponding outer (black) mark regardless of this setting — see "Mark-rounding detection -> RegattaUp" above |
-| `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `<LOG_DIR>/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
+| `REGATTAUP_MARK_ROUNDING_QUEUE_DB` | `race-config/mark_rounding_webhook_queue.sqlite` | Base station only — where the mark-rounding webhook's own retry queue sqlite file lives, separate from the lap/on-grid queues' |
 | `REGATTAUP_FOUL_ENABLED` | unset (on) | Base station only — set to `0` to turn off foul webhooks. On by default, same as laps/on-grid/mark-rounding; independent of `REGATTAUP_WEBHOOK_ENABLED` (which still gates it too) — see "Foul detection -> RegattaUp" above |
-| `REGATTAUP_FOUL_QUEUE_DB` | `<LOG_DIR>/foul_webhook_queue.sqlite` | Base station only — where the foul webhook's own retry queue sqlite file lives, separate from the lap/on-grid/mark-rounding queues' |
+| `REGATTAUP_FOUL_QUEUE_DB` | `race-config/foul_webhook_queue.sqlite` | Base station only — where the foul webhook's own retry queue sqlite file lives, separate from the lap/on-grid/mark-rounding queues' |
 | `TEST_LAP_NUMBER` | 0 | `npm run base` only — doubles as the on/off switch (0 = off) and part of the payload: any positive value sends a single synthetic lap straight into the webhook queue, reported as that lap number, and exits. Not a lap count; always exactly one lap is sent regardless of the number chosen. See "Testing the lap -> webhook path" above |
 | `TEST_LAP_BOAT_ID` | 1 | `npm run base` only — which boat that one synthetic lap is attributed to; only matters alongside a positive `TEST_LAP_NUMBER` |
 

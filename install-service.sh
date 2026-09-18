@@ -74,8 +74,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Runs as whoever actually invoked sudo, so anything the app writes
-# (race-logs/, node_modules/, boat_id.txt/regatta-id.txt/mark-name.txt/...)
-# doesn't end up root-owned. Insisted on explicitly (not guessed/defaulted
+# (race-logs/, race-config/, node_modules/) doesn't end up root-owned. Insisted on explicitly (not guessed/defaulted
 # to some fixed account) since there's no single fallback user that makes
 # sense across every machine any of these six modes might run on.
 SERVICE_USER="${SUDO_USER:-}"

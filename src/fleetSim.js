@@ -77,7 +77,7 @@ const boatAgentPath = path.join(__dirname, 'boatAgent.js');
 // (already-running) base station over its own simulated radio link and
 // waiting out MARKS_PING_RETRY_MS retries for an answer this process could
 // just look up directly.
-const marksFilePath = path.join(config.logDir, 'course_marks.json');
+const marksFilePath = path.join(config.configDir, 'course_marks.json');
 
 // Fetches (or creates, if truly missing - same getOrCreateMarks() guarantee
 // resetCourse.js/baseStation.js already rely on, so this never clobbers a

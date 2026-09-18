@@ -165,7 +165,7 @@ if (config.simulate) {
 // learns the course. Kept in memory for anything on the boat that wants it
 // this run, and persisted to disk so a reboot/restart still has a last-known
 // course immediately, without waiting for the next broadcast.
-const marksFilePath = path.join(config.logDir, 'course_marks.json');
+const marksFilePath = path.join(config.configDir, 'course_marks.json');
 let currentMarks = null;
 try {
   const loaded = JSON.parse(fs.readFileSync(marksFilePath, 'utf8'));

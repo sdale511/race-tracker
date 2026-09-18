@@ -1377,7 +1377,7 @@ function main() {
     return watcher;
   }
 
-  // All three webhook queues below default to the same LOG_DIR - a queue's
+  // All three webhook queues below default to the same configDir - a queue's
   // own "ready" line just shows its filename (see queueFileLabel), with the
   // shared directory logged once, immediately before the first "ready" line
   // (inside the lap queue's own IIFE below), so the two appear as adjacent

@@ -44,10 +44,14 @@ function sequentialBoatId(n) {
 }
 
 // Path this device's own generated id is read from/written to - deliberately
-// the repo root, not config.logDir (which can be redirected to an SD card
+// race-config/, not config.logDir (which can be redirected to an SD card
 // mount via LOG_DIR - see config.js), since this identity should survive
-// independently of wherever logs happen to be pointed this run.
-const idFilePath = path.join(__dirname, '..', 'boat_id.txt');
+// independently of wherever logs happen to be pointed this run. race-config
+// itself is a fixed repo-root directory, not something LOG_DIR or any other
+// env var redirects - same reasoning, one level up.
+const configDir = path.join(__dirname, '..', 'race-config');
+fs.mkdirSync(configDir, { recursive: true });
+const idFilePath = path.join(configDir, 'boat_id.txt');
 
 // Generates (once) and thereafter reuses a persistent BOAT_ID for this
 // physical device - see config.js's own boatId resolution. Only consulted

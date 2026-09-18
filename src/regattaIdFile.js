@@ -2,12 +2,14 @@ const fs = require('fs');
 const path = require('path');
 
 // Path this base station's own default regatta id is read from/written to -
-// deliberately the repo root, not config.logDir (which can be redirected to
+// deliberately race-config/, not config.logDir (which can be redirected to
 // an SD card mount via LOG_DIR - see config.js), same reasoning as
 // boatIdFile.js's own idFilePath: this is an identity/preference that
 // should survive independently of wherever logs happen to be pointed this
 // run.
-const idFilePath = path.join(__dirname, '..', 'regatta-id.txt');
+const configDir = path.join(__dirname, '..', 'race-config');
+fs.mkdirSync(configDir, { recursive: true });
+const idFilePath = path.join(configDir, 'regatta-id.txt');
 
 // Whatever regatta was last persisted here, as { id, name, defaultLat,
 // defaultLon }, or null if this base has never had one set (a fresh

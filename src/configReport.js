@@ -129,7 +129,7 @@ const sections = [
         // an id this specific device generated and will keep reusing.
         note:
           process.env.BOAT_ID === undefined
-            ? `from ${config.logDir}/boat_id.txt (this device's own persisted id)`
+            ? `from ${config.configDir}/boat_id.txt (this device's own persisted id)`
             : undefined,
         roles: ['boat'],
       },

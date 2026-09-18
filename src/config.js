@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 const { getOrCreatePersistentBoatId, ID_LENGTH: BOAT_ID_LENGTH } = require('./boatIdFile');
@@ -150,6 +151,19 @@ const testLapNumber = parseInt(process.env.TEST_LAP_NUMBER || '0', 10);
 // is relative to this package (not the shell's cwd), so it works the same
 // whether you're on the Pi or testing on a laptop.
 const logDir = process.env.LOG_DIR || path.join(__dirname, '..', 'race-logs');
+
+// Where every small piece of persisted config/state lives - the webhook
+// retry queues' sqlite files and the boat's course_marks.json cache below,
+// plus (independently redeclared in each of their own modules, to avoid a
+// circular require back into this file - see boatIdFile.js's own comment)
+// boat_id.txt/regatta-id.txt/mark-name.txt/power-schedule.txt. Deliberately
+// NOT redirectable via LOG_DIR - unlike race-logs (raw track data, fine to
+// point at a swappable SD card), this is small, low-write-volume state that
+// should survive independently of wherever LOG_DIR happens to be pointed
+// this run, same reasoning boatIdFile.js already used for its own identity
+// file before this directory existed.
+const configDir = path.join(__dirname, '..', 'race-config');
+fs.mkdirSync(configDir, { recursive: true });
 
 // Redis connection presets, selected via REDIS_ENV. Hostnames/ports are fine
 // to keep in source; credentials are not, so those always come from the
@@ -452,6 +466,9 @@ module.exports = {
 
   // --- Local logging (microSD) ---
   logDir,
+  // See this const's own comment above - persisted config/state, not raw
+  // log data, deliberately NOT redirectable via LOG_DIR.
+  configDir,
   // CSV logs (boat SD card, base station's received-fix log) older than
   // this many days are deleted automatically - see logRotation.js. Keeps
   // an always-running base station laptop or a boat's microSD card from
@@ -634,7 +651,7 @@ module.exports = {
     // to see the routine success line too, e.g. while confirming a mocked
     // REGATTAUP_ACTIVE_REGATTAS_URL is actually being hit on schedule.
     logActiveRegattas: process.env.REGATTAUP_LOG_ACTIVE_REGATTAS === '1' || process.env.REGATTAUP_LOG_ACTIVE_REGATTAS === 'true',
-    queueDbPath: process.env.REGATTAUP_QUEUE_DB || path.join(logDir, 'lap_webhook_queue.sqlite'),
+    queueDbPath: process.env.REGATTAUP_QUEUE_DB || path.join(configDir, 'lap_webhook_queue.sqlite'),
     // Every lap/on-grid/mark-rounding event is always queued first (see
     // baseStation.js's enqueueLap/OnGrid/MarkRounding), never POSTed
     // straight away - a single shared loop then drains at most one POST
@@ -657,7 +674,7 @@ module.exports = {
     // file - see onGridWebhookQueue.js's module comment for why it can't
     // just share lap_webhook_queue.sqlite.
     onGridZoneM: parseFloat(process.env.REGATTAUP_ONGRID_ZONE_M || '10'),
-    onGridQueueDbPath: process.env.REGATTAUP_ONGRID_QUEUE_DB || path.join(logDir, 'ongrid_webhook_queue.sqlite'),
+    onGridQueueDbPath: process.env.REGATTAUP_ONGRID_QUEUE_DB || path.join(configDir, 'ongrid_webhook_queue.sqlite'),
     // Mark-rounding detection (see markRoundingWatcher.js): reports a
     // 'mark' webhook whenever a boat crosses the virtual gate extending
     // markRoundingExtensionM beyond a windward/leeward mark. On by default,
@@ -671,7 +688,7 @@ module.exports = {
     // tacking/gybing well short of the mark, no matter how long).
     markRoundingExtensionM: parseFloat(process.env.REGATTAUP_MARK_ROUNDING_EXTENSION_M || '50'),
     markRoundingQueueDbPath:
-      process.env.REGATTAUP_MARK_ROUNDING_QUEUE_DB || path.join(logDir, 'mark_rounding_webhook_queue.sqlite'),
+      process.env.REGATTAUP_MARK_ROUNDING_QUEUE_DB || path.join(configDir, 'mark_rounding_webhook_queue.sqlite'),
     // Foul detection (see foulWatcher.js): reports a 'foul' webhook whenever
     // a boat's path crosses the start line, the finish line the wrong way
     // (downwind), or passes between the two committee boats at all. On by
@@ -680,7 +697,7 @@ module.exports = {
     // REGATTAUP_WEBHOOK_ENABLED switch (which still gates it too - both
     // must allow it for it to send).
     foulEnabled: process.env.REGATTAUP_FOUL_ENABLED !== '0' && process.env.REGATTAUP_FOUL_ENABLED !== 'false',
-    foulQueueDbPath: process.env.REGATTAUP_FOUL_QUEUE_DB || path.join(logDir, 'foul_webhook_queue.sqlite'),
+    foulQueueDbPath: process.env.REGATTAUP_FOUL_QUEUE_DB || path.join(configDir, 'foul_webhook_queue.sqlite'),
   },
 
   // --- Local UDP broadcast (base and boat both) ---

@@ -2,14 +2,16 @@ const fs = require('fs');
 const path = require('path');
 
 // Path this device's own assigned mark name is read from/written to -
-// deliberately the repo root, not config.logDir (which can be redirected to
+// deliberately race-config/, not config.logDir (which can be redirected to
 // an SD card mount via LOG_DIR - see config.js), same reasoning as
 // boatIdFile.js/regattaIdFile.js's own path: this is an identity that
 // should survive independently of wherever logs happen to be pointed this
 // run. A rover physically attached to a course mark (see README's "Mark
 // mode") remembers which mark it is across restarts the same way a boat
 // remembers its own BOAT_ID.
-const markNameFilePath = path.join(__dirname, '..', 'mark-name.txt');
+const configDir = path.join(__dirname, '..', 'race-config');
+fs.mkdirSync(configDir, { recursive: true });
+const markNameFilePath = path.join(configDir, 'mark-name.txt');
 
 // Whichever mark name was last persisted here, or null if this device has
 // never had one assigned (a fresh checkout, plain base/markset never used
