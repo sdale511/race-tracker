@@ -546,7 +546,7 @@ function main() {
   // yet) - the exact same regatta-scoping Redis boat data already uses (see
   // redisStore.js's own `regattas:<id>:...` prefix), so switching regattas
   // starts a fresh set of received-fix logs instead of interleaving two
-  // regattas' worth of frames in the same file, and npm run clear-boats can
+  // regattas' worth of frames in the same file, and npm run clear-fleet-logs can
   // clear just the active regatta's own logs without touching another
   // regatta's history.
   let csvPath = null;

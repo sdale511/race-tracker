@@ -23,7 +23,7 @@ const {
 // republishing to whatever ran `npm run base` next, whenever that happened
 // to be. Run with `npm run reset-course` (respects REDIS_ENV/REDIS_URL same
 // as boatAgent/baseStation, see README's "Redis track storage"). Boat
-// tracks are left untouched - see `npm run clear-boats` for those.
+// tracks are left untouched - see `npm run clear-fleet-logs` for those.
 (async () => {
   const target = config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`;
   console.log(`[resetCourse] connecting to Redis at ${target}`);

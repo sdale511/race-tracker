@@ -1,7 +1,7 @@
 // Central in-memory stats collector for the base station's admin dashboard
 // (see adminServer.js). Deliberately simple and in-process: resets on
 // restart, nothing persisted here - this is a live "what's happening right
-// now" view, not a historical record (Redis and race-uploads are already
+// now" view, not a historical record (Redis and fleet-uploads are already
 // the durable stores for that). A singleton by construction (Node caches
 // this module), which is fine since there's only ever one base station
 // process per run.

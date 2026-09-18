@@ -111,7 +111,7 @@ const REDIS_MEMORY_ALERT_BELOW_PCT = 10;
 // checking on room left is exactly the moment they'd also want to know
 // whether writes are actually succeeding right now.
 function renderRedisMemoryCard(memory, writeHealth, retentionHours) {
-  const retentionText = `Tracks recorded continuously (not just while racing), kept ${retentionHours}h, then expire automatically - "npm run clear-boats" clears sooner`;
+  const retentionText = `Tracks recorded continuously (not just while racing), kept ${retentionHours}h, then expire automatically - "npm run clear-fleet-logs" clears sooner`;
   if (!memory) {
     return `<div class="card">
       <div class="label">Redis memory</div>
@@ -228,7 +228,7 @@ function renderDashboard(s, rtkControlsEnabled) {
           ? `<a href="http://${b.ip}:${b.adminPort}/" target="_blank" rel="noopener">stats ↗</a>`
           : '<span class="muted">—</span>';
       // filesOnDisk/lastUploadOnDisk come from a one-time startup scan of
-      // race-uploads (see baseStation.js's uploadDirBaseline) - this is the
+      // fleet-uploads (see baseStation.js's uploadDirBaseline) - this is the
       // boat's real all-time uploaded history, distinct from the
       // this-session-only counters in the "Uploads" column, so a boat with
       // no activity yet this session can still show it has uploaded
@@ -472,7 +472,7 @@ function renderDashboard(s, rtkControlsEnabled) {
           <th title="Completed lap count for this boat this race">Laps</th>
           <th title="Successful vs. attempted SD-card log uploads since this base station started">Uploads this session</th>
           <th title="Log files this boat says are still waiting to upload, self-reported on its own last health-check ping">Pending</th>
-          <th title="Total files ever received from this boat, from a one-time scan of race-uploads at startup - includes previous sessions, not just this one">Files on disk (all-time)</th>
+          <th title="Total files ever received from this boat, from a one-time scan of fleet-uploads at startup - includes previous sessions, not just this one">Files on disk (all-time)</th>
           <th title="Link to this boat's own admin dashboard - appears once it has self-reported its IP/port via a health check">Rover dashboard</th>
         </tr>
       </thead>

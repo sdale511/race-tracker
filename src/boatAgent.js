@@ -96,8 +96,16 @@ console.log(
     `upload=${config.upload.enabled ? 'on' : 'off'}`
 );
 
+// config.boatLogDir (default boat-logs/, see config.js's own comment) - a
+// completely separate directory from the base's own LOG_DIR (fleet-logs/),
+// not a subdirectory of it, so the two never end up sharing a directory
+// even when both roles happen to run from the same checkout on the same
+// machine. Every other boatLogDir consumer below (pruneForDiskSpace,
+// startUploadClient, countPending, getDiskSpace) has to agree on this same
+// directory, or they'd end up scanning/uploading from the wrong place
+// entirely.
 const sdLogger = new SdLogger({
-  logDir: config.logDir,
+  logDir: config.boatLogDir,
   boatId: config.boatId,
   retentionDays: config.logRetentionDays,
   chunkMinutes: config.logChunkMinutes,
@@ -111,7 +119,7 @@ const sdLogger = new SdLogger({
 // to LOG_CHUNK_MINUTES away and a genuinely full disk needs a much
 // tighter check than that.
 setInterval(
-  () => pruneForDiskSpace(config.logDir, /^boat[A-Za-z0-9]+_.*\.csv$/, CRITICAL_BELOW_PCT),
+  () => pruneForDiskSpace(config.boatLogDir, /^boat[A-Za-z0-9]+_.*\.csv$/, CRITICAL_BELOW_PCT),
   60000
 );
 
@@ -332,7 +340,7 @@ radio.on('sync-error', () => roverStats.recordSyncError());
 // disappear from the base's own dashboard. UPLOAD_ENABLED only gates the
 // actual file transfer inside uploadClient.js's own tick().
 startUploadClient({
-  logDir: config.logDir,
+  logDir: config.boatLogDir,
   boatId: config.boatId,
   chunkMinutes: config.logChunkMinutes,
   getBaseAddress: () => baseAddress,
@@ -829,8 +837,8 @@ function getRoverStats() {
     currentMarks,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
-    pendingCount: countPending(config.logDir, config.boatId, config.logChunkMinutes),
-    disk: getDiskSpace(config.logDir),
+    pendingCount: countPending(config.boatLogDir, config.boatId, config.logChunkMinutes),
+    disk: getDiskSpace(config.boatLogDir),
     baseIp: baseAddress ? baseAddress.ip : null,
     adminPort: baseAddress ? baseAddress.adminPort : null,
     baseUploadPort: baseAddress ? baseAddress.port : null,

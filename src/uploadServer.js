@@ -48,14 +48,14 @@ function chunkTimestampFromFilename(filename) {
   return match ? new Date(`${match[1]}:${match[2]}:00.000Z`).getTime() : null;
 }
 
-// One-time inventory of what's already sitting in race-uploads - so the
+// One-time inventory of what's already sitting in fleet-uploads - so the
 // admin dashboard (adminServer.js) can show a boat's real uploaded history
 // (file count, most recent upload) even if the base has just restarted and
 // hasn't heard from that boat yet this session. stats.js is purely
 // in-memory and only knows about this session's activity; this is what
 // fills in everything before "now."
 //
-// Deliberately does no per-file fs.stat: race-uploads is never pruned (see
+// Deliberately does no per-file fs.stat: fleet-uploads is never pruned (see
 // "Log rotation" in the README), so a long-running fleet could accumulate
 // thousands of files per boat, and statting every one synchronously at
 // startup would block the event loop for a meaningfully long time - with
@@ -91,7 +91,7 @@ function scanUploadDir(uploadDir) {
 // Receives boat log uploads over HTTP - a rover pushes one of its chunked
 // CSV files (see sdLogger.js) here whenever it's back in WiFi range of the
 // base (see uploadClient.js). Deliberately dumb: no auth, no listing, just
-// "accept this exact file into race-uploads." Writes to a .part file first
+// "accept this exact file into fleet-uploads." Writes to a .part file first
 // and only renames into the final name once the full body has actually
 // arrived (checked via req.complete, not just the write stream finishing -
 // pipe() only ends the destination on the source's own 'end', so a
@@ -104,7 +104,7 @@ function scanUploadDir(uploadDir) {
 // uploadClient.js sends each file gzip-compressed (smaller transfer, better
 // odds of finishing inside a short WiFi window - see its own comment) but
 // that's wire-transfer plumbing only: decompressed here on the way in, so
-// what actually lands in race-uploads is a plain, immediately-readable
+// what actually lands in fleet-uploads is a plain, immediately-readable
 // .csv, identical to what the boat originally wrote - not something you
 // need to gunzip yourself before opening it.
 // getCurrentRegattaId (optional) - called fresh on every upload, not
@@ -157,7 +157,7 @@ function startUploadServer({ port, uploadDir, logSuccess = false, getCurrentRega
     stats.recordBoatIp(boatId, normalizeIp(req.socket.remoteAddress));
 
     // One subdirectory per regatta, then per boat, named after its BOAT_ID
-    // (e.g. race-uploads/<regattaId>/TK10X/boatTK10X_2026-08-04T17-10.csv) -
+    // (e.g. fleet-uploads/<regattaId>/TK10X/boatTK10X_2026-08-04T17-10.csv) -
     // keeps a multi-boat fleet's uploads organized instead of one flat
     // directory of files from every boat mixed together, and scopes them to
     // the regatta they were actually uploaded during, the same regatta
