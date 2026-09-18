@@ -136,10 +136,15 @@ working). If you enabled `UBX-NAV-PVT` on the wrong UART number, this
 simply stays silent - undo that one (`CFG-MSGOUT-UBX_NAV_PVT_UARTx,0,7`)
 and try the other.
 
-The simpleRTK2B LR's onboard LoRa radio is a **separate concern** — that's
-normally used for RTCM3 correction data between your RTK base and this
-rover, not for the position telemetry this app sends. Nothing here touches
-that link.
+The simpleRTK2B LR's onboard radio (in the board's XBee socket - see
+"Wiring notes" above) is a **separate concern** — that's normally used for
+RTCM3 correction data between your RTK base and this rover, not for the
+position telemetry this app sends. Nothing here touches that link. "LR"
+here is ArduSimple's own kit name ("Long Range," ~10km) for this radio,
+not a Digi product name - the underlying chip, confirmed directly off the
+module's own label, is a **Digi XBee SX** (Model: XBSX, FCC ID
+`MCQ-XBSX`); their step-up "XLR" kit uses a Digi XBee PRO SX instead, for
+longer range.
 
 ### RTK base GPS: enabling RTCM3 output (one-time)
 
@@ -156,9 +161,10 @@ locked and working" on this app's own dashboard while the rover receives
 nothing usable.
 
 Check/enable directly on the base, on whichever UART its correction radio
-is wired to (`UART2` on the simpleRTK2B LR - its onboard LoRa radio is
-wired internally to UART2 on the PCB, not something you'd have jumpered
-yourself, but it's the same interface as far as this config goes):
+is wired to (`UART2` on the simpleRTK2B LR - its onboard radio (a Digi
+XBee SX, see the note just above this section) is wired internally to
+UART2 on the PCB, not something you'd have jumpered yourself, but it's the
+same interface as far as this config goes):
 ```
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1005_UART2,1,7
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1077_UART2,1,7
@@ -329,6 +335,36 @@ estimated missed count, and loss %. Start with both radios close together
 to confirm basic connectivity, then physically separate them to find where
 the link actually starts to degrade - that's the number that matters for
 real racing distance.
+
+### Congestion-testing the radio
+
+`npm run fleet`'s `SIMULATE=1` link is a UDP stand-in with no real airtime
+limit, so it can't show you real congestion - and running `FLEET_SIZE`
+real boat processes with `SIMULATE_GPS=1` (real radio, fake GPS) needs one
+real radio *per boat*, since only one process can ever hold a given serial
+port. If you only have the one boat-side radio a normal setup actually
+has, `src/radioCongestionTest.js` is the alternative: one process, one
+real radio, transmitting the *combined* frame traffic a whole simulated
+fleet sailing at speed would really put on the air - same
+`protocol.js`/`RadioLink` frames boatAgent.js sends, at the same per-boat
+cadence its own `TX_DISTANCE_M` gate would trigger at that speed, just
+computed directly instead of coming from a live GPS track.
+
+```
+npm run base                                                   # real base, real radio - NOT SIMULATE=1
+BOAT_COUNT=30 RADIO_PORT=/dev/cu.usbserial-A npm run radio-congestion   # your one boat-side radio
+```
+
+Watch the base's own fleet dashboard (per-boat "last seen"/frame counts)
+and its `[radio] link quality` log line (sync-error count) as `BOAT_COUNT`
+climbs - that's the actual congestion signal; this script only generates
+realistic load; it doesn't judge the result. `CONGESTION_SPEED_KN`
+(default 6) sets the assumed boat speed that drives the per-boat send
+rate. This is a real test of airtime/throughput load and the base radio's
+own receive pipeline - it is **not** a test of real multi-transmitter RF
+collisions (hidden-node interference, simultaneous keying), since every
+frame still leaves the one real antenna you have; that would need one real
+radio per virtual boat.
 
 ## Running
 
@@ -2125,7 +2161,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `SIMULATE_GPS` | unset | Fakes just the GPS track while still using real radio hardware on both ends - for bench-testing an actual radio link (range, packet loss) without needing a real GPS fix or being outdoors. Implied by `SIMULATE=1`; only needed on its own when you want simulated GPS with a real radio specifically, see "Simulated GPS with real radio hardware" above |
 | `GPS_OUTPUT_FORMAT` | `ubx` | Base and boat both — format of the local UDP broadcast, see "Connecting to your race committee software" above. `ubx` (default) sends a synthetic `UBX-NAV-PVT` message; `nmea` sends a standard `$GPGGA` sentence instead, for tools that only speak NMEA |
 | `UDP_PORT` / `UDP_BROADCAST_ADDR` | `10110` / `255.255.255.255` | Base and boat both — where each process's own local UDP broadcast (see `GPS_OUTPUT_FORMAT` above) is sent. 10110 is the conventional NMEA-over-UDP port; override the address to a more targeted subnet broadcast if `255.255.255.255` doesn't reach your tracking tool's network setup |
-| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base`/`basertk` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat and `npm run rtk`/`basertk` (see "RTK-only mode"/"Base + RTK combined" above) always open a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`, boat only); plain `npm run base` only tries when `GPS_PORT` is explicitly set — most base stations have none attached |
+| `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART (the Pi's own hardware UART, GPIO 14/15, by default — override to `/dev/ttyACM0` plus a matching `GPS_BAUD` if wired to the simpleRTK2B LR's own USB port instead, see "Wiring notes" above). Shared with an optional GPS wired directly to the base station — commonly over USB there, so both vars will usually need overriding to match that connection. Set on `npm run base`/`basertk` to power the admin map's "Recenter on base GPS" button (see "Editing mark positions from the map" above). The boat always opens a port at this default unless told otherwise (`SIMULATE`/`NO_GPS`). `npm run rtk`/`basertk` (see "RTK-only mode"/"Base + RTK combined" above) always try `GPS_PORT` regardless of `SIMULATE` — their whole purpose is exercising the real RTK receiver. Plain `npm run base` only tries when `GPS_PORT` is explicitly set AND `SIMULATE` isn't `1` — most base stations have none attached, and `SIMULATE=1` is assumed to mean no hardware is attached at all, same as it already does for the radio |
 | `GPS_LOG` | unset (on) | All three modes — set to `0` to silence the per-fix `[gps]`/`[baseGps]` console line (position, fix type, `carrSoln`, `numSV`, accuracy) entirely. Every fix is logged, not just ones that clear `TX_DISTANCE_M` — the console is a live "is this thing still getting fixes" view, independent of what's actually sent over radio/written to SD. On by default; useful to turn off once you've confirmed a good fix and don't want it scrolling during an actual race |
 | `GPS_LOG_REPLACE` | unset (on) | All three modes — when watching a real interactive terminal (not piped/redirected, e.g. to a file or `systemd`/journald), each fix overwrites the same console line instead of scrolling, so a stationary boat/base/RTK-only process doesn't flood the screen. On the boat, a fix that actually clears `TX_DISTANCE_M` (a real radio send) still commits to scrollback instead of being overwritten. Set to `0` to always scroll instead (one line per logged fix) — e.g. if something else is tailing/grepping this process's own terminal output directly, where overwritten lines would never actually appear to it |
 | `GPS_LOG_RTCM` | unset (off) | Boat only — set to `1` to log a `[rtcm]` line for every `UBX-RXM-RTCM` message the receiver reports (RTCM message type, whether it was applied, CRC failures) — see "Wiring notes" above. Also requires `UBX-RXM-RTCM` to be enabled as an output on the receiver itself, a separate one-time step |
@@ -2133,6 +2169,7 @@ given `boat`/`base` run will actually use, instead of reading through
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `npm run rtk` or `basertk` only (not plain `base`) — accuracy (mm) the survey-in mean position must reach before it's accepted, regardless of how long that takes — survey-in only completes once both this and `GPS_SVIN_MIN_DUR_S` are satisfied. A real fixed installation typically wants both tightened for cm-level RTK base precision; these defaults are gentle for testing |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the radio's factory default, every radio must be reconfigured to match (see "Radio configuration" above) |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `npm run radio-test` only — `send` or `listen`, and how often the sender transmits, see "Bench-testing the radios" above |
+| `BOAT_COUNT` / `CONGESTION_SPEED_KN` | 30 / 6 | `npm run radio-congestion` only — how many virtual boats' worth of frame traffic to transmit, and the assumed boat speed (drives the per-boat send rate via the real `TX_DISTANCE_M` gate), see "Congestion-testing the radio" above |
 | `RADIO_ENABLED` | unset (on) | Set to `0` to skip opening the radio port entirely, on either `npm run boat` (fixes still log to SD) or `npm run base` (other outputs — console/CSV/Redis — still testable, just with no incoming frames) |
 | `NO_GPS` | unset | `npm run boat` only — set to `1` to skip starting any GPS source at all, real or simulated. Useful with `SIMULATE=1` when you want a working sim radio link (course marks, the log upload client, radio bench-testing) without an actual simulated race running |
 | `BOAT_ID` | this device's own persisted id (see below) | Exactly 5 characters (letters/digits, the wire protocol's boatId field is a fixed-width byte slot) distinguishing boats. When set (by hand, or by `npm run fleet`/`fleetSim.js` for every boat it spawns), always wins outright over this device's own persisted id - see "Running" above |

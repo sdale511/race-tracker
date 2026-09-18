@@ -24,9 +24,12 @@ const protocol = require('./protocol');
 //
 // `ls /dev/cu.*` before/after plugging in each radio to find its device
 // path. RADIO_BAUD must match what's actually configured on both radios
-// (9600 for a factory-default XBee SX, see README's "Radio configuration").
-// For XBee, also confirm both share the same Network ID (ATID) via XCTU
-// first - this test can't get through if they're not paired.
+// (9600 for a factory-default XBee-PRO S3B - this app's actual telemetry
+// radio, see xbee_configure_at.py - not to be confused with the separate
+// XBee SX radio the simpleRTK2B LR uses for RTK correction, see README's
+// "Wiring notes"). For XBee, also confirm both share the same Network ID
+// (ATID) via XCTU first - this test can't get through if they're not
+// paired.
 //
 // The sequence number is piggybacked on the frame's own timestamp field
 // (seq*1000 always lands on a whole second with zero ms remainder, so it

@@ -16,6 +16,7 @@
     "reset-course": "node src/resetCourse.js",
     "reset-regatta": "node src/resetRegatta.js",
     "radio-test": "node src/radioTest.js",
+    "radio-congestion": "node src/radioCongestionTest.js",
     "print-config": "node src/printConfig.js"
   },
   "dependencies": {

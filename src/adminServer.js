@@ -5,6 +5,16 @@ const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
+
+// Display order for the map's own mark list (the "Set" button rows and the
+// mark-assignment dropdown) - the physical order marks actually sit along
+// the course, south to north: leewardBlack, leewardGreen, the start/finish
+// complex, windwardGreen, windwardBlack (see course.js's START_LINE_POSITION
+// comment - green marks sit halfway between the start/finish complex and
+// their own black mark). Deliberately separate from MARK_NAMES' own order,
+// which is fixed by Redis key names and the radio protocol and has nothing
+// to do with how the list should read in a UI.
+const MAP_MARK_ORDER = ['leewardBlack', 'leewardGreen', 'pin', 'committeeStart', 'committeeFinish', 'finish', 'windwardGreen', 'windwardBlack'];
 const {
   fixQualityText,
   connectionDot,
@@ -756,7 +766,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   // mode, so the same rule applies (see README's "Mark mode" on why
   // markset+assignment and mark are the same underlying state).
   const hideSetButtons = mapOnly && (markMode || !!s.markAssignment);
-  const markSetRowsHtml = MARK_NAMES.map((name) => {
+  const markSetRowsHtml = MAP_MARK_ORDER.map((name) => {
     const isAssigned = hideSetButtons && s.markAssignment === name;
     return `<div class="mark-set-row${isAssigned ? ' mark-set-row-assigned' : ''}">
         <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
@@ -784,7 +794,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
         <label for="markAssignSelect" style="display:block;font-size:11px;color:#8b94a3;margin-bottom:4px;">This rover represents</label>
         <select id="markAssignSelect" onchange="assignMark(this)" data-current="${s.markAssignment || ''}" style="width:100%;background:#0f1216;color:#e6e9ef;border:1px solid #262c36;border-radius:6px;padding:7px 10px;font-size:13px;">
           <option value="" ${!s.markAssignment ? 'selected' : ''}>Not assigned - edit marks manually below</option>
-          ${MARK_NAMES.map((name) => `<option value="${name}" ${s.markAssignment === name ? 'selected' : ''}>${name}</option>`).join('')}
+          ${MAP_MARK_ORDER.map((name) => `<option value="${name}" ${s.markAssignment === name ? 'selected' : ''}>${name}</option>`).join('')}
         </select>
         ${
           s.markAssignment

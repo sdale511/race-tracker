@@ -303,9 +303,22 @@ function main() {
   // always opens this GPS regardless of GPS_PORT, same as a boat - that GPS
   // reading IS the whole point of walking the course with this mode
   // running, not an optional extra.
-  const gpsEnabled = marksetMode || !!process.env.GPS_PORT;
+  //
+  // Set only by src/baseRtkStation.js (npm run basertk) - a thin wrapper
+  // around this exact file for the single-machine case where this base is
+  // ALSO the RTK correction source (see README's "RTK-only mode"/"Base +
+  // RTK combined" sections). Declared here (not just below, where it's
+  // also used for which admin routes/cards to expose) because basertk's
+  // whole purpose is exercising the real RTK receiver, so it must keep
+  // trying to open GPS_PORT even under SIMULATE=1 - unlike plain base
+  // below, where SIMULATE=1 fakes the boat radio but was never meant to
+  // imply real GPS hardware is attached either.
+  const rtkControlsEnabled = process.env.RTK_CONTROLS_ENABLED === '1';
+  const gpsEnabled = marksetMode ? true : rtkControlsEnabled ? !!process.env.GPS_PORT : !config.simulate && !!process.env.GPS_PORT;
   if (gpsEnabled) {
     console.log(`[baseStation] base GPS ${config.gps.port} @ ${config.gps.baud}`);
+  } else if (config.simulate && !!process.env.GPS_PORT) {
+    console.log(`[baseStation] SIMULATE=1 - not opening base GPS ${process.env.GPS_PORT} (assumed not attached; set RTK_CONTROLS_ENABLED=1/npm run basertk to open it anyway)`);
   }
 
   // Which mark this device physically represents, if any (see README's
@@ -1999,16 +2012,15 @@ function main() {
     return raceMarks;
   }
 
-  // Set only by src/baseRtkStation.js (npm run basertk) - a thin wrapper
-  // around this exact file for the single-machine case where this base is
-  // ALSO the RTK correction source, not split onto its own process (see
-  // README's "RTK-only mode"/"Base + RTK combined" sections). Plain
-  // `npm run base` always leaves this unset: it still opens/reads the base
+  // rtkControlsEnabled itself is declared up near gpsEnabled above (it
+  // gates whether GPS_PORT is opened regardless of SIMULATE) - reused here
+  // to also decide whether to expose the TMODE3/survey-in controls that
+  // actually reconfigure what gets broadcast as RTCM to every boat. Plain
+  // `npm run base` always leaves it unset: it still opens/reads the base
   // GPS for the ordinary-fix "plant a mark at my real position" feature
-  // (getBaseGps below, unconditional), but doesn't expose the TMODE3/
-  // survey-in controls that actually reconfigure what gets broadcast as
-  // RTCM to every boat - see adminServer.js's own rtkControlsEnabled.
-  const rtkControlsEnabled = process.env.RTK_CONTROLS_ENABLED === '1';
+  // (getBaseGps below, unconditional) whenever gpsEnabled is true, but
+  // doesn't expose these RTK-specific routes/cards either way - see
+  // adminServer.js's own rtkControlsEnabled param.
 
   startAdminServer({
     port: config.admin.port,
