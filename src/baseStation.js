@@ -461,17 +461,35 @@ function main() {
     } else {
       console.log(`[baseStation] log upload address: ${baseIp}:${config.upload.port}`);
     }
-    startUploadServer({ port: config.upload.port, uploadDir: config.upload.dir, logSuccess: config.upload.logSuccess });
+    startUploadServer({
+      port: config.upload.port,
+      uploadDir: config.upload.dir,
+      logSuccess: config.upload.logSuccess,
+      getCurrentRegattaId: () => currentRegattaId,
+    });
   }
 
-  // Scanned once at startup (see scanUploadDir's own comment on why this
-  // stays cheap regardless of how many files have piled up over a season)
-  // so the admin dashboard can show a boat's real uploaded history even
-  // before it's said anything this session - stats.js only knows about
-  // this session's activity, not what happened in prior ones. Markset's own
-  // map-only dashboard has no fleet table to show this on, so it's skipped
-  // too - an empty baseline, same shape getFullStats already expects.
-  const uploadDirBaseline = marksetMode ? {} : scanUploadDir(config.upload.dir);
+  // Re-scanned every time the selected regatta actually changes (see
+  // refreshUploadDirBaseline's call sites below, in selectRegatta and the
+  // startup resolution IIFE) rather than once at process start - this
+  // module-level currentRegattaId is still null at the point main() runs
+  // synchronously this far, well before regatta resolution (an async
+  // RegattaUp fetch, possibly a terminal prompt) has had a chance to
+  // complete, so scanning uploadDir here would always find the (empty)
+  // 'none' bucket. Scoped to the active regatta's own subdirectory (see
+  // uploadServer.js's own regatta-nested boatDir), matching how Redis boat
+  // data is already scoped - switching regattas shows that regatta's own
+  // upload history, not a running total across every regatta this base has
+  // ever seen. See scanUploadDir's own comment on why rescanning stays
+  // cheap regardless of how many files have piled up over a season.
+  // Markset's own map-only dashboard has no fleet table to show this on, so
+  // it's skipped entirely - always the empty shape getFullStats expects.
+  let uploadDirBaseline = {};
+  function refreshUploadDirBaseline() {
+    if (marksetMode) return;
+    uploadDirBaseline = scanUploadDir(path.join(config.upload.dir, currentRegattaId || 'none'));
+  }
+  refreshUploadDirBaseline();
 
   // Passive signal-quality feel, without interrupting the data stream to
   // query the radio for RSSI: a rising 'sync-error' rate (bytes that arrive
@@ -523,15 +541,27 @@ function main() {
   // cheap date-string check, only reopens/prunes on an actual date change)
   // is what makes that happen without a separate timer.
   const CSV_HEADER = 'received_iso,boat_id,fix_time_iso,lat,lon,speed_kn,heading_deg,fix_ok,carr_soln,num_sv\n';
+  // Nested one level under whichever regatta is currently selected
+  // (currentRegattaId, see selectRegatta below - 'none' if nothing's picked
+  // yet) - the exact same regatta-scoping Redis boat data already uses (see
+  // redisStore.js's own `regattas:<id>:...` prefix), so switching regattas
+  // starts a fresh set of received-fix logs instead of interleaving two
+  // regattas' worth of frames in the same file, and npm run clear-boats can
+  // clear just the active regatta's own logs without touching another
+  // regatta's history.
   let csvPath = null;
   let csvDate = null;
+  let csvRegattaId = null;
   function ensureCsvFile() {
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    if (today === csvDate) return csvPath;
+    if (today === csvDate && currentRegattaId === csvRegattaId) return csvPath;
     csvDate = today;
-    csvPath = path.join(logDir, `base_station_received_${today}.csv`);
+    csvRegattaId = currentRegattaId;
+    const regattaLogDir = path.join(logDir, currentRegattaId || 'none');
+    fs.mkdirSync(regattaLogDir, { recursive: true });
+    csvPath = path.join(regattaLogDir, `base_station_received_${today}.csv`);
     if (!fs.existsSync(csvPath)) fs.writeFileSync(csvPath, CSV_HEADER);
-    pruneOldLogs(logDir, /^base_station_received_.*\.csv$/, config.logRetentionDays);
+    pruneOldLogs(regattaLogDir, /^base_station_received_.*\.csv$/, config.logRetentionDays);
     return csvPath;
   }
   ensureCsvFile();
@@ -541,8 +571,13 @@ function main() {
   // isn't enough to keep this machine's disk from filling up - see
   // logRotation.js's own comment on pruneForDiskSpace. On its own timer
   // rather than only checked at the daily rollover, since a genuinely full
-  // disk needs a much tighter check than that.
-  setInterval(() => pruneForDiskSpace(logDir, /^base_station_received_.*\.csv$/, CRITICAL_BELOW_PCT), 60000);
+  // disk needs a much tighter check than that. Reads currentRegattaId fresh
+  // on every tick (not captured once) so this keeps following the regatta
+  // actually in use even if it changes mid-run.
+  setInterval(
+    () => pruneForDiskSpace(path.join(logDir, currentRegattaId || 'none'), /^base_station_received_.*\.csv$/, CRITICAL_BELOW_PCT),
+    60000
+  );
 
   const udpSocket = dgram.createSocket('udp4');
   const UDP_BROADCAST_ADDR = config.localBroadcast.address;
@@ -691,6 +726,7 @@ function main() {
       selectedRegatta = null;
       redisStore.setCurrentRegatta(null);
       currentRegattaId = null;
+      refreshUploadDirBaseline();
       clearPersistedRegattaId();
     }
   }
@@ -712,6 +748,7 @@ function main() {
     selectedRegatta = regatta;
     redisStore.setCurrentRegatta(regatta.id);
     currentRegattaId = regatta.id;
+    refreshUploadDirBaseline();
     // Remembers this pick as the new default for next time this base
     // restarts - the same file REGATTAUP_REGATTA_ID itself writes to (see
     // config.js's resolveDefaultRegattaId/regattaIdFile.js), so whichever

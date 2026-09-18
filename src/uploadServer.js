@@ -107,7 +107,14 @@ function scanUploadDir(uploadDir) {
 // what actually lands in race-uploads is a plain, immediately-readable
 // .csv, identical to what the boat originally wrote - not something you
 // need to gunzip yourself before opening it.
-function startUploadServer({ port, uploadDir, logSuccess = false }) {
+// getCurrentRegattaId (optional) - called fresh on every upload, not
+// captured once at server start, so this keeps following whichever regatta
+// is actually selected even as it's picked/switched live from the admin
+// dashboard (this server starts well before regatta selection resolves -
+// see baseStation.js's own startup ordering). Omitted entirely by
+// markSetStation.js (this server never even starts under marksetMode), so
+// no default is needed here beyond falling back to 'none'.
+function startUploadServer({ port, uploadDir, logSuccess = false, getCurrentRegattaId }) {
   fs.mkdirSync(uploadDir, { recursive: true });
 
   const server = http.createServer((req, res) => {
@@ -149,11 +156,14 @@ function startUploadServer({ port, uploadDir, logSuccess = false }) {
     stats.recordUploadAttempt(boatId);
     stats.recordBoatIp(boatId, normalizeIp(req.socket.remoteAddress));
 
-    // One subdirectory per boat, named after its BOAT_ID (e.g.
-    // race-uploads/TK10X/boatTK10X_2026-08-04T17-10.csv) - keeps a
-    // multi-boat fleet's uploads organized instead of one flat directory of
-    // files from every boat mixed together.
-    const boatDir = path.join(uploadDir, filenameMatch[1]);
+    // One subdirectory per regatta, then per boat, named after its BOAT_ID
+    // (e.g. race-uploads/<regattaId>/TK10X/boatTK10X_2026-08-04T17-10.csv) -
+    // keeps a multi-boat fleet's uploads organized instead of one flat
+    // directory of files from every boat mixed together, and scopes them to
+    // the regatta they were actually uploaded during, the same regatta
+    // scoping Redis boat data already uses.
+    const regattaId = (getCurrentRegattaId && getCurrentRegattaId()) || 'none';
+    const boatDir = path.join(uploadDir, regattaId, filenameMatch[1]);
     fs.mkdirSync(boatDir, { recursive: true });
 
     const receiveStart = Date.now();

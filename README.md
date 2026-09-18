@@ -1339,6 +1339,50 @@ through its ordinary generic `mark:*` scan; its map draws the same dashed
 line the base's own map does. Off, that key is simply absent, and nothing
 extra renders.
 
+## File layout
+
+Everything this app writes to disk lands in one of three git-ignored
+directories, all relative to the repo root by default (`LOG_DIR`/
+`UPLOAD_DIR` can redirect two of them - see below):
+
+```
+race-config/                                 - small per-device identity/state (fixed location, NOT redirectable via LOG_DIR)
+  boat_id.txt                                  this device's own persistent BOAT_ID, auto-generated if unset (see "Running" below)
+  mark-name.txt                                this device's mark assignment, if any (see "Mark mode" below)
+  regatta-id.txt                               this base's default regatta selection (see "Selecting a regatta at startup" below)
+  power-schedule.txt                           this boat's scheduled-shutdown settings (see "Scheduled shutdown (boat, battery-saving)" below)
+  course_marks.json                            a boat's local cache of the last-broadcast course (see "Broadcasting marks to the rovers" below)
+  lap_webhook_queue.sqlite                      RegattaUp webhook retry queues (see "Lap events -> RegattaUp" below)
+  ongrid_webhook_queue.sqlite
+  mark_rounding_webhook_queue.sqlite
+  foul_webhook_queue.sqlite
+
+race-logs/<regattaId>/                       - base's own received-fix CSV log, nested per regatta (LOG_DIR to redirect, e.g. an SD card)
+  base_station_received_<date>.csv
+
+race-uploads/<regattaId>/<boatId>/           - each boat's uploaded SD-card logs, nested per regatta then per boat (UPLOAD_DIR to redirect)
+  boat<boatId>_<chunk>.csv
+```
+
+`race-config/` is deliberately a fixed location, not redirectable the way
+`LOG_DIR`/`UPLOAD_DIR` are - this is small, low-write-volume identity/state
+that should survive independently of wherever raw log data happens to be
+pointed this run (e.g. an SD card that gets swapped), same reasoning
+`boat_id.txt` already used before this directory existed. `race-logs/` and
+`race-uploads/` are both nested one level under whichever regatta was
+selected at the time (`none` if nothing was), the same regatta-scoping
+Redis boat data already uses (see "Redis track storage" below) - switching
+regattas starts fresh local history instead of interleaving two regattas'
+files together, and `npm run clear-boats` (see "Clearing boat data" below)
+can clear just the active regatta's own local files the same way it
+already scopes its Redis clearing.
+
+The boat side is simpler: `npm run boat` only ever writes `race-config/`
+(its own `boat_id.txt`/`power-schedule.txt`/`course_marks.json`) and
+`race-logs/` (its own chunked SD-card CSVs, via `LOG_DIR` - see "Log
+rotation" below) - there's no `race-uploads/` on a boat, that only exists
+on whichever machine receives uploads (the base).
+
 ## Redis track storage
 
 Every fix the base station decodes is recorded into Redis by `src/redisStore.js`
@@ -1500,6 +1544,17 @@ way `base` does (`boat` doesn't touch Redis at all - see "Broadcasting marks
 to the rovers" above), so point it at whichever Redis you actually want
 cleared.
 
+Also clears this base's own local files for that same regatta -
+`LOG_DIR/<regattaId>/base_station_received_*.csv` and everything under
+`UPLOAD_DIR/<regattaId>/` (see "Log rotation"/"Uploading boat logs to the
+base over WiFi" above) - so a base can be fully reset after testing (e.g. a
+`radio-congestion` run, see "Congestion-testing the radio" above) without
+leftover fake boats in its own logs or dashboard, not just Redis. Also
+removes anything still sitting in the pre-regatta-nesting flat layout
+(`base_station_received_*.csv` directly in `LOG_DIR`, a boat-id directory
+directly in `UPLOAD_DIR`) - not regatta-scoped, since those predate the
+whole regatta-nesting concept and there's nothing to scope them to.
+
 ### Changing the course
 
 The course has eight marks (`src/course.js`'s `MARK_NAMES`): `pin`,
@@ -1640,10 +1695,14 @@ chunk's file rather than starting a new one (the file is keyed by chunk,
 not by session). Smaller chunks mean each one becomes upload-eligible
 sooner (see "Uploading boat logs to the base over WiFi" below) at the cost
 of more, smaller files. The base station's file is named per day
-(`base_station_received_<date>.csv`) for the same by-age pruning to apply
-to it too, instead of one file growing without bound across an entire
-season. Neither ever prunes rows *within* a file that's still being
-actively written, only whole files once they age out.
+(`LOG_DIR/<regattaId>/base_station_received_<date>.csv` - nested under
+whichever regatta is currently selected, `none` if nothing is, same
+regatta-scoping Redis boat data already uses; switching regattas starts a
+fresh file even on the same day rather than interleaving two regattas'
+frames together) for the same by-age pruning to apply to it too, instead of
+one file growing without bound across an entire season. Neither ever
+prunes rows *within* a file that's still being actively written, only
+whole files once they age out.
 
 The lap webhook retry queue (`lapWebhookQueue.js`'s sqlite file) isn't
 touched by this - it already self-cleans on successful delivery, and isn't
@@ -1721,10 +1780,13 @@ never to assume the connection will hold):
 Uploaded files land in `UPLOAD_DIR` (default a `race-uploads` directory
 next to `LOG_DIR`, deliberately separate from the base's own
 `race-logs` - that's this machine's own received-fix log, not a dumping
-ground for every boat's SD card backup), organized into one subdirectory
-per boat by BOAT_ID (`race-uploads/<boatId>/boat<boatId>_<chunk>.csv`)
-so a multi-boat fleet's files don't all land in one flat directory
-together. Unlike `race-logs`,
+ground for every boat's SD card backup), organized one subdirectory per
+regatta (whichever one is currently selected when the upload actually
+arrives - `none` if nothing is, same regatta scoping Redis boat data
+already uses), then one subdirectory per boat within that by BOAT_ID
+(`race-uploads/<regattaId>/<boatId>/boat<boatId>_<chunk>.csv`) so neither a
+multi-boat fleet's files, nor two different regattas' worth of history, end
+up mixed together. Unlike `race-logs`,
 `race-uploads` is **not** pruned by `LOG_RETENTION_DAYS` (or by the
 emergency low-disk cleanup - see "Disk space" below) - it's meant to
 be the durable, centrally-collected copy that outlives whatever retention
