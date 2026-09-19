@@ -13,10 +13,16 @@ class RadioLink extends EventEmitter {
     this.portPath = port;
     this.baud = baud;
     this._buf = Buffer.alloc(0);
+    // True once the local serial write buffer has room - see send() below.
+    // A fresh SerialPort (initial connect, or any reconnect via _open())
+    // always starts with an empty write buffer, so this resets to true
+    // there too, not just in the constructor.
+    this._writable = true;
     this._open();
   }
 
   _open() {
+    this._writable = true;
     this.port = new SerialPort({ path: this.portPath, baudRate: this.baud }, (err) => {
       if (err) {
         this.emit('error', err);
@@ -36,6 +42,12 @@ class RadioLink extends EventEmitter {
       this._scheduleReconnect();
     });
     this.port.on('error', (err) => this.emit('error', err));
+    // SerialPort is a standard Node Writable stream - 'drain' is the
+    // built-in signal that its internal buffer has room again after
+    // write() reported it was full (see send() below).
+    this.port.on('drain', () => {
+      this._writable = true;
+    });
   }
 
   _scheduleReconnect() {
@@ -47,9 +59,22 @@ class RadioLink extends EventEmitter {
     }, 3000);
   }
 
+  // Real RF congestion (collisions, a saturated shared channel) doesn't
+  // close the serial port - the radio just can't drain what we hand it as
+  // fast as we hand it. Checking _writable BEFORE writing (not just
+  // write()'s own return value afterward) is what actually matters: without
+  // it, every gate-cleared fix keeps getting queued on top of an already-
+  // backed-up buffer, so stale data sits ahead of fresh data and gets
+  // transmitted first once the radio finally catches up - exactly the wrong
+  // priority under congestion. Returning false here instead makes a
+  // congested link fail the exact same way a closed port already does, so
+  // callers' existing "didn't send, just try again with whatever's current
+  // next time" behavior (see boatAgent.js's transmitFix/flushPendingBatch)
+  // covers congestion too, not just a literally-disconnected radio.
   send(buf) {
     if (!this.port || !this.port.isOpen) return false;
-    this.port.write(buf);
+    if (!this._writable) return false; // still draining a backed-up buffer - don't pile more on top of it
+    if (!this.port.write(buf)) this._writable = false; // this write itself filled the buffer - wait for 'drain'
     return true;
   }
 

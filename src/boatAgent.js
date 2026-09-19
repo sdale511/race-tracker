@@ -147,6 +147,20 @@ let radio;
 // RADIO_ENABLED=0, which never emits 'connected' at all - fine, since
 // radioExpected (above) is what the status summary actually checks first.
 let radioConnected = false;
+
+// send() now returns false for two different reasons (see radioLink.js's
+// own comment on _writable): the port isn't open at all, or it IS open but
+// its local write buffer is still draining a backlog - real RF congestion,
+// not a disconnect. radioConnected above is exactly what tells these apart:
+// if it's true and send() still failed, a backed-up buffer is the only
+// remaining explanation. Used by every dropped-frame warning below, so the
+// message actually points an operator at the right thing to check (a
+// cable/port problem vs. a congested link) instead of always blaming "not
+// connected" regardless of which one it really was.
+function radioDropReason() {
+  return radioConnected ? 'backed up (congested link?)' : 'not connected';
+}
+
 if (config.simulate) {
   const { SimRadioLink } = require('./simRadioLink');
   radio = new SimRadioLink({
@@ -285,7 +299,7 @@ function sendMarksPing() {
   // Same "best effort, not critical" handling as handlePvt's own send
   // below - a real radio that isn't connected yet just falls back to the
   // periodic broadcast, same as before this ping existed at all.
-  if (!sent && config.radio.enabled) console.warn('[radio] not connected, dropped a marks-ping frame');
+  if (!sent && config.radio.enabled) console.warn(`[radio] ${radioDropReason()}, dropped a marks-ping frame`);
 }
 
 // A single ping isn't enough - the base might not even be up yet when this
@@ -525,7 +539,7 @@ function transmitFix(pvt) {
   if (sent) {
     roverStats.recordFrameSent();
   } else if (radioExpected) {
-    console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+    console.warn(`[radio] ${radioDropReason()}, dropped a frame (still logged to SD)`);
   }
 }
 
@@ -582,7 +596,7 @@ function flushPendingBatch() {
     roverStats.recordFrameSent();
   } else if (radioExpected) {
     const what = fixes.length === 1 ? 'a frame' : `a batch of ${fixes.length} frames`;
-    console.warn(`[radio] not connected, dropped ${what} (still logged to SD)`);
+    console.warn(`[radio] ${radioDropReason()}, dropped ${what} (still logged to SD)`);
   }
 }
 
@@ -609,7 +623,7 @@ function sendHello() {
     return;
   }
   const sent = radio.send(protocol.encodeHello(config.boatId));
-  if (!sent && radioExpected) console.warn('[radio] not connected, dropped a hello frame (will keep retrying)');
+  if (!sent && radioExpected) console.warn(`[radio] ${radioDropReason()}, dropped a hello frame (will keep retrying)`);
 }
 
 function startHelloAnnounce() {

@@ -297,6 +297,43 @@ set it the same way on real boats:
 TX_BATCH_SIZE=4 npm run boat
 ```
 
+### What happens when a send fails (and why it never retries stale data)
+
+A boat never queues-and-retries a fix that fails to go out - it's always
+"try again with whatever's current on the next real GPS fix," never "hold
+onto this one and resend it later." `lastTxPosition`/`lastTxTime` only
+advance once `radio.send()` actually reports success (or there's
+deliberately no radio at all, `RADIO_ENABLED=0`) - on failure they stay
+put, so the movement/interval gate re-clears on the very next fix and
+tries again with a position that's actually still true. The frame that
+didn't go out isn't lost either way - it's already on the SD card by the
+time `radio.send()` is even called.
+
+`send()` reports failure for two different reasons, and only one of them
+used to be detected:
+
+- **The serial port isn't open** - disconnected, or hasn't finished
+  connecting yet. Always handled this way.
+- **The port IS open, but its local write buffer is still full** - real RF
+  congestion (a saturated shared channel, collisions with other boats'
+  transmissions) doesn't close the port, the radio just can't drain what
+  it's handed as fast as it's handed it. `RadioLink` is a standard Node
+  `Writable` stream underneath, so this is the same backpressure signal any
+  Node stream gives (`write()` returning `false`, a later `'drain'` event
+  once there's room) - `send()` now checks it *before* writing, not just
+  after, so a fix never gets queued on top of an already-backed-up buffer.
+  Without this, congestion would otherwise make things worse, not better:
+  stale bytes already queued get transmitted first (FIFO), pushing fresher
+  positions further behind them, right when a congested link most needs to
+  be carrying current data, not old data it's already too late for.
+
+Both cases now log the same way - `[radio] not connected, dropped a frame
+(still logged to SD)` for a closed port vs. `[radio] backed up (congested
+link?), dropped a frame (still logged to SD)` for the backpressure case -
+so an operator watching the console can actually tell a cable/connection
+problem apart from a genuinely saturated radio link, instead of both
+looking identical.
+
 ## Running
 
 Six modes, each its own `npm run` script:
