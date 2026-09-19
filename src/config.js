@@ -473,6 +473,19 @@ module.exports = {
   // for the dashboard to reflect a stationary boat's current position.
   pingResponseJitterMs: parseInt(process.env.PING_RESPONSE_JITTER_MS || '3000', 10),
 
+  // Boat only - max random delay (ms, uniform between 0 and this value)
+  // before the FIRST hello announcement once the radio connects (see
+  // boatAgent.js's startHelloAnnounce) - same reasoning as
+  // pingResponseJitterMs above, applied at startup instead of per-request:
+  // a whole fleet's radios connecting together (every boat powered on
+  // right before a start, or npm run fleet spawning every boat process in
+  // the same instant) would otherwise announce - and keep retrying every
+  // HELLO_RETRY_MS - in perfect lockstep. The retry interval only starts
+  // counting once this one jittered delay elapses, so each boat's own
+  // retries stay offset from every other boat's indefinitely, not just on
+  // the very first send.
+  helloStartupJitterMs: parseInt(process.env.HELLO_STARTUP_JITTER_MS || '3000', 10),
+
   // How often the base station re-broadcasts the course marks to every boat
   // (base station only) - marks essentially never change mid-race, so this
   // is just a slow heartbeat for boats that missed an earlier broadcast or

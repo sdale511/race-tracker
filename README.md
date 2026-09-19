@@ -1142,10 +1142,14 @@ Opposite direction from Ping fleet: a boat announces itself the moment its
 radio connects (`protocol.js`'s `encodeHello`/`decodeHello`,
 `boatAgent.js`'s `startHelloAnnounce`) - a cold GPS start can take
 minutes, and without this the base had no way to know a boat's radio was
-alive until its first real fix. Carries just the boat's id, sent
-immediately then retried every 5s (`HELLO_RETRY_MS`) until the first real
-fix transmits. Base-side, only updates the Fleet table's "last seen" -
-never written to CSV/Redis/RegattaUp. Not gated on a regatta being
+alive until its first real fix. Carries just the boat's id, sent after a
+random `HELLO_STARTUP_JITTER_MS` delay (default up to 3s - same reasoning
+as Ping fleet's own jitter above: a whole fleet's radios connecting
+together, e.g. everyone powering on right before a start, would otherwise
+announce in lockstep and keep colliding on every retry), then retried
+every 5s (`HELLO_RETRY_MS`, inheriting that same random offset) until the
+first real fix transmits. Base-side, only updates the Fleet table's "last
+seen" - never written to CSV/Redis/RegattaUp. Not gated on a regatta being
 selected.
 
 **Base GPS card** (when `GPS_PORT` is set): the receiver's ordinary
@@ -1295,6 +1299,7 @@ actually use. Redis password is redacted.
 | `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only - speed below which a fix counts as stationary |
 | `ROVER_SHUTDOWN_CHECK_INTERVAL_MS` | 30000 | Boat only - shutdown gate re-check interval |
 | `PING_RESPONSE_JITTER_MS` | 3000 | Boat only - max random delay replying to "Ping fleet" |
+| `HELLO_STARTUP_JITTER_MS` | 3000 | Boat only - max random delay before the first hello announcement (and, since the retry interval inherits it, every retry after) - see "Boat startup announcement" above |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
 | `LOG_RECEIVED_FIXES` | unset (off) | Base only - `1` = console-echo every received frame. CSV/Redis/detection always run regardless |
 | `BASE_LOG_DIR` | `./base-logs` | Base only - received-fix CSV location |

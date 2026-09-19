@@ -600,6 +600,7 @@ function flushPendingBatch() {
 // than a bare hello and there's nothing left for this to usefully add.
 const HELLO_RETRY_MS = 5000;
 let helloIntervalId = null;
+let helloStartupTimeoutId = null;
 
 function sendHello() {
   if (lastTxTime !== null) {
@@ -613,12 +614,23 @@ function sendHello() {
 
 function startHelloAnnounce() {
   // A real radio reconnecting mid-run (see radio.on('disconnected', ...)
-  // above) fires 'connected' again - clear any interval from the previous
-  // connection first, so a reconnect before the first real fix doesn't
-  // leave two intervals both calling sendHello.
+  // above) fires 'connected' again - clear any interval/pending startup
+  // delay from the previous connection first, so a reconnect before the
+  // first real fix doesn't leave two intervals (or two pending jittered
+  // starts) both calling sendHello.
   if (helloIntervalId !== null) clearInterval(helloIntervalId);
-  sendHello();
-  if (lastTxTime === null) helloIntervalId = setInterval(sendHello, HELLO_RETRY_MS);
+  if (helloStartupTimeoutId !== null) clearTimeout(helloStartupTimeoutId);
+
+  // Random delay before the first send (see config.js's own comment on
+  // helloStartupJitterMs) - the retry interval below only starts counting
+  // once this fires, so it inherits the same random offset rather than
+  // snapping back to a fleet-wide fixed beat after just one jittered send.
+  const delayMs = Math.random() * config.helloStartupJitterMs;
+  helloStartupTimeoutId = setTimeout(() => {
+    helloStartupTimeoutId = null;
+    sendHello();
+    if (lastTxTime === null) helloIntervalId = setInterval(sendHello, HELLO_RETRY_MS);
+  }, delayMs);
 }
 
 // Base-triggered "report your current position now" (see protocol.js's
