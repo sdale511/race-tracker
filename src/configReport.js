@@ -135,27 +135,26 @@ const sections = [
       },
       // markName/markDistanceM only ever DO anything on a mark/markset-mode
       // process (npm run mark/markset - see README's "Mark mode") - both are
-      // just baseStation.js itself run with MARK_MODE=1/MARKSET_MODE=1, with
-      // no role tag of their own here, so 'base' is the closest fit and
-      // these end up showing on every baseStation.js-based process's
-      // /config page, including a plain committee base that will never
-      // actually represent a mark. Said explicitly in both notes below so
-      // that's obvious in the UI itself, not just something you have to
-      // already know.
+      // just baseStation.js itself run with MARK_MODE=1/MARKSET_MODE=1.
+      // Tagged 'markset', not 'base' - a plain base/basertk will never
+      // represent a mark, so these would just be confusing noise on that
+      // dashboard (see renderConfigPage's own comment on the 'markset' role
+      // above, which unions in the generic 'base' rows a markset device
+      // still needs - GPS/admin/Redis/etc - without inheriting these two).
       {
         label: 'markName',
         value: config.markName || '(not assigned)',
         envVar: 'MARK_NAME',
-        note: 'only relevant to a mark/markset-mode device (npm run mark/markset) - which course mark THIS device auto-posts its own GPS position as, if any. On a plain base/basertk this is always "(not assigned)" and unused',
-        roles: ['base'],
+        note: 'which course mark THIS device auto-posts its own GPS position as, if any',
+        roles: ['markset'],
       },
       {
         label: 'markDistanceM',
         value: config.markDistanceM,
         envVar: 'MARK_DISTANCE_M',
         unit: 'm',
-        note: 'mark/markset-mode only - how far the assigned mark has to actually move before this device posts its new position to Redis, same distance-gated spirit as txDistanceM below but for a mark buoy instead of a boat. Unused on a plain base/basertk',
-        roles: ['base'],
+        note: 'how far the assigned mark has to actually move before this device posts its new position to Redis, same distance-gated spirit as txDistanceM below but for a mark buoy instead of a boat',
+        roles: ['markset'],
       },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
@@ -367,6 +366,15 @@ function overrideTag(envVar, inverted) {
 // row to also carry a third label that would always just mirror the union
 // of the other two.
 //
+// 'markset' (npm run markset/mark - see baseStation.js's marksetMode) is
+// the same idea, one level narrower: it's baseStation.js too, so it still
+// wants every generic 'base'-tagged row (GPS, admin port, Redis, ...), but
+// it ALSO has its own extra settings (markName, markDistanceM - see their
+// own rows above) that only ever do anything in this mode and would just
+// be confusing noise on a plain base/basertk that will never represent a
+// mark - hence those two are tagged 'markset' only, not 'base', and
+// visibleTo unions 'markset' with 'base' here rather than the reverse.
+//
 // Omit role to show everything unfiltered - printConfig.js uses `sections`
 // directly instead of this function, so nothing currently relies on that
 // default, but it's the safe fallback for any future caller that isn't a
@@ -375,7 +383,9 @@ function renderConfigPage({ role } = {}) {
   const visibleTo = (item) => {
     if (!item.roles) return true;
     if (item.roles.includes(role)) return true;
-    return role === 'basertk' && (item.roles.includes('base') || item.roles.includes('rtk'));
+    if (role === 'basertk') return item.roles.includes('base') || item.roles.includes('rtk');
+    if (role === 'markset') return item.roles.includes('base');
+    return false;
   };
   const sectionsToRender = role
     ? sections

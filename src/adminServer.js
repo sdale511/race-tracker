@@ -1980,7 +1980,11 @@ function startAdminServer({
 
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConfigPage({ role: rtkControlsEnabled ? 'basertk' : 'base' }));
+      // mapOnly (markset/mark mode - see baseStation.js's marksetMode) gets
+      // its own role so markName/markDistanceM only ever show there, not on
+      // a plain base/basertk that will never represent a mark - see
+      // configReport.js's own comment on the 'markset' role.
+      res.end(renderConfigPage({ role: mapOnly ? 'markset' : rtkControlsEnabled ? 'basertk' : 'base' }));
       return;
     }
 
