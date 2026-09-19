@@ -31,16 +31,14 @@ const SYNC = 0xaa;
 // old single-byte numeric id, long enough that random generation across a
 // whole fleet is only very remotely likely to ever collide).
 const BOAT_ID_LEN = 5;
-const FRAME_LEN = 1 + BOAT_ID_LEN + 4 + 2 + 4 + 4 + 2 + 2 + 1 + 1 + 1;
 
-function encode(boatId, pvt) {
-  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
-    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
-  }
-  const buf = Buffer.alloc(FRAME_LEN);
-  buf.writeUInt8(SYNC, 0);
-  buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
-  let offset = 1 + BOAT_ID_LEN;
+// Everything in a fix except sync/boatId/checksum - shared byte-for-byte by
+// the plain single-fix frame below and the batch frame further down, so the
+// two only ever differ in framing (how many fixes, whose boatId), never in
+// how one fix's own fields are laid out on the wire.
+const FIX_FIELDS_LEN = 4 + 2 + 4 + 4 + 2 + 2 + 1 + 1; // time_s+time_ms+lat+lon+speed+heading+status+reserved = 20
+
+function writeFixFields(buf, offset, pvt) {
   buf.writeUInt32LE(Math.floor(pvt.timestamp / 1000), offset);
   buf.writeUInt16LE(pvt.timestamp % 1000, offset + 4);
   buf.writeInt32LE(Math.round(pvt.lat * 1e7), offset + 6);
@@ -59,6 +57,32 @@ function encode(boatId, pvt) {
   buf.writeUInt8(status, offset + 18);
 
   buf.writeUInt8(0, offset + 19); // reserved
+}
+
+function readFixFields(buf, offset) {
+  const status = buf.readUInt8(offset + 18);
+  return {
+    timestamp: buf.readUInt32LE(offset) * 1000 + buf.readUInt16LE(offset + 4),
+    lat: buf.readInt32LE(offset + 6) / 1e7,
+    lon: buf.readInt32LE(offset + 10) / 1e7,
+    speedKnots: buf.readUInt16LE(offset + 14) / 10,
+    headingDeg: buf.readUInt16LE(offset + 16) / 10,
+    gnssFixOk: !!(status & 0x01),
+    carrSoln: (status >> 1) & 0x03,
+    numSV: (status >> 3) & 0x1f,
+  };
+}
+
+const FRAME_LEN = 1 + BOAT_ID_LEN + FIX_FIELDS_LEN + 1;
+
+function encode(boatId, pvt) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  const buf = Buffer.alloc(FRAME_LEN);
+  buf.writeUInt8(SYNC, 0);
+  buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
+  writeFixFields(buf, 1 + BOAT_ID_LEN, pvt);
 
   let sum = 0;
   for (let i = 1; i < FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
@@ -76,17 +100,9 @@ function decode(buf) {
   if (sum !== buf[FRAME_LEN - 1]) return null; // checksum mismatch
 
   const offset = 1 + BOAT_ID_LEN;
-  const status = buf.readUInt8(offset + 18);
   return {
     boatId: buf.toString('ascii', 1, offset),
-    timestamp: buf.readUInt32LE(offset) * 1000 + buf.readUInt16LE(offset + 4),
-    lat: buf.readInt32LE(offset + 6) / 1e7,
-    lon: buf.readInt32LE(offset + 10) / 1e7,
-    speedKnots: buf.readUInt16LE(offset + 14) / 10,
-    headingDeg: buf.readUInt16LE(offset + 16) / 10,
-    gnssFixOk: !!(status & 0x01),
-    carrSoln: (status >> 1) & 0x03,
-    numSV: (status >> 3) & 0x1f,
+    ...readFixFields(buf, offset),
   };
 }
 
@@ -278,6 +294,105 @@ function decodeHello(buf) {
   return { boatId: buf.toString('ascii', 1, 1 + BOAT_ID_LEN) };
 }
 
+// Fifth frame type: boat -> base, an optional batched variant of the plain
+// position frame above - packs several consecutive fixes from the SAME boat
+// into one radio transmission instead of one each (see config.js's
+// TX_BATCH_SIZE/boatAgent.js's queueFixForTx), trading a little latency
+// (fixes wait to be batched) for fewer, larger over-the-air transmissions -
+// worth it only if per-transmission overhead, not per-byte airtime, is the
+// actual bottleneck (see the XBee-PRO 900HP/XSC S3B User Guide's NP command,
+// default 256 RF payload bytes - MAX_BATCH_COUNT below is chosen to stay
+// comfortably under that even after encryption's -9 byte reduction).
+// TX_BATCH_SIZE=1 (the default) never produces this frame at all -
+// boatAgent.js keeps sending the plain single-fix frame above unchanged, so
+// default behavior is byte-for-byte identical to before this existed.
+//
+// Layout (all little-endian):
+//   [0]     sync byte     0xEE
+//   [1]     count         uint8 (1..MAX_BATCH_COUNT) - how many fixes follow
+//   [2..6]  boatId        BOAT_ID_LEN bytes, shared by every fix below (a
+//                          batch is always one boat's own consecutive fixes,
+//                          never a mix of boats)
+//   [7..]   count x FIX_FIELDS_LEN-byte fix records (see writeFixFields/
+//            readFixFields above), oldest fix first
+//   [last]  checksum      uint8 (sum of bytes 1..N-2 mod 256)
+
+const BATCH_SYNC = 0xee;
+const BATCH_HEADER_LEN = 1 + 1 + BOAT_ID_LEN; // sync + count + boatId = 7
+const MAX_BATCH_COUNT = 8; // largest batch frame: 7 + 8*20 + 1 = 168 bytes
+
+function batchFrameLen(count) {
+  return BATCH_HEADER_LEN + count * FIX_FIELDS_LEN + 1;
+}
+
+// Reads just enough of a candidate buffer to know the FULL length of the
+// batch frame it's the start of, without needing that whole frame in hand
+// yet - radioLink.js's byte-stream scanner needs this since (unlike every
+// other frame type here) this one's length isn't a fixed constant. Returns
+// null if there aren't even enough bytes to read the count byte yet (wait
+// for more data), or a small definite length if the count byte reads as out
+// of range - never a length computed from an unvalidated count, so a false
+// sync-byte match on random noise can't stall the scanner waiting on an
+// implausibly large frame that will never arrive; decodeBatch below
+// re-validates count independently regardless.
+function batchFrameLenFromHeader(buf) {
+  if (buf.length < BATCH_HEADER_LEN) return null;
+  const count = buf.readUInt8(1);
+  if (count < 1 || count > MAX_BATCH_COUNT) return BATCH_HEADER_LEN + 1;
+  return batchFrameLen(count);
+}
+
+function encodeBatch(boatId, pvts) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  if (!Array.isArray(pvts) || pvts.length < 1 || pvts.length > MAX_BATCH_COUNT) {
+    throw new Error(`encodeBatch needs 1-${MAX_BATCH_COUNT} fixes, got ${Array.isArray(pvts) ? pvts.length : typeof pvts}`);
+  }
+
+  const len = batchFrameLen(pvts.length);
+  const buf = Buffer.alloc(len);
+  buf.writeUInt8(BATCH_SYNC, 0);
+  buf.writeUInt8(pvts.length, 1);
+  buf.write(boatId, 2, BOAT_ID_LEN, 'ascii');
+
+  let offset = BATCH_HEADER_LEN;
+  for (const pvt of pvts) {
+    writeFixFields(buf, offset, pvt);
+    offset += FIX_FIELDS_LEN;
+  }
+
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, len - 1);
+
+  return buf;
+}
+
+// Returns an array of decoded fixes (each shaped exactly like decode()'s own
+// return value, sharing the one boatId carried in the header), oldest fix
+// first - or null if the buffer isn't a valid batch frame.
+function decodeBatch(buf) {
+  if (buf.length < BATCH_HEADER_LEN + 1 || buf[0] !== BATCH_SYNC) return null;
+  const count = buf.readUInt8(1);
+  if (count < 1 || count > MAX_BATCH_COUNT) return null;
+  const len = batchFrameLen(count);
+  if (buf.length !== len) return null;
+
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[len - 1]) return null;
+
+  const boatId = buf.toString('ascii', 2, 2 + BOAT_ID_LEN);
+  const fixes = [];
+  let offset = BATCH_HEADER_LEN;
+  for (let i = 0; i < count; i++) {
+    fixes.push({ boatId, ...readFixFields(buf, offset) });
+    offset += FIX_FIELDS_LEN;
+  }
+  return fixes;
+}
+
 module.exports = {
   encode,
   decode,
@@ -296,4 +411,10 @@ module.exports = {
   decodeHello,
   HELLO_FRAME_LEN,
   HELLO_SYNC,
+  encodeBatch,
+  decodeBatch,
+  batchFrameLen,
+  batchFrameLenFromHeader,
+  BATCH_SYNC,
+  MAX_BATCH_COUNT,
 };

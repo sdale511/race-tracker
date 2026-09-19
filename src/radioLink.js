@@ -63,17 +63,20 @@ class RadioLink extends EventEmitter {
     return this.send(buf);
   }
 
-  // Four frame types share this one byte stream (position frames,
+  // Five frame types share this one byte stream (position frames,
   // boat->base; mark broadcasts, base->boats; ping requests, base->boats;
-  // hello announcements, boat->base - see protocol.js's own comment on
-  // each) - each with its own sync byte and length, since a single radio
-  // link hears everything broadcast on the network, not just frames
-  // addressed to "me".
+  // hello announcements, boat->base; batched position frames, boat->base -
+  // see protocol.js's own comment on each) - each with its own sync byte,
+  // since a single radio link hears everything broadcast on the network,
+  // not just frames addressed to "me". Every type but the batch one has a
+  // fixed `len`; the batch frame's length depends on how many fixes it
+  // carries, so it supplies `getLen(buf)` instead - see below.
   static FRAME_TYPES = [
     { sync: protocol.SYNC, len: protocol.FRAME_LEN, decode: protocol.decode, event: 'frame' },
     { sync: protocol.MARKS_SYNC, len: protocol.MARKS_FRAME_LEN, decode: protocol.decodeMarks, event: 'marks' },
     { sync: protocol.PING_SYNC, len: protocol.PING_FRAME_LEN, decode: protocol.decodePing, event: 'ping' },
     { sync: protocol.HELLO_SYNC, len: protocol.HELLO_FRAME_LEN, decode: protocol.decodeHello, event: 'hello' },
+    { sync: protocol.BATCH_SYNC, getLen: protocol.batchFrameLenFromHeader, decode: protocol.decodeBatch, event: 'frame-batch' },
   ];
 
   // Used on both ends: scans incoming bytes for valid frames of either type.
@@ -96,13 +99,19 @@ class RadioLink extends EventEmitter {
         break;
       }
       if (syncIdx > 0) this._buf = this._buf.slice(syncIdx);
-      if (this._buf.length < frameType.len) break; // wait for the rest of this frame
 
-      const candidate = this._buf.slice(0, frameType.len);
+      // Fixed-length types know `len` up front; the batch type has to read
+      // a header byte first (getLen returns null if even that isn't in
+      // hand yet - wait for more data, same as the plain "wait for the
+      // rest of this frame" case below).
+      const len = typeof frameType.len === 'number' ? frameType.len : frameType.getLen(this._buf);
+      if (len === null || this._buf.length < len) break; // wait for the rest of this frame
+
+      const candidate = this._buf.slice(0, len);
       const decoded = frameType.decode(candidate);
       if (decoded) {
         this.emit(frameType.event, decoded);
-        this._buf = this._buf.slice(frameType.len);
+        this._buf = this._buf.slice(len);
       } else {
         // Bad checksum/false sync match - drop one byte and resync. Emitted
         // as its own event (not just silently dropped) since a rising rate

@@ -353,6 +353,10 @@ startUploadClient({
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
+// Fixes accumulated for the next batch send - see queueFixForTx/
+// flushPendingBatch below. Always empty when config.txBatchSize is 1 (the
+// default) - that path never touches this at all, see handlePvt.
+let pendingBatch = [];
 let lastPvt = null;
 // True once a dwelling/holding fix (pvt.stationary - see simGps.js's
 // _emitStationaryFix) has already been logged to the console once, so
@@ -474,7 +478,11 @@ function handlePvt(pvt) {
 
   if (clearedTxGate) {
     if (hasValidFix(pvt)) {
-      transmitFix(pvt);
+      if (config.txBatchSize > 1) {
+        queueFixForTx(pvt);
+      } else {
+        transmitFix(pvt);
+      }
     } else {
       const now = Date.now();
       if (now - lastInvalidFixWarnAt > INVALID_FIX_WARN_INTERVAL_MS) {
@@ -518,6 +526,63 @@ function transmitFix(pvt) {
     roverStats.recordFrameSent();
   } else if (radioExpected) {
     console.warn('[radio] not connected, dropped a frame (still logged to SD)');
+  }
+}
+
+// Only reachable when config.txBatchSize > 1 (see handlePvt) - logs pvt to
+// SD immediately, same timing as transmitFix above (SD mirrors "cleared the
+// gate," not "actually went out over radio" - see the README's own note on
+// this), then adds it to the pending batch instead of sending it alone.
+// Flushes once the batch reaches txBatchSize fixes, OR once the oldest
+// pending fix has been waiting txIntervalMs - the latter is what keeps
+// TX_INTERVAL_MS's own "never silent longer than this" guarantee intact
+// even while a batch is still filling up on a slow-moving boat, instead of
+// letting a partial batch sit indefinitely.
+function queueFixForTx(pvt) {
+  sdLogger.logPvt(pvt);
+  pendingBatch.push(pvt);
+
+  const batchFull = pendingBatch.length >= config.txBatchSize;
+  // txIntervalMs === 0 means "heartbeat disabled" (same convention as
+  // handlePvt's own clearedTxGate above) - without this guard, a fresh
+  // batch's very first fix would read as instantly stale (0 >= 0) and flush
+  // right away every time, silently defeating batching whenever an operator
+  // has turned the heartbeat off.
+  const batchStale = config.txIntervalMs > 0 && pvt.timestamp - pendingBatch[0].timestamp >= config.txIntervalMs;
+  if (batchFull || batchStale) {
+    flushPendingBatch();
+  }
+}
+
+// Sends whatever's pending as one batch frame (or, for the common case of a
+// single straggling fix once txIntervalMs forces an early flush, the exact
+// same plain single-fix frame transmitFix would have sent) - same
+// success/failure handling as transmitFix above, just applied once to the
+// whole batch: lastTxPosition/lastTxTime advance to the LAST fix in the
+// batch only if the send actually succeeded (or no radio is expected at
+// all), so a failed send keeps retrying on the next fix exactly like a
+// single dropped frame would. Always clears pendingBatch regardless of
+// success - like a dropped single frame, an undelivered batch's fixes are
+// already durably on SD (logged above as each one was queued); this app
+// doesn't buffer-and-retry radio sends, on principle, for either case.
+function flushPendingBatch() {
+  const fixes = pendingBatch;
+  pendingBatch = [];
+  if (fixes.length === 0) return;
+
+  const frame = fixes.length === 1 ? protocol.encode(config.boatId, fixes[0]) : protocol.encodeBatch(config.boatId, fixes);
+  const sent = radio.send(frame);
+
+  const last = fixes[fixes.length - 1];
+  if (sent || !radioExpected) {
+    lastTxPosition = { lat: last.lat, lon: last.lon };
+    lastTxTime = last.timestamp;
+  }
+  if (sent) {
+    roverStats.recordFrameSent();
+  } else if (radioExpected) {
+    const what = fixes.length === 1 ? 'a frame' : `a batch of ${fixes.length} frames`;
+    console.warn(`[radio] not connected, dropped ${what} (still logged to SD)`);
   }
 }
 

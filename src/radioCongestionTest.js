@@ -57,9 +57,17 @@ const perBoatIntervalMs = (config.txDistanceM / SPEED_MS) * 1000;
 
 const boatIds = Array.from({ length: BOAT_COUNT }, (_, i) => sequentialBoatId(i + 1));
 
+// TX_BATCH_SIZE (config.txBatchSize) applies here too - lets you A/B the
+// real airtime effect of batching against this same load profile without
+// needing an actual fleet, see the README's own "Batching multiple fixes
+// per send" section. Each boat still computes a fresh fix every
+// perBoatIntervalMs below (the distance-gate cadence doesn't change), but
+// only actually calls radio.send() once every txBatchSize fixes - modeling
+// exactly what boatAgent.js's own queueFixForTx/flushPendingBatch do.
+const batchNote = config.txBatchSize > 1 ? ` (batched ${config.txBatchSize}/send)` : '';
 console.log(
-  `[radioCongestionTest] ${BOAT_COUNT} virtual boats @ ${SPEED_KN}kn (txDistanceM=${config.txDistanceM}m) -> ` +
-    `~${(1000 / perBoatIntervalMs).toFixed(2)} tx/s/boat, ~${((BOAT_COUNT * 1000) / perBoatIntervalMs).toFixed(1)} tx/s aggregate ` +
+  `[radioCongestionTest] ${BOAT_COUNT} virtual boats @ ${SPEED_KN}kn (txDistanceM=${config.txDistanceM}m)${batchNote} -> ` +
+    `~${(1000 / perBoatIntervalMs).toFixed(2)} fixes/s/boat, ~${((BOAT_COUNT * 1000) / perBoatIntervalMs).toFixed(1)} fixes/s aggregate ` +
     `on ${config.radio.port} @ ${config.radio.baud}`
 );
 
@@ -86,6 +94,7 @@ boatIds.forEach((boatId, i) => {
   // position.
   let lat = config.sim.centerLat + i * 0.00002;
   const lon = config.sim.centerLon;
+  const pending = []; // only used when config.txBatchSize > 1
 
   // Each boat's own send loop, independently phased (see the random
   // initial delay below) so BOAT_COUNT sends don't all land on the same
@@ -94,7 +103,7 @@ boatIds.forEach((boatId, i) => {
   // jitter while overstating any single-instant burst.
   const tick = () => {
     lat += (SPEED_MS * (perBoatIntervalMs / 1000)) / 111320; // meters -> degrees lat, same flat-earth approximation course.js uses
-    const frame = protocol.encode(boatId, {
+    const pvt = {
       timestamp: Date.now(),
       lat,
       lon,
@@ -103,11 +112,24 @@ boatIds.forEach((boatId, i) => {
       gnssFixOk: true,
       carrSoln: 2,
       numSV: 14,
-    });
-    if (radio.send(frame)) {
-      sent++;
-    } else {
-      dropped++;
+    };
+
+    if (config.txBatchSize <= 1) {
+      if (radio.send(protocol.encode(boatId, pvt))) sent++;
+      else dropped++;
+      return;
+    }
+
+    // Same size-based flush boatAgent.js's own queueFixForTx uses - this
+    // tool models steady, continuous movement (the distance gate always
+    // clears every tick), so there's no slow-boat/TX_INTERVAL_MS-staleness
+    // case to model here, unlike the real app.
+    pending.push(pvt);
+    if (pending.length >= config.txBatchSize) {
+      const frame = protocol.encodeBatch(boatId, pending);
+      pending.length = 0;
+      if (radio.send(frame)) sent++;
+      else dropped++;
     }
   };
 

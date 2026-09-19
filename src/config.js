@@ -6,6 +6,7 @@ const { getPersistedRegattaId, persistRegattaId } = require('./regattaIdFile');
 const { getPersistedMarkName, persistMarkName } = require('./markNameFile');
 const { getPersistedPowerSchedule, persistPowerSchedule } = require('./powerScheduleFile');
 const { MARK_NAMES } = require('./course');
+const { MAX_BATCH_COUNT } = require('./protocol');
 
 // BOAT_ID always wins outright when set (by hand, or by fleetSim.js for
 // every boat it spawns) - only falls back to this device's own persisted id
@@ -433,6 +434,22 @@ module.exports = {
   // arrive at 1-10Hz; this throttles radio TX independently to conserve
   // airtime/bandwidth over long range.
   txDistanceM: parseFloat(process.env.TX_DISTANCE_M || '1'),
+
+  // How many consecutive fixes to pack into one radio transmission instead
+  // of sending each as its own frame - see protocol.js's own comment on the
+  // batch frame type and boatAgent.js's queueFixForTx/flushPendingBatch.
+  // Trades a little latency (fixes wait to fill a batch, bounded by
+  // txIntervalMs below so a slow-moving boat still can't go silent longer
+  // than that) for fewer, larger over-the-air transmissions - worth trying
+  // only if per-transmission overhead, not per-byte airtime, turns out to be
+  // the real bottleneck at your fleet size (see "Congestion-testing the
+  // radio" in the README). 1 (the default) means "one frame per fix,"
+  // exactly this app's original behavior - boatAgent.js never even touches
+  // the batch frame type at that setting. Clamped to protocol.js's own
+  // MAX_BATCH_COUNT (the largest batch frame stays comfortably under the
+  // XBee-PRO 900HP/XSC's default 256-byte max RF payload), not just trusted
+  // from the environment, since encodeBatch throws on anything larger.
+  txBatchSize: Math.max(1, Math.min(MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '1', 10) || 1)),
 
   // Heartbeat alongside txDistanceM above: even a boat that hasn't moved
   // far enough to clear the distance gate still transmits at least once

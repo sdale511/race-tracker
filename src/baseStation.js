@@ -562,6 +562,11 @@ function main() {
   // a while, not just this same ongoing issue continuing to log itself.
   let lastLoggedSyncErrors = null;
   radio.on('frame', () => framesOk++);
+  // A batch frame is still just ONE radio-layer transmission this base
+  // successfully decoded, whether it carried 1 fix or MAX_BATCH_COUNT of
+  // them - counted the same as a plain 'frame' here so this stays a link-
+  // quality metric (received transmissions vs sync errors), not a fix count.
+  radio.on('frame-batch', () => framesOk++);
   radio.on('sync-error', () => {
     syncErrors++;
     stats.recordSyncError();
@@ -1767,7 +1772,15 @@ function main() {
   const NO_REGATTA_WARN_INTERVAL_MS = 30000;
   let lastNoRegattaWarnAt = 0;
 
-  radio.on('frame', (decoded) => {
+  // Named (not inline) specifically so it can be reused unchanged for both
+  // a plain 'frame' event and each fix inside a 'frame-batch' event below -
+  // a batch is just several of a boat's own consecutive fixes that happened
+  // to share one radio transmission (see protocol.js's batch frame type),
+  // and every one of them deserves exactly the same handling a normal fix
+  // gets: regatta gating, null-island check, stats, CSV/Redis, the local
+  // re-broadcast, reconnect/marks-rebroadcast detection, and lap/on-grid/
+  // mark-rounding/foul detection.
+  function handleDecodedFrame(decoded) {
     // No regatta selected - every course/mark/on-grid-zone/track key is
     // namespaced by regatta (see redisStore.js's own module comment), so
     // recording this fix now would silently write it under the "none"
@@ -1865,7 +1878,15 @@ function main() {
       if (raceMarks) detectRaceEvents(decoded);
       else pendingFrames.push(decoded);
     }
-  });
+  }
+
+  radio.on('frame', handleDecodedFrame);
+  // Same handling as a plain frame, once per fix in the batch, oldest
+  // first - see protocol.js's batch frame type and handleDecodedFrame's own
+  // comment above. Only ever arrives at all when some boat's TX_BATCH_SIZE
+  // is set above 1 (see config.js/boatAgent.js) - otherwise this base just
+  // never hears a 'frame-batch' event, same as before batching existed.
+  radio.on('frame-batch', (fixes) => fixes.forEach(handleDecodedFrame));
 
   // A boat announcing itself unprompted right at its own radio startup,
   // before it necessarily has a GPS fix yet (see protocol.js's own comment

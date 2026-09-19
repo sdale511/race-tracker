@@ -17,6 +17,8 @@ function decodeDatagram(msg) {
   if (ping) return { event: 'ping', decoded: ping };
   const hello = protocol.decodeHello(msg);
   if (hello) return { event: 'hello', decoded: hello };
+  const batch = protocol.decodeBatch(msg);
+  if (batch) return { event: 'frame-batch', decoded: batch };
   return null;
 }
 
