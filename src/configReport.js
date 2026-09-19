@@ -133,14 +133,30 @@ const sections = [
             : undefined,
         roles: ['boat'],
       },
+      // markName/markDistanceM only ever DO anything on a mark/markset-mode
+      // process (npm run mark/markset - see README's "Mark mode") - both are
+      // just baseStation.js itself run with MARK_MODE=1/MARKSET_MODE=1, with
+      // no role tag of their own here, so 'base' is the closest fit and
+      // these end up showing on every baseStation.js-based process's
+      // /config page, including a plain committee base that will never
+      // actually represent a mark. Said explicitly in both notes below so
+      // that's obvious in the UI itself, not just something you have to
+      // already know.
       {
         label: 'markName',
         value: config.markName || '(not assigned)',
         envVar: 'MARK_NAME',
-        note: 'see README\'s "Mark mode" - which course mark this device auto-posts its own GPS position as, if any',
+        note: 'only relevant to a mark/markset-mode device (npm run mark/markset) - which course mark THIS device auto-posts its own GPS position as, if any. On a plain base/basertk this is always "(not assigned)" and unused',
         roles: ['base'],
       },
-      { label: 'markDistanceM', value: config.markDistanceM, envVar: 'MARK_DISTANCE_M', unit: 'm', roles: ['base'] },
+      {
+        label: 'markDistanceM',
+        value: config.markDistanceM,
+        envVar: 'MARK_DISTANCE_M',
+        unit: 'm',
+        note: 'mark/markset-mode only - how far the assigned mark has to actually move before this device posts its new position to Redis, same distance-gated spirit as txDistanceM below but for a mark buoy instead of a boat. Unused on a plain base/basertk',
+        roles: ['base'],
+      },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
         label: 'txIntervalMs',
