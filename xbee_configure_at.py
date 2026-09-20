@@ -140,7 +140,19 @@ DEFAULT_MODE = "p2mp"
 CONFIG = {
     # Serial baud the radio will run at going forward. The script
     # connects at --connect-baud (its CURRENT speed) and, if different,
-    # switches it to this and reconnects to confirm.
+    # switches it to this and reconnects to confirm. Tried bumping this to
+    # 230400 after a 100-boat radio-congestion run showed the SERIAL link
+    # saturating at ~11.2 KB/s (almost exactly 115200's own 8N1 ceiling,
+    # 115200/10 bits-per-byte = 11,520 B/s) - but that just exposed a lower
+    # ceiling one level up: at 230400 the same test pushed 15.4 KB/s (well
+    # under 230400's own ~23 KB/s ceiling) yet sync errors jumped from 0.2%
+    # to 10.4% - real RF-level bit corruption, not local serial buffering.
+    # This fleet's XBee-PRO 900HP 200K radios' real sustainable RF
+    # throughput tops out around ~11-12 KB/s regardless of serial baud;
+    # 115200 was accidentally already throttling right at that ceiling, not
+    # artificially limiting it. Don't raise this again without re-running
+    # that same congestion test and checking sync-error rate, not just
+    # bandwidth headroom.
     "TARGET_BAUD": 115200,        # was 9600 by default
 
     # Network ID (PAN ID), 0 - 0x7FFF. Coincidentally already the factory

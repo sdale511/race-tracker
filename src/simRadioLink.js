@@ -45,6 +45,11 @@ class SimRadioLink extends EventEmitter {
     this.socket.on('error', (err) => this.emit('error', err));
 
     this.socket.on('message', (msg) => {
+      // Same 'bytes' event RadioLink emits, for interface consistency - see
+      // baseStation.js's bandwidth card. SIMULATE=1 has no real airtime
+      // limit (see radioCongestionTest.js's own comment on this), so this
+      // is a genuine byte count, just not one bounded by anything real.
+      this.emit('bytes', { rx: msg.length });
       const result = decodeDatagram(msg);
       if (result) this.emit(result.event, result.decoded);
       // Same 'sync-error' event as RadioLink, for interface consistency -
@@ -73,6 +78,7 @@ class SimRadioLink extends EventEmitter {
       return true; // simulate a frame lost over the air; still "sent" from the caller's perspective
     }
     this.socket.send(buf, this.port, BROADCAST_ADDR);
+    this.emit('bytes', { tx: buf.length }); // see the 'message' handler's own comment above
     return true;
   }
 

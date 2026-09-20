@@ -43,10 +43,37 @@ if (!Number.isInteger(BOAT_COUNT) || BOAT_COUNT < 1) {
   process.exit(1);
 }
 
-// 6kn - a brisk but ordinary beat/run boatspeed, not a peak surf/plane
-// speed - this is meant to model realistic sustained load, not a
-// worst-case burst.
-const SPEED_KN = parseFloat(process.env.CONGESTION_SPEED_KN || '6');
+// Lets several of these run at once on SEPARATE real radios - each with a
+// disjoint boat-id range instead of every instance independently starting
+// back at boat 1 - for a real multi-transmitter RF collision test (see the
+// README's own "Congestion-testing the radio" - one process/one antenna
+// can model realistic aggregate LOAD, but never genuine collisions between
+// independent transmitters; that needs more than one real radio actually
+// keying up). E.g. 4 radios covering a 28-boat fleet:
+//   BOAT_COUNT=7 BOAT_ID_OFFSET=0  RADIO_PORT=<radio1> npm run radio-congestion
+//   BOAT_COUNT=7 BOAT_ID_OFFSET=7  RADIO_PORT=<radio2> npm run radio-congestion
+//   BOAT_COUNT=7 BOAT_ID_OFFSET=14 RADIO_PORT=<radio3> npm run radio-congestion
+//   BOAT_COUNT=7 BOAT_ID_OFFSET=21 RADIO_PORT=<radio4> npm run radio-congestion
+// Purely cosmetic (which id shows up attached to which frame on the base's
+// own dashboard/console) - nothing about the actual RF load or collision
+// behavior depends on the ids being distinct, only on the radios being
+// physically separate transmitters. Default 0 keeps today's behavior
+// (every instance numbering its own boats from 1) unchanged.
+const BOAT_ID_OFFSET = parseInt(process.env.BOAT_ID_OFFSET || '0', 10);
+if (!Number.isInteger(BOAT_ID_OFFSET) || BOAT_ID_OFFSET < 0) {
+  console.error(`[radioCongestionTest] invalid BOAT_ID_OFFSET=${process.env.BOAT_ID_OFFSET} - must be a non-negative integer`);
+  process.exit(1);
+}
+
+// 26.1kn ≈ 30mph - this fleet's own reference planning speed (land
+// yachts, not displacement sailboats - see SIM_UPWIND_SPEED_KN/
+// SIM_DOWNWIND_SPEED_KN's own defaults, 30/55kn), the same figure used
+// for this app's earlier data-rate/airtime planning. CONGESTION_SPEED_KN
+// itself is still in knots (matching protocol.js's own speedKnots field
+// and every other speed value in this app), so a straight "30" here would
+// silently mean 30 KNOTS (≈34.5mph) instead - convert explicitly if you
+// want a different mph target.
+const SPEED_KN = parseFloat(process.env.CONGESTION_SPEED_KN || '26.1');
 const SPEED_MS = SPEED_KN * 0.514444;
 
 // Reuses the REAL production transmit gate (config.js's txDistanceM,
@@ -55,7 +82,7 @@ const SPEED_MS = SPEED_KN * 0.514444;
 // on the air.
 const perBoatIntervalMs = (config.txDistanceM / SPEED_MS) * 1000;
 
-const boatIds = Array.from({ length: BOAT_COUNT }, (_, i) => sequentialBoatId(i + 1));
+const boatIds = Array.from({ length: BOAT_COUNT }, (_, i) => sequentialBoatId(BOAT_ID_OFFSET + i + 1));
 
 // TX_BATCH_SIZE (config.txBatchSize) applies here too - lets you A/B the
 // real airtime effect of batching against this same load profile without
@@ -65,8 +92,9 @@ const boatIds = Array.from({ length: BOAT_COUNT }, (_, i) => sequentialBoatId(i 
 // only actually calls radio.send() once every txBatchSize fixes - modeling
 // exactly what boatAgent.js's own queueFixForTx/flushPendingBatch do.
 const batchNote = config.txBatchSize > 1 ? ` (batched ${config.txBatchSize}/send)` : '';
+const offsetNote = BOAT_ID_OFFSET > 0 ? ` (boat ids ${boatIds[0]}-${boatIds[boatIds.length - 1]})` : '';
 console.log(
-  `[radioCongestionTest] ${BOAT_COUNT} virtual boats @ ${SPEED_KN}kn (txDistanceM=${config.txDistanceM}m)${batchNote} -> ` +
+  `[radioCongestionTest] ${BOAT_COUNT} virtual boats @ ${SPEED_KN}kn (txDistanceM=${config.txDistanceM}m)${batchNote}${offsetNote} -> ` +
     `~${(1000 / perBoatIntervalMs).toFixed(2)} fixes/s/boat, ~${((BOAT_COUNT * 1000) / perBoatIntervalMs).toFixed(1)} fixes/s aggregate ` +
     `on ${config.radio.port} @ ${config.radio.baud}`
 );

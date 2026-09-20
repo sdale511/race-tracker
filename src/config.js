@@ -380,9 +380,25 @@ module.exports = {
   // RFD900x/SiK) - at fleet sizes beyond a couple boats, the serial link to
   // the base station's own radio is the actual bottleneck (all boats' frames
   // funnel through that one port), well below the radio's real RF capacity.
-  // Every radio (base + every boat) must be reconfigured via XCTU/RFD Modem
-  // Tools to actually run at this baud before you change this value to
-  // match - a mismatch here just means the port opens but nothing decodes.
+  // Tried bumping this to 230400 after a 100-boat radio-congestion run
+  // measured the SERIAL link saturating at ~11.2 KB/s (almost exactly
+  // 115200's own 8N1 ceiling, 115200/10 bits-per-byte = 11,520 B/s) - but
+  // that just exposed a lower ceiling one level up: at 230400 the same test
+  // pushed 15.4 KB/s and sync errors jumped from 0.2% to 10.4% (see
+  // radioLink.js's own sync-error comment - that's real bit corruption on
+  // the RF link, not local buffering, since bandwidth used was still well
+  // under 230400's own ~23 KB/s ceiling). This fleet's XBee-PRO 900HP 200K
+  // radios' real sustainable RF throughput tops out around ~11-12 KB/s
+  // regardless of serial baud - 115200 was accidentally already throttling
+  // right at that ceiling, not artificially limiting it. Don't raise this
+  // without re-running that same congestion test and checking sync-error
+  // rate, not just bandwidth headroom - use TX_BATCH_SIZE instead if you
+  // need more real fix throughput (reduces actual RF bytes-per-fix, not
+  // just how fast the serial link can be fed). Every radio (base + every
+  // boat) must be reconfigured via XCTU (see xbee_configure_at.py) or RFD
+  // Modem Tools to actually run at this baud before you change this value
+  // to match - a mismatch here just means the port opens but nothing
+  // decodes.
   radio: {
     // RADIO_ENABLED=0 skips opening the radio port entirely (e.g. bench-testing
     // GPS alone, no radio hardware attached) - fixes still log to SD.
@@ -446,9 +462,10 @@ module.exports = {
   // radio" in the README). 1 (the default) means "one frame per fix,"
   // exactly this app's original behavior - boatAgent.js never even touches
   // the batch frame type at that setting. Clamped to protocol.js's own
-  // MAX_BATCH_COUNT (the largest batch frame stays comfortably under the
-  // XBee-PRO 900HP/XSC's default 256-byte max RF payload), not just trusted
-  // from the environment, since encodeBatch throws on anything larger.
+  // MAX_BATCH_COUNT (the largest batch frame stays comfortably under this
+  // fleet's actual, read-only NP=100 max RF payload - see MAX_BATCH_COUNT's
+  // own comment), not just trusted from the environment, since encodeBatch
+  // throws on anything larger.
   txBatchSize: Math.max(1, Math.min(MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '1', 10) || 1)),
 
   // Heartbeat alongside txDistanceM above: even a boat that hasn't moved

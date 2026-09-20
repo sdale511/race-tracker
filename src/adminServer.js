@@ -193,6 +193,85 @@ function renderRedisMemoryCard(memory, writeHealth, retentionHours) {
     </div>`;
 }
 
+// A small scrolling line chart, oldest sample on the left, built as plain
+// server-rendered SVG - no client-side charting library, no JS at all,
+// consistent with this whole page just being re-rendered fresh from a
+// stats snapshot every 5s (see renderDashboard's own comment below). Each
+// full-page reload embeds a fresh 60-sample window from baseStation.js's
+// own 1-second-resolution history (see its bandwidthHistory), so across
+// successive reloads the chart reads as continuously scrolling forward
+// rather than jumping - the two cadences (1s sampling, 5s reload) just
+// mean each reload advances the visible window by ~5 samples.
+//
+// LEFT_MARGIN/BOTTOM_MARGIN reserve space OUTSIDE the plotted area for the
+// Y-axis range (top = the shared max both lines are scaled against, bottom
+// = 0) and the X-axis time span (-60s to now) - labels live in that margin
+// rather than overlaid on the chart itself, so they never collide with a
+// line that happens to peak near an edge.
+function renderBandwidthSparkline(history) {
+  // Wide enough for the longest realistic label formatBytes can produce
+  // here ("0.1 KB/s", "102.4 KB/s", ...) at this font size - too narrow and
+  // text-anchor="end" pushes the START of the string past x=0, off the left
+  // edge of the viewBox, where it's silently clipped (the leading digit
+  // disappearing, not an error) rather than just looking cramped.
+  const LEFT_MARGIN = 42;
+  const BOTTOM_MARGIN = 12;
+  const CHART_WIDTH = 190;
+  const CHART_HEIGHT = 40;
+  const TOTAL_WIDTH = LEFT_MARGIN + CHART_WIDTH;
+  const TOTAL_HEIGHT = CHART_HEIGHT + BOTTOM_MARGIN;
+  const maxVal = Math.max(1, ...history.map((h) => h.rx), ...history.map((h) => h.tx));
+  // Fewer than 60 samples yet (process just started) - pad the FRONT with
+  // zeros rather than stretching what little real data exists across the
+  // whole width, so a freshly-started base shows a mostly-flat line filling
+  // in from the right, not a misleadingly zoomed-in one.
+  const padded = Array(60 - history.length)
+    .fill({ rx: 0, tx: 0 })
+    .concat(history);
+  const points = (key) =>
+    padded
+      .map((h, i) => {
+        const x = LEFT_MARGIN + (i / (padded.length - 1)) * CHART_WIDTH;
+        const y = CHART_HEIGHT - (h[key] / maxVal) * CHART_HEIGHT;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+  const axisStyle = 'font-size="8" fill="#8b94a3" font-family="-apple-system, BlinkMacSystemFont, sans-serif"';
+  return `<svg viewBox="0 0 ${TOTAL_WIDTH} ${TOTAL_HEIGHT}" width="100%" height="${TOTAL_HEIGHT}" preserveAspectRatio="none">
+    <text x="${LEFT_MARGIN - 4}" y="7" text-anchor="end" ${axisStyle}>${formatBytes(maxVal)}/s</text>
+    <text x="${LEFT_MARGIN - 4}" y="${CHART_HEIGHT}" text-anchor="end" ${axisStyle}>0</text>
+    <line x1="${LEFT_MARGIN}" y1="${CHART_HEIGHT}" x2="${TOTAL_WIDTH}" y2="${CHART_HEIGHT}" stroke="#262c36" stroke-width="1" />
+    <polyline points="${points('rx')}" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+    <polyline points="${points('tx')}" fill="none" stroke="#bc8cff" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+    <text x="${LEFT_MARGIN}" y="${TOTAL_HEIGHT - 1}" ${axisStyle}>-60s</text>
+    <text x="${TOTAL_WIDTH}" y="${TOTAL_HEIGHT - 1}" text-anchor="end" ${axisStyle}>now</text>
+  </svg>`;
+}
+
+// bandwidth is s.radio.bandwidth (see baseStation.js's getFullStats) -
+// {history, rxBytesPerSec, txBytesPerSec}. mode is s.radio.mode
+// ('real'/'simulated'/'none'), same as the "Radio frames" card right next
+// to this one uses for its own port/baud line.
+function renderBandwidthCard(bandwidth, mode) {
+  if (mode === 'none') {
+    return `<div class="card">
+      <div class="label">Radio bandwidth</div>
+      <div class="value muted" style="font-size:16px;">no radio (RADIO_ENABLED=0)</div>
+    </div>`;
+  }
+  const note =
+    mode === 'simulated'
+      ? 'SIMULATE=1 - UDP stand-in, no real airtime limit to measure against'
+      : 'bytes actually on the wire - corrupted/resynced bytes count too, decoded frames or not';
+  return `<div class="card bandwidth-card">
+    <div class="label">Radio bandwidth</div>
+    <div class="value">${formatBytes(bandwidth.rxBytesPerSec)}/s <span class="bw-dir bw-rx">&darr; in</span></div>
+    <div class="value" style="font-size:16px; margin-top:-4px;">${formatBytes(bandwidth.txBytesPerSec)}/s <span class="bw-dir bw-tx">&uarr; out</span></div>
+    <div class="bw-chart">${renderBandwidthSparkline(bandwidth.history)}</div>
+    <div class="sub">${note}</div>
+  </div>`;
+}
+
 // Renders the whole dashboard server-side from one stats snapshot (see
 // baseStation.js's getFullStats) - simpler than shipping a client-side
 // templating setup for what's fundamentally a page that reloads its data
@@ -453,6 +532,12 @@ function renderDashboard(s, rtkControlsEnabled) {
     margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
     background: #3a2a0f; border: 1px solid #6b4a12; color: #f2b84b;
   }
+  .bandwidth-card .value { font-size: 20px; line-height: 1.3; }
+  .bw-dir { font-size: 11px; font-weight: 500; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .bw-rx { color: #58a6ff; }
+  .bw-tx { color: #bc8cff; }
+  .bw-chart { margin: 10px -4px 2px; }
+  .bw-chart svg { display: block; }
 </style>
 </head>
 <body>
@@ -489,13 +574,16 @@ function renderDashboard(s, rtkControlsEnabled) {
     </div>
     <div class="card">
       <div class="label">Radio frames</div>
-      <div class="value">${s.radio.framesReceived.toLocaleString()}</div>
+      <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
+      <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
       <div class="stat-rows">
         ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
+        <div class="stat-row"><span class="name">Total frames</span><span class="val">${s.radio.framesReceived.toLocaleString()}</span></div>
         <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
         <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (RADIO_ENABLED=0)'}</span></div>
       </div>
     </div>
+    ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
     ${
       s.course
         ? `<div class="card marks-card">

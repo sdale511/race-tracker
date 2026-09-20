@@ -255,7 +255,7 @@ function main() {
     const real = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
     radio.send = (buf) => real.send(buf);
     radio.broadcast = (buf) => real.broadcast(buf);
-    for (const evt of ['error', 'disconnected', 'connected', 'frame', 'sync-error']) {
+    for (const evt of ['error', 'disconnected', 'connected', 'frame', 'frame-batch', 'hello', 'sync-error', 'bytes']) {
       real.on(evt, (...args) => radio.emit(evt, ...args));
     }
   }
@@ -584,6 +584,42 @@ function main() {
     framesOk = 0;
     syncErrors = 0;
   }, 30000);
+
+  // Real-time bandwidth AND frame rate for the dashboard's own live cards
+  // (see adminServer.js) - a rolling 60-second history at 1s resolution,
+  // independent of the dashboard's own 5s page-reload cadence so the
+  // history a page load embeds always reflects a true continuous window,
+  // not one resampled awkwardly to match reloads. Every RadioLink/
+  // SimRadioLink already emits 'bytes' on every actual read/write (see
+  // their own comments) - this just buckets those, plus decoded frames,
+  // into completed one-second windows. bandwidthWindow accumulates the
+  // CURRENT, not-yet-closed second; each tick below closes it into
+  // bandwidthHistory and starts a fresh one.
+  const BANDWIDTH_HISTORY_LEN = 60;
+  const bandwidthHistory = [];
+  let bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0 };
+  radio.on('bytes', ({ rx, tx }) => {
+    if (rx) bandwidthWindow.rx += rx;
+    if (tx) bandwidthWindow.tx += tx;
+  });
+  // Same "one batch = one radio-layer transmission" counting convention as
+  // framesOk above (a batch frame counts once, not once per fix inside it).
+  radio.on('frame', () => bandwidthWindow.frames++);
+  radio.on('frame-batch', () => bandwidthWindow.frames++);
+  // Unlike frames above, this counts actual POSITION FIXES, not
+  // transmissions - a batch frame carries however many fixes it actually
+  // packed (see protocol.js's TX_BATCH_SIZE feature), so this only differs
+  // from frames/sec when TX_BATCH_SIZE > 1. Exists so the dashboard can show
+  // the real per-fix throughput a batching change actually bought (see
+  // README's "Batching multiple fixes per send") instead of an operator
+  // having to multiply frames/sec by TX_BATCH_SIZE by hand.
+  radio.on('frame', () => bandwidthWindow.fixes++);
+  radio.on('frame-batch', (fixes) => (bandwidthWindow.fixes += fixes.length));
+  setInterval(() => {
+    bandwidthHistory.push(bandwidthWindow);
+    if (bandwidthHistory.length > BANDWIDTH_HISTORY_LEN) bandwidthHistory.shift();
+    bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0 };
+  }, 1000);
 
   const logDir = config.logDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -2164,6 +2200,24 @@ function main() {
         // null = not applicable (radioMode 'none'), not "disconnected" -
         // see radioConnected's own comment above.
         connected: radioConnected,
+        // Same "last COMPLETED second, not the still-filling current one"
+        // reasoning as bandwidth below - see its own comment.
+        framesPerSec: bandwidthHistory.length ? bandwidthHistory[bandwidthHistory.length - 1].frames : 0,
+        // See bandwidthWindow's own "fixes" comment above - only differs
+        // from framesPerSec when TX_BATCH_SIZE > 1.
+        fixesPerSec: bandwidthHistory.length ? bandwidthHistory[bandwidthHistory.length - 1].fixes : 0,
+        // See bandwidthHistory's own comment above - a snapshot copy (never
+        // the live array itself) so nothing outside this closure can mutate
+        // it out from under the next tick. The "current rate" readout uses
+        // the last COMPLETED second (history's own last entry), not the
+        // still-filling bandwidthWindow - that one only holds however many
+        // milliseconds have elapsed since the last tick, which would read
+        // as an artificially low, jittery rate most of the time.
+        bandwidth: {
+          history: bandwidthHistory.slice(),
+          rxBytesPerSec: bandwidthHistory.length ? bandwidthHistory[bandwidthHistory.length - 1].rx : 0,
+          txBytesPerSec: bandwidthHistory.length ? bandwidthHistory[bandwidthHistory.length - 1].tx : 0,
+        },
       },
       // Null whenever GPS_PORT isn't set at all - same "not configured"
       // signal baseGps.getFix/getSurveyStatus already use, so the

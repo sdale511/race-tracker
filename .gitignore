@@ -1,3 +1,7 @@
+# Python bytecode cache (xbee_configure_at.py/xbee_read_id.py)
+__pycache__/
+*.pyc
+
 # Logs
 logs
 *.log

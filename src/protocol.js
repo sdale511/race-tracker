@@ -20,8 +20,16 @@
 //   [20..21]   speed (0.1 kn)   uint16
 //   [22..23]   heading (0.1deg) uint16
 //   [24]       status           uint8  (bit0 fixOk, bits1-2 carrSoln, bits3-7 numSV)
-//   [25]       reserved         uint8  (e.g. battery %, spare)
-//   [26]       checksum         uint8  (sum of bytes 1..25 mod 256)
+//   [25]       checksum         uint8  (sum of bytes 1..24 mod 256)
+//
+// WIRE-FORMAT CHANGE: this frame was 27 bytes (one extra always-zero,
+// never-read "reserved" byte at the old [25], checksum at [26]) before the
+// reserved byte was removed as dead weight - see the radio-efficiency audit
+// this came out of. Every boat AND the base must run this updated
+// protocol.js together - there's no backward compatibility here (a 26-byte
+// sender talking to a 27-byte-expecting receiver, or vice versa, just
+// checksum-fails/sync-errors on every single frame, never decodes), so this
+// is a coordinated fleet-wide update, not something to roll out gradually.
 
 const { MARK_NAMES } = require('./course');
 
@@ -36,7 +44,7 @@ const BOAT_ID_LEN = 5;
 // the plain single-fix frame below and the batch frame further down, so the
 // two only ever differ in framing (how many fixes, whose boatId), never in
 // how one fix's own fields are laid out on the wire.
-const FIX_FIELDS_LEN = 4 + 2 + 4 + 4 + 2 + 2 + 1 + 1; // time_s+time_ms+lat+lon+speed+heading+status+reserved = 20
+const FIX_FIELDS_LEN = 4 + 2 + 4 + 4 + 2 + 2 + 1; // time_s+time_ms+lat+lon+speed+heading+status = 19
 
 function writeFixFields(buf, offset, pvt) {
   buf.writeUInt32LE(Math.floor(pvt.timestamp / 1000), offset);
@@ -55,8 +63,6 @@ function writeFixFields(buf, offset, pvt) {
     ((pvt.carrSoln & 0x03) << 1) |
     ((Math.min(pvt.numSV, 31) & 0x1f) << 3);
   buf.writeUInt8(status, offset + 18);
-
-  buf.writeUInt8(0, offset + 19); // reserved
 }
 
 function readFixFields(buf, offset) {
@@ -300,9 +306,12 @@ function decodeHello(buf) {
 // TX_BATCH_SIZE/boatAgent.js's queueFixForTx), trading a little latency
 // (fixes wait to be batched) for fewer, larger over-the-air transmissions -
 // worth it only if per-transmission overhead, not per-byte airtime, is the
-// actual bottleneck (see the XBee-PRO 900HP/XSC S3B User Guide's NP command,
-// default 256 RF payload bytes - MAX_BATCH_COUNT below is chosen to stay
-// comfortably under that even after encryption's -9 byte reduction).
+// actual bottleneck (see the XBee-PRO 900HP/XSC S3B User Guide's NP command -
+// 256 RF payload bytes on the standard 900HP, but read-only and as low as
+// 100 on this fleet's actual radios (the "900HP 200K" variant - higher RF
+// data rate, smaller max payload per packet) - MAX_BATCH_COUNT below is
+// chosen to stay comfortably under the SMALLER of those, not the datasheet
+// default, even after encryption's -9 byte reduction).
 // TX_BATCH_SIZE=1 (the default) never produces this frame at all -
 // boatAgent.js keeps sending the plain single-fix frame above unchanged, so
 // default behavior is byte-for-byte identical to before this existed.
@@ -319,7 +328,7 @@ function decodeHello(buf) {
 
 const BATCH_SYNC = 0xee;
 const BATCH_HEADER_LEN = 1 + 1 + BOAT_ID_LEN; // sync + count + boatId = 7
-const MAX_BATCH_COUNT = 8; // largest batch frame: 7 + 8*20 + 1 = 168 bytes
+const MAX_BATCH_COUNT = 4; // largest batch frame: 7 + 4*19 + 1 = 84 bytes - fits under this fleet's actual (read-only) NP=100, not the standard 900HP's 256
 
 function batchFrameLen(count) {
   return BATCH_HEADER_LEN + count * FIX_FIELDS_LEN + 1;

@@ -31,7 +31,7 @@ whatever mode it happened to be in when this script found it.
 
 USAGE
     python3 xbee_read_id.py --port /dev/cu.usbserial-0001
-    python3 xbee_read_id.py --port /dev/cu.usbserial-0001 --baud 115200
+    python3 xbee_read_id.py --port /dev/cu.usbserial-0001 --connect-baud 115200
 """
 
 import argparse
@@ -82,7 +82,7 @@ def enter_command_mode(ser):
     ser.write(b"+++")
     resp = read_response(ser, timeout=2.0)
     if "OK" not in resp:
-        raise RuntimeError(f'no "OK" after +++ (got {resp!r}) - wrong --baud, wrong --port, or not in AT/transparent mode?')
+        raise RuntimeError(f'no "OK" after +++ (got {resp!r}) - wrong --connect-baud, wrong --port, or not in AT/transparent mode?')
 
 
 def send_at(ser, cmd):
@@ -157,16 +157,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="Serial port, e.g. /dev/cu.usbserial-0001")
     ap.add_argument(
-        "--baud",
+        "--connect-baud",
         type=int,
         default=115200,
-        help="Baud to connect at (default 115200 - both correction radios checked so far were here, "
-        "not Digi's own 9600 factory default; pass --detect-baud instead if that's wrong for a given radio)",
+        help="Baud to connect at (radio's CURRENT speed, default 115200 - same flag name/default as "
+        "xbee_configure_at.py's own --connect-baud, since it's the same concept; both correction radios "
+        "checked so far were here, not Digi's own 9600 factory default; pass --detect-baud instead if "
+        "that's wrong for a given radio)",
     )
     ap.add_argument(
         "--detect-baud",
         action="store_true",
-        help=f"Try common bauds in turn ({', '.join(str(b) for b in COMMON_BAUDS)}) instead of just --baud",
+        help=f"Try common bauds in turn ({', '.join(str(b) for b in COMMON_BAUDS)}) instead of just --connect-baud",
     )
     args = ap.parse_args()
 
@@ -212,16 +214,16 @@ def main():
             device.set_parameter("AP", bytes([0]))
             device.write_changes()
             print("Done - this radio is now in AT/transparent mode. Confirm with:")
-            print(f"  python3 {sys.argv[0]} --port {args.port} --baud {api_baud}")
+            print(f"  python3 {sys.argv[0]} --port {args.port} --connect-baud {api_baud}")
             device.close()
             sys.exit(0)
         print(f"Connected at {baud} baud.\n")
     else:
-        print(f"Connecting to {args.port} at {args.baud} baud...")
+        print(f"Connecting to {args.port} at {args.connect_baud} baud...")
         try:
-            ser = open_serial(args.port, args.baud)
+            ser = open_serial(args.port, args.connect_baud)
         except serial.SerialException as e:
-            print(f"Failed to open {args.port} at {args.baud} baud: {e}")
+            print(f"Failed to open {args.port} at {args.connect_baud} baud: {e}")
             sys.exit(1)
         try:
             enter_command_mode(ser)

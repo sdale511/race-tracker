@@ -75,6 +75,11 @@ class RadioLink extends EventEmitter {
     if (!this.port || !this.port.isOpen) return false;
     if (!this._writable) return false; // still draining a backed-up buffer - don't pile more on top of it
     if (!this.port.write(buf)) this._writable = false; // this write itself filled the buffer - wait for 'drain'
+    // Only bytes actually handed to the port count - a skipped/backed-up
+    // send above never reaches here, so this is real bandwidth used, not
+    // just attempted. See baseStation.js's own bandwidth card (accumulates
+    // this into a rolling per-second history for the dashboard).
+    this.emit('bytes', { tx: buf.length });
     return true;
   }
 
@@ -106,6 +111,10 @@ class RadioLink extends EventEmitter {
 
   // Used on both ends: scans incoming bytes for valid frames of either type.
   _onData(chunk) {
+    // Every byte that actually arrived over the air, whether it ends up
+    // part of a valid frame or gets dropped resyncing past a corrupted one
+    // - real airtime used either way. See send()'s own 'bytes' emit above.
+    this.emit('bytes', { rx: chunk.length });
     this._buf = Buffer.concat([this._buf, chunk]);
     while (this._buf.length > 0) {
       // Whichever known sync byte appears earliest decides which frame type

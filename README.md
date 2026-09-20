@@ -21,7 +21,7 @@ browser).
 | Component | Notes |
 |---|---|
 | GPS | ZED-F9P, `UBX-NAV-PVT` binary messages (position, speed, heading, fix type, RTK carrier solution, satellite count) - no NMEA needed |
-| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 27-byte binary frame (`src/protocol.js`) minimizes airtime - optionally batched, see `TX_BATCH_SIZE` below |
+| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - optionally batched, see `TX_BATCH_SIZE` below |
 | SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
 ## Wiring notes
@@ -175,6 +175,24 @@ radio's serial baud via XCTU (XBee) or RFD Modem Tools/Mission Planner
 port opens but nothing decodes. Also confirm all radios share the same
 Network ID (XBee `ID`).
 
+**Don't raise this past 115200 without re-testing.** It's tempting to - a
+100-boat `radio-congestion` run at 115200 measured the SERIAL link
+saturating at ~11.2 KB/s, almost exactly 115200's own 8N1 ceiling (115200 ÷
+10 bits/byte = 11,520 B/s), apparently well under an XBee-PRO 900HP 200K's
+nominal RF capacity. Bumping to 230400 does relieve that serial ceiling
+(the same test then pushed 15.4 KB/s, using only ~67% of 230400's own
+~23 KB/s ceiling) but sync errors jumped from 0.2% to 10.4% - real
+RF-level bit corruption (see `radioLink.js`'s own `sync-error` event), not
+local serial buffering, since bandwidth used stayed well under the new
+ceiling. This fleet's actual radios' real sustainable RF throughput tops
+out around ~11-12 KB/s regardless of serial baud - 115200 was accidentally
+already throttling right at that ceiling, not artificially limiting it. If
+you need more real fix throughput, use `TX_BATCH_SIZE` instead (reduces
+actual RF bytes-per-fix, not just how fast the serial link can be fed) -
+see "Batching multiple fixes per send" below - and re-run the same
+`radio-congestion` test checking sync-error rate, not just bandwidth
+headroom, before trusting any higher baud.
+
 Running only 1-2 boats? Leave everything at factory defaults and set
 `RADIO_BAUD` to match. Higher baud = faster delivery but shorter
 range/reliability at a given power - tune on the water. **Antenna height
@@ -200,7 +218,7 @@ python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run    # read only
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--connect-baud` | 9600 (factory) | The radio's CURRENT speed - pass its actual current baud if already reconfigured |
+| `--connect-baud` | 115200 | The radio's CURRENT speed - pass its actual current baud if already reconfigured, or `9600` for a genuinely factory-fresh radio |
 | `--target-baud` | 115200 | Applied last (changes how the script itself talks to the radio), matches `RADIO_BAUD` |
 | `--mode` | `p2mp` | `p2mp` / `digimesh` / `digimesh-routing` |
 
@@ -259,11 +277,36 @@ BOAT_COUNT=30 RADIO_PORT=/dev/cu.usbserial-A npm run radio-congestion
 
 Watch the base's fleet dashboard (last-seen/frame counts) and its
 `[radio] link quality` log line (sync errors) as `BOAT_COUNT` climbs.
-`CONGESTION_SPEED_KN` (default 6) sets the assumed speed driving send
-rate. This tests airtime/throughput load on the base's real receive
+`CONGESTION_SPEED_KN` (default 26.1, ≈ 30mph - this fleet's own reference
+planning speed, land yachts rather than displacement sailboats; still in
+knots like every other speed value in this app, so a bare `30` here means
+30 *knots* instead) sets the assumed speed driving send rate. This tests
+airtime/throughput load on the base's real receive
 pipeline - it is **not** a test of real multi-transmitter RF collisions
 (every frame still leaves one real antenna); that needs one real radio per
 virtual boat.
+
+**For real collisions**, run several of these at once, each on its own
+physical radio, `BOAT_ID_OFFSET`-staggered so their boat ids don't overlap
+(purely cosmetic for telling frames apart on the dashboard - the actual RF
+collision behavior only depends on the radios being physically separate
+transmitters, not on the ids). Split a target fleet size across them to
+get realistic aggregate load *and* genuine multi-transmitter contention at
+once, rather than choosing between the two:
+
+```
+BOAT_COUNT=7 BOAT_ID_OFFSET=0  RADIO_PORT=<radio1> npm run radio-congestion
+BOAT_COUNT=7 BOAT_ID_OFFSET=7  RADIO_PORT=<radio2> npm run radio-congestion
+BOAT_COUNT=7 BOAT_ID_OFFSET=14 RADIO_PORT=<radio3> npm run radio-congestion
+BOAT_COUNT=7 BOAT_ID_OFFSET=21 RADIO_PORT=<radio4> npm run radio-congestion
+```
+
+Physically separate the transmitting radios rather than clustering them -
+radios that can all hear each other collide differently (often more
+politely) than ones spread across a real course, where some pairs are
+hidden nodes to each other but both still reach the base. That hidden-node
+case is usually where the ugliest real collision behavior actually shows
+up, and clustering hides it entirely.
 
 ### Batching multiple fixes per send (TX_BATCH_SIZE)
 
@@ -274,9 +317,12 @@ own - fewer, larger over-the-air transmissions instead of many small ones.
 Whether that's actually worth the added latency (fixes wait to fill a
 batch, though never longer than `TX_INTERVAL_S` - see below) depends on
 whether your bottleneck is per-transmission overhead or per-byte airtime;
-see the XBee-PRO 900HP/XSC S3B's own `NP` command (default 256-byte max RF
-payload) for the ceiling a batch frame stays comfortably under (largest
-batch, at the built-in cap of 8 fixes, is 168 bytes).
+see the XBee-PRO 900HP/XSC S3B's own `NP` command (max RF payload - 256
+bytes on the standard 900HP, but read-only and check it yourself: the
+"900HP 200K" variant's higher RF data rate caps it much lower, 100 bytes on
+this fleet's actual radios) for the ceiling a batch frame stays comfortably
+under - `MAX_BATCH_COUNT` (protocol.js) is capped at 4 fixes (84 bytes) to
+fit that, not the standard 900HP's larger default.
 
 Test it with the same tool "Congestion-testing the radio" above uses -
 `radio-congestion` respects `TX_BATCH_SIZE` too, so you can compare real
@@ -1137,6 +1183,25 @@ In-memory only (`src/stats.js`) - resets on restart. Durable records are
 Redis (tracks) and `base-uploads` (files); the dashboard reflects both
 plus things Redis doesn't track (link quality, upload counts).
 
+**Radio frames card**'s "Frames/sec" row is the same live, rolling-1s-window
+rate the bandwidth card below uses (last *completed* second, not a
+lifetime average) - the card's own big number is still the all-time
+cumulative count.
+
+**Radio bandwidth card**: live bytes/sec in each direction (↓ in, ↑ out),
+plus a small scrolling sparkline of the last 60 seconds. Both
+`RadioLink`/`SimRadioLink` emit a `bytes` event on every real read/write -
+counting every byte that actually crossed the link (corrupted/resynced
+ones included, on the real-radio side - not just successfully-decoded
+frames), never bytes that were only *attempted* (a send skipped due to
+backpressure, or `SIM_PACKET_LOSS`, doesn't count - see "What happens when
+a send fails" above). Sampled into 1-second buckets independently of the
+page's own 5s reload, so the window a page load embeds is always a true
+continuous 60s history, not one resampled to match reload timing. Under
+`SIMULATE=1` this reflects real UDP traffic with no real airtime ceiling
+to compare against (same caveat as `radio-congestion`'s own docs); under
+`RADIO_ENABLED=0` the card just shows "no radio."
+
 **Regatta card**: picks which RegattaUp regatta this base reports for
 (`POST /api/functions/getActiveRegattas`, refreshed every
 `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS`), persisted to `regatta-id.txt`.
@@ -1322,7 +1387,8 @@ actually use. Redis password is redacted.
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |
 | `RADIO_TEST_MODE` / `RADIO_TEST_INTERVAL_MS` | unset / 500 | `radio-test` only - `send`/`listen`, send interval |
-| `BOAT_COUNT` / `CONGESTION_SPEED_KN` | 30 / 6 | `radio-congestion` only - simulated boat count, assumed speed |
+| `BOAT_COUNT` / `CONGESTION_SPEED_KN` | 30 / 26.1 | `radio-congestion` only - simulated boat count, assumed speed (knots; 26.1 ≈ 30mph) |
+| `BOAT_ID_OFFSET` | 0 | `radio-congestion` only - shifts this instance's boat ids up by this many, so several instances on separate real radios can run at once with disjoint ranges - see "Congestion-testing the radio" above |
 | `RADIO_ENABLED` | unset (on) | `0` = skip opening the radio port entirely |
 | `NO_GPS` | unset | Boat only - `1` skips any GPS source, real or simulated |
 | `BOAT_ID` | auto-persisted | Exactly 5 chars, overrides this device's persisted id |
