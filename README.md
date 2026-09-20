@@ -157,6 +157,56 @@ Configuring TMODE3 itself for survey-in (vs. just reading it) is a
 separate one-time step, typically done via u-center at setup - see
 u-blox's ZED-F9P integration manual for survey-in parameters.
 
+### Checking everything at once (gps_config_report.sh)
+
+`gps_config_report.sh` (repo root) polls every setting the sections above
+depend on - fix rate, UART baud, `UBX-NAV-PVT`/NMEA/`UBX-NAV-SVIN`/
+`UBX-RXM-RTCM` output, TMODE3 mode, RTCM3 output types - in one pass,
+instead of re-typing each `ubxtool -g` poll by hand or assuming a board's
+still configured the way it was last time. Read-only (`-g`/poll only,
+never `-z`/set):
+```
+./gps_config_report.sh -f /dev/ttyAMA0 -s 115200
+```
+A board acting as a rover should show the RTK-base rows (TMODE3, RTCM3
+output) at 0/off; a board acting as the RTK base should show its own rows
+enabled and `CFG-TMODE-MODE` non-zero.
+
+No `gpsd`/`ubxtool` available (or can't install it)? `ubx_config_report.py`
+reports the exact same settings, talking the UBX binary protocol directly
+over `pyserial` instead - same reasoning as `xbee_configure_at.py`'s own
+"why not a library" comment, no external CLI tool needed:
+```
+pip install pyserial
+python3 ubx_config_report.py --port /dev/ttyAMA0 --baud 115200
+```
+Every key ID it polls is cross-checked against two independent open-source
+references (SparkFun's u-blox GNSS library and pyubx2), not typed from
+memory - see its own module comment.
+
+`ubx_config_set.py` applies the fix, same no-`ubxtool`-needed approach:
+```
+python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base
+python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
+```
+`--role base` enables RTCM3 observations for all four constellations
+(`1077`/`1087`/`1097`/`1127` - GPS/GLONASS/Galileo/BeiDou) and `UBX-NAV-SVIN`
+- the exact gap a live audit of this fleet's own base unit found (`1005`
+station coordinates on, no observation message at all, so a rover would
+never get a usable correction from it - see "RTK base GPS: enabling RTCM3
+output" above). All four on by default, not gated behind opt-in flags -
+this fleet operates in the US, where all four have real satellites in view
+(including BeiDou-3's global coverage, not just the old Asia-Pacific-only
+BeiDou-2), and more satellites means better RTK fix reliability under
+real-world sky obstruction; edit `BASE_SETTINGS` directly if you want fewer.
+`--role rover` enables `UBX-NAV-PVT`
+(required, or this app sees nothing from it), disables TMODE3 (a rover
+isn't a stationary reference station), and enables `UBX-RXM-RTCM` (for
+`GPS_LOG_RTCM` visibility). Every write goes to RAM+BBR+Flash (survives a
+power cycle) and is read back afterward to confirm it actually stuck - a
+silently-failed write is worse than a loud one. `--dry-run` shows what
+would change without writing anything.
+
 ## Radio configuration
 
 Pair every radio (boat + base) on the same netid/frequency/baud, in
