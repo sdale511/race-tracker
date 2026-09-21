@@ -1445,8 +1445,10 @@ actually use. Redis password is redacted.
 | `MARK_NAME` | unset | `mark`/`markset` - which mark this device auto-posts, persisted to `mark-name.txt` |
 | `MARK_DISTANCE_M` | 1 | `mark`/`markset` - movement gate before posting a mark update |
 | `TX_DISTANCE_M` | 1 | Movement gate for radio send + SD log. Keep smaller than the finish-gate width - lap detection only sees transmitted positions |
+| `TX_FINISH_APPROACH_ZONE_M` | 50 | Boat only - within this many meters of the finish line, closing on it while sailing upwind, `TX_DISTANCE_M` is replaced by `TX_FINISH_DISTANCE_M` below for much more frequent reporting right at a close finish. `0` disables this entirely (`TX_DISTANCE_M` applies everywhere) |
+| `TX_FINISH_DISTANCE_M` | 0.3 | Boat only - the tightened movement gate itself, only in effect inside `TX_FINISH_APPROACH_ZONE_M` |
 | `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` - always sends at least this often. `0` disables (distance gate only) |
-| `TX_BATCH_SIZE` | 1 | How many consecutive fixes to pack into one radio transmission - `1` (default) sends one frame per fix, unchanged from before this existed. Clamped to 8 (the wire format's own cap). See "Batching multiple fixes per send" above |
+| `TX_BATCH_SIZE` | 1 | How many consecutive fixes to pack into one radio transmission - `1` (default) sends one frame per fix, unchanged from before this existed. Clamped to `MAX_BATCH_COUNT` (4 - this fleet's actual radio hardware's own payload limit, see "Batching multiple fixes per send" above), not the wire format's own theoretical cap |
 | `ROVER_SHUTDOWN_AT` | unset (off) | Boat only - 24h local time (`"HH:MM"`) after which shutdown can trigger |
 | `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only - continuous idle minutes required after `ROVER_SHUTDOWN_AT` |
 | `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only - speed below which a fix counts as stationary |

@@ -451,6 +451,21 @@ module.exports = {
   // airtime/bandwidth over long range.
   txDistanceM: parseFloat(process.env.TX_DISTANCE_M || '1'),
 
+  // Tightens the distance gate above to txFinishDistanceM (below) whenever
+  // this boat is within this many meters of the finish line AND closing on
+  // it while sailing upwind - see finishApproach.js's own module comment
+  // for the exact "upwind" convention (the same committee-boat-on-the-
+  // left one FinishLineWatcher already uses, so the two never disagree
+  // about which side is upwind). A close finish is exactly the moment an
+  // operator most wants frequent position updates, not whatever coarser
+  // txDistanceM they set for the rest of the race. 0 disables this
+  // entirely (txDistanceM applies everywhere, unchanged from before this
+  // existed) - same "0 means off" convention as txIntervalMs below.
+  txFinishApproachZoneM: parseFloat(process.env.TX_FINISH_APPROACH_ZONE_M || '50'),
+  // The tightened distance gate itself, only in effect inside
+  // txFinishApproachZoneM above.
+  txFinishDistanceM: parseFloat(process.env.TX_FINISH_DISTANCE_M || '0.3'),
+
   // How many consecutive fixes to pack into one radio transmission instead
   // of sending each as its own frame - see protocol.js's own comment on the
   // batch frame type and boatAgent.js's queueFixForTx/flushPendingBatch.

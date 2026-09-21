@@ -14,6 +14,7 @@ const { SdLogger } = require('./sdLogger');
 const { pruneForDiskSpace } = require('./logRotation');
 const protocol = require('./protocol');
 const { distanceMeters, MARK_NAMES } = require('./course');
+const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const roverStats = require('./roverStats');
@@ -207,6 +208,19 @@ try {
   if (err.code !== 'ENOENT') console.error('[boatAgent] failed to read persisted course marks:', err.message);
 }
 
+// Rebuilt every time currentMarks changes (see radio.on('marks', ...)
+// below, and the disk-cache load just above) so it always reflects
+// wherever committeeFinish/finish actually are right now, not a stale
+// position from an earlier course. null whenever those two marks aren't
+// both known yet - handlePvt's own finish-approach check treats that the
+// same as the feature being off for this fix.
+let finishApproachWatcher = null;
+function rebuildFinishApproachWatcher() {
+  finishApproachWatcher =
+    currentMarks && currentMarks.committeeFinish && currentMarks.finish ? new FinishApproachWatcher(currentMarks) : null;
+}
+rebuildFinishApproachWatcher();
+
 // The base's address for log uploads (see uploadClient.js), as last
 // broadcast alongside the marks - not persisted to disk like currentMarks
 // below, since it's much more likely to go stale across a restart (a
@@ -234,6 +248,7 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   // not a separately-tracked one that could drift out of sync with it.
   const isFirstMarks = !freshMarksReceived;
   currentMarks = marks;
+  rebuildFinishApproachWatcher();
   freshMarksReceived = true;
   stopMarksPingRetry();
   baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort, adminPort: baseAdminPort } : null;
@@ -422,10 +437,23 @@ function handlePvt(pvt) {
   // movedM above - a distance-triggered send resets this timer too (see
   // transmitFix), so it's genuinely "at least every N seconds," not a
   // separate clock ticking on top of already-frequent distance-based sends.
+  //
+  // TX_FINISH_APPROACH_ZONE_M/TX_FINISH_DISTANCE_M tighten the distance
+  // gate itself (not a separate gate alongside it) while this boat is
+  // closing on the finish line upwind - see finishApproach.js's own
+  // comment. Falls back to the plain txDistanceM whenever marks haven't
+  // arrived yet, the zone is disabled (0), or this fix simply isn't an
+  // upwind finish approach.
+  const effectiveTxDistanceM =
+    config.txFinishApproachZoneM > 0 &&
+    finishApproachWatcher &&
+    finishApproachWatcher.isApproachingUpwind(pvt.lat, pvt.lon, config.txFinishApproachZoneM)
+      ? config.txFinishDistanceM
+      : config.txDistanceM;
   const movedM = lastTxPosition ? distanceMeters(lastTxPosition, pvt) : Infinity;
   const elapsedSinceTxMs = lastTxTime !== null ? pvt.timestamp - lastTxTime : Infinity;
   const clearedTxGate =
-    movedM >= config.txDistanceM || (config.txIntervalMs > 0 && elapsedSinceTxMs >= config.txIntervalMs);
+    movedM >= effectiveTxDistanceM || (config.txIntervalMs > 0 && elapsedSinceTxMs >= config.txIntervalMs);
 
   // Every fix gets a console line, same as the base's own GPS logging
   // (openBaseGps in baseStation.js) - the console is a live "is this thing

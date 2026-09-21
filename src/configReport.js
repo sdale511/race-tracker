@@ -158,6 +158,22 @@ const sections = [
       },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
+        label: 'txFinishApproachZoneM',
+        value: config.txFinishApproachZoneM,
+        envVar: 'TX_FINISH_APPROACH_ZONE_M',
+        unit: 'm',
+        note: '0 disables the finish-approach tightening below (txDistanceM applies everywhere)',
+        roles: ['boat'],
+      },
+      {
+        label: 'txFinishDistanceM',
+        value: config.txFinishDistanceM,
+        envVar: 'TX_FINISH_DISTANCE_M',
+        unit: 'm',
+        note: 'replaces txDistanceM while closing on the finish upwind, within txFinishApproachZoneM',
+        roles: ['boat'],
+      },
+      {
         label: 'txIntervalMs',
         value: config.txIntervalMs,
         envVar: 'TX_INTERVAL_S',

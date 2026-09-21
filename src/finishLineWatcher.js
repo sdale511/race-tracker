@@ -87,4 +87,8 @@ class FinishLineWatcher {
   }
 }
 
-module.exports = { FinishLineWatcher };
+// toXY/cross also exported for finishApproach.js - it needs the exact same
+// local-frame/cross-product primitives to stay consistent with this
+// module's own "upwind" convention, not a second, potentially-diverging
+// copy of the same trig.
+module.exports = { FinishLineWatcher, toXY, cross };
