@@ -22,7 +22,10 @@ fleet's own pair of boards actually found wrong:
     survey-in card has something to show.
   - rover: UBX-NAV-PVT on (or this app sees nothing from it at all), TMODE3
     disabled (a rover is not a stationary reference station), UBX-RXM-RTCM on
-    (GPS_LOG_RTCM visibility into corrections actually arriving).
+    (GPS_LOG_RTCM visibility into corrections actually arriving), and fix
+    rate set to 10Hz (not the 20Hz spec ceiling - see CFG-RATE-MEAS's own
+    comment on why 20Hz risks carrSoln instability under a real correction
+    radio link, not just a bench test).
 
 Every key ID is the same cross-checked (SparkFun u-blox GNSS library +
 pyubx2) set ubx_config_report.py already uses - see its own module comment.
@@ -62,22 +65,23 @@ LAYERS_RAM_BBR_FLASH = 0b111  # for VALSET writes - matches ubxtool's own ",7"
 
 RESPONSE_TIMEOUT_S = 1.5
 
-# name -> (key ID, decode kind, friendly label for the log line) - decode
-# kind needed both to build the right size value field for VALSET and to
-# interpret the VALGET read-back. Key IDs cross-checked against SparkFun's
-# u-blox_config_keys.h AND pyubx2's ubxtypes_configdb.py - see
-# ubx_config_report.py's own module comment. Labels match the same keys
-# there too, so a setting reads the same whether it showed up in a report or
-# a set.
+# name -> (key ID, decode kind, short label for the one-line log output) -
+# decode kind needed both to build the right size value field for VALSET
+# and to interpret the VALGET read-back. Key IDs cross-checked against
+# SparkFun's u-blox_config_keys.h AND pyubx2's ubxtypes_configdb.py - see
+# ubx_config_report.py's own module comment (its own KEYS list has the full
+# explanatory labels this one deliberately doesn't repeat - see the
+# module docstring/README for what each of these actually does/why).
 KEY_INFO = {
-    "CFG-MSGOUT-RTCM_3X_TYPE1077_UART2": (0x209102CE, "u1", "GPS MSM7 observations"),
-    "CFG-MSGOUT-RTCM_3X_TYPE1087_UART2": (0x209102D3, "u1", "GLONASS MSM7 observations"),
-    "CFG-MSGOUT-RTCM_3X_TYPE1097_UART2": (0x2091031A, "u1", "Galileo MSM7 observations"),
-    "CFG-MSGOUT-RTCM_3X_TYPE1127_UART2": (0x209102D8, "u1", "BeiDou MSM7 observations"),
-    "CFG-MSGOUT-UBX_NAV_SVIN_UART1": (0x20910089, "u1", "UBX-NAV-SVIN rate on UART1 - needed for the admin dashboard's survey-in card"),
-    "CFG-MSGOUT-UBX_NAV_PVT_UART1": (0x20910007, "u1", "UBX-NAV-PVT rate on UART1 - must be on (1) or this app sees nothing"),
-    "CFG-TMODE-MODE": (0x20030001, "tmode", "TMODE3 mode - 0=disabled, 1=survey-in, 2=fixed"),
-    "CFG-MSGOUT-UBX_RXM_RTCM_UART1": (0x20910269, "u1", "UBX-RXM-RTCM rate on UART1 - needed for GPS_LOG_RTCM visibility into corrections arriving"),
+    "CFG-MSGOUT-RTCM_3X_TYPE1077_UART2": (0x209102CE, "u1", "RTCM 1077 (GPS)"),
+    "CFG-MSGOUT-RTCM_3X_TYPE1087_UART2": (0x209102D3, "u1", "RTCM 1087 (GLONASS)"),
+    "CFG-MSGOUT-RTCM_3X_TYPE1097_UART2": (0x2091031A, "u1", "RTCM 1097 (Galileo)"),
+    "CFG-MSGOUT-RTCM_3X_TYPE1127_UART2": (0x209102D8, "u1", "RTCM 1127 (BeiDou)"),
+    "CFG-MSGOUT-UBX_NAV_SVIN_UART1": (0x20910089, "u1", "NAV-SVIN rate"),
+    "CFG-MSGOUT-UBX_NAV_PVT_UART1": (0x20910007, "u1", "NAV-PVT rate"),
+    "CFG-TMODE-MODE": (0x20030001, "tmode", "TMODE3 mode"),
+    "CFG-MSGOUT-UBX_RXM_RTCM_UART1": (0x20910269, "u1", "RXM-RTCM rate"),
+    "CFG-RATE-MEAS": (0x30210001, "u2", "fix rate (ms)"),
 }
 
 # All four constellations on by default, not gated behind opt-in flags -
@@ -100,6 +104,14 @@ ROVER_SETTINGS = {
     "CFG-MSGOUT-UBX_NAV_PVT_UART1": 1,  # must be on, or this app sees nothing from this rover at all
     "CFG-TMODE-MODE": 0,  # disabled - a rover is not a stationary reference station
     "CFG-MSGOUT-UBX_RXM_RTCM_UART1": 1,  # GPS_LOG_RTCM visibility into corrections actually arriving
+    # 10Hz, not the 20Hz spec ceiling - u-blox's own correction-link-latency
+    # guidance (< nav period - 50ms) leaves ~0ms margin at 20Hz, meaning a
+    # real correction-radio link (not a bench test) risks carrSoln
+    # flickering fixed->float right at the moment precision matters most.
+    # 10Hz keeps a comfortable 50ms margin instead. Not the base's own
+    # concern - a stationary reference station has no reason to move this
+    # off BASE_SETTINGS' effective default (whatever this board already had).
+    "CFG-RATE-MEAS": 100,
 }
 
 
@@ -236,27 +248,35 @@ def set_key(ser, key_id, kind, value):
     return False
 
 
+# Every line below fits in ~60 columns - one setting, one line, no wrap in
+# a normal terminal. The full raw CFG- key name and why-it-matters
+# explanation live in KEY_INFO's own comment/README/config.js, not repeated
+# here on every run.
+LABEL_WIDTH = 20
+
+
 def apply_setting(ser, name, target_value, dry_run):
     key_id, kind, label = KEY_INFO[name]
     current = poll_key(ser, key_id, kind)
-    current_display = current if current is not None else "(no response)"
+    current_display = current if current is not None else "?"
+    prefix = f"  {label:<{LABEL_WIDTH}}"
     if current == target_value:
-        print(f"  {name} ({label}): already {target_value} - no change needed")
+        print(f"{prefix} = {target_value} (unchanged)")
         return True
     if dry_run:
-        print(f"  {name} ({label}): {current_display} -> {target_value} (dry run, not written)")
+        print(f"{prefix} {current_display} -> {target_value} [dry run]")
         return True
     if not set_key(ser, key_id, kind, target_value):
-        print(f"  {name} ({label}): {current_display} -> {target_value} FAILED (NAK or no response)")
+        print(f"{prefix} {current_display} -> {target_value} [FAILED]")
         return False
     # Read back to confirm it actually stuck, same reasoning as
     # xbee_configure_at.py's own set_and_verify - a write ACK alone doesn't
     # prove the receiver is now actually running the new value.
     verified = poll_key(ser, key_id, kind)
     if verified == target_value:
-        print(f"  {name} ({label}): {current_display} -> {target_value} OK (verified)")
+        print(f"{prefix} {current_display} -> {target_value} [OK]")
         return True
-    print(f"  {name} ({label}): {current_display} -> {target_value} WROTE BUT READ BACK {verified} - did not stick")
+    print(f"{prefix} {current_display} -> {target_value} [wrote, read back {verified} - did not stick]")
     return False
 
 

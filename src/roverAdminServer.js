@@ -217,6 +217,11 @@ function renderDashboard(s, power) {
                 title: '0 = no RTK carrier-phase solution, 1 = RTK float (decimeter-level, still resolving), 2 = RTK fixed (centimeter-level)',
                 value: `${fix.carrSoln}`,
               },
+              {
+                label: 'Fix rate',
+                title: "This boat's own raw GPS output rate (CFG-RATE-MEAS), measured from actual fix-receipt gaps over the last 10s - not the radio transmit rate, which is throttled separately by TX_DISTANCE_M",
+                value: s.fixHz != null ? `${s.fixHz.toFixed(1)} Hz` : '—',
+              },
               { label: 'Satellites', title: 'Number of satellites used in this fix', value: `${fix.numSV}` },
               {
                 label: 'Accuracy',

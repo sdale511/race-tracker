@@ -11,6 +11,15 @@ let syncErrors = 0;
 let marksReceived = 0;
 let lastMarksReceivedAt = null;
 let lastFix = null;
+// Recent fix-receipt timestamps, trimmed to the last FIX_RATE_WINDOW_MS on
+// every recordFix call - see fixHz() below. This is this boat's own raw
+// onboard GPS rate (every fix the RTK box actually produced, i.e. whatever
+// CFG-RATE-MEAS is set to), deliberately NOT the same number as the base's
+// own fixHz in stats.js, which measures frames arriving there AFTER
+// boatAgent.js's TX_DISTANCE_M gate - those two rates diverge by design any
+// time the boat is moving less than TX_DISTANCE_M between fixes.
+const FIX_RATE_WINDOW_MS = 10000;
+let fixTimes = [];
 
 let uploadAttempts = 0;
 let uploadSuccesses = 0;
@@ -42,6 +51,23 @@ function recordMarksReceived() {
 // not just position.
 function recordFix(pvt) {
   lastFix = pvt;
+  // receivedAt (this Pi's own local-clock receipt time), not pvt.timestamp
+  // (the fix's own GPS-derived time) - same reasoning as roverAdminServer.js's
+  // own staleness check: a rate measured against the GPS's own clock could
+  // be thrown off by anything that clock does independently of when fixes
+  // actually arrived here, where a local monotonic-ish clock can't.
+  fixTimes.push(pvt.receivedAt);
+  const cutoff = pvt.receivedAt - FIX_RATE_WINDOW_MS;
+  while (fixTimes.length && fixTimes[0] < cutoff) fixTimes.shift();
+}
+
+// null until at least two fixes have landed inside the window (one alone
+// has no interval to measure a rate from) - same contract as stats.js's
+// own fixHz on the base side.
+function fixHz() {
+  if (fixTimes.length < 2) return null;
+  const spanS = (fixTimes[fixTimes.length - 1] - fixTimes[0]) / 1000;
+  return spanS > 0 ? (fixTimes.length - 1) / spanS : null;
 }
 
 function recordUploadAttempt() {
@@ -80,6 +106,7 @@ function snapshot() {
     radio: { framesSent, syncErrors },
     marks: { received: marksReceived, lastReceivedAt: lastMarksReceivedAt },
     lastFix,
+    fixHz: fixHz(),
     upload: {
       attempts: uploadAttempts,
       successes: uploadSuccesses,

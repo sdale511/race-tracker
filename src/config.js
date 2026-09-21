@@ -460,8 +460,14 @@ module.exports = {
   // operator most wants frequent position updates, not whatever coarser
   // txDistanceM they set for the rest of the race. 0 disables this
   // entirely (txDistanceM applies everywhere, unchanged from before this
-  // existed) - same "0 means off" convention as txIntervalMs below.
-  txFinishApproachZoneM: parseFloat(process.env.TX_FINISH_APPROACH_ZONE_M || '50'),
+  // existed) - same "0 means off" convention as txIntervalMs below. Off by
+  // default for now (0) - this fleet's actual GPS fix rate at real finish
+  // speeds hasn't been validated in the field yet (see the 30mph/0.3m
+  // sizing discussion - the achievable floor depends entirely on the
+  // rover's own CFG-RATE-MEAS), so this stays opt-in until that's settled
+  // rather than silently enabling a distance target the hardware might not
+  // actually be able to hit.
+  txFinishApproachZoneM: parseFloat(process.env.TX_FINISH_APPROACH_ZONE_M || '0'),
   // The tightened distance gate itself, only in effect inside
   // txFinishApproachZoneM above.
   txFinishDistanceM: parseFloat(process.env.TX_FINISH_DISTANCE_M || '0.3'),

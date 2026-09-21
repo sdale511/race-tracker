@@ -201,11 +201,17 @@ BeiDou-2), and more satellites means better RTK fix reliability under
 real-world sky obstruction; edit `BASE_SETTINGS` directly if you want fewer.
 `--role rover` enables `UBX-NAV-PVT`
 (required, or this app sees nothing from it), disables TMODE3 (a rover
-isn't a stationary reference station), and enables `UBX-RXM-RTCM` (for
-`GPS_LOG_RTCM` visibility). Every write goes to RAM+BBR+Flash (survives a
-power cycle) and is read back afterward to confirm it actually stuck - a
-silently-failed write is worse than a loud one. `--dry-run` shows what
-would change without writing anything.
+isn't a stationary reference station), enables `UBX-RXM-RTCM` (for
+`GPS_LOG_RTCM` visibility), and sets the fix rate to 10Hz (`CFG-RATE-MEAS`)
+- not the ZED-F9P's 20Hz spec ceiling, since u-blox's own correction-link-
+latency guidance (link latency should stay under nav-period minus 50ms)
+leaves ~0ms margin at 20Hz - a real correction-radio link (not a bench
+test) risks `carrSoln` flickering fixed→float right at the moment
+precision matters most. 10Hz keeps a comfortable 50ms margin instead.
+Every write goes to
+RAM+BBR+Flash (survives a power cycle) and is read back afterward to
+confirm it actually stuck - a silently-failed write is worse than a loud
+one. `--dry-run` shows what would change without writing anything.
 
 ## Radio configuration
 
@@ -1445,7 +1451,7 @@ actually use. Redis password is redacted.
 | `MARK_NAME` | unset | `mark`/`markset` - which mark this device auto-posts, persisted to `mark-name.txt` |
 | `MARK_DISTANCE_M` | 1 | `mark`/`markset` - movement gate before posting a mark update |
 | `TX_DISTANCE_M` | 1 | Movement gate for radio send + SD log. Keep smaller than the finish-gate width - lap detection only sees transmitted positions |
-| `TX_FINISH_APPROACH_ZONE_M` | 50 | Boat only - within this many meters of the finish line, closing on it while sailing upwind, `TX_DISTANCE_M` is replaced by `TX_FINISH_DISTANCE_M` below for much more frequent reporting right at a close finish. `0` disables this entirely (`TX_DISTANCE_M` applies everywhere) |
+| `TX_FINISH_APPROACH_ZONE_M` | 0 (off) | Boat only - within this many meters of the finish line, closing on it while sailing upwind, `TX_DISTANCE_M` is replaced by `TX_FINISH_DISTANCE_M` below for much more frequent reporting right at a close finish. `0` disables this entirely (`TX_DISTANCE_M` applies everywhere) - off by default until the rover's actual achievable fix spacing at real finish speeds is validated in the field |
 | `TX_FINISH_DISTANCE_M` | 0.3 | Boat only - the tightened movement gate itself, only in effect inside `TX_FINISH_APPROACH_ZONE_M` |
 | `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` - always sends at least this often. `0` disables (distance gate only) |
 | `TX_BATCH_SIZE` | 1 | How many consecutive fixes to pack into one radio transmission - `1` (default) sends one frame per fix, unchanged from before this existed. Clamped to `MAX_BATCH_COUNT` (4 - this fleet's actual radio hardware's own payload limit, see "Batching multiple fixes per send" above), not the wire format's own theoretical cap |
