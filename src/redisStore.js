@@ -237,10 +237,20 @@ class RedisStore {
   // affect any other output" philosophy elsewhere (console/CSV/UDP logging
   // in baseStation.js's radio.on('frame', ...) handler all keep working
   // regardless of what happens here).
+  // Synchronous mirror of recordFix's own movement gate below - lets a
+  // caller (baseStation.js's per-fix log line) know right away whether this
+  // fix is about to be skipped, without waiting on the async Redis write
+  // itself to resolve. Reads the exact same lastRecordedPosition state
+  // recordFix's own check reads, so the two can never disagree about a
+  // given fix - this just exposes that same decision, not a second one.
+  wouldSkipRecordFix(decoded) {
+    const last = this.lastRecordedPosition.get(decoded.boatId);
+    return !!(last && distanceMeters(last.lat, last.lon, decoded.lat, decoded.lon) < this.minMovementM);
+  }
+
   async recordFix(decoded, receivedAt) {
     await this.ready;
-    const last = this.lastRecordedPosition.get(decoded.boatId);
-    if (last && distanceMeters(last.lat, last.lon, decoded.lat, decoded.lon) < this.minMovementM) return;
+    if (this.wouldSkipRecordFix(decoded)) return;
 
     const member = packFix(decoded, receivedAt);
     const score = decoded.timestamp;

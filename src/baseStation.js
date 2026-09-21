@@ -1858,7 +1858,7 @@ function main() {
     // per-fix console echo, not the durable record or lap/on-grid/mark-
     // rounding/foul detection those actually drive (see config.js's own
     // comment on logReceivedFrames).
-    if (config.logReceivedFrames) logToConsole(decoded);
+    if (config.logReceivedFrames) logToConsole(decoded, redisStore.wouldSkipRecordFix(decoded));
     logToCsv(decoded);
     // recordFix never rejects - a write failure (Redis full, network blip,
     // ...) is caught, tracked, and rate-limit logged inside redisStore.js
@@ -2086,11 +2086,18 @@ function main() {
     foulWebhookQueue.enqueue(event);
   }
 
-  function logToConsole(d) {
+  // skippedRedis: redisStore.wouldSkipRecordFix's own answer for this exact
+  // fix (see its comment) - appended as "no-post" so this console line says
+  // right away whether the fix that just arrived actually landed in Redis
+  // (and therefore in RegattaUp's/the map's own track history) or was
+  // filtered out by REDIS_MIN_MOVEMENT_M, without needing to separately
+  // cross-reference the Redis write itself.
+  function logToConsole(d, skippedRedis) {
     console.log(
       `[base] boat=${d.boatId} ${new Date(d.timestamp).toISOString()} ` +
         `${d.lat.toFixed(6)},${d.lon.toFixed(6)} ${d.speedKnots.toFixed(1)}kn ` +
-        `hdg=${d.headingDeg.toFixed(0)} fixOk=${d.gnssFixOk} carrSoln=${d.carrSoln} sv=${d.numSV}`
+        `hdg=${d.headingDeg.toFixed(0)} fixOk=${d.gnssFixOk} carrSoln=${d.carrSoln} sv=${d.numSV}` +
+        (skippedRedis ? ' no-post' : '')
     );
   }
 
