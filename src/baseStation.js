@@ -795,12 +795,19 @@ function main() {
   // interval below) - errors are logged and swallowed, same as the other
   // best-effort background refreshes in this file, so a transient
   // RegattaUp/network hiccup doesn't crash the base station.
+  // Returns whether the fetch itself succeeded - callers that need to tell
+  // "RegattaUp said this regatta doesn't exist/isn't active" apart from
+  // "RegattaUp couldn't be reached at all" (see the startup offline-
+  // fallback below) need this; a swallowed catch alone leaves activeRegattas
+  // looking identically empty either way.
   async function refreshActiveRegattas() {
+    let fetchOk = false;
     try {
       const res = await fetch(config.regattaup.activeRegattasUrl, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       activeRegattas = Array.isArray(body.regattas) ? body.regattas : [];
+      fetchOk = true;
       if (config.regattaup.logActiveRegattas) {
         console.log(
           `[baseStation] ${new Date().toISOString()} fetched ${activeRegattas.length} active/future regatta(s) from ${config.regattaup.activeRegattasUrl}`
@@ -820,6 +827,7 @@ function main() {
       refreshUploadDirBaseline();
       clearPersistedRegattaId();
     }
+    return fetchOk;
   }
 
   // What the admin dashboard's regatta card actually renders - the cached
@@ -845,7 +853,7 @@ function main() {
     // config.js's resolveDefaultRegattaId/regattaIdFile.js), so whichever
     // was used most recently (an operator's own dashboard pick, or the env
     // var) is what the startup resolution defaults to on the next run.
-    persistRegattaId(id, regatta.name, regatta.default_lat, regatta.default_lon);
+    persistRegattaId(id, regatta.name, regatta.default_lat, regatta.default_lon, regatta.venue, regatta.start_date, regatta.end_date);
     // A newly-selected regatta is a new race starting - every per-boat
     // watcher (lap count, on-grid state, mark roundings) is keyed only by
     // boatId, not by regatta, and lives for as long as this process stays
@@ -1402,7 +1410,7 @@ function main() {
     // fresh process always starts with nothing selected, so there's no
     // "already selected" case to check here the way a Redis-backed
     // selection would have had.
-    await refreshActiveRegattas();
+    const activeRegattasFetchedOk = await refreshActiveRegattas();
     // Apply config.regattaup.defaultRegatta (REGATTAUP_REGATTA_ID, or
     // whatever's persisted in regatta-id.txt from a prior run/pick - see
     // config.js's own comment) if it's actually one of the regattas
@@ -1416,9 +1424,45 @@ function main() {
       try {
         picked = selectRegatta(config.regattaup.defaultRegatta.id);
       } catch (err) {
-        console.warn(
-          `[baseStation] default regatta id "${config.regattaup.defaultRegatta.id}" isn't in the active/future list - ${err.message}`
-        );
+        // RegattaUp itself couldn't be reached at all (no signal - a real,
+        // expected condition at a dry lakebed/remote venue, not an edge
+        // case) - activeRegattas came back empty not because this regatta
+        // genuinely isn't active, but because there was no live list to
+        // check it against at all. Falling through to "no regatta
+        // selected" here would strand an operator on a previously-working
+        // regatta the moment connectivity drops, even though
+        // regatta-id.txt has exactly what's needed to keep racing. Only
+        // trusted when the FETCH itself failed - never when it succeeded
+        // and genuinely didn't include this id, which is a real "this
+        // regatta isn't active anymore" signal worth respecting, not
+        // papering over. Requires venue+both dates (not just id/name) -
+        // only present once regattaIdFile.js has actually cached a full
+        // regatta object from a prior successful selection, and needed to
+        // reconstruct something regattaHasEnded/the dashboard/console logs
+        // can all use the same as any other regatta object.
+        const cached = config.regattaup.defaultRegatta;
+        if (!activeRegattasFetchedOk && cached.venue && cached.startDate && cached.endDate) {
+          const offlineRegatta = { id: cached.id, name: cached.name, venue: cached.venue, start_date: cached.startDate, end_date: cached.endDate };
+          if (regattaHasEnded(offlineRegatta)) {
+            console.warn(
+              `[baseStation] RegattaUp unreachable and the locally-cached regatta "${cached.name}" already ended ${cached.endDate} - not auto-selecting it, pick one once the admin dashboard has a live list`
+            );
+          } else {
+            activeRegattas = [offlineRegatta];
+            try {
+              picked = selectRegatta(cached.id);
+              console.warn(
+                `[baseStation] RegattaUp unreachable at startup - trusting locally-cached regatta "${offlineRegatta.name}" (${offlineRegatta.venue}) from regatta-id.txt instead of leaving none selected`
+              );
+            } catch (err2) {
+              console.error('[baseStation] failed to select the locally-cached offline regatta:', err2.message);
+            }
+          }
+        } else {
+          console.warn(
+            `[baseStation] default regatta id "${config.regattaup.defaultRegatta.id}" isn't in the active/future list - ${err.message}`
+          );
+        }
       }
     }
     if (!picked) picked = await promptForRegatta();

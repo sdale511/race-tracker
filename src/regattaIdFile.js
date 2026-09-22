@@ -12,22 +12,34 @@ fs.mkdirSync(configDir, { recursive: true });
 const idFilePath = path.join(configDir, 'regatta-id.txt');
 
 // Whatever regatta was last persisted here, as { id, name, defaultLat,
-// defaultLon }, or null if this base has never had one set (a fresh
-// checkout, or REGATTAUP_REGATTA_ID has simply never been used) - never
-// throws, same "missing means null, not an error" contract as getMark/
-// getDiskSpace elsewhere in this app. name/defaultLat/defaultLon are
-// persisted alongside the id purely for display and as a course-creation
-// fallback (a startup log line, an interactive prompt's "currently: X"
-// hint, resolveCourseCenter's default map center - see course.js) -
-// resolving/selecting a regatta always matches by id against RegattaUp's
-// own live list, never by name.
+// defaultLon, venue, startDate, endDate }, or null if this base has never
+// had one set (a fresh checkout, or REGATTAUP_REGATTA_ID has simply never
+// been used) - never throws, same "missing means null, not an error"
+// contract as getMark/getDiskSpace elsewhere in this app. Every field past
+// id is persisted purely for display and as fallbacks - a startup log
+// line, an interactive prompt's "currently: X" hint, resolveCourseCenter's
+// default map center (see course.js), AND (venue/startDate/endDate)
+// letting baseStation.js's startup flow reconstruct a fully-usable regatta
+// object to select from when RegattaUp can't be reached at all (see its
+// own comment on the offline-startup fallback) - resolving/selecting a
+// regatta still always matches by id against RegattaUp's own live list
+// when that's reachable, never by name; this cache only stands in for that
+// list when there's no way to fetch it at all.
 function getPersistedRegattaId() {
   try {
     const raw = fs.readFileSync(idFilePath, 'utf8').trim();
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return parsed && parsed.id
-      ? { id: parsed.id, name: parsed.name || null, defaultLat: parsed.defaultLat ?? null, defaultLon: parsed.defaultLon ?? null }
+      ? {
+          id: parsed.id,
+          name: parsed.name || null,
+          defaultLat: parsed.defaultLat ?? null,
+          defaultLon: parsed.defaultLon ?? null,
+          venue: parsed.venue || null,
+          startDate: parsed.startDate || null,
+          endDate: parsed.endDate || null,
+        }
       : null;
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('[regattaIdFile] failed to read persisted regatta id:', err.message);
@@ -43,14 +55,24 @@ function getPersistedRegattaId() {
 // what the next restart defaults to. Not fatal on failure - this base just
 // won't remember its default regatta across a restart, same
 // degraded-but-not-broken contract as boatIdFile.js's own persist step.
-// defaultLat/defaultLon (RegattaUp's own venue coordinates for this regatta
-// - see getActiveRegattas' default_lat/default_lon) are optional and only
-// ever known when persisted from a live regatta object (selectRegatta,
-// resetRegatta.js) - the REGATTAUP_REGATTA_ID env var path has no way to
-// supply them, same reasoning as name being null in that case.
-function persistRegattaId(id, name, defaultLat, defaultLon) {
+// Every field past id/name is optional and only ever known when persisted
+// from a live regatta object (selectRegatta, resetRegatta.js) - the
+// REGATTAUP_REGATTA_ID env var path has no way to supply any of them, same
+// reasoning as name being null in that case.
+function persistRegattaId(id, name, defaultLat, defaultLon, venue, startDate, endDate) {
   try {
-    fs.writeFileSync(idFilePath, JSON.stringify({ id, name: name || null, defaultLat: defaultLat ?? null, defaultLon: defaultLon ?? null }));
+    fs.writeFileSync(
+      idFilePath,
+      JSON.stringify({
+        id,
+        name: name || null,
+        defaultLat: defaultLat ?? null,
+        defaultLon: defaultLon ?? null,
+        venue: venue || null,
+        startDate: startDate || null,
+        endDate: endDate || null,
+      })
+    );
   } catch (err) {
     console.error('[regattaIdFile] failed to persist regatta id:', err.message);
   }

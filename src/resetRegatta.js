@@ -61,7 +61,7 @@ const { getPersistedRegattaId, persistRegattaId } = require('./regattaIdFile');
   }
   rl.close();
 
-  persistRegattaId(choice.id, choice.name, choice.default_lat, choice.default_lon);
+  persistRegattaId(choice.id, choice.name, choice.default_lat, choice.default_lon, choice.venue, choice.start_date, choice.end_date);
   console.log(
     `[resetRegatta] persisted "${choice.name}" (${choice.venue}, default center ${choice.default_lat}/${choice.default_lon}) as the default regatta - ` +
       'a base station not currently running will pick this up (course/pin-boundary/on-grid-zone included) on its next start; ' +
