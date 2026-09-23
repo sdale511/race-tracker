@@ -544,6 +544,7 @@ function renderDashboard(s, rtkControlsEnabled) {
   <h1>race-tracker admin</h1>
   <div class="subtitle">
     <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
+    &nbsp;·&nbsp; Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
     &nbsp;·&nbsp; refreshes every 5s
@@ -1120,6 +1121,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
 <body>
   <div class="topbar">
     <h1>Course map</h1>
+    <span style="margin-left:16px; font-size:12px; color:#8b94a3;">Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}</span>
     ${backToDashboardLink}
     ${regattaControlsHtml}
     <div class="spacer"></div>
