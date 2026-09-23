@@ -426,8 +426,9 @@ function decodeBatch(buf) {
   return fixes;
 }
 
-// Sixth frame type: boat -> base, an operator asking the base to set a
-// specific course mark to THIS boat's own current position - see
+// Sixth frame type: boat -> base, an operator (or mark mode's own
+// automatic gate - see config.markMode) asking the base to set a specific
+// course mark to THIS boat's own current position - see
 // roverAdminServer.js's "Set mark here" card/boatAgent.js's sendSetMark.
 // Built for exactly the field case this whole app exists for: an operator
 // physically places a mark, then sets it from the rover's own touchscreen
@@ -450,14 +451,26 @@ function decodeBatch(buf) {
 //   [6]      mark index    uint8 - index into MARK_NAMES (see course.js),
 //                           not a string, to keep this frame as small as
 //                           every other one here
-//   [7..10]  lat * 1e7     int32
-//   [11..14] lon * 1e7     int32
-//   [15]     checksum      uint8 (sum of bytes 1..14 mod 256)
+//   [7]      continuous    uint8 (0/1) - whether this update came from mark
+//                           mode's own automatic movement gate (see config
+//                           .markMode/boatAgent.js's handlePvt), as opposed
+//                           to a manual one-off markset tap. Purely
+//                           informational - the base applies either one
+//                           identically (setMarkLocation doesn't care) -
+//                           but it's what lets the base's own admin map
+//                           warn an operator that a mark is currently being
+//                           driven by a mark-mode rover before they
+//                           overwrite it with a manual edit that will just
+//                           get reset on that rover's next auto-send (see
+//                           baseStation.js's markRepresentedBy).
+//   [8..11]  lat * 1e7     int32
+//   [12..15] lon * 1e7     int32
+//   [16]     checksum      uint8 (sum of bytes 1..15 mod 256)
 
 const SET_MARK_SYNC = 0xff;
-const SET_MARK_FRAME_LEN = 1 + BOAT_ID_LEN + 1 + 4 + 4 + 1;
+const SET_MARK_FRAME_LEN = 1 + BOAT_ID_LEN + 1 + 1 + 4 + 4 + 1;
 
-function encodeSetMark(boatId, markName, lat, lon) {
+function encodeSetMark(boatId, markName, lat, lon, { continuous } = {}) {
   if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
     throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
   }
@@ -468,8 +481,9 @@ function encodeSetMark(boatId, markName, lat, lon) {
   buf.writeUInt8(SET_MARK_SYNC, 0);
   buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
   buf.writeUInt8(markIndex, 1 + BOAT_ID_LEN);
-  buf.writeInt32LE(Math.round(lat * 1e7), 1 + BOAT_ID_LEN + 1);
-  buf.writeInt32LE(Math.round(lon * 1e7), 1 + BOAT_ID_LEN + 1 + 4);
+  buf.writeUInt8(continuous ? 1 : 0, 1 + BOAT_ID_LEN + 1);
+  buf.writeInt32LE(Math.round(lat * 1e7), 1 + BOAT_ID_LEN + 2);
+  buf.writeInt32LE(Math.round(lon * 1e7), 1 + BOAT_ID_LEN + 2 + 4);
 
   let sum = 0;
   for (let i = 1; i < SET_MARK_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
@@ -478,12 +492,12 @@ function encodeSetMark(boatId, markName, lat, lon) {
   return buf;
 }
 
-// Returns { boatId, markName, lat, lon }, or null if the buffer isn't a
-// valid set-mark frame - including a mark index past the end of MARK_NAMES
-// (corrupted/from a version with a different MARK_NAMES list, never
-// trusted as-is) or a lat/lon outside real-world range (same bounds
-// setMarkLocation itself enforces - rejected here too so a decode failure
-// reads the same way regardless of which check catches it).
+// Returns { boatId, markName, lat, lon, continuous }, or null if the
+// buffer isn't a valid set-mark frame - including a mark index past the
+// end of MARK_NAMES (corrupted/from a version with a different MARK_NAMES
+// list, never trusted as-is) or a lat/lon outside real-world range (same
+// bounds setMarkLocation itself enforces - rejected here too so a decode
+// failure reads the same way regardless of which check catches it).
 function decodeSetMark(buf) {
   if (buf.length !== SET_MARK_FRAME_LEN || buf[0] !== SET_MARK_SYNC) return null;
 
@@ -493,8 +507,9 @@ function decodeSetMark(buf) {
 
   const markIndex = buf.readUInt8(1 + BOAT_ID_LEN);
   if (markIndex >= MARK_NAMES.length) return null;
-  const lat = buf.readInt32LE(1 + BOAT_ID_LEN + 1) / 1e7;
-  const lon = buf.readInt32LE(1 + BOAT_ID_LEN + 1 + 4) / 1e7;
+  const continuous = buf.readUInt8(1 + BOAT_ID_LEN + 1) === 1;
+  const lat = buf.readInt32LE(1 + BOAT_ID_LEN + 2) / 1e7;
+  const lon = buf.readInt32LE(1 + BOAT_ID_LEN + 2 + 4) / 1e7;
   if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
 
   return {
@@ -502,6 +517,7 @@ function decodeSetMark(buf) {
     markName: MARK_NAMES[markIndex],
     lat,
     lon,
+    continuous,
   };
 }
 

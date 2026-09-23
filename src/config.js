@@ -56,14 +56,16 @@ function resolveDefaultRegattaId() {
 
 // MARK_NAME - which course mark this device physically represents (see
 // README's "Mark mode") - a rover permanently attached to a mark buoy that
-// auto-posts that mark's position to Redis as it drifts, instead of an
-// operator manually walking between marks and clicking "Set" (markset's own
-// normal workflow, see baseStation.js's marksetMode). Same env-wins,
+// auto-sends that mark's position over the radio as it drifts (see
+// config.markMode/boatAgent.js's handlePvt), instead of an operator
+// manually walking between marks and clicking "Set" (markset's own normal
+// workflow, see config.marksetMode). Same env-wins,
 // persist-immediately spirit as resolveDefaultRegattaId above - an
 // explicit MARK_NAME becomes the new remembered default from this point on,
 // so a later restart that omits it still remembers the assignment. Falls
 // back to whatever's already persisted when unset; null (not an error, and
-// not a failure to run - see baseStation.js's assignedMarkName) if this
+// not a failure to run - a markMode device just sits unassigned until one
+// is picked from its own dashboard, same as an unpicked regatta) if this
 // device has never been assigned one. Validated against MARK_NAMES here
 // (unlike BOAT_ID/REGATTAUP_REGATTA_ID, which have no fixed enum to check
 // against) so a typo'd env var fails loudly at startup instead of quietly
@@ -446,16 +448,38 @@ module.exports = {
   // the button, sent once, using whatever this device's own GPS says right
   // now (see README's "Setting a mark over the radio").
   marksetMode: process.env.MARKSET_MODE === '1',
-  // Which mark this device represents, if any (see README's "Mark mode") -
-  // null is the overwhelmingly common case (plain base/boat/markset, never
-  // assigned to a mark at all).
+  // MARK_MODE=1 (npm run mark - see markStation.js) - the continuous
+  // counterpart to marksetMode above: this device IS one specific course
+  // mark (markName below), and boatAgent.js's handlePvt auto-sends a
+  // Set-Mark frame (see protocol.js's encodeSetMark) whenever its own GPS
+  // position drifts markDistanceM from the last position it sent for that
+  // mark - no operator action needed once assigned. markset, by contrast,
+  // is every mark's button sitting there until an operator taps one; the
+  // two are mutually distinct workflows, not different settings of the
+  // same mode.
+  markMode: process.env.MARK_MODE === '1',
+  // Which mark this device represents under markMode above, if any (see
+  // README's "Mark mode") - null is the overwhelmingly common case (plain
+  // base/boat/markset, or a markMode device not yet assigned one).
   markName: resolveMarkName(),
   // How far the assigned mark has to actually move before this device
-  // posts a new position to Redis for it - same distance-gated spirit as
-  // txDistanceM below, just for a stationary/slow-drifting mark buoy
-  // instead of a moving boat, so ordinary GPS jitter on an anchored mark
-  // doesn't write to Redis on every single fix.
+  // sends a fresh Set-Mark frame for it (see markMode above) - same
+  // distance-gated spirit as txDistanceM below, just for a
+  // stationary/slow-drifting mark buoy instead of a moving boat, so
+  // ordinary GPS jitter on an anchored mark doesn't key up the radio on
+  // every single fix.
   markDistanceM: parseFloat(process.env.MARK_DISTANCE_M || '1'),
+  // How often this device re-sends its Set-Mark frame even when the mark
+  // HASN'T moved markDistanceM - same "stopped moving is the normal case,
+  // not a reason to go silent" reasoning as txIntervalMs below, but for
+  // the assignedBoatId/assignedAt liveness fields adminServer.js's
+  // markAssignmentBadge reads (MARK_ASSIGNMENT_STALE_MS=60000 there) -
+  // without this, an anchored mark buoy that's stopped drifting would look
+  // "stale/offline" on the base's own map an hour into a race despite this
+  // device being perfectly healthy the whole time, which is exactly
+  // backwards for a warning meant to catch an operator about to fight a
+  // still-live rover.
+  markHeartbeatMs: parseFloat(process.env.MARK_HEARTBEAT_S || '20') * 1000,
   // How far the boat has to actually move before we transmit a new
   // position frame over the radio - distance-based, not time-based, so a
   // stopped boat doesn't keep re-sending the same fix and a fast-moving one

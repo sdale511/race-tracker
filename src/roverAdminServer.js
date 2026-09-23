@@ -77,6 +77,37 @@ function renderPowerCard(power) {
     </div>`;
 }
 
+// markMode's own assignment card (see config.js's markMode/boatAgent.js's
+// setMarkName) - only ever rendered when s.markMode is true (npm run mark),
+// same "capability only shown on a device explicitly launched for it"
+// spirit as the map's own markset Set buttons. Lets an operator pick (or
+// clear) which mark this device continuously represents without needing
+// MARK_NAME set on the command line, and shows whether it's currently
+// keeping up (a fresh auto-send is implied by currentMarkName being set -
+// there's no separate "last auto-sent" timestamp surfaced here, since the
+// Course marks card above already shows the mark's own last-known position
+// the instant the base's re-broadcast confirms it landed).
+function renderMarkCard(s) {
+  const options = MARK_NAMES.map(
+    (name) => `<option value="${name}" ${s.currentMarkName === name ? 'selected' : ''}>${name}</option>`
+  ).join('');
+  return `<div class="card">
+      <div class="label">This device represents</div>
+      <div class="value">${s.currentMarkName || 'unassigned'}</div>
+      <div class="sub">auto-sends its own position as this mark whenever it drifts &ge;${config.markDistanceM}m</div>
+      <div class="manual-fixed-field">
+        <label for="markNameSelect">Mark</label>
+        <select class="manual-input" id="markNameSelect">
+          <option value="">unassigned</option>
+          ${options}
+        </select>
+      </div>
+      <div class="card-actions">
+        <button type="button" class="card-btn" onclick="saveMarkName(this)">Assign</button>
+      </div>
+    </div>`;
+}
+
 // Renders the boat's own dashboard server-side from one stats snapshot (see
 // boatAgent.js's getRoverStats) - the boat-side counterpart to
 // adminServer.js's renderDashboard, but there's only ever one boat here, so
@@ -165,7 +196,7 @@ function renderDashboard(s, power) {
 </style>
 </head>
 <body>
-  <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}</h1>
+  <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}</h1>
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
     &nbsp;·&nbsp; Regatta: ${s.currentRegattaName || 'not set'}
@@ -310,6 +341,7 @@ function renderDashboard(s, power) {
       <div class="sub">${pct(s.upload.successes, s.upload.attempts)} success rate, ${s.upload.failures} failures</div>
     </div>
     ${renderDiskCard(s.disk, `Logs chunked every ${config.logChunkMinutes}min, kept ${config.logRetentionDays} days`)}
+    ${s.markMode ? renderMarkCard(s) : ''}
     ${renderPowerCard(power)}
   </div>
 
@@ -352,6 +384,30 @@ function renderDashboard(s, power) {
     function disablePowerSchedule(btn) {
       if (!confirm('Disable scheduled shutdown for this boat?')) return;
       postPowerSchedule(btn, { shutdownAt: null });
+    }
+
+    // markMode's own card (see renderMarkCard) - assigns/clears which mark
+    // this device continuously represents (see boatAgent.js's
+    // setMarkName). Reloads on success, same reasoning as
+    // postPowerSchedule above - the card's own "This device represents"
+    // value should reflect the change immediately, not wait on the next
+    // 5s meta-refresh.
+    async function saveMarkName(btn) {
+      btn.disabled = true;
+      try {
+        const markName = document.getElementById('markNameSelect').value || null;
+        const res = await fetch('/api/mark-name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ markName }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
     }
   </script>
 </body>
@@ -412,12 +468,13 @@ function renderMap(s) {
   const fixAgeMs = fix ? Date.now() - fix.receivedAt : null;
   const fixStale = fixAgeMs == null || fixAgeMs > 10000;
 
-  // Skipped entirely in markset mode, even with neither marks nor a fix
-  // yet - that device's whole point is its own edit column (see
-  // canEditMarks below), which needs to render its own "waiting for GPS
-  // fix" state rather than this generic placeholder swallowing the page
-  // before it ever gets there.
-  if (!s.currentMarks && !fix && !s.marksetMode) {
+  // Skipped entirely in markset or mark mode, even with neither marks nor
+  // a fix yet - either device's whole point is its own right-hand column
+  // (see canEditMarks/showMarkModeInfo below), which needs to render its
+  // own "waiting for GPS fix" (markset) or "auto-sends once assigned"
+  // (mark) explanation rather than this generic placeholder swallowing the
+  // page before it ever gets there.
+  if (!s.currentMarks && !fix && !s.marksetMode && !s.markMode) {
     return `<!doctype html>
 <html>
 <head>
@@ -542,6 +599,36 @@ function renderMap(s) {
         ).join('')
       : `<div class="muted" style="font-size:12px;margin-top:8px;">Waiting for a GPS fix - the "Set" button for each mark appears here once this device has a position to send.</div>`
     : '';
+  // Mark mode's own right-hand column - never has Set buttons at all (see
+  // markStation.js's own comment: it auto-sends, there's nothing to tap),
+  // but still shows SOMETHING there rather than leaving the column just
+  // absent, same "explain why, don't just vanish" reasoning as markset's
+  // own "waiting for GPS fix" state above. Always rendered .visible - no
+  // crosshair, no edit toggle, nothing here needs hiding by default the
+  // way markset's own editing column does.
+  const showMarkModeInfo = !!s.markMode && !canEditMarks;
+  const markModeInfoHtml = showMarkModeInfo
+    ? `<div class="edit-column visible" id="markModeColumn">
+      <div class="edit-column-inner">
+        <h2>Mark mode</h2>
+        <div class="muted" style="font-size:12px;">No manual "Set" buttons here - this device automatically sends its own GPS position as <strong style="color:#e6e9ef;">${
+          s.currentMarkName || 'its assigned mark, once one is picked'
+        }</strong> whenever it drifts &ge;${config.markDistanceM}m.</div>
+        ${
+          fix
+            ? ''
+            : '<div class="muted" style="font-size:12px;margin-top:8px;">Also waiting for a GPS fix - nothing to send until this device has a position.</div>'
+        }
+
+        <div class="gps-readout"><span>Represents</span></div>
+        <select class="recenter-btn" id="markModeNameSelect" style="cursor:pointer;">
+          <option value="">unassigned</option>
+          ${MARK_NAMES.map((name) => `<option value="${name}" ${s.currentMarkName === name ? 'selected' : ''}>${name}</option>`).join('')}
+        </select>
+        <button type="button" class="recenter-btn" id="markModeAssignBtn">Assign</button>
+      </div>
+    </div>`
+    : '';
   const markBoundsJs = `[${markPoints.join(', ')}]`;
   const courseInfoHtml = marks ? buildCourseInfoHtml(marks) : '';
 
@@ -658,7 +745,7 @@ function renderMap(s) {
 </head>
 <body>
   <div class="topbar">
-    <h1>Boat ${s.boatId} map${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}</h1>
+    <h1>Boat ${s.boatId} map${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ` &middot; <span style="color:#e3b341;">MARK MODE${s.currentMarkName ? ' (' + s.currentMarkName + ')' : ''}</span>` : ''}</h1>
     <span class="muted">Regatta: ${s.currentRegattaName || 'not set'}</span>
     <span class="muted" id="fixStatus">${fix ? `last fix ${fixStale ? 'stale, ' : ''}${formatAgo(fix.timestamp)}` : 'no GPS fix yet'}</span>
     <a href="/">&larr; back to dashboard</a>
@@ -717,6 +804,7 @@ function renderMap(s) {
     </div>`
         : ''
     }
+    ${markModeInfoHtml}
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
@@ -829,6 +917,32 @@ function renderMap(s) {
       });
       reschedule();
     })();
+
+    // Mark mode's own assign control (see renderMap's markModeInfoHtml) -
+    // not gated on canEditMarks below, since this renders in the opposite
+    // case (markMode without marksetMode) - defensively checked instead
+    // (markModeAssignBtn only exists when showMarkModeInfo rendered it) so
+    // this script works unmodified on every other page variant too.
+    const markModeAssignBtn = document.getElementById('markModeAssignBtn');
+    if (markModeAssignBtn) {
+      markModeAssignBtn.addEventListener('click', async () => {
+        markModeAssignBtn.disabled = true;
+        try {
+          const markName = document.getElementById('markModeNameSelect').value || null;
+          const res = await fetch('/api/mark-name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ markName }),
+          });
+          const body = await res.json();
+          if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+          location.reload();
+        } catch (err) {
+          alert('Failed to assign: ' + err.message);
+          markModeAssignBtn.disabled = false;
+        }
+      });
+    }
     ${
       canEditMarks
         ? `
@@ -1030,7 +1144,7 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule, sendSetMark }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule, sendSetMark, setMarkName }) {
   const server = http.createServer(async (req, res) => {
     // Power card's Save/Disable buttons (see renderPowerCard) - the only
     // write route this server has, so it's handled up front rather than
@@ -1065,6 +1179,25 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
         const result = sendSetMark(body.markName);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // markMode's own dashboard control (see renderDashboard's mark-name
+    // select) - assigns (or clears, markName: null) which mark this device
+    // continuously represents (see boatAgent.js's setMarkName/handlePvt's
+    // own markMode block). Unlike /api/set-mark above this doesn't touch
+    // the radio at all - it just changes what the NEXT auto-send, if any,
+    // will use.
+    if (req.url === '/api/mark-name' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        const result = setMarkName(body.markName || null);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, markName: result }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));

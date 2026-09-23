@@ -18,6 +18,7 @@ const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const roverStats = require('./roverStats');
+const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 const { startShutdownScheduler } = require('./powerSchedule');
 
@@ -424,6 +425,27 @@ function hasValidFix(pvt) {
 const INVALID_FIX_WARN_INTERVAL_MS = 30000;
 let lastInvalidFixWarnAt = 0;
 
+// Mutable copy of config.markName - config.markMode's own reassignment
+// control (see setMarkName/roverAdminServer.js) changes this at runtime,
+// the same "own local variable, not a mutation of the shared config
+// object" pattern powerSchedule.js's updateParams already uses for its own
+// runtime-editable settings.
+let currentMarkName = config.markName;
+// {lat, lon} of the last fix actually sent as currentMarkName's new
+// position (see handlePvt's own markMode block below) - distinct from
+// lastTxPosition above, which gates this boat's own ordinary position
+// frame; a markMode device sends both independently; null again whenever
+// currentMarkName changes so a reassignment doesn't inherit gating from
+// whatever mark this device represented before.
+let lastMarkSetPosition = null;
+// pvt.timestamp of the last Set-Mark frame actually sent for
+// currentMarkName - drives markHeartbeatMs below the same way lastTxTime
+// drives txIntervalMs for the ordinary position frame.
+let lastMarkSetTime = null;
+// Same rate-limiting spirit as lastInvalidFixWarnAt above, for the "no
+// valid fix, can't auto-set the mark yet" case.
+let lastMarkSetWarnAt = 0;
+
 function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
@@ -540,6 +562,50 @@ function handlePvt(pvt) {
       if (now - lastInvalidFixWarnAt > INVALID_FIX_WARN_INTERVAL_MS) {
         console.warn(`[gps] no valid fix (gnssFixOk=${pvt.gnssFixOk} lat=${pvt.lat} lon=${pvt.lon}) - not transmitting`);
         lastInvalidFixWarnAt = now;
+      }
+    }
+  }
+
+  // markMode's own continuous "this device IS the mark" gate - entirely
+  // independent of clearedTxGate above (a markMode device is still an
+  // ordinary boat too, see config.markMode's own comment): a real mark
+  // buoy drifts far more slowly than a boat under sail, so it gets its own
+  // distance threshold (markDistanceM, typically much smaller than
+  // txDistanceM) and its own last-sent position to gate against, rather
+  // than piggybacking on whichever cadence the boat-position gate happens
+  // to be running at.
+  //
+  // markHeartbeatMs is the second half of the gate, same dual-gate shape
+  // as clearedTxGate's own movedM-or-elapsed above: an anchored mark buoy
+  // is the NORMAL case (it stops moving once placed), but the base's own
+  // assignedBoatId/assignedAt liveness (adminServer.js's
+  // markAssignmentBadge, MARK_ASSIGNMENT_STALE_MS=60000) still needs
+  // periodic proof this device is alive and still representing it - a
+  // heartbeat-only send re-uses the exact same Set-Mark frame with
+  // whatever position this device is already at, not a distinct frame
+  // type.
+  if (config.markMode && currentMarkName) {
+    if (hasValidFix(pvt)) {
+      const movedFromMarkM = lastMarkSetPosition ? distanceMeters(lastMarkSetPosition, pvt) : Infinity;
+      const elapsedSinceMarkSetMs = lastMarkSetTime !== null ? pvt.timestamp - lastMarkSetTime : Infinity;
+      if (movedFromMarkM >= config.markDistanceM || (config.markHeartbeatMs > 0 && elapsedSinceMarkSetMs >= config.markHeartbeatMs)) {
+        try {
+          sendSetMark(currentMarkName, { continuous: true });
+          lastMarkSetPosition = { lat: pvt.lat, lon: pvt.lon };
+          lastMarkSetTime = pvt.timestamp;
+        } catch (err) {
+          const now = Date.now();
+          if (now - lastMarkSetWarnAt > INVALID_FIX_WARN_INTERVAL_MS) {
+            console.warn(`[markMode] failed to auto-send "${currentMarkName}" position: ${err.message}`);
+            lastMarkSetWarnAt = now;
+          }
+        }
+      }
+    } else {
+      const now = Date.now();
+      if (now - lastMarkSetWarnAt > INVALID_FIX_WARN_INTERVAL_MS) {
+        console.warn(`[markMode] no valid fix yet - not auto-setting "${currentMarkName}"`);
+        lastMarkSetWarnAt = now;
       }
     }
   }
@@ -997,6 +1063,8 @@ function getRoverStats() {
     ...snapshot,
     boatId: config.boatId,
     marksetMode: config.marksetMode,
+    markMode: config.markMode,
+    currentMarkName,
     gpsMode,
     radioMode,
     currentMarks,
@@ -1047,13 +1115,37 @@ function getPosition() {
 // (caught by roverAdminServer.js's own POST handler) rather than returning
 // a status, matching updatePowerSchedule's own contract for this same
 // callback-injection pattern.
-function sendSetMark(markName) {
+// continuous=true (only ever passed by handlePvt's own markMode auto-set
+// block below, never by the manual markset button) marks this update as
+// coming from mark mode's own automatic gate rather than a one-off tap -
+// see protocol.js's own comment on the frame's continuous byte for what
+// the base does with it.
+function sendSetMark(markName, { continuous } = {}) {
   if (!lastPvt || !hasValidFix(lastPvt)) {
     throw new Error('no valid GPS fix yet - nothing to set the mark to');
   }
-  const sent = radio.send(protocol.encodeSetMark(config.boatId, markName, lastPvt.lat, lastPvt.lon));
+  const sent = radio.send(protocol.encodeSetMark(config.boatId, markName, lastPvt.lat, lastPvt.lon, { continuous }));
   if (!sent && radioExpected) throw new Error(radioDropReason());
   return { lat: lastPvt.lat, lon: lastPvt.lon };
+}
+
+// Assigns (or clears, name=null) which mark this markMode device
+// continuously represents - see config.markMode/handlePvt's own auto-set
+// block above. Persisted immediately, same "an explicit choice right now
+// outlives this process" contract as config.js's own resolveMarkName, so a
+// restart remembers the assignment without needing MARK_NAME set again.
+// Resets lastMarkSetPosition/lastMarkSetTime so a reassignment (or a
+// re-pick of the SAME mark, e.g. after moving it to a new buoy) always
+// sends a fresh position on the very next fix rather than staying gated on
+// wherever (or whenever) the previously-represented mark last was.
+function setMarkName(name) {
+  if (name && !MARK_NAMES.includes(name)) throw new Error(`unknown mark name: ${name}`);
+  currentMarkName = name || null;
+  lastMarkSetPosition = null;
+  lastMarkSetTime = null;
+  if (currentMarkName) persistMarkName(currentMarkName);
+  else clearPersistedMarkName();
+  return currentMarkName;
 }
 
 // Armed only if config.power.shutdownAt ends up set (ROVER_SHUTDOWN_AT, or
@@ -1076,6 +1168,7 @@ startRoverAdminServer({
   getPowerStatus: powerScheduler.getStatus,
   updatePowerSchedule: powerScheduler.updateParams,
   sendSetMark,
+  setMarkName,
 });
 
 // Compact fix-quality label - RTK carrier solution takes priority over the

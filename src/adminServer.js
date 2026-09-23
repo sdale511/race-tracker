@@ -948,15 +948,31 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   const hideSetButtons = mapOnly && (markMode || !!s.markAssignment);
   const markSetRowsHtml = MAP_MARK_ORDER.map((name) => {
     const isAssigned = hideSetButtons && s.markAssignment === name;
+    // Plain base/basertk (never hideSetButtons - that's the mapOnly-only
+    // case above) still show a normal "Set" button for every mark, even
+    // one a mark-mode rover currently represents - a manual edit here is a
+    // legitimate thing to want (correcting a mark mode rover that's
+    // actually misplaced, or one that's about to be powered down). What
+    // changes is the warning: markAssignmentBadge (same badge the
+    // dashboard's own Course marks card shows) appears next to the name,
+    // and the button's own data-assigned-boat/data-assigned-live carry
+    // enough for the confirm() dialog below to spell out that this edit
+    // will likely get overwritten again unless that rover's stopped.
+    const otherMark = !hideSetButtons ? marks[name] : null;
+    const assignedBadge = otherMark ? markAssignmentBadge(otherMark) : '';
+    const assignedLive = !!(otherMark && otherMark.assignedBoatId && Date.now() - otherMark.assignedAt < MARK_ASSIGNMENT_STALE_MS);
     return `<div class="mark-set-row${isAssigned ? ' mark-set-row-assigned' : ''}">
         <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
         <span class="name">${name}</span>
+        ${assignedBadge}
         ${
           isAssigned
             ? `<span class="mark-assigned-badge" title="This rover auto-posts this mark's position as its own GPS moves - see the dropdown below to reassign">This rover</span>`
             : hideSetButtons
             ? ''
-            : `<button type="button" class="set-mark-btn" data-mark="${name}">Set</button>`
+            : `<button type="button" class="set-mark-btn" data-mark="${name}" ${
+                assignedLive ? `data-assigned-boat="${escapeHtml(otherMark.assignedBoatId)}"` : ''
+              }>Set</button>`
         }
       </div>`;
   }).join('');
@@ -1616,7 +1632,15 @@ function renderMap(s, { mapOnly, markMode } = {}) {
         const center = map.getCenter();
         const latText = center.lat.toFixed(6);
         const lonText = center.lng.toFixed(6);
-        if (!confirm('Set ' + name + ' to ' + latText + ', ' + lonText + '?\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
+        const assignedBoat = btn.dataset.assignedBoat;
+        const warning = assignedBoat
+          ? '\\n\\nWARNING: boat ' + assignedBoat + ' is currently in mark mode and actively auto-posting this mark\\'s position - your change will likely be overwritten the next time it moves, unless you disable or reassign that rover first.'
+          : '';
+        if (
+          !confirm(
+            'Set ' + name + ' to ' + latText + ', ' + lonText + '?' + warning + '\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.'
+          )
+        ) {
           return;
         }
         btn.disabled = true;

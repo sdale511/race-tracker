@@ -2003,25 +2003,35 @@ function main() {
   // position - see protocol.js's own comment on the frame and
   // roverAdminServer.js's "Set mark here" card, the field case this exists
   // for (no WiFi to reach the WiFi-only /api/marks/:name path below).
-  // Calls the exact same setMarkLocation the base's own admin map uses,
-  // without assignedByBoatId - a one-off nudge from whichever boat happened
-  // to be standing at the mark, not "this boat now represents this mark"
-  // the way markset/mark mode's own continuous re-posting does (see
-  // markStation.js) - a second request from a different boat, or from the
-  // base's own map, simply overwrites it the same way any edit would.
+  // Calls the exact same setMarkLocation the base's own admin map uses -
+  // with assignedByBoatId when this update came from mark mode's own
+  // automatic gate (continuous - see protocol.js's own comment on the
+  // frame's continuous byte/boatAgent.js's handlePvt), same as
+  // baseStation.js's own now-removed in-process mark mode used to pass it,
+  // so this reuses the SAME assignedBoatId/assignedAt fields on the mark
+  // (redisStore.js's setMarkAssignment) that adminServer.js's
+  // markAssignmentBadge/markAssignmentsByBoatId already know how to render
+  // - a manual, one-off request (continuous=false: a markset tap, or the
+  // base's own crosshair edit) passes none, which setMarkLocation treats
+  // as "clear whatever assignment existed" - the right behavior either
+  // way: a markset tap genuinely isn't "this boat now represents this
+  // mark," and a manual edit clearing a stale badge is correct too, it'll
+  // simply reappear on that rover's own next auto-send if it's still live.
   // Gated on a regatta being selected, same reasoning as
   // handleDecodedFrame's own guard above (every mark lives under this
   // regatta's own `regattas:<id>:...` namespace - see redisStore.js's
   // module comment) - unlike the hello handler just above, this DOES touch
   // regatta-namespaced state.
-  radio.on('set-mark', async ({ boatId, markName, lat, lon }) => {
+  radio.on('set-mark', async ({ boatId, markName, lat, lon, continuous }) => {
     if (!selectedRegatta) {
       console.warn(`[baseStation] ignoring set-mark request from boat=${boatId} (${markName}) - no regatta selected`);
       return;
     }
     try {
-      await setMarkLocation(markName, lat, lon);
-      console.log(`[baseStation] mark "${markName}" set to ${lat.toFixed(6)}, ${lon.toFixed(6)} by boat=${boatId} (radio)`);
+      await setMarkLocation(markName, lat, lon, continuous ? { assignedByBoatId: boatId } : {});
+      console.log(
+        `[baseStation] mark "${markName}" set to ${lat.toFixed(6)}, ${lon.toFixed(6)} by boat=${boatId} (radio${continuous ? ', mark mode' : ''})`
+      );
     } catch (err) {
       console.error(`[baseStation] failed to set mark "${markName}" from boat=${boatId}'s radio request:`, err.message);
     }
