@@ -434,6 +434,18 @@ module.exports = {
 
   // --- Identity & timing ---
   boatId: resolveBoatId(),
+  // Boat only (`npm run markset`/`npm run mark` - see markSetStation.js) -
+  // an ordinary boatAgent.js process in every other respect (still
+  // transmits its own position, still tracked as a regular boat), except
+  // its own roverAdminServer.js /map page also shows a "Set" button per
+  // course mark (see boatAgent.js's sendSetMark). Deliberately NOT shown
+  // on an ordinary boat's map - an accidental tap during racing shouldn't
+  // be able to move a live course mark, so this capability only appears on
+  // a device an operator explicitly launched for mark-setting duty. No
+  // continuous auto-post, no "this rover represents X" assignment - just
+  // the button, sent once, using whatever this device's own GPS says right
+  // now (see README's "Setting a mark over the radio").
+  marksetMode: process.env.MARKSET_MODE === '1',
   // Which mark this device represents, if any (see README's "Mark mode") -
   // null is the overwhelmingly common case (plain base/boat/markset, never
   // assigned to a mark at all).

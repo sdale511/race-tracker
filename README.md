@@ -446,8 +446,8 @@ Six modes, each its own `npm run` script:
 | Base | `npm run base` | Shore/committee machine | Receives telemetry, tracks course/fleet/laps, reports to RegattaUp, serves fleet dashboard. Optional own GPS for planting course marks at a surveyed position - not RTK control |
 | RTK-only | `npm run rtk` | Machine with just the RTK correction-source GPS | Monitors/configures TMODE3/survey-in, small dedicated dashboard - no telemetry, course, fleet, or RegattaUp |
 | Base + RTK combined | `npm run basertk` | One machine, both roles | Everything `base` does + RTK-only's TMODE3/survey-in controls, one process/dashboard |
-| Mark-set | `npm run markset` | Handheld/backpack RTK unit | Regatta/course/Redis, always-on GPS, dashboard opens to course map for manually setting mark positions - no radio/fleet/uploads/webhooks |
-| Mark | `npm run mark` | Rover attached to one mark | Identical to Mark-set, plus a mark **assignment** (`MARK_NAME` or set from the map) that auto-posts this device's GPS as that mark moves |
+| Mark-set | `npm run markset` | Any boat's Pi, used for mark-setting duty | Identical to `boat` (real GPS, real radio, tracked as a normal boat) - only difference: its own rover dashboard's `/map` page shows a "Set" button per course mark, sending this device's own current position over the radio - see "Setting a mark over the radio" below |
+| Mark | `npm run mark` | Same as Mark-set | Identical to `npm run markset` - kept as a separate command for anyone already used to typing it |
 
 Run `base` + `rtk` together on one machine (`basertk`) when simplest, or
 split them (plain `base` + separate `rtk`) when the telemetry base and
@@ -544,34 +544,22 @@ broadcast to the fleet, not just supply a one-off reading.
 ### Mark-set mode
 
 ```
-GPS_PORT=/dev/ttyACM0 npm run markset
+npm run markset
 ```
-`src/markSetStation.js` - same thin-wrapper pattern (`MARKSET_MODE=1`).
-Changes from plain `base`:
+`src/markSetStation.js` - a thin wrapper (`MARKSET_MODE=1`) around
+`boatAgent.js` itself, not `base` - this is an ordinary boat in every
+respect (real GPS, real telemetry radio, transmits its own position, shows
+up on the fleet table like any other boat). The one addition:
+`config.marksetMode` makes its own rover dashboard's `/map` page show a
+"Set" button per course mark - see "Setting a mark over the radio" above,
+under "Editing mark positions from the map". `npm run mark` is identical -
+kept as a separate command for anyone already used to typing it.
 
-| Change | Detail |
-|---|---|
-| GPS always on | Not gated on `GPS_PORT` being explicit - falls back to boat GPS defaults |
-| Dashboard opens to course map | `GET /` renders `GET /map`; also shows Redis indicator + regatta selector in the topbar |
-| Radio disabled outright | Regardless of `RADIO_ENABLED`/`SIMULATE` - a mark edited here still persists to Redis, picked up on base/basertk's next regatta-select or restart |
-| Upload server, CSV/Redis fix recording, UDP broadcast, all 4 webhook queues | Skipped entirely, not just hidden |
-
-### Mark mode
-
-```
-MARK_NAME=windwardBlack npm run mark
-```
-`src/markStation.js` - identical to `markset` plus `MARK_MODE=1`, which
-prompts on the terminal for a mark assignment if unassigned once startup
-settles (same shape as the regatta prompt). That prompt (and `MARK_NAME`,
-which skips it) are the only things distinguishing "mark mode" from
-"markset mode" - the current **assignment** is runtime state either way,
-so a `markset` instance can also be assigned a mark from its own map.
-
-`MARK_NAME` is optional - omit to be prompted (TTY) or start unassigned
-(no TTY, e.g. systemd). However set - env var, prompt, or the map's
-dropdown - it persists to `race-config/mark-name.txt` (same pattern as
-`boat_id.txt`/`regatta-id.txt`).
+Deliberately **not** available on a plain `npm run boat` - an accidental
+tap during racing shouldn't be able to move a live course mark, so this
+only appears on a device explicitly launched this way. The dashboard and
+map both show a **MARKSET MODE** badge so it's obvious at a glance which
+devices have it.
 
 Once assigned, on the map:
 - The assigned mark's row swaps its "Set" button for a "This rover" badge
@@ -1377,13 +1365,15 @@ buttons. What "Set" actually sends differs by which map you're on:
   fine-tune by panning (crosshair always shows `map.getCenter()`), tap
   "Set" - confirms first, then writes directly to Redis in-process (no
   network hop at all) and re-broadcasts.
-- **A boat's own map** (`roverAdminServer.js`) - no crosshair. Tap "Set"
-  and it sends *this boat's own current GPS position* to the base over the
-  **telemetry radio itself** (see `protocol.js`'s `encodeSetMark`/
-  `decodeSetMark`, `boatAgent.js`'s `sendSetMark`, `baseStation.js`'s
-  `radio.on('set-mark', ...)`) - the same link a position fix already goes
-  out on, so it works with zero WiFi/network connectivity to the base at
-  all, not something to count on at a real venue. The base applies it with
+- **A boat's own map** (`roverAdminServer.js`), **markset mode only** (see
+  "Mark-set mode" below - `npm run markset`/`npm run mark`, not a plain
+  `npm run boat`) - no crosshair. Tap "Set" and it sends *this boat's own
+  current GPS position* to the base over the **telemetry radio itself**
+  (see `protocol.js`'s `encodeSetMark`/`decodeSetMark`, `boatAgent.js`'s
+  `sendSetMark`, `baseStation.js`'s `radio.on('set-mark', ...)`) - the same
+  link a position fix already goes out on, so it works with zero
+  WiFi/network connectivity to the base at all, not something to count on
+  at a real venue. The base applies it with
   the exact same `setMarkLocation` the base's own map uses (persists to
   Redis, clears finish-line watchers, re-broadcasts) - just triggered by a
   radio frame instead of a local call. Workflow in the field: walk/sail to

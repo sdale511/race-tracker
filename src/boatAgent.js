@@ -986,6 +986,7 @@ function getRoverStats() {
   return {
     ...snapshot,
     boatId: config.boatId,
+    marksetMode: config.marksetMode,
     gpsMode,
     radioMode,
     currentMarks,

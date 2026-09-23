@@ -1,24 +1,8 @@
-// npm run mark - the exact same baseStation.js process markset uses (see
-// markSetStation.js), for the common case of a rover physically attached
-// to one course mark rather than an operator walking between all of them -
-// see README's "Mark mode". A thin wrapper, not a second copy of
-// baseStation.js's ~2000 lines: it sets MARKSET_MODE=1, the same flag
-// markSetStation.js sets, since mark mode IS markset mode - always-on GPS,
-// map-only dashboard, no radio/fleet/upload/webhook subsystems.
-//
-// MARK_MODE=1 is the one thing this file sets that markSetStation.js
-// doesn't - it's what tells baseStation.js's own startup flow to prompt on
-// the terminal for a mark assignment (same shape as its existing regatta
-// prompt) if nothing's assigned once startup settles, rather than staying
-// unassigned indefinitely the way plain markset is expected to. That's the
-// actual distinction between the two commands; everything else is runtime
-// state (whether a mark is currently assigned), not a separate code path.
-//
-// MARK_NAME can be passed here for a one-step launch-and-assign, skipping
-// the prompt entirely, e.g.:
-//   MARK_NAME=windwardBlack npm run mark
-// or left unset to be prompted for one (with a real terminal attached), or
-// to start unassigned and pick one from the map afterward if not.
-process.env.MARKSET_MODE = '1';
-process.env.MARK_MODE = '1';
-require('./baseStation');
+// npm run mark - identical to `npm run markset` (see markSetStation.js) as
+// of the redesign that made mark-setting a one-off "tap Set, use my
+// current GPS fix" action with no continuous auto-post or assignment: the
+// thing that used to distinguish this command (prompting on startup for
+// which single mark this device should continuously represent) no longer
+// has anything to apply to. Kept as its own command purely so
+// `npm run mark` keeps working for anyone already used to typing it.
+require('./markSetStation');

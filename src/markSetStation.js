@@ -1,16 +1,22 @@
-// npm run markset - the exact same baseStation.js process, with its GPS
-// forced always-on (like a boat's own, not gated on GPS_PORT being
-// explicitly set) and its dashboard defaulting to the course map instead
-// of the fleet view - see baseStation.js's own marksetMode. For walking
-// (or sailing) the actual course with a real RTK GPS unit and setting each
-// mark's position from wherever the crosshair sits - see README's
-// "Mark-set mode" section.
+// npm run markset - an ordinary boatAgent.js process (real GPS, real
+// telemetry radio, transmits its own position and gets tracked as a
+// regular boat, same as any other rover) with one addition: its own
+// roverAdminServer.js /map page shows a "Set" button per course mark,
+// sending this device's own current GPS position to the base over the
+// radio (see protocol.js's encodeSetMark/boatAgent.js's sendSetMark) - no
+// WiFi, no crosshair, no continuous auto-post, no "this device represents
+// mark X" assignment, just a one-off send using wherever this device
+// actually is right now.
 //
-// A thin wrapper, not a second copy of baseStation.js's ~2000 lines - same
-// pattern as baseRtkStation.js (npm run basertk): set the flag
-// baseStation.js already checks, then require it. Everything else about
-// this process - radio, fleet tracking, Redis, RegattaUp reporting - stays
-// exactly as plain `npm run base` would run it; only the GPS-gating and
-// default page change.
+// Deliberately not shown on an ordinary boat's own map - an accidental tap
+// during racing shouldn't be able to move a live course mark, so this only
+// appears on a device an operator explicitly launched this way for
+// mark-setting duty. Field workflow: walk/sail to the mark you just
+// placed, open this device's own /map on its touchscreen, tap "Set" for
+// that mark.
+//
+// A thin wrapper, not a second copy of boatAgent.js - same pattern as
+// baseRtkStation.js (npm run basertk): set the flag config.js already
+// checks (config.marksetMode), then require boatAgent.js.
 process.env.MARKSET_MODE = '1';
-require('./baseStation');
+require('./boatAgent');

@@ -165,7 +165,7 @@ function renderDashboard(s, power) {
 </style>
 </head>
 <body>
-  <h1>boat ${s.boatId} - rover admin</h1>
+  <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}</h1>
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
     &nbsp;·&nbsp; <span class="dot ${fixStale ? 'dot-red' : 'dot-green'}"></span>GPS ${s.gpsMode}
@@ -481,12 +481,15 @@ function renderMap(s) {
   // has no Redis access of its own (see baseStation.js's mark-broadcast
   // comment), and no WiFi/base-address dependency either: this boat
   // doesn't need to know where the base is, only that a radio link to it
-  // exists. Any rover standing at the mark it just placed can use this -
-  // there's no separate "markset mode" to enable, every boat already has
-  // it. (An earlier version of this also had a WiFi-based, crosshair-
-  // positioned "Set" - removed as redundant once every boat could always
-  // do this over the radio instead, with no WiFi dependency to fail.)
-  const canEditMarks = !!marks && !!fix;
+  // exists.
+  //
+  // Gated on config.marksetMode (see markSetStation.js/npm run markset),
+  // NOT shown on an ordinary boat - an accidental tap during racing
+  // shouldn't be able to move a live course mark, so this only appears on
+  // a device an operator explicitly launched for mark-setting duty. No
+  // continuous auto-post, no "this device represents mark X" assignment -
+  // just the button, sent once.
+  const canEditMarks = !!marks && !!fix && !!s.marksetMode;
   const markSetRowsHtml = canEditMarks
     ? MARK_NAMES.map(
         (name) =>
@@ -613,7 +616,7 @@ function renderMap(s) {
 </head>
 <body>
   <div class="topbar">
-    <h1>Boat ${s.boatId} map</h1>
+    <h1>Boat ${s.boatId} map${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}</h1>
     <span class="muted" id="fixStatus">${fix ? `last fix ${fixStale ? 'stale, ' : ''}${formatAgo(fix.timestamp)}` : 'no GPS fix yet'}</span>
     <a href="/">&larr; back to dashboard</a>
     <div class="spacer"></div>
