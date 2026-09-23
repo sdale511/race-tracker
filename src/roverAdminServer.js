@@ -168,6 +168,7 @@ function renderDashboard(s, power) {
   <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}</h1>
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
+    ${s.currentRegattaName ? `&nbsp;·&nbsp; ${s.currentRegattaName}` : ''}
     &nbsp;·&nbsp; <span class="dot ${fixStale ? 'dot-red' : 'dot-green'}"></span>GPS ${s.gpsMode}
     &nbsp;·&nbsp; radio ${s.radioMode}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
@@ -658,6 +659,7 @@ function renderMap(s) {
 <body>
   <div class="topbar">
     <h1>Boat ${s.boatId} map${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}</h1>
+    ${s.currentRegattaName ? `<span class="muted">${s.currentRegattaName}</span>` : ''}
     <span class="muted" id="fixStatus">${fix ? `last fix ${fixStale ? 'stale, ' : ''}${formatAgo(fix.timestamp)}` : 'no GPS fix yet'}</span>
     <a href="/">&larr; back to dashboard</a>
     <div class="spacer"></div>

@@ -137,6 +137,13 @@ function decode(buf) {
 //   ...  base admin port   uint16
 //   ...  pin boundary gate uint8  (0/1 - see course.js's own comment on
 //                                   PIN_BOUNDARY_MARK/getPinBoundaryFarPoint)
+//   ...  regatta name   REGATTA_NAME_LEN raw ASCII bytes, zero-padded/
+//                        truncated (see baseStation.js's selectedRegatta.name -
+//                        this frame only ever goes out once a regatta is
+//                        selected, so there's no "none" case here) - a
+//                        small dashboard hint (roverAdminServer.js), not an
+//                        authoritative copy of anything; a rover never acts
+//                        on this beyond displaying it
 //   [last] checksum     uint8  (sum of all preceding bytes mod 256)
 // Total length is MARKS_FRAME_LEN below - deliberately not hardcoded here
 // as fixed byte offsets, since it shifts whenever MARK_NAMES grows/shrinks.
@@ -150,7 +157,12 @@ function decode(buf) {
 // edited later without a fresh gate broadcast landing at the same instant.
 
 const MARKS_SYNC = 0xbb;
-const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 2 + 1 + 1;
+// Truncated if longer - this is a small dashboard label, not the
+// authoritative name (RegattaUp's own record is that), so a long real
+// regatta name losing its tail here costs nothing beyond the display hint
+// itself being less complete.
+const REGATTA_NAME_LEN = 32;
+const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 2 + 1 + REGATTA_NAME_LEN + 1;
 
 function encodeMarks(marks, baseInfo = {}) {
   const buf = Buffer.alloc(MARKS_FRAME_LEN);
@@ -171,6 +183,12 @@ function encodeMarks(marks, baseInfo = {}) {
   offset += 2;
   buf.writeUInt8(marks.pinBoundaryEnabled ? 1 : 0, offset);
   offset += 1;
+  // Buffer.alloc above already zero-filled the whole frame, so a shorter
+  // (or absent) name just leaves the rest of this field as trailing zero
+  // bytes - buf.write only ever writes what the string itself needs, never
+  // pads on its own.
+  buf.write((baseInfo.regattaName || '').slice(0, REGATTA_NAME_LEN), offset, REGATTA_NAME_LEN, 'ascii');
+  offset += REGATTA_NAME_LEN;
 
   let sum = 0;
   for (let i = 1; i < MARKS_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
@@ -180,9 +198,9 @@ function encodeMarks(marks, baseInfo = {}) {
 }
 
 // Returns { marks: { windward: {lat,lon}, ..., pinBoundaryEnabled: bool },
-// baseIp, basePort, baseAdminPort }, or null if the buffer isn't a valid
-// marks frame. baseIp is '0.0.0.0' if the base doesn't have (or hasn't been
-// told) an address to publish.
+// baseIp, basePort, baseAdminPort, regattaName }, or null if the buffer
+// isn't a valid marks frame. baseIp is '0.0.0.0' if the base doesn't have
+// (or hasn't been told) an address to publish.
 function decodeMarks(buf) {
   if (buf.length !== MARKS_FRAME_LEN || buf[0] !== MARKS_SYNC) return null;
 
@@ -204,8 +222,14 @@ function decodeMarks(buf) {
   const baseAdminPort = buf.readUInt16LE(offset);
   offset += 2;
   marks.pinBoundaryEnabled = buf.readUInt8(offset) === 1;
+  offset += 1;
+  // split('\0')[0] rather than a trailing-only trim - the zero-padding
+  // always starts right after the real name ends (see encodeMarks above),
+  // so the first NUL byte is always exactly where the real name stops.
+  const regattaName = buf.toString('ascii', offset, offset + REGATTA_NAME_LEN).split('\0')[0];
+  offset += REGATTA_NAME_LEN;
 
-  return { marks, baseIp, basePort, baseAdminPort };
+  return { marks, baseIp, basePort, baseAdminPort, regattaName };
 }
 
 // Third frame type: base station -> all boats, asking every boat to report

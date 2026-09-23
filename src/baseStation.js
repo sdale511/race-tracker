@@ -702,7 +702,13 @@ function main() {
   // match, or it'd be left silently stale/wrong for the rest of the race.
   function broadcastMarksNow(forceZoneUpdate = false) {
     if (!raceMarks) return;
-    radio.broadcast(protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port }));
+    // selectedRegatta is always set here - raceMarks only ever resolves
+    // once a regatta is selected (see resolveCourseForCurrentRegatta above
+    // and its only two call sites), so there's no "no regatta" case to
+    // hedge for on this path.
+    radio.broadcast(
+      protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port, regattaName: selectedRegatta.name })
+    );
     // Off by default - this fires on every new-boat join (see
     // NEW_BOAT_FORCE_BROADCAST_THRESHOLD) as well as the periodic
     // heartbeat, so a fleet joining in a burst floods the console with a

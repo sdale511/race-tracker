@@ -229,6 +229,13 @@ rebuildFinishApproachWatcher();
 // current one.
 let baseAddress = null;
 
+// The regatta name currently selected at the base, as last broadcast
+// alongside the marks - same "not persisted, goes stale fast" reasoning as
+// baseAddress above (a restart shouldn't show yesterday's regatta name
+// before the next broadcast lands). '' until the first marks broadcast
+// arrives.
+let currentRegattaName = '';
+
 // True once marks have actually been received on THIS run, as opposed to
 // the possibly-stale copy loaded from disk above. SIMULATE_GPS always waits
 // for this before starting a simulated race - the disk cache exists so a
@@ -238,7 +245,7 @@ let baseAddress = null;
 // its hardware GPS says regardless of marks) shouldn't either.
 let freshMarksReceived = false;
 
-radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
+radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort, regattaName }) => {
   // baseStation.js re-broadcasts marks periodically (MARKS_BROADCAST_INTERVAL_MS,
   // 60s default) for the whole time this boat's connected, not just once -
   // logging every re-broadcast would spam the console for the entire race.
@@ -252,6 +259,7 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort }) => {
   freshMarksReceived = true;
   stopMarksPingRetry();
   baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort, adminPort: baseAdminPort } : null;
+  currentRegattaName = regattaName || '';
   roverStats.recordMarksReceived();
   try {
     fs.writeFileSync(marksFilePath, JSON.stringify(marks));
@@ -990,6 +998,7 @@ function getRoverStats() {
     gpsMode,
     radioMode,
     currentMarks,
+    currentRegattaName,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
     pendingCount: countPending(config.boatLogDir, config.boatId, config.logChunkMinutes),
