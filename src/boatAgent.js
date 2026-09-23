@@ -188,18 +188,27 @@ if (config.simulate) {
 // learns the course. Kept in memory for anything on the boat that wants it
 // this run, and persisted to disk so a reboot/restart still has a last-known
 // course immediately, without waiting for the next broadcast.
+//
+// The regatta name rides along in the same file (see radio.on('marks', ...)
+// below) - it comes down on the exact same broadcast as the marks
+// themselves, so it's exactly as safe (or stale) to trust across a restart
+// as the marks are; there's no reason to treat it more cautiously than the
+// course it's describing.
 const marksFilePath = path.join(config.configDir, 'course_marks.json');
 let currentMarks = null;
+let currentRegattaName = '';
 try {
   const loaded = JSON.parse(fs.readFileSync(marksFilePath, 'utf8'));
   // Reject a cache written by an older version of this app whose mark
   // schema doesn't match the current one (e.g. before green/black mark
-  // pairs existed) - trusting it as-is would crash deriveGeometry on a
-  // missing property the moment startGpsSimIfReady runs. Treat it the
-  // same as no cache at all: wait for the next broadcast to write a
-  // fresh one in the current shape.
-  if (MARK_NAMES.every((name) => loaded[name])) {
-    currentMarks = loaded;
+  // pairs existed, or before this file wrapped marks in { marks,
+  // regattaName } instead of storing them at the top level) - trusting it
+  // as-is would crash deriveGeometry on a missing property the moment
+  // startGpsSimIfReady runs. Treat it the same as no cache at all: wait for
+  // the next broadcast to write a fresh one in the current shape.
+  if (loaded.marks && MARK_NAMES.every((name) => loaded.marks[name])) {
+    currentMarks = loaded.marks;
+    currentRegattaName = loaded.regattaName || '';
     console.log(`[boatAgent] loaded last-known course marks from disk: ${Object.keys(currentMarks).join(', ')}`);
   } else {
     console.log('[boatAgent] persisted course marks on disk are in an outdated format - ignoring, waiting for a fresh broadcast');
@@ -229,13 +238,6 @@ rebuildFinishApproachWatcher();
 // current one.
 let baseAddress = null;
 
-// The regatta name currently selected at the base, as last broadcast
-// alongside the marks - same "not persisted, goes stale fast" reasoning as
-// baseAddress above (a restart shouldn't show yesterday's regatta name
-// before the next broadcast lands). '' until the first marks broadcast
-// arrives.
-let currentRegattaName = '';
-
 // True once marks have actually been received on THIS run, as opposed to
 // the possibly-stale copy loaded from disk above. SIMULATE_GPS always waits
 // for this before starting a simulated race - the disk cache exists so a
@@ -262,7 +264,7 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort, regattaName }) => {
   currentRegattaName = regattaName || '';
   roverStats.recordMarksReceived();
   try {
-    fs.writeFileSync(marksFilePath, JSON.stringify(marks));
+    fs.writeFileSync(marksFilePath, JSON.stringify({ marks, regattaName: currentRegattaName }));
   } catch (err) {
     console.error('[boatAgent] failed to persist course marks to disk:', err.message);
   }
