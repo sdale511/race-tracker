@@ -411,7 +411,12 @@ function renderMap(s) {
   const fixAgeMs = fix ? Date.now() - fix.receivedAt : null;
   const fixStale = fixAgeMs == null || fixAgeMs > 10000;
 
-  if (!s.currentMarks && !fix) {
+  // Skipped entirely in markset mode, even with neither marks nor a fix
+  // yet - that device's whole point is its own edit column (see
+  // canEditMarks below), which needs to render its own "waiting for GPS
+  // fix" state rather than this generic placeholder swallowing the page
+  // before it ever gets there.
+  if (!s.currentMarks && !fix && !s.marksetMode) {
     return `<!doctype html>
 <html>
 <head>
@@ -468,20 +473,46 @@ function renderMap(s) {
       .bindTooltip('boat ${s.boatId}', { permanent: true, direction: 'bottom', offset: [0, 8], className: 'mark-label' });`
     : '';
 
-  const boundsPoints = [
-    ...(marks ? MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`) : []),
-    ...(fix ? [`[${fix.lat}, ${fix.lon}]`] : []),
-  ];
+  // Fallback for the initial view (see initialViewJs below) when this boat
+  // has no fix of its own yet but has already received a course - marks
+  // only, not combined with the boat's own position the way this used to
+  // work, since a fix (when there is one) should always win on its own -
+  // see initialViewJs's own comment.
+  const markPoints = marks ? MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`) : [];
+  // The map should always come up centered on wherever THIS device
+  // actually is, not a bounds-fit that also drags in every course mark -
+  // markset mode in particular is often used to walk somewhere far from
+  // the existing marks to place a new one, where a combined fit would zoom
+  // out to show both instead of focusing on where the operator actually
+  // is. Falls back to fitting the known marks when there's no fix yet
+  // (nothing of this boat's own to center on), or does nothing at all if
+  // there's neither - left for refreshBoat's own first-fix centering
+  // (below) to take over the moment a position actually arrives.
+  const initialViewJs = fix
+    ? `map.setView([${fix.lat}, ${fix.lon}], 18);`
+    : markPoints.length
+    ? `map.fitBounds([${markPoints.join(', ')}], { padding: [60, 60], maxZoom: 18 });`
+    : '';
 
-  // Editing only makes sense once this boat actually knows a course to
-  // edit, and only works when it knows a position to send - "Set" always
-  // sends this boat's own current GPS fix, over the same radio a position
-  // fix already goes out on, to the LOCAL /api/set-mark route below (see
-  // protocol.js's encodeSetMark/boatAgent.js's sendSetMark) - a real rover
-  // has no Redis access of its own (see baseStation.js's mark-broadcast
-  // comment), and no WiFi/base-address dependency either: this boat
-  // doesn't need to know where the base is, only that a radio link to it
-  // exists.
+  // Deliberately NOT gated on `marks` (this boat having already received a
+  // course broadcast) - the whole point of markset mode is often setting
+  // marks up for the very first time, before the base has anything to
+  // broadcast yet. MARK_NAMES (the list of possible marks) and
+  // MARK_COLORS/markStroke (their dot colors below) are fixed constants
+  // from course.js, not derived from `marks` - nothing about listing which
+  // marks CAN be set needs to know where they currently are. Only needs a
+  // position to send - "Set" always sends this boat's own current GPS fix,
+  // over the same radio a position fix already goes out on, to the LOCAL
+  // /api/set-mark route below (see protocol.js's encodeSetMark/
+  // boatAgent.js's sendSetMark) - a real rover has no Redis access of its
+  // own (see baseStation.js's mark-broadcast comment), and no WiFi/base-
+  // address dependency either: this boat doesn't need to know where the
+  // base is, only that a radio link to it exists. (The base's own
+  // setMarkLocation still requires a course to already exist there before
+  // it'll accept an edit - see its own comment - so a genuinely from-
+  // scratch course still needs bootstrapping once, e.g. `npm run
+  // reset-course`, before the very first Set here will succeed; this gate
+  // is only about what THIS boat needs to know to send the request.)
   //
   // Gated on config.marksetMode (see markSetStation.js/npm run markset),
   // NOT shown on an ordinary boat - an accidental tap during racing
@@ -489,18 +520,28 @@ function renderMap(s) {
   // a device an operator explicitly launched for mark-setting duty. No
   // continuous auto-post, no "this device represents mark X" assignment -
   // just the button, sent once.
-  const canEditMarks = !!marks && !!fix && !!s.marksetMode;
+  //
+  // Deliberately NOT also gated on `fix` - the column itself (and its GPS
+  // readout, already showing "—" with nothing to recenter on) should still
+  // render while waiting for a fix, with the Set buttons replaced by an
+  // explicit "waiting for GPS" placeholder below - rather than the whole
+  // right-hand column just vanishing with no explanation, which reads as
+  // "the buttons are broken/missing" instead of "this device hasn't locked
+  // a position yet."
+  const canEditMarks = !!s.marksetMode;
   const markSetRowsHtml = canEditMarks
-    ? MARK_NAMES.map(
-        (name) =>
-          `<div class="mark-set-row">
+    ? fix
+      ? MARK_NAMES.map(
+          (name) =>
+            `<div class="mark-set-row">
         <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
         <span class="name">${name}</span>
         <button type="button" class="set-mark-btn" data-mark="${name}">Set</button>
       </div>`
-      ).join('')
+        ).join('')
+      : `<div class="muted" style="font-size:12px;margin-top:8px;">Waiting for a GPS fix - the "Set" button for each mark appears here once this device has a position to send.</div>`
     : '';
-  const markBoundsJs = marks ? `[${MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`).join(', ')}]` : '[]';
+  const markBoundsJs = `[${markPoints.join(', ')}]`;
   const courseInfoHtml = marks ? buildCourseInfoHtml(marks) : '';
 
   return `<!doctype html>
@@ -722,7 +763,7 @@ function renderMap(s) {
     ${linesJs}
     ${boatMarkerJs}
 
-    map.fitBounds([${boundsPoints.join(', ')}], { padding: [60, 60], maxZoom: 18 });
+    ${initialViewJs}
 
     // Moves the boat's own marker (and creates it, if this page loaded
     // before the first fix came in) rather than reloading the page, so
@@ -762,6 +803,12 @@ function renderMap(s) {
         boatMarker = L.circleMarker([pos.lat, pos.lon], { radius: 7, color: '#ffffff', weight: 2, fillColor, fillOpacity: 0.9 })
           .addTo(map)
           .bindTooltip('boat ${s.boatId}', { permanent: true, direction: 'bottom', offset: [0, 8], className: 'mark-label' });
+        // This is the FIRST fix this page has ever seen (server-rendered
+        // load had none - see initialViewJs's own comment on why it
+        // couldn't center on one yet) - center on it now, once. Every
+        // later update above only moves the existing marker, never the
+        // view, so pan/zoom the operator's already done isn't thrown away.
+        map.setView([pos.lat, pos.lon], 18);
       }
     }
 
@@ -893,6 +940,14 @@ function renderMap(s) {
 
     const markBounds = ${markBoundsJs};
     document.getElementById('recenterMarks').addEventListener('click', () => {
+      // markBounds is empty when no course has been broadcast yet (markset
+      // mode's own Set buttons below don't need one - see canEditMarks'
+      // own comment) - fitBounds([]) throws, so just no-op instead of
+      // crashing the rest of this script's own event wiring below it.
+      if (!markBounds.length) {
+        alert('No course marks received yet - nothing to recenter on.');
+        return;
+      }
       map.fitBounds(markBounds, { padding: [60, 60], maxZoom: 18 });
     });
 
