@@ -93,20 +93,22 @@ class RadioLink extends EventEmitter {
     return this.send(buf);
   }
 
-  // Five frame types share this one byte stream (position frames,
+  // Six frame types share this one byte stream (position frames,
   // boat->base; mark broadcasts, base->boats; ping requests, base->boats;
-  // hello announcements, boat->base; batched position frames, boat->base -
-  // see protocol.js's own comment on each) - each with its own sync byte,
-  // since a single radio link hears everything broadcast on the network,
-  // not just frames addressed to "me". Every type but the batch one has a
-  // fixed `len`; the batch frame's length depends on how many fixes it
-  // carries, so it supplies `getLen(buf)` instead - see below.
+  // hello announcements, boat->base; batched position frames, boat->base;
+  // set-mark requests, boat->base - see protocol.js's own comment on each)
+  // - each with its own sync byte, since a single radio link hears
+  // everything broadcast on the network, not just frames addressed to
+  // "me". Every type but the batch one has a fixed `len`; the batch
+  // frame's length depends on how many fixes it carries, so it supplies
+  // `getLen(buf)` instead - see below.
   static FRAME_TYPES = [
     { sync: protocol.SYNC, len: protocol.FRAME_LEN, decode: protocol.decode, event: 'frame' },
     { sync: protocol.MARKS_SYNC, len: protocol.MARKS_FRAME_LEN, decode: protocol.decodeMarks, event: 'marks' },
     { sync: protocol.PING_SYNC, len: protocol.PING_FRAME_LEN, decode: protocol.decodePing, event: 'ping' },
     { sync: protocol.HELLO_SYNC, len: protocol.HELLO_FRAME_LEN, decode: protocol.decodeHello, event: 'hello' },
     { sync: protocol.BATCH_SYNC, getLen: protocol.batchFrameLenFromHeader, decode: protocol.decodeBatch, event: 'frame-batch' },
+    { sync: protocol.SET_MARK_SYNC, len: protocol.SET_MARK_FRAME_LEN, decode: protocol.decodeSetMark, event: 'set-mark' },
   ];
 
   // Used on both ends: scans incoming bytes for valid frames of either type.

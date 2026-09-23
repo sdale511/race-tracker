@@ -1370,12 +1370,34 @@ for just its own marker.
 #### Editing mark positions from the map
 
 "Edit marks" checkbox reveals a column of all seven marks with "Set"
-buttons, plus a fixed crosshair at map center. Workflow: walk/sail to the
-mark, snap the map to your position, fine-tune by panning (crosshair
-always shows `map.getCenter()`), tap "Set" - confirms first, since it
-immediately updates the live course and re-broadcasts. Checkbox state
-persists across reloads; the confirm step is what guards against
-accidental edits.
+buttons. What "Set" actually sends differs by which map you're on:
+
+- **Base's own map** (`adminServer.js`) - a fixed crosshair at map center.
+  Workflow: walk/sail to the mark, snap the map to your position,
+  fine-tune by panning (crosshair always shows `map.getCenter()`), tap
+  "Set" - confirms first, then writes directly to Redis in-process (no
+  network hop at all) and re-broadcasts.
+- **A boat's own map** (`roverAdminServer.js`) - no crosshair. Tap "Set"
+  and it sends *this boat's own current GPS position* to the base over the
+  **telemetry radio itself** (see `protocol.js`'s `encodeSetMark`/
+  `decodeSetMark`, `boatAgent.js`'s `sendSetMark`, `baseStation.js`'s
+  `radio.on('set-mark', ...)`) - the same link a position fix already goes
+  out on, so it works with zero WiFi/network connectivity to the base at
+  all, not something to count on at a real venue. The base applies it with
+  the exact same `setMarkLocation` the base's own map uses (persists to
+  Redis, clears finish-line watchers, re-broadcasts) - just triggered by a
+  radio frame instead of a local call. Workflow in the field: walk/sail to
+  the mark you just placed, open this boat's own `/map` on its touchscreen,
+  tap "Set" - no fine-tuning step, since it's always exactly wherever this
+  boat's own GPS says it is right now. No ack frame exists for this (or
+  anything else in this protocol) - the base's own re-broadcast of the
+  updated course, picked up the normal way, is what actually confirms it
+  landed; nothing repaints instantly, reload after the next broadcast.
+  Requires a course already published at the base and a regatta selected.
+
+Either way, tapping "Set" confirms first, since it immediately updates the
+live course and re-broadcasts to the whole fleet. Checkbox state persists
+across reloads; the confirm step is what guards against accidental edits.
 
 The base's edit column has one more control at the bottom (not on a
 boat's map): the pin boundary gate checkbox (see above) - plain on/off,
@@ -1385,7 +1407,11 @@ Each GPS-recenter button has a live coordinate readout above it, updated
 continuously while edit mode is on (`watchPosition()`,
 `enableHighAccuracy: true`) rather than a blind one-shot lookup - the
 readout doubles as proof it's working. RTK-based readouts (base/boat GPS)
-also show fix quality and `hAcc`.
+also show fix quality and `hAcc`. On the base's own map these also move
+the crosshair its "Set" reads from; on a boat's own map they're just
+navigation (panning/zooming to look at something) - a boat's "Set" always
+sends its live GPS fix directly, regardless of where the map itself is
+currently centered.
 
 | Recenter button | Source |
 |---|---|
@@ -1393,14 +1419,6 @@ also show fix quality and `hAcc`.
 | Recenter on marks | Snaps back to fit the whole course |
 | Recenter on base GPS (base map only) | GPS wired to the base machine (`GPS_PORT`/`GPS_BAUD`) - for planting a mark with RTK precision, not tracking the base |
 | Recenter on boat GPS (boat map only) | That boat's own already-flowing fix |
-
-Setting a mark persists to Redis, clears cached finish-line watchers (so
-lap detection picks up a corrected committee/finish position), and
-re-broadcasts (`POST /api/marks/:name`). A boat's own "Set" has no local
-Redis access, so it POSTs cross-origin to the base's `/api/marks/:name`
-(CORS-enabled) - only works while the boat has WiFi to the base. A
-successful edit doesn't repaint the boat's own marker immediately (marks
-don't live-poll) - reload after the next broadcast.
 
 Fleet table sorts most-recently-seen first; boats never heard from this
 session sink to the bottom, ordered by ID.

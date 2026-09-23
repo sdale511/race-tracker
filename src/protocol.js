@@ -402,6 +402,85 @@ function decodeBatch(buf) {
   return fixes;
 }
 
+// Sixth frame type: boat -> base, an operator asking the base to set a
+// specific course mark to THIS boat's own current position - see
+// roverAdminServer.js's "Set mark here" card/boatAgent.js's sendSetMark.
+// Built for exactly the field case this whole app exists for: an operator
+// physically places a mark, then sets it from the rover's own touchscreen
+// with no WiFi in reach at all - the existing WiFi-only cross-origin POST
+// straight to the base's /api/marks/:name (see adminServer.js) simply
+// isn't reachable there, so this rides the same telemetry radio a
+// position fix already goes out on instead.
+//
+// No ack frame type exists in this protocol for anything (hello/ping don't
+// get one either) - confirmation is the base's own re-broadcast of the
+// updated course the instant it applies the change (see baseStation.js's
+// radio.on('set-mark', ...), which calls the exact same setMarkLocation
+// the WiFi path already uses), picked up the normal way by this boat's own
+// radio.on('marks', ...) handler and shown on the dashboard's Course marks
+// card - not a special-purpose response to this frame.
+//
+// Layout (all little-endian):
+//   [0]      sync byte     0xFF
+//   [1..5]   boatId        BOAT_ID_LEN raw ASCII bytes (same field as encode/decode above)
+//   [6]      mark index    uint8 - index into MARK_NAMES (see course.js),
+//                           not a string, to keep this frame as small as
+//                           every other one here
+//   [7..10]  lat * 1e7     int32
+//   [11..14] lon * 1e7     int32
+//   [15]     checksum      uint8 (sum of bytes 1..14 mod 256)
+
+const SET_MARK_SYNC = 0xff;
+const SET_MARK_FRAME_LEN = 1 + BOAT_ID_LEN + 1 + 4 + 4 + 1;
+
+function encodeSetMark(boatId, markName, lat, lon) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  const markIndex = MARK_NAMES.indexOf(markName);
+  if (markIndex === -1) throw new Error(`unknown mark name: ${markName}`);
+
+  const buf = Buffer.alloc(SET_MARK_FRAME_LEN);
+  buf.writeUInt8(SET_MARK_SYNC, 0);
+  buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
+  buf.writeUInt8(markIndex, 1 + BOAT_ID_LEN);
+  buf.writeInt32LE(Math.round(lat * 1e7), 1 + BOAT_ID_LEN + 1);
+  buf.writeInt32LE(Math.round(lon * 1e7), 1 + BOAT_ID_LEN + 1 + 4);
+
+  let sum = 0;
+  for (let i = 1; i < SET_MARK_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, SET_MARK_FRAME_LEN - 1);
+
+  return buf;
+}
+
+// Returns { boatId, markName, lat, lon }, or null if the buffer isn't a
+// valid set-mark frame - including a mark index past the end of MARK_NAMES
+// (corrupted/from a version with a different MARK_NAMES list, never
+// trusted as-is) or a lat/lon outside real-world range (same bounds
+// setMarkLocation itself enforces - rejected here too so a decode failure
+// reads the same way regardless of which check catches it).
+function decodeSetMark(buf) {
+  if (buf.length !== SET_MARK_FRAME_LEN || buf[0] !== SET_MARK_SYNC) return null;
+
+  let sum = 0;
+  for (let i = 1; i < SET_MARK_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[SET_MARK_FRAME_LEN - 1]) return null;
+
+  const markIndex = buf.readUInt8(1 + BOAT_ID_LEN);
+  if (markIndex >= MARK_NAMES.length) return null;
+  const lat = buf.readInt32LE(1 + BOAT_ID_LEN + 1) / 1e7;
+  const lon = buf.readInt32LE(1 + BOAT_ID_LEN + 1 + 4) / 1e7;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+
+  return {
+    boatId: buf.toString('ascii', 1, 1 + BOAT_ID_LEN),
+    markName: MARK_NAMES[markIndex],
+    lat,
+    lon,
+  };
+}
+
 module.exports = {
   encode,
   decode,
@@ -426,4 +505,8 @@ module.exports = {
   batchFrameLenFromHeader,
   BATCH_SYNC,
   MAX_BATCH_COUNT,
+  encodeSetMark,
+  decodeSetMark,
+  SET_MARK_FRAME_LEN,
+  SET_MARK_SYNC,
 };

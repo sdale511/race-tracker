@@ -474,15 +474,19 @@ function renderMap(s) {
   ];
 
   // Editing only makes sense once this boat actually knows a course to
-  // edit, and only works when it knows where to send the edit - a real
-  // rover has no Redis access of its own (see baseStation.js's
-  // mark-broadcast comment), so "Set" here doesn't write anything
-  // locally, it POSTs to the base's own /api/marks/:name cross-origin
-  // (see the base admin/adminPort learned from the marks broadcast,
-  // same address already used for the "base dashboard" link above) -
-  // only reachable when this boat currently has WiFi connectivity to the
-  // base, same requirement as log uploads.
-  const canEditMarks = !!marks && !!s.baseIp;
+  // edit, and only works when it knows a position to send - "Set" always
+  // sends this boat's own current GPS fix, over the same radio a position
+  // fix already goes out on, to the LOCAL /api/set-mark route below (see
+  // protocol.js's encodeSetMark/boatAgent.js's sendSetMark) - a real rover
+  // has no Redis access of its own (see baseStation.js's mark-broadcast
+  // comment), and no WiFi/base-address dependency either: this boat
+  // doesn't need to know where the base is, only that a radio link to it
+  // exists. Any rover standing at the mark it just placed can use this -
+  // there's no separate "markset mode" to enable, every boat already has
+  // it. (An earlier version of this also had a WiFi-based, crosshair-
+  // positioned "Set" - removed as redundant once every boat could always
+  // do this over the radio instead, with no WiFi dependency to fail.)
+  const canEditMarks = !!marks && !!fix;
   const markSetRowsHtml = canEditMarks
     ? MARK_NAMES.map(
         (name) =>
@@ -637,7 +641,7 @@ function renderMap(s) {
         ? `<div class="edit-column" id="editColumn">
       <div class="edit-column-inner">
         <h2>Edit course marks</h2>
-        <div class="muted" style="font-size:11px;margin-bottom:10px;">Edits are sent to the base at ${s.baseIp}:${s.adminPort} - only works while this boat has WiFi connectivity to it, same as log uploads.</div>
+        <div class="muted" style="font-size:11px;margin-bottom:10px;">"Set" sends this boat's own current GPS position over the telemetry radio - no WiFi needed.</div>
 
         <div class="gps-readout"><span>Boat RTK GPS</span><span class="value" id="boatGpsReadout">${
           fix
@@ -891,39 +895,38 @@ function renderMap(s) {
 
     // Unlike the base's own edit column, this doesn't write anywhere
     // locally - this boat has no Redis access of its own (see this
-    // function's module comment), so "Set" POSTs cross-origin straight
-    // to the base's own /api/marks/:name (see adminServer.js, which has
-    // CORS enabled specifically for this). Only works while this boat
-    // currently has WiFi reachability to the base - same requirement as
-    // log uploads, nothing to do with the radio link.
-    const baseMarksUrl = 'http://${s.baseIp}:${s.adminPort}/api/marks/';
+    // function's module comment). This boat's own local server (same
+    // origin) sends this boat's current GPS position over the telemetry
+    // radio instead (see protocol.js's encodeSetMark/boatAgent.js's
+    // sendSetMark) and the base applies it there - no crosshair, no base
+    // address, no WiFi dependency. {ok:true} here only means the frame was
+    // handed to the radio, not that the base actually received/applied it
+    // - not reloading immediately for that reason; this boat's own
+    // currentMarks won't reflect the change until the next broadcast
+    // actually reaches it (course marks aren't a live-polled loop on this
+    // page, see refreshBoat above).
     document.querySelectorAll('.set-mark-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const name = btn.dataset.mark;
-        const center = map.getCenter();
-        const latText = center.lat.toFixed(6);
-        const lonText = center.lng.toFixed(6);
-        if (!confirm('Set ' + name + ' to ' + latText + ', ' + lonText + ' on the base course?\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
+        if (!confirm('Set ' + name + ' to this boat\\'s current position?\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
           return;
         }
         btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = 'Sending…';
         try {
-          const res = await fetch(baseMarksUrl + encodeURIComponent(name), {
+          const res = await fetch('/api/set-mark', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lat: center.lat, lon: center.lng })
+            body: JSON.stringify({ markName: name })
           });
           const body = await res.json();
           if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
-          // Not reloading - this boat's own currentMarks won't reflect
-          // the change until the next broadcast actually reaches it
-          // (course marks aren't a live-polled loop on this page, see
-          // refreshBoat above), so a reload right now would just show
-          // the same pre-edit positions.
-          alert('Set ' + name + '. This boat will pick up the change once the next marks broadcast reaches it (usually within moments) - reload afterward to see it reflected here.');
+          alert('Sent ' + name + ' over the radio. This boat will pick up the change once the next marks broadcast reaches it (usually within moments) - reload afterward to see it reflected here.');
         } catch (err) {
-          alert('Failed to set ' + name + ' - could not reach the base (' + err.message + '). Make sure this boat currently has WiFi connectivity to it.');
+          alert('Failed to send ' + name + ' - ' + err.message);
         } finally {
+          btn.textContent = label;
           btn.disabled = false;
         }
       });
@@ -967,7 +970,7 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule, sendSetMark }) {
   const server = http.createServer(async (req, res) => {
     // Power card's Save/Disable buttons (see renderPowerCard) - the only
     // write route this server has, so it's handled up front rather than
@@ -981,6 +984,27 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
         updatePowerSchedule(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // The map page's own "Set" button (see renderMap's set-mark-btn) -
+    // sends this boat's own current position to the base over the radio
+    // (see boatAgent.js's sendSetMark/protocol.js's encodeSetMark), no
+    // WiFi/base address needed at all. Fire-and-forget, same as sendSetMark
+    // itself - {ok:true} here only means the frame was handed to the
+    // radio, not that the base actually received/applied it; the Course
+    // marks card on the main dashboard (and this map's own markers) update
+    // on their own once the base's re-broadcast arrives.
+    if (req.url === '/api/set-mark' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        const result = sendSetMark(body.markName);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));

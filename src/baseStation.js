@@ -1993,6 +1993,34 @@ function main() {
     }
   });
 
+  // A rover asking this base to set a course mark to its own current
+  // position - see protocol.js's own comment on the frame and
+  // roverAdminServer.js's "Set mark here" card, the field case this exists
+  // for (no WiFi to reach the WiFi-only /api/marks/:name path below).
+  // Calls the exact same setMarkLocation the base's own admin map uses,
+  // without assignedByBoatId - a one-off nudge from whichever boat happened
+  // to be standing at the mark, not "this boat now represents this mark"
+  // the way markset/mark mode's own continuous re-posting does (see
+  // markStation.js) - a second request from a different boat, or from the
+  // base's own map, simply overwrites it the same way any edit would.
+  // Gated on a regatta being selected, same reasoning as
+  // handleDecodedFrame's own guard above (every mark lives under this
+  // regatta's own `regattas:<id>:...` namespace - see redisStore.js's
+  // module comment) - unlike the hello handler just above, this DOES touch
+  // regatta-namespaced state.
+  radio.on('set-mark', async ({ boatId, markName, lat, lon }) => {
+    if (!selectedRegatta) {
+      console.warn(`[baseStation] ignoring set-mark request from boat=${boatId} (${markName}) - no regatta selected`);
+      return;
+    }
+    try {
+      await setMarkLocation(markName, lat, lon);
+      console.log(`[baseStation] mark "${markName}" set to ${lat.toFixed(6)}, ${lon.toFixed(6)} by boat=${boatId} (radio)`);
+    } catch (err) {
+      console.error(`[baseStation] failed to set mark "${markName}" from boat=${boatId}'s radio request:`, err.message);
+    }
+  });
+
   // Lap/on-grid/mark-rounding detection for one already-decoded frame - split
   // out from the radio.on('frame') handler above so pendingFrames (above) can
   // replay exactly this same logic for a frame that arrived before raceMarks

@@ -1019,6 +1019,31 @@ function getPosition() {
     : null;
 }
 
+// Sends this boat's own current position as the new location for a course
+// mark, over the SAME radio a fix goes out on - see protocol.js's
+// encodeSetMark/roverAdminServer.js's own "Set mark here" card. Built for
+// exactly the field case this whole app exists for: an operator physically
+// places a mark, then sets it from the rover's own touchscreen with no
+// WiFi in reach at all - the existing WiFi-only cross-origin POST straight
+// to the base's /api/marks/:name (see adminServer.js) simply isn't
+// reachable there. Fire-and-forget, same as sendHello - there's no ack
+// frame type in this protocol; the base's own re-broadcast of the updated
+// course (triggered the instant it applies the change - see
+// baseStation.js's radio.on('set-mark', ...)) is what actually confirms it
+// landed, picked up the normal way by this boat's own radio.on('marks',
+// ...) handler and shown on the dashboard's own Course marks card. Throws
+// (caught by roverAdminServer.js's own POST handler) rather than returning
+// a status, matching updatePowerSchedule's own contract for this same
+// callback-injection pattern.
+function sendSetMark(markName) {
+  if (!lastPvt || !hasValidFix(lastPvt)) {
+    throw new Error('no valid GPS fix yet - nothing to set the mark to');
+  }
+  const sent = radio.send(protocol.encodeSetMark(config.boatId, markName, lastPvt.lat, lastPvt.lon));
+  if (!sent && radioExpected) throw new Error(radioDropReason());
+  return { lat: lastPvt.lat, lon: lastPvt.lon };
+}
+
 // Armed only if config.power.shutdownAt ends up set (ROVER_SHUTDOWN_AT, or
 // a schedule persisted from a previous rover dashboard edit - see config
 // .js's own "Scheduled shutdown" comment) - otherwise this is just a live,
@@ -1038,6 +1063,7 @@ startRoverAdminServer({
   getPosition,
   getPowerStatus: powerScheduler.getStatus,
   updatePowerSchedule: powerScheduler.updateParams,
+  sendSetMark,
 });
 
 // Compact fix-quality label - RTK carrier solution takes priority over the
