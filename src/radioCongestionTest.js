@@ -208,7 +208,12 @@ setInterval(() => {
 // virtual boats' own sequential ids (see boatIds above) on the base's own
 // console/CSV/fleet table.
 const MARK_BOAT_ID = 'MARKS';
-const myAdminPort = parseInt(process.env.ADMIN_PORT || '8094', 10);
+// Same resolution as boatAgent.js's own myAdminPort - the default (8092,
+// config.admin.port) assumes a real deployment runs the base and every
+// rover on separate machines, same as any other rover; SIMULATE=1 shifts
+// to 8093 the same way a real boat would, for the same-machine dev
+// convenience that's actually for.
+const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate ? 8093 : config.admin.port;
 const powerScheduler = startShutdownScheduler({
   shutdownAt: null, // this test has no GPS/idle concept of its own to gate a shutdown on
   shutdownIdleMinutes: 10,
