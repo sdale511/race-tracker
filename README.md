@@ -1463,7 +1463,7 @@ actually use. Redis password is redacted.
 | `HELLO_STARTUP_JITTER_MS` | 3000 | Boat only - max random delay before the first hello announcement (and, since the retry interval inherits it, every retry after) - see "Boat startup announcement" above |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
 | `LOG_RECEIVED_FIXES` | unset (off) | Base only - `1` = console-echo every received frame. CSV/Redis/detection always run regardless |
-| `LOG_RATE_STATS` | unset (off) | Base only - `1` = log fix rate and sync-error rate every 10s, unconditionally (unlike the always-on 30s `[radio] link quality` line, which only logs on a CHANGE) - both to the console AND to its own CSV (`base_station_rate_stats_<date>.csv` in `BASE_LOG_DIR`, same date/regatta rotation as the per-fix log) for a field session's own time series |
+| `LOG_RATE_STATS` | unset (off) | Base only - `1` = log fix rate, sync-error rate, and the most recent decoded fix (boat id, lat/lon, age) every 10s, unconditionally (unlike the always-on 30s `[radio] link quality` line, which only logs on a CHANGE) - both to the console AND to its own CSV (`base_station_rate_stats_<date>.csv` in `BASE_LOG_DIR`, same date/regatta rotation as the per-fix log) for a field session's own time series. The last-fix fields are radio-layer only, so they're populated even under `NO_REGATTA=1` or before any regatta is selected |
 | `BASE_LOG_DIR` | `./base-logs` | Base only - received-fix CSV location |
 | `BOAT_LOG_DIR` | `./boat-logs` | Boat only - SD-card CSV location |
 | `LOG_RETENTION_DAYS` | 7 | CSV files older than this are auto-deleted |

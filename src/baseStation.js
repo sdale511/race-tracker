@@ -621,6 +621,23 @@ function main() {
   // by config.logRateStats' own 10s logger, so the two loggers' different
   // cadences never fight over the same mutable counter.
   radio.on('sync-error', () => bandwidthWindow.syncErrors++);
+  // Most recent decoded fix, radio-layer only - same "never gated on
+  // selectedRegatta" spot as bandwidthWindow above, so config.logRateStats'
+  // own logger below can show exactly where the sending rover was even
+  // with NO_REGATTA=1 (or before a regatta's picked at all), when nothing
+  // else on this base ever gets to see this fix at all. A batch frame
+  // updates this from its LAST (newest) fix, not its first - fixes.length-1,
+  // matching decodeBatch's own "oldest fix first" ordering (see
+  // protocol.js).
+  let lastFix = null;
+  radio.on('frame', (decoded) => {
+    lastFix = { boatId: decoded.boatId, lat: decoded.lat, lon: decoded.lon, timestamp: decoded.timestamp };
+  });
+  radio.on('frame-batch', (fixes) => {
+    if (!fixes.length) return;
+    const f = fixes[fixes.length - 1];
+    lastFix = { boatId: f.boatId, lat: f.lat, lon: f.lon, timestamp: f.timestamp };
+  });
   setInterval(() => {
     bandwidthHistory.push(bandwidthWindow);
     if (bandwidthHistory.length > BANDWIDTH_HISTORY_LEN) bandwidthHistory.shift();
@@ -650,10 +667,30 @@ function main() {
       const fixRate = (totalFixes / spanS).toFixed(1);
       const errorRate = (totalSyncErrors / spanS).toFixed(1);
       const errorPct = totalFrames + totalSyncErrors > 0 ? ((totalSyncErrors / (totalFrames + totalSyncErrors)) * 100).toFixed(1) : '0.0';
+      // Age relative to THIS tick, not the fix's own timestamp alone - a
+      // stale lastFix (radio dropped, boat stopped sending) should read as
+      // stale here too, not just show old coordinates with no indication
+      // they're not current.
+      const lastFixText = lastFix
+        ? `boat=${lastFix.boatId} ${lastFix.lat.toFixed(6)},${lastFix.lon.toFixed(6)} (${Math.round((Date.now() - lastFix.timestamp) / 1000)}s old)`
+        : 'none yet';
       console.log(
-        `[baseStation] rate: ${fixRate} fixes/s, ${errorRate} sync errors/s (${errorPct}% of frames) - last ${spanS}s`
+        `[baseStation] rate: ${fixRate} fixes/s, ${errorRate} sync errors/s (${errorPct}% of frames) - last ${spanS}s - last fix: ${lastFixText}`
       );
-      const row = [new Date().toISOString(), totalFixes, totalFrames, totalSyncErrors, fixRate, errorRate, errorPct, spanS].join(',');
+      const row = [
+        new Date().toISOString(),
+        totalFixes,
+        totalFrames,
+        totalSyncErrors,
+        fixRate,
+        errorRate,
+        errorPct,
+        spanS,
+        lastFix ? lastFix.boatId : '',
+        lastFix ? lastFix.lat.toFixed(7) : '',
+        lastFix ? lastFix.lon.toFixed(7) : '',
+        lastFix ? new Date(lastFix.timestamp).toISOString() : '',
+      ].join(',');
       fs.appendFile(ensureRateStatsCsvFile(), row + '\n', (err) => {
         if (err) console.error('[baseStation] rate-stats csv write failed:', err.message);
       });
@@ -702,7 +739,8 @@ function main() {
   // after a field session, not just watched live in the console, so it
   // needs to actually persist somewhere rather than only ever being a
   // console.log line.
-  const RATE_STATS_CSV_HEADER = 'timestamp_iso,fixes,frames,sync_errors,fix_rate_hz,sync_error_rate_hz,error_pct,span_s\n';
+  const RATE_STATS_CSV_HEADER =
+    'timestamp_iso,fixes,frames,sync_errors,fix_rate_hz,sync_error_rate_hz,error_pct,span_s,last_fix_boat_id,last_fix_lat,last_fix_lon,last_fix_time_iso\n';
   let rateStatsCsvPath = null;
   let rateStatsCsvDate = null;
   let rateStatsCsvRegattaId = null;
@@ -849,6 +887,19 @@ function main() {
   // only ever gates real hardware.
   let systemStarted = false;
 
+  // The actual "open the real radio/base GPS" step - factored out of
+  // selectRegatta below (its own sole caller until NO_REGATTA=1 needed a
+  // second one) so a bench test that deliberately never selects a regatta
+  // can still start the hardware it's there to test. Idempotent via
+  // systemStarted, same guard selectRegatta already relied on.
+  function startSystem() {
+    if (systemStarted) return;
+    systemStarted = true;
+    if (radioMode === 'real') console.log(`[baseStation] connecting to radio ${config.radio.port} @ ${config.radio.baud}`);
+    connectRealRadio();
+    baseGps.open();
+  }
+
   function regattaHasEnded(regatta) {
     // end_date is a bare 'YYYY-MM-DD' (no time component) - treat the
     // regatta as still current through the end of that day rather than its
@@ -951,12 +1002,7 @@ function main() {
       );
     }
     console.log(`[baseStation] regatta selected: "${regatta.name}" (${regatta.venue})`);
-    if (!systemStarted) {
-      systemStarted = true;
-      if (radioMode === 'real') console.log(`[baseStation] connecting to radio ${config.radio.port} @ ${config.radio.baud}`);
-      connectRealRadio();
-      baseGps.open();
-    }
+    startSystem();
     return regatta;
   }
 
@@ -1498,7 +1544,18 @@ function main() {
       // still fetched above (and kept refreshing via the setInterval
       // further down) so the admin dashboard's own dropdown works normally
       // if an operator decides to override this and pick one anyway.
+      //
+      // startSystem() still needs to run explicitly here - it's normally
+      // only ever triggered by selectRegatta's own first call (see
+      // systemStarted's module comment: "neither the real radio nor the
+      // base GPS actually opens anything until a regatta is picked"), and
+      // NO_REGATTA=1 means that never happens. Without this, the very
+      // radio a bench test exists to exercise would just sit unopened -
+      // "Radio frames" showing disconnected, nothing ever arriving,
+      // despite the sending side working fine - exactly backwards for a
+      // flag whose whole point is testing the radio.
       console.log('[baseStation] NO_REGATTA=1 - not selecting a regatta this run; pick one on the admin dashboard to override');
+      startSystem();
     } else if (config.regattaup.defaultRegatta) {
       try {
         picked = selectRegatta(config.regattaup.defaultRegatta.id);
