@@ -597,7 +597,7 @@ function main() {
   // bandwidthHistory and starts a fresh one.
   const BANDWIDTH_HISTORY_LEN = 60;
   const bandwidthHistory = [];
-  let bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0 };
+  let bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0, syncErrors: 0 };
   radio.on('bytes', ({ rx, tx }) => {
     if (rx) bandwidthWindow.rx += rx;
     if (tx) bandwidthWindow.tx += tx;
@@ -615,11 +615,50 @@ function main() {
   // having to multiply frames/sec by TX_BATCH_SIZE by hand.
   radio.on('frame', () => bandwidthWindow.fixes++);
   radio.on('frame-batch', (fixes) => (bandwidthWindow.fixes += fixes.length));
+  // A separate tally from the module-level syncErrors above (which the
+  // link-quality logger further up zeroes out every 30s) - this one only
+  // ever gets read from bandwidthHistory's own per-second snapshots below,
+  // by config.logRateStats' own 10s logger, so the two loggers' different
+  // cadences never fight over the same mutable counter.
+  radio.on('sync-error', () => bandwidthWindow.syncErrors++);
   setInterval(() => {
     bandwidthHistory.push(bandwidthWindow);
     if (bandwidthHistory.length > BANDWIDTH_HISTORY_LEN) bandwidthHistory.shift();
-    bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0 };
+    bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0, syncErrors: 0 };
   }, 1000);
+
+  // Opt-in (config.logRateStats/LOG_RATE_STATS=1) - a fix-rate/sync-error-
+  // rate line every 10s, meant to be left running for a whole field session
+  // and reviewed afterward (piped to a file, or scraped from the base's own
+  // console log), unlike the "[radio] link quality" 30s logger above (which
+  // only logs a CHANGE, since it's meant as a live nuisance-free alert, not
+  // a time series). Reads the last 10 one-second bandwidthHistory samples
+  // (already maintained above for the dashboard's own live cards) rather
+  // than keeping yet another separate counter - divides by however many
+  // samples actually exist yet (never more than 10) so the very first line
+  // after startup, before a full 10s of history has accumulated, still
+  // reports a correct rate instead of one artificially diluted by seconds
+  // that haven't happened yet.
+  if (config.logRateStats) {
+    setInterval(() => {
+      const window = bandwidthHistory.slice(-10);
+      if (!window.length) return; // nothing heard at all yet - not a signal, just silence
+      const spanS = window.length;
+      const totalFixes = window.reduce((sum, w) => sum + w.fixes, 0);
+      const totalFrames = window.reduce((sum, w) => sum + w.frames, 0);
+      const totalSyncErrors = window.reduce((sum, w) => sum + w.syncErrors, 0);
+      const fixRate = (totalFixes / spanS).toFixed(1);
+      const errorRate = (totalSyncErrors / spanS).toFixed(1);
+      const errorPct = totalFrames + totalSyncErrors > 0 ? ((totalSyncErrors / (totalFrames + totalSyncErrors)) * 100).toFixed(1) : '0.0';
+      console.log(
+        `[baseStation] rate: ${fixRate} fixes/s, ${errorRate} sync errors/s (${errorPct}% of frames) - last ${spanS}s`
+      );
+      const row = [new Date().toISOString(), totalFixes, totalFrames, totalSyncErrors, fixRate, errorRate, errorPct, spanS].join(',');
+      fs.appendFile(ensureRateStatsCsvFile(), row + '\n', (err) => {
+        if (err) console.error('[baseStation] rate-stats csv write failed:', err.message);
+      });
+    }, 10000);
+  }
 
   const logDir = config.logDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -657,6 +696,29 @@ function main() {
   }
   ensureCsvFile();
 
+  // config.logRateStats' own CSV, same date+regatta rotation shape as
+  // ensureCsvFile above (a completely separate file/header, never
+  // interleaved with the per-fix log) - a time series meant to be reviewed
+  // after a field session, not just watched live in the console, so it
+  // needs to actually persist somewhere rather than only ever being a
+  // console.log line.
+  const RATE_STATS_CSV_HEADER = 'timestamp_iso,fixes,frames,sync_errors,fix_rate_hz,sync_error_rate_hz,error_pct,span_s\n';
+  let rateStatsCsvPath = null;
+  let rateStatsCsvDate = null;
+  let rateStatsCsvRegattaId = null;
+  function ensureRateStatsCsvFile() {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today === rateStatsCsvDate && currentRegattaId === rateStatsCsvRegattaId) return rateStatsCsvPath;
+    rateStatsCsvDate = today;
+    rateStatsCsvRegattaId = currentRegattaId;
+    const regattaLogDir = path.join(logDir, currentRegattaId || 'none');
+    fs.mkdirSync(regattaLogDir, { recursive: true });
+    rateStatsCsvPath = path.join(regattaLogDir, `base_station_rate_stats_${today}.csv`);
+    if (!fs.existsSync(rateStatsCsvPath)) fs.writeFileSync(rateStatsCsvPath, RATE_STATS_CSV_HEADER);
+    pruneOldLogs(regattaLogDir, /^base_station_rate_stats_.*\.csv$/, config.logRetentionDays);
+    return rateStatsCsvPath;
+  }
+
   // Emergency last resort if LOG_RETENTION_DAYS's normal age-based pruning
   // above (only re-checked once a day, at the next CSV rollover) still
   // isn't enough to keep this machine's disk from filling up - see
@@ -665,10 +727,14 @@ function main() {
   // disk needs a much tighter check than that. Reads currentRegattaId fresh
   // on every tick (not captured once) so this keeps following the regatta
   // actually in use even if it changes mid-run.
-  setInterval(
-    () => pruneForDiskSpace(path.join(logDir, currentRegattaId || 'none'), /^base_station_received_.*\.csv$/, CRITICAL_BELOW_PCT),
-    60000
-  );
+  setInterval(() => {
+    const regattaLogDir = path.join(logDir, currentRegattaId || 'none');
+    pruneForDiskSpace(regattaLogDir, /^base_station_received_.*\.csv$/, CRITICAL_BELOW_PCT);
+    // Same emergency pruning for config.logRateStats' own CSV - it's a tiny
+    // file (one row every 10s) so this rarely if ever actually fires, but
+    // costs nothing to check alongside the per-fix log's own pass above.
+    pruneForDiskSpace(regattaLogDir, /^base_station_rate_stats_.*\.csv$/, CRITICAL_BELOW_PCT);
+  }, 60000);
 
   const udpSocket = dgram.createSocket('udp4');
   const UDP_BROADCAST_ADDR = config.localBroadcast.address;
@@ -1426,7 +1492,14 @@ function main() {
     // operator can still pick correctly even when the remembered default no
     // longer applies.
     let picked = null;
-    if (config.regattaup.defaultRegatta) {
+    if (config.regattaup.noRegatta) {
+      // Skips defaultRegatta/the terminal prompt/pickClosestRegatta below
+      // entirely - see config.js's own comment on why. activeRegattas is
+      // still fetched above (and kept refreshing via the setInterval
+      // further down) so the admin dashboard's own dropdown works normally
+      // if an operator decides to override this and pick one anyway.
+      console.log('[baseStation] NO_REGATTA=1 - not selecting a regatta this run; pick one on the admin dashboard to override');
+    } else if (config.regattaup.defaultRegatta) {
       try {
         picked = selectRegatta(config.regattaup.defaultRegatta.id);
       } catch (err) {
@@ -1471,10 +1544,11 @@ function main() {
         }
       }
     }
-    if (!picked) picked = await promptForRegatta();
+    if (!picked && !config.regattaup.noRegatta) picked = await promptForRegatta();
     // Only ever reached with no TTY (promptForRegatta blocks until answered
-    // when one's attached) - see pickClosestRegatta's own comment.
-    if (!picked) {
+    // when one's attached) - see pickClosestRegatta's own comment. Also
+    // skipped under NO_REGATTA=1, same reasoning as the prompt above.
+    if (!picked && !config.regattaup.noRegatta) {
       const auto = pickClosestRegatta();
       if (auto) {
         try {
@@ -1487,7 +1561,10 @@ function main() {
         }
       }
     }
-    if (!picked) console.log('[baseStation] regatta: none selected - pick one on the admin dashboard before racing');
+    // Not logged under NO_REGATTA=1 - the console.log above already
+    // explained why nothing's selected; this generic line would just read
+    // like an unresolved problem right under an intentional one.
+    if (!picked && !config.regattaup.noRegatta) console.log('[baseStation] regatta: none selected - pick one on the admin dashboard before racing');
     setInterval(refreshActiveRegattas, config.regattaup.activeRegattasRefreshIntervalMs);
 
     // Flipped either way, right here rather than after course resolution

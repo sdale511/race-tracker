@@ -331,6 +331,17 @@ npm run base                                                   # real base, real
 BOAT_COUNT=30 RADIO_PORT=/dev/cu.usbserial-A npm run radio-congestion
 ```
 
+The base treats this synthetic traffic exactly like a real fleet's - real
+(non-zero) lat/lon, real-format boat ids - so with a real regatta selected
+it gets written into that regatta's own Redis data (and, if RegattaUp
+reporting is live, could fire real lap/on-grid webhook posts too). Run the
+base with `NO_REGATTA=1 npm run base` for a pure bench test instead: it
+skips regatta auto-selection entirely for that run (no terminal prompt, no
+closest-active-date auto-pick), so every received frame - real or
+synthetic - is ignored and nothing is written anywhere. The admin
+dashboard's own regatta dropdown still works normally if you want to
+override it mid-run.
+
 Watch the base's fleet dashboard (last-seen/frame counts) and its
 `[radio] link quality` log line (sync errors) as `BOAT_COUNT` climbs.
 `CONGESTION_SPEED_KN` (default 26.1, ≈ 30mph - this fleet's own reference
@@ -1452,6 +1463,7 @@ actually use. Redis password is redacted.
 | `HELLO_STARTUP_JITTER_MS` | 3000 | Boat only - max random delay before the first hello announcement (and, since the retry interval inherits it, every retry after) - see "Boat startup announcement" above |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
 | `LOG_RECEIVED_FIXES` | unset (off) | Base only - `1` = console-echo every received frame. CSV/Redis/detection always run regardless |
+| `LOG_RATE_STATS` | unset (off) | Base only - `1` = log fix rate and sync-error rate every 10s, unconditionally (unlike the always-on 30s `[radio] link quality` line, which only logs on a CHANGE) - both to the console AND to its own CSV (`base_station_rate_stats_<date>.csv` in `BASE_LOG_DIR`, same date/regatta rotation as the per-fix log) for a field session's own time series |
 | `BASE_LOG_DIR` | `./base-logs` | Base only - received-fix CSV location |
 | `BOAT_LOG_DIR` | `./boat-logs` | Boat only - SD-card CSV location |
 | `LOG_RETENTION_DAYS` | 7 | CSV files older than this are auto-deleted |
@@ -1473,6 +1485,7 @@ actually use. Redis password is redacted.
 | `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | Base only - `0` disables all four webhook types |
 | `REGATTAUP_ACTIVE_REGATTAS_URL` | `.../getActiveRegattas` | Base only - regatta-selector fetch source |
 | `REGATTAUP_REGATTA_ID` | unset | Base only - selects at startup, persists to `regatta-id.txt` |
+| `NO_REGATTA` | unset (off) | Base only - `1` = skip regatta auto-selection entirely for this run (no default, no prompt, no closest-date auto-pick) - see "Congestion-testing the radio" above. Never persisted; dashboard override still works |
 | `REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS` | 300000 (5 min) | Base only - active-regattas background refresh |
 | `REGATTAUP_LOG_ACTIVE_REGATTAS` | unset (off) | Base only - `1` logs each successful background refresh |
 | `REGATTAUP_QUEUE_DB` / `POST_INTERVAL_MS` / `MAX_BACKOFF_MS` | see "Durable retry queue" | Lap webhook queue tuning; interval/backoff shared with on-grid and mark-rounding |

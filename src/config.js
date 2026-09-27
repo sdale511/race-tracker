@@ -583,6 +583,16 @@ module.exports = {
   // only silences the routine per-fix console echo, not the actual
   // race-event detection those fixes drive.
   logReceivedFrames: process.env.LOG_RECEIVED_FIXES === '1' || process.env.LOG_RECEIVED_FIXES === 'true',
+  // Base station only - off by default, set LOG_RATE_STATS=1 to print a
+  // fix-rate/sync-error-rate line every 10s regardless of whether either
+  // number has changed (see baseStation.js's own rate-stats interval) -
+  // unlike the existing "[radio] link quality" 30s logger (which only logs
+  // a CHANGE in error count, to avoid repeating an unchanging problem
+  // forever), this is meant to be left running and piped to a file for a
+  // field session, so a steady, unchanging rate is exactly as worth a line
+  // as a changing one - the point is a time series to look back on, not a
+  // live alert.
+  logRateStats: process.env.LOG_RATE_STATS === '1' || process.env.LOG_RATE_STATS === 'true',
 
   // --- Local logging (microSD) ---
   logDir,
@@ -761,6 +771,20 @@ module.exports = {
     // already-active selection (e.g. one still valid from this same base's
     // last run).
     defaultRegatta: resolveDefaultRegattaId(),
+    // NO_REGATTA=1 - base station only, skips regatta auto-selection
+    // (defaultRegatta above, the interactive terminal prompt, and the
+    // closest-active-date auto-pick) entirely for this run, so it comes up
+    // with none selected and stays there unless an operator overrides it
+    // from the admin dashboard's own dropdown. Built for radio-congestion/
+    // bench testing (see README's "Congestion-testing the radio") - with
+    // no regatta selected, the base ignores every received fix outright
+    // (see baseStation.js's radio.on('frame', ...) guard), so synthetic
+    // test traffic never gets written into Redis or reported to RegattaUp
+    // under a real regatta. Never persisted anywhere (unlike
+    // REGATTAUP_REGATTA_ID above) - it only ever changes THIS run's own
+    // startup behavior, on purpose, so a later run without the env var set
+    // goes right back to auto-selecting normally.
+    noRegatta: process.env.NO_REGATTA === '1' || process.env.NO_REGATTA === 'true',
     // How often that list is refreshed in the background - regattas
     // essentially never change mid-race, so this is just a slow heartbeat
     // (pick up a newly published regatta, notice the selected one has

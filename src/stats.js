@@ -33,6 +33,13 @@ const boatFrameTimes = new Map();
 // sitting still under TX_DISTANCE_M's movement gate) shows up within a few
 // seconds rather than lingering on stale history.
 const FIX_RATE_WINDOW_MS = 10000;
+// boatId -> highest fixHz-style rate seen this session (see recordFrame).
+// Only sampled once the window spans at least FIX_RATE_MIN_SPAN_MS: a
+// batched frame delivers several fixes in one burst, so a rate computed over
+// the first few frames after a boat appears (span of milliseconds) reads
+// absurdly high and would pin the max there forever.
+const boatMaxFixHz = new Map();
+const FIX_RATE_MIN_SPAN_MS = 5000;
 const boatPending = new Map(); // boatId -> { pending, reportedAt } - self-reported by the rover, see uploadClient.js
 const boatUploadStats = new Map(); // boatId -> { attempts, successes, failures, bytes }
 const boatIp = new Map(); // boatId -> LAN IP, learned from its own upload/health-check requests
@@ -83,6 +90,11 @@ function recordFrame(boatId, position, fix) {
   times.push(now);
   const cutoff = now - FIX_RATE_WINDOW_MS;
   while (times.length && times[0] < cutoff) times.shift();
+
+  if (times.length >= 2 && now - times[0] >= FIX_RATE_MIN_SPAN_MS) {
+    const hz = (times.length - 1) / ((now - times[0]) / 1000);
+    if (hz > (boatMaxFixHz.get(id) || 0)) boatMaxFixHz.set(id, hz);
+  }
 }
 
 // The actual rate frames from this boat are arriving AT THE BASE, measured
@@ -159,6 +171,7 @@ function snapshot() {
       lastPosition: boatLastPosition.get(boatId) || null,
       lastFix: boatLastFix.get(boatId) || null,
       fixHz: fixHz(boatId),
+      maxFixHz: boatMaxFixHz.get(boatId) || null,
       upload,
       pending: pendingInfo ? pendingInfo.pending : null,
       pendingReportedAt: pendingInfo ? pendingInfo.reportedAt : null,

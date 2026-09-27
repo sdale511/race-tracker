@@ -408,6 +408,7 @@ function renderDashboard(s, rtkControlsEnabled) {
       // before any frame has arrived and for a stationary boat that
       // legitimately has nothing new to send right now.
       const fixRate = b.fixHz != null ? `${b.fixHz.toFixed(1)} Hz` : '<span class="muted">—</span>';
+      const maxFixRate = b.maxFixHz != null ? `${b.maxFixHz.toFixed(1)} Hz` : '<span class="muted">—</span>';
       // b.lastFix is {carrSoln, gnssFixOk, numSV} off the last decoded
       // frame (see stats.js's recordFrame) - null until the first frame
       // arrives. No fixType here (RTK-fixed/float vs. plain 3D/2D) - that
@@ -434,6 +435,7 @@ function renderDashboard(s, rtkControlsEnabled) {
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
           <td>${lastSeenRadio}</td>
           <td>${fixRate}</td>
+          <td>${maxFixRate}</td>
           <td>${fixCell}</td>
           <td>${tracks.toLocaleString()}</td>
           <td>${laps}</td>
@@ -647,6 +649,7 @@ function renderDashboard(s, rtkControlsEnabled) {
           <th title="Most recent activity from either the radio link or the WiFi health-check ping, whichever is more recent - marked (WiFi) when that ping is the only reason this looks current">Last seen</th>
           <th title="Most recent actual position frame received over radio specifically - unlike &quot;Last seen&quot;, not satisfied by the WiFi health-check ping alone, so a boat with a dead radio link but working WiFi shows stale here even while Last seen looks current">Last seen (radio)</th>
           <th title="How often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Fix rate</th>
+          <th title="Highest Fix rate this boat has sustained (measured over a rolling 10s window, sampled only once at least 5s of frames are in it) since this base started - resets on restart">Max rate</th>
           <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count in parentheses">Fix</th>
           <th title="Number of position points stored in Redis for this boat this session">Tracks</th>
           <th title="Completed lap count for this boat this race">Laps</th>
