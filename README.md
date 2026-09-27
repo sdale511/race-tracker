@@ -394,6 +394,15 @@ own row in that same `base_station_rate_stats_<date>.csv`, numeric fields
 blank, note filled in, landing inline with the fix-rate/error-rate time
 series at the exact moment it was sent.
 
+`radio-congestion` runs its own copy of this same dashboard too
+(`http://localhost:8094` by default, `ADMIN_PORT` to override) purely to
+reach this card from a browser during a bench test - every other card on
+it (course marks, GPS fix, uploads, scheduled shutdown) just shows its own
+honest "nothing yet" state, since this script tracks none of that; only
+Mark base log actually does something. Tagged `boat=MARKS` on the base's
+own console/CSV so it's never confused with one of the virtual boats' own
+sequential ids.
+
 ### Batching multiple fixes per send (TX_BATCH_SIZE)
 
 `TX_BATCH_SIZE` (default 1 - one frame per fix, this app's original

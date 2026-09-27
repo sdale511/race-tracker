@@ -2,6 +2,11 @@ const config = require('./config');
 const { RadioLink } = require('./radioLink');
 const protocol = require('./protocol');
 const { sequentialBoatId } = require('./boatIdFile');
+const { startRoverAdminServer } = require('./roverAdminServer');
+const roverStats = require('./roverStats');
+const { getDiskSpace } = require('./diskSpace');
+const { countPending } = require('./uploadClient');
+const { startShutdownScheduler } = require('./powerSchedule');
 
 // Bench test for REAL over-the-air congestion on the actual telemetry
 // radio - distinct from both `npm run fleet` (SIMULATE=1's UDP stand-in
@@ -186,6 +191,68 @@ setInterval(() => {
       : '';
   console.log(`[radioCongestionTest] --- ${sent} frames sent, ${(sent / elapsedS).toFixed(1)} tx/s actual average, ${elapsedS.toFixed(0)}s elapsed${droppedNote} ---`);
 }, 10000);
+
+// A real rover admin dashboard (same roverAdminServer.js a real
+// boatAgent.js runs) purely so this bench test has somewhere to reach the
+// "Mark base log" card (see protocol.js's encodeMarkLog/baseStation.js's
+// radio.on('mark-log', ...)) from a browser instead of a terminal - the
+// SAME field-testing use case (annotate the base's own log/rate-stats CSV
+// right when something changes, e.g. walking to a new distance) that card
+// exists for on a real rover. Everything else this dashboard would
+// normally show (course marks, GPS fix, uploads, scheduled shutdown) has
+// no real counterpart here - this script tracks none of that - so those
+// cards just render their own honest "nothing yet" state; only Mark base
+// log is actually wired up to do something.
+//
+// A distinct, clearly non-numeric boat id - never confused with one of the
+// virtual boats' own sequential ids (see boatIds above) on the base's own
+// console/CSV/fleet table.
+const MARK_BOAT_ID = 'MARKS';
+const myAdminPort = parseInt(process.env.ADMIN_PORT || '8094', 10);
+const powerScheduler = startShutdownScheduler({
+  shutdownAt: null, // this test has no GPS/idle concept of its own to gate a shutdown on
+  shutdownIdleMinutes: 10,
+  shutdownSpeedKn: 0.3,
+  shutdownCheckIntervalMs: 30000,
+  getLastFix: () => null,
+});
+startRoverAdminServer({
+  port: myAdminPort,
+  getStats: () => ({
+    ...roverStats.snapshot(),
+    boatId: MARK_BOAT_ID,
+    marksetMode: false,
+    markMode: false,
+    currentMarkName: null,
+    gpsMode: 'none',
+    radioMode: 'real',
+    currentMarks: null,
+    currentRegattaName: '',
+    marksReceivedCount: 0,
+    lastMarksReceivedAt: null,
+    pendingCount: countPending(config.boatLogDir, MARK_BOAT_ID, config.logChunkMinutes),
+    disk: getDiskSpace(config.boatLogDir),
+    baseIp: null,
+    adminPort: null,
+    baseUploadPort: null,
+  }),
+  getPosition: () => null,
+  getPowerStatus: powerScheduler.getStatus,
+  updatePowerSchedule: () => {
+    throw new Error('no scheduled shutdown here - this is a bench-test process, not a real rover');
+  },
+  sendSetMark: () => {
+    throw new Error('no course marks in radio-congestion - this is a bench test, not a real rover');
+  },
+  setMarkName: () => {
+    throw new Error('no mark mode in radio-congestion - this is a bench test, not a real rover');
+  },
+  sendMarkLog: (label) => {
+    const ok = radio.send(protocol.encodeMarkLog(MARK_BOAT_ID, label));
+    if (!ok) throw new Error('radio not open');
+  },
+});
+console.log(`[radioCongestionTest] dashboard=http://localhost:${myAdminPort} - use its "Mark base log" card to annotate the base's own log`);
 
 process.on('SIGINT', () => {
   console.log('\n[radioCongestionTest] shutting down');
