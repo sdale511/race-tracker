@@ -108,6 +108,30 @@ function renderMarkCard(s) {
     </div>`;
 }
 
+// Shown on EVERY rover mode (plain boat, markset, mark) - unlike
+// renderMarkCard above, marking the base's own log with a note is just as
+// relevant to an ordinary boat as to either special mode, so this isn't
+// gated on s.marksetMode/s.markMode the way that card is. No GPS fix
+// needed (see boatAgent.js's sendMarkLog) and nothing on THIS dashboard
+// changes as a result - the whole point lands on the base's own log, not
+// here - so the button's own JS (see the <script> below) shows a brief
+// inline confirmation instead of the usual location.reload() other cards
+// use, and clears the field so it's obviously ready for the next note.
+function renderMarkLogCard() {
+  return `<div class="card">
+      <div class="label">Mark base log</div>
+      <div class="sub">Sends a short note to the base's own log/rate-stats right now - e.g. right after walking to a new distance, or any other physical change worth timestamping.</div>
+      <div class="manual-fixed-field">
+        <label for="markLogInput">Note</label>
+        <input type="text" class="manual-input" id="markLogInput" placeholder="e.g. 1000m from base" maxlength="20">
+      </div>
+      <div class="card-actions">
+        <button type="button" class="card-btn" onclick="sendMarkLog(this)">Mark</button>
+      </div>
+      <div class="sub" id="markLogStatus" style="margin-top:6px;"></div>
+    </div>`;
+}
+
 // Renders the boat's own dashboard server-side from one stats snapshot (see
 // boatAgent.js's getRoverStats) - the boat-side counterpart to
 // adminServer.js's renderDashboard, but there's only ever one boat here, so
@@ -342,6 +366,7 @@ function renderDashboard(s, power) {
     </div>
     ${renderDiskCard(s.disk, `Logs chunked every ${config.logChunkMinutes}min, kept ${config.logRetentionDays} days`)}
     ${s.markMode ? renderMarkCard(s) : ''}
+    ${renderMarkLogCard()}
     ${renderPowerCard(power)}
   </div>
 
@@ -406,6 +431,33 @@ function renderDashboard(s, power) {
         location.reload();
       } catch (err) {
         alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    // Mark base log card (see renderMarkLogCard) - unlike every other
+    // card's own button here, nothing on THIS page changes as a result (the
+    // whole point lands on the base's own log), so this shows a brief
+    // inline confirmation instead of location.reload(), and clears the
+    // field so it's obviously ready for the next note.
+    async function sendMarkLog(btn) {
+      btn.disabled = true;
+      const status = document.getElementById('markLogStatus');
+      const input = document.getElementById('markLogInput');
+      status.textContent = 'Sending…';
+      try {
+        const res = await fetch('/api/mark-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: input.value }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        status.textContent = 'Sent - ' + new Date().toLocaleTimeString();
+        input.value = '';
+      } catch (err) {
+        status.textContent = 'Failed: ' + err.message;
+      } finally {
         btn.disabled = false;
       }
     }
@@ -1144,7 +1196,7 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule, sendSetMark, setMarkName }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule, sendSetMark, setMarkName, sendMarkLog }) {
   const server = http.createServer(async (req, res) => {
     // Power card's Save/Disable buttons (see renderPowerCard) - the only
     // write route this server has, so it's handled up front rather than
@@ -1156,6 +1208,26 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
       try {
         const body = await readJsonBody(req);
         updatePowerSchedule(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Dashboard's "Mark log" card (see renderDashboard) - sends a short
+    // free-text note to the base over the radio (see boatAgent.js's
+    // sendMarkLog/protocol.js's encodeMarkLog), no GPS fix or WiFi needed
+    // at all. Available on every rover mode (plain boat, markset, mark),
+    // not just markset/mark-mode-specific - field testing (walking to a
+    // new distance, checking an antenna) is just as relevant to an
+    // ordinary boat as to either of those.
+    if (req.url === '/api/mark-log' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        sendMarkLog(body.label || '');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

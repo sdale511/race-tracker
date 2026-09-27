@@ -1129,6 +1129,21 @@ function sendSetMark(markName, { continuous } = {}) {
   return { lat: lastPvt.lat, lon: lastPvt.lon };
 }
 
+// Marks a moment in the base's own log with a short free-text note (see
+// protocol.js's own comment on the mark-log frame/baseStation.js's
+// radio.on('mark-log', ...)) - built for field testing, e.g. tapping this
+// right after walking to a new distance from the base so that moment
+// shows up inline in whatever the base is already logging, instead of
+// needing to cross-reference two separate logs by wall-clock time. No GPS
+// fix required (unlike sendSetMark above) - this isn't about a position,
+// it's just a labeled instant, so it works even before this device has
+// ever gotten a fix. Fire-and-forget, same "no ack in this protocol"
+// contract as every other frame here.
+function sendMarkLog(label) {
+  const sent = radio.send(protocol.encodeMarkLog(config.boatId, label));
+  if (!sent && radioExpected) throw new Error(radioDropReason());
+}
+
 // Assigns (or clears, name=null) which mark this markMode device
 // continuously represents - see config.markMode/handlePvt's own auto-set
 // block above. Persisted immediately, same "an explicit choice right now
@@ -1169,6 +1184,7 @@ startRoverAdminServer({
   updatePowerSchedule: powerScheduler.updateParams,
   sendSetMark,
   setMarkName,
+  sendMarkLog,
 });
 
 // Compact fix-quality label - RTK carrier solution takes priority over the

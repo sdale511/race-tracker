@@ -109,6 +109,7 @@ class RadioLink extends EventEmitter {
     { sync: protocol.HELLO_SYNC, len: protocol.HELLO_FRAME_LEN, decode: protocol.decodeHello, event: 'hello' },
     { sync: protocol.BATCH_SYNC, getLen: protocol.batchFrameLenFromHeader, decode: protocol.decodeBatch, event: 'frame-batch' },
     { sync: protocol.SET_MARK_SYNC, len: protocol.SET_MARK_FRAME_LEN, decode: protocol.decodeSetMark, event: 'set-mark' },
+    { sync: protocol.MARK_LOG_SYNC, len: protocol.MARK_LOG_FRAME_LEN, decode: protocol.decodeMarkLog, event: 'mark-log' },
   ];
 
   // Used on both ends: scans incoming bytes for valid frames of either type.

@@ -621,23 +621,6 @@ function main() {
   // by config.logRateStats' own 10s logger, so the two loggers' different
   // cadences never fight over the same mutable counter.
   radio.on('sync-error', () => bandwidthWindow.syncErrors++);
-  // Most recent decoded fix, radio-layer only - same "never gated on
-  // selectedRegatta" spot as bandwidthWindow above, so config.logRateStats'
-  // own logger below can show exactly where the sending rover was even
-  // with NO_REGATTA=1 (or before a regatta's picked at all), when nothing
-  // else on this base ever gets to see this fix at all. A batch frame
-  // updates this from its LAST (newest) fix, not its first - fixes.length-1,
-  // matching decodeBatch's own "oldest fix first" ordering (see
-  // protocol.js).
-  let lastFix = null;
-  radio.on('frame', (decoded) => {
-    lastFix = { boatId: decoded.boatId, lat: decoded.lat, lon: decoded.lon, timestamp: decoded.timestamp };
-  });
-  radio.on('frame-batch', (fixes) => {
-    if (!fixes.length) return;
-    const f = fixes[fixes.length - 1];
-    lastFix = { boatId: f.boatId, lat: f.lat, lon: f.lon, timestamp: f.timestamp };
-  });
   setInterval(() => {
     bandwidthHistory.push(bandwidthWindow);
     if (bandwidthHistory.length > BANDWIDTH_HISTORY_LEN) bandwidthHistory.shift();
@@ -667,35 +650,46 @@ function main() {
       const fixRate = (totalFixes / spanS).toFixed(1);
       const errorRate = (totalSyncErrors / spanS).toFixed(1);
       const errorPct = totalFrames + totalSyncErrors > 0 ? ((totalSyncErrors / (totalFrames + totalSyncErrors)) * 100).toFixed(1) : '0.0';
-      // Age relative to THIS tick, not the fix's own timestamp alone - a
-      // stale lastFix (radio dropped, boat stopped sending) should read as
-      // stale here too, not just show old coordinates with no indication
-      // they're not current.
-      const lastFixText = lastFix
-        ? `boat=${lastFix.boatId} ${lastFix.lat.toFixed(6)},${lastFix.lon.toFixed(6)} (${Math.round((Date.now() - lastFix.timestamp) / 1000)}s old)`
-        : 'none yet';
       console.log(
-        `[baseStation] rate: ${fixRate} fixes/s, ${errorRate} sync errors/s (${errorPct}% of frames) - last ${spanS}s - last fix: ${lastFixText}`
+        `[baseStation] rate: ${fixRate} fixes/s, ${errorRate} sync errors/s (${errorPct}% of frames) - last ${spanS}s`
       );
-      const row = [
-        new Date().toISOString(),
-        totalFixes,
-        totalFrames,
-        totalSyncErrors,
-        fixRate,
-        errorRate,
-        errorPct,
-        spanS,
-        lastFix ? lastFix.boatId : '',
-        lastFix ? lastFix.lat.toFixed(7) : '',
-        lastFix ? lastFix.lon.toFixed(7) : '',
-        lastFix ? new Date(lastFix.timestamp).toISOString() : '',
-      ].join(',');
+      // Trailing blank field - the note column mark-log rows below fill in;
+      // a plain rate sample never has one of its own.
+      const row = [new Date().toISOString(), totalFixes, totalFrames, totalSyncErrors, fixRate, errorRate, errorPct, spanS, ''].join(',');
       fs.appendFile(ensureRateStatsCsvFile(), row + '\n', (err) => {
         if (err) console.error('[baseStation] rate-stats csv write failed:', err.message);
       });
     }, 10000);
   }
+
+  // A rover marking a moment in this same rate-stats CSV/console log with
+  // a short free-text note (see protocol.js's own comment on the mark-log
+  // frame/roverAdminServer.js's "Mark log" card) - built for field
+  // testing: tapping this right after walking to a new distance (or any
+  // other physical change) so that moment lands inline in the SAME time
+  // series as the fix-rate/error-rate numbers, instead of needing to
+  // cross-reference two separate logs by wall-clock time afterward.
+  // Console-logged unconditionally (this is the ordinary "did anything
+  // interesting happen" log, useful regardless of LOG_RATE_STATS), but
+  // only written to the rate-stats CSV when config.logRateStats is on -
+  // appending a note into a numeric time series nothing else is writing to
+  // would just be a stray row with nothing to correlate against.
+  radio.on('mark-log', ({ boatId, label }) => {
+    console.log(`[baseStation] === MARK from boat=${boatId}: "${label}" ===`);
+    if (!config.logRateStats) return;
+    // Commas/newlines stripped from both fields - boatId is normally a
+    // fixed 5-char id and label a short operator-typed note, but neither
+    // is otherwise validated against CSV-breaking characters before it
+    // gets here, and one stray comma would shift every column after it.
+    const csvSafe = (s) => String(s).replace(/[,\r\n]/g, ' ');
+    // Blank numeric fields (not zeros - a real zero-fix window and "not a
+    // rate sample at all" need to read differently to anyone graphing this
+    // later) - only timestamp and note are meaningful on this row.
+    const row = [new Date().toISOString(), '', '', '', '', '', '', '', `boat=${csvSafe(boatId)}: ${csvSafe(label)}`].join(',');
+    fs.appendFile(ensureRateStatsCsvFile(), row + '\n', (err) => {
+      if (err) console.error('[baseStation] rate-stats csv write failed:', err.message);
+    });
+  });
 
   const logDir = config.logDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -739,8 +733,7 @@ function main() {
   // after a field session, not just watched live in the console, so it
   // needs to actually persist somewhere rather than only ever being a
   // console.log line.
-  const RATE_STATS_CSV_HEADER =
-    'timestamp_iso,fixes,frames,sync_errors,fix_rate_hz,sync_error_rate_hz,error_pct,span_s,last_fix_boat_id,last_fix_lat,last_fix_lon,last_fix_time_iso\n';
+  const RATE_STATS_CSV_HEADER = 'timestamp_iso,fixes,frames,sync_errors,fix_rate_hz,sync_error_rate_hz,error_pct,span_s,note\n';
   let rateStatsCsvPath = null;
   let rateStatsCsvDate = null;
   let rateStatsCsvRegattaId = null;

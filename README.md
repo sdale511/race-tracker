@@ -375,6 +375,25 @@ hidden nodes to each other but both still reach the base. That hidden-node
 case is usually where the ugliest real collision behavior actually shows
 up, and clustering hides it entirely.
 
+### Marking the base's own log from a rover
+
+A real field test - walking/driving a rover to a new distance from the
+base, checking an antenna, anything worth timestamping - needs a way to
+say "right now" without cross-referencing two separate logs by wall-clock
+time afterward. Every rover's own dashboard (`roverAdminServer.js`, any
+mode - plain boat, markset, or mark) has a **Mark base log** card: type a
+short note (20 characters, truncated beyond that) and tap **Mark**. It
+sends over the same telemetry radio a position fix already goes out on
+(`protocol.js`'s `encodeMarkLog`/`0x88`) - no GPS fix or WiFi needed, works
+even before this device has ever gotten a position.
+
+The base logs it unconditionally to its own console
+(`=== MARK from boat=... : "<note>" ===`), and - when `LOG_RATE_STATS=1` is
+also set (see "Congestion-testing the radio" above) - appends it as its
+own row in that same `base_station_rate_stats_<date>.csv`, numeric fields
+blank, note filled in, landing inline with the fix-rate/error-rate time
+series at the exact moment it was sent.
+
 ### Batching multiple fixes per send (TX_BATCH_SIZE)
 
 `TX_BATCH_SIZE` (default 1 - one frame per fix, this app's original
@@ -1463,7 +1482,7 @@ actually use. Redis password is redacted.
 | `HELLO_STARTUP_JITTER_MS` | 3000 | Boat only - max random delay before the first hello announcement (and, since the retry interval inherits it, every retry after) - see "Boat startup announcement" above |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
 | `LOG_RECEIVED_FIXES` | unset (off) | Base only - `1` = console-echo every received frame. CSV/Redis/detection always run regardless |
-| `LOG_RATE_STATS` | unset (off) | Base only - `1` = log fix rate, sync-error rate, and the most recent decoded fix (boat id, lat/lon, age) every 10s, unconditionally (unlike the always-on 30s `[radio] link quality` line, which only logs on a CHANGE) - both to the console AND to its own CSV (`base_station_rate_stats_<date>.csv` in `BASE_LOG_DIR`, same date/regatta rotation as the per-fix log) for a field session's own time series. The last-fix fields are radio-layer only, so they're populated even under `NO_REGATTA=1` or before any regatta is selected |
+| `LOG_RATE_STATS` | unset (off) | Base only - `1` = log fix rate and sync-error rate every 10s, unconditionally (unlike the always-on 30s `[radio] link quality` line, which only logs on a CHANGE) - both to the console AND to its own CSV (`base_station_rate_stats_<date>.csv` in `BASE_LOG_DIR`, same date/regatta rotation as the per-fix log) for a field session's own time series |
 | `BASE_LOG_DIR` | `./base-logs` | Base only - received-fix CSV location |
 | `BOAT_LOG_DIR` | `./boat-logs` | Boat only - SD-card CSV location |
 | `LOG_RETENTION_DAYS` | 7 | CSV files older than this are auto-deleted |

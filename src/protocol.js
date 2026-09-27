@@ -521,6 +521,70 @@ function decodeSetMark(buf) {
   };
 }
 
+// Seventh frame type: boat -> base, an operator marking a moment in the
+// base's own log with a short free-text note - see roverAdminServer.js's
+// "Mark log" card/boatAgent.js's sendMarkLog. Built for exactly the field-
+// testing case this comes out of: walking/driving a rover to a new
+// position (or making any other physical change - antenna orientation,
+// power cycle) and wanting that moment to show up inline in whatever the
+// base is already logging (see baseStation.js's radio.on('mark-log', ...),
+// which annotates the SAME rate-stats CSV config.logRateStats writes to -
+// see its own comment), rather than having to cross-reference two separate
+// logs by wall-clock time after the fact.
+//
+// No position of its own - unlike Set-Mark above, this isn't about a
+// physical location, just a labeled instant. No ack (same as every other
+// frame here) - there's nothing to confirm back, the operator sees their
+// own tap succeed or fail locally on the rover's own dashboard.
+//
+// Layout (all little-endian):
+//   [0]      sync byte     0x88
+//   [1..5]   boatId        BOAT_ID_LEN raw ASCII bytes (same field as encode/decode above)
+//   [6..25]  label         MARK_LOG_LABEL_LEN raw ASCII bytes, zero-padded/
+//                            truncated (same convention as encodeMarks'
+//                            own regattaName field)
+//   [26]     checksum      uint8 (sum of bytes 1..25 mod 256)
+
+const MARK_LOG_SYNC = 0x88;
+const MARK_LOG_LABEL_LEN = 20;
+const MARK_LOG_FRAME_LEN = 1 + BOAT_ID_LEN + MARK_LOG_LABEL_LEN + 1;
+
+function encodeMarkLog(boatId, label) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  const buf = Buffer.alloc(MARK_LOG_FRAME_LEN);
+  buf.writeUInt8(MARK_LOG_SYNC, 0);
+  buf.write(boatId, 1, BOAT_ID_LEN, 'ascii');
+  // Buffer.alloc above already zero-filled the frame, so a shorter (or
+  // absent) label just leaves the rest of this field as trailing zero
+  // bytes - same reasoning as encodeMarks' own regattaName field.
+  buf.write((label || '').slice(0, MARK_LOG_LABEL_LEN), 1 + BOAT_ID_LEN, MARK_LOG_LABEL_LEN, 'ascii');
+
+  let sum = 0;
+  for (let i = 1; i < MARK_LOG_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, MARK_LOG_FRAME_LEN - 1);
+
+  return buf;
+}
+
+// Returns { boatId, label }, or null if the buffer isn't a valid mark-log
+// frame. label is '' when sent with no text (a plain "mark this moment"
+// tap, no note attached).
+function decodeMarkLog(buf) {
+  if (buf.length !== MARK_LOG_FRAME_LEN || buf[0] !== MARK_LOG_SYNC) return null;
+
+  let sum = 0;
+  for (let i = 1; i < MARK_LOG_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[MARK_LOG_FRAME_LEN - 1]) return null;
+
+  const label = buf.toString('ascii', 1 + BOAT_ID_LEN, 1 + BOAT_ID_LEN + MARK_LOG_LABEL_LEN).split('\0')[0];
+  return {
+    boatId: buf.toString('ascii', 1, 1 + BOAT_ID_LEN),
+    label,
+  };
+}
+
 module.exports = {
   encode,
   decode,
@@ -549,4 +613,8 @@ module.exports = {
   decodeSetMark,
   SET_MARK_FRAME_LEN,
   SET_MARK_SYNC,
+  encodeMarkLog,
+  decodeMarkLog,
+  MARK_LOG_FRAME_LEN,
+  MARK_LOG_SYNC,
 };
