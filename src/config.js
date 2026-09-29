@@ -514,17 +514,19 @@ module.exports = {
   // batch frame type and boatAgent.js's queueFixForTx/flushPendingBatch.
   // Trades a little latency (fixes wait to fill a batch, bounded by
   // txIntervalMs below so a slow-moving boat still can't go silent longer
-  // than that) for fewer, larger over-the-air transmissions - worth trying
-  // only if per-transmission overhead, not per-byte airtime, turns out to be
-  // the real bottleneck at your fleet size (see "Congestion-testing the
-  // radio" in the README). 1 (the default) means "one frame per fix,"
-  // exactly this app's original behavior - boatAgent.js never even touches
-  // the batch frame type at that setting. Clamped to protocol.js's own
+  // than that) for fewer, larger over-the-air transmissions - the real
+  // congestion-testing findings this default is based on (see
+  // "Congestion-testing the radio" in the README) showed 4 comfortably
+  // improving aggregate fleet throughput at this fleet's actual radio
+  // hardware's own NP=100 payload ceiling, so it's the default rather than
+  // an opt-in. Set TX_BATCH_SIZE=1 to go back to "one frame per fix," this
+  // app's original behavior (boatAgent.js never even touches the batch
+  // frame type at that setting). Clamped to protocol.js's own
   // MAX_BATCH_COUNT (the largest batch frame stays comfortably under this
   // fleet's actual, read-only NP=100 max RF payload - see MAX_BATCH_COUNT's
   // own comment), not just trusted from the environment, since encodeBatch
   // throws on anything larger.
-  txBatchSize: Math.max(1, Math.min(MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '1', 10) || 1)),
+  txBatchSize: Math.max(1, Math.min(MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '4', 10) || 4)),
 
   // Heartbeat alongside txDistanceM above: even a boat that hasn't moved
   // far enough to clear the distance gate still transmits at least once

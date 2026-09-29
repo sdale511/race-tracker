@@ -394,8 +394,8 @@ startUploadClient({
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
 // Fixes accumulated for the next batch send - see queueFixForTx/
-// flushPendingBatch below. Always empty when config.txBatchSize is 1 (the
-// default) - that path never touches this at all, see handlePvt.
+// flushPendingBatch below. Always empty when config.txBatchSize is 1 -
+// that path never touches this at all, see handlePvt.
 let pendingBatch = [];
 let lastPvt = null;
 // True once a dwelling/holding fix (pvt.stationary - see simGps.js's

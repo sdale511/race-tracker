@@ -336,9 +336,11 @@ function decodeHello(buf) {
 // data rate, smaller max payload per packet) - MAX_BATCH_COUNT below is
 // chosen to stay comfortably under the SMALLER of those, not the datasheet
 // default, even after encryption's -9 byte reduction).
-// TX_BATCH_SIZE=1 (the default) never produces this frame at all -
-// boatAgent.js keeps sending the plain single-fix frame above unchanged, so
-// default behavior is byte-for-byte identical to before this existed.
+// Sent by default (config.js's TX_BATCH_SIZE now defaults to 4, chosen
+// from this fleet's own congestion-testing findings - see the README's
+// "Congestion-testing the radio") - TX_BATCH_SIZE=1 is what falls back to
+// the plain single-fix frame above, this app's original one-frame-per-fix
+// behavior, unchanged at that setting.
 //
 // Layout (all little-endian):
 //   [0]     sync byte     0xEE

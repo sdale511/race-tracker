@@ -288,7 +288,7 @@ flowchart TB
   classDef cloud fill:#ffffff,stroke:#17202b,color:#17202b,stroke-width:2px
 
   GPS["u-blox GPS<br/>or SimGpsSource"]:::rover --> RV["boatAgent.js<br/>(rover)"]:::rover
-  RV -- "position frame · 23B" --> RADIO{{Radio link}}
+  RV -- "position frame · 26B" --> RADIO{{Radio link}}
   RADIO -- decode --> BS["baseStation.js"]:::base
   BS --> REDIS[("Redis<br/>tracks · marks · course")]:::store
   BS --> SD[("SD card CSV<br/>+ upload archive")]:::store
@@ -322,7 +322,7 @@ flowchart TB
     <section class="stage" id="rover">
       <div class="stage-head"><span class="stage-num">§1</span><h2>Rover</h2><span class="chip rover">boatAgent.js</span></div>
       <p class="stage-file">One process per boat — <code>src/boatAgent.js</code>, GPS source is either real hardware (<code>ubxParser.js</code>) or <code>simGps.js</code> under <code>SIMULATE=1</code>.</p>
-      <p class="lead">Every fix is logged locally regardless of radio conditions; only fixes that clear <code class="mono">TX_DISTANCE_M</code> since the last transmitted one are actually sent — a stopped boat doesn't re-key the channel every tick.</p>
+      <p class="lead">Every fix is logged locally regardless of radio conditions; only fixes that clear <code class="mono">TX_DISTANCE_M</code> since the last transmitted one are actually sent — a stopped boat doesn't re-key the channel every tick. By default (<code class="mono">TX_BATCH_SIZE=4</code>) four consecutive cleared fixes are queued and sent as one batch frame instead of four separate transmissions — see the Batch frame panel below. Set <code class="mono">TX_BATCH_SIZE=1</code> to go back to one plain position frame per fix.</p>
 
       <div class="panel">
         <div class="panel-title">Fix handling sequence</div>
@@ -339,12 +339,13 @@ sequenceDiagram
   alt moved &ge; TX_DISTANCE_M since last send
     B->>SD: append fix to chunked CSV log
     B->>R: protocol.encode(boatId, fix)
-    R--)R: 23-byte frame over LoRa / UDP
+    R--)R: 26-byte frame over LoRa / UDP
   else hasn't moved enough
     B->>B: log locally only, nothing transmitted
   end
 </pre>
         </div>
+        <div class="note">📦 <div><b>Simplified above.</b> With the default <code class="mono">TX_BATCH_SIZE=4</code>, this send step doesn't fire on every cleared fix — up to 4 cleared fixes queue up first (never held longer than <code class="mono">TX_INTERVAL_S</code>), then go out together as one <code class="mono">0xEE</code> batch frame. <code class="mono">TX_BATCH_SIZE=1</code> restores the one-frame-per-fix behavior shown here exactly.</div></div>
       </div>
 
       <div class="grid-2">
@@ -376,44 +377,43 @@ sequenceDiagram
     <!-- ============ RADIO ============ -->
     <section class="stage" id="radio">
       <div class="stage-head"><span class="stage-num">§2</span><h2>Radio protocol</h2><span class="chip base">protocol.js</span></div>
-      <p class="lead">Three fixed-length frame types share one channel, told apart by a leading sync byte before either side needs to know how many bytes to expect. Every frame ends in a mod-256 checksum over its own body.</p>
+      <p class="lead">Several frame types share one channel, told apart by a leading sync byte before either side needs to know how many bytes to expect — position/marks/ping below are fixed-length, the batch frame is variable-length (its own count byte says how many fixes follow). Every frame ends in a mod-256 checksum over its own body.</p>
 
       <div class="path-badge-row">
         <span class="chip rover">rover → base</span><span class="chip">position · 0xAA</span>
         <span class="chip base">base → rover</span><span class="chip">marks · 0xBB</span>
         <span class="chip base">base → rover</span><span class="chip">ping · 0xCC</span>
+        <span class="chip rover">rover → base</span><span class="chip">batch · 0xEE</span>
       </div>
 
       <div class="panel">
-        <div class="panel-title">Position frame — 23 bytes</div>
+        <div class="panel-title">Position frame — 26 bytes</div>
         <div class="byte-diagram">
           <div class="field-strip">
             <div class="field-block" style="flex-basis:34px;">sync</div>
-            <div class="field-block alt" style="flex-basis:34px;">boat</div>
+            <div class="field-block alt" style="flex-basis:70px;">boatId</div>
             <div class="field-block" style="flex-basis:145px;">unix time (s + ms)</div>
             <div class="field-block alt" style="flex-basis:145px;">lat ×1e7</div>
             <div class="field-block" style="flex-basis:145px;">lon ×1e7</div>
             <div class="field-block alt" style="flex-basis:75px;">speed</div>
             <div class="field-block" style="flex-basis:75px;">hdg</div>
             <div class="field-block alt" style="flex-basis:34px;">status</div>
-            <div class="field-block" style="flex-basis:34px;">rsv</div>
-            <div class="field-block alt" style="flex-basis:34px;">sum</div>
+            <div class="field-block" style="flex-basis:34px;">sum</div>
           </div>
         </div>
         <div class="tbl-scroll">
           <table class="data">
             <tr><th>Offset</th><th>Field</th><th>Type</th><th>Notes</th></tr>
             <tr><td class="field">0</td><td>sync</td><td class="type">uint8</td><td><code>0xAA</code></td></tr>
-            <tr><td class="field">1</td><td>boatId</td><td class="type">uint8</td><td></td></tr>
-            <tr><td class="field">2–5</td><td>unix time</td><td class="type">uint32 LE</td><td>whole seconds</td></tr>
-            <tr><td class="field">6–7</td><td>ms within second</td><td class="type">uint16 LE</td><td>0–999, gives full ms precision without a 64-bit field</td></tr>
-            <tr><td class="field">8–11</td><td>lat</td><td class="type">int32 LE</td><td>degrees × 1e7</td></tr>
-            <tr><td class="field">12–15</td><td>lon</td><td class="type">int32 LE</td><td>degrees × 1e7</td></tr>
-            <tr><td class="field">16–17</td><td>speed</td><td class="type">uint16 LE</td><td>knots × 10</td></tr>
-            <tr><td class="field">18–19</td><td>heading</td><td class="type">uint16 LE</td><td>degrees × 10</td></tr>
-            <tr><td class="field">20</td><td>status</td><td class="type">uint8</td><td>bit0 fixOk · bits1–2 carrSoln · bits3–7 numSV</td></tr>
-            <tr><td class="field">21</td><td>reserved</td><td class="type">uint8</td><td>spare</td></tr>
-            <tr><td class="field">22</td><td>checksum</td><td class="type">uint8</td><td>sum of bytes 1–21 mod 256</td></tr>
+            <tr><td class="field">1–5</td><td>boatId</td><td class="type">5B ASCII</td><td>fixed-width, not null-terminated</td></tr>
+            <tr><td class="field">6–9</td><td>unix time</td><td class="type">uint32 LE</td><td>whole seconds</td></tr>
+            <tr><td class="field">10–11</td><td>ms within second</td><td class="type">uint16 LE</td><td>0–999, gives full ms precision without a 64-bit field</td></tr>
+            <tr><td class="field">12–15</td><td>lat</td><td class="type">int32 LE</td><td>degrees × 1e7</td></tr>
+            <tr><td class="field">16–19</td><td>lon</td><td class="type">int32 LE</td><td>degrees × 1e7</td></tr>
+            <tr><td class="field">20–21</td><td>speed</td><td class="type">uint16 LE</td><td>knots × 10</td></tr>
+            <tr><td class="field">22–23</td><td>heading</td><td class="type">uint16 LE</td><td>degrees × 10</td></tr>
+            <tr><td class="field">24</td><td>status</td><td class="type">uint8</td><td>bit0 fixOk · bits1–2 carrSoln · bits3–7 numSV</td></tr>
+            <tr><td class="field">25</td><td>checksum</td><td class="type">uint8</td><td>sum of bytes 1–24 mod 256</td></tr>
           </table>
         </div>
       </div>
@@ -441,6 +441,19 @@ sequenceDiagram
             <tr><td class="field">5</td><td>checksum</td><td class="type">uint8</td></tr>
           </table>
         </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Batch frame — 7 + count×19 + 1 bytes (default path, <code class="mono">TX_BATCH_SIZE=4</code>)</div>
+        <p style="color:var(--ink-muted); font-size:13px; margin:0 0 14px;">Same per-fix fields as the position frame above, packed <code class="mono">count</code> at a time (oldest first) into one transmission — one boatId shared across the whole batch instead of repeated per fix. <code class="mono">count</code> is capped at <code class="mono">MAX_BATCH_COUNT</code> (4, this fleet's actual radio's own RF payload ceiling), so the frame never exceeds 84 bytes. <code class="mono">TX_BATCH_SIZE=1</code> skips this frame type entirely — every send goes out as a plain position frame instead.</p>
+        <table class="data">
+          <tr><th>Offset</th><th>Field</th><th>Type</th><th>Notes</th></tr>
+          <tr><td class="field">0</td><td>sync</td><td class="type">uint8</td><td><code>0xEE</code></td></tr>
+          <tr><td class="field">1</td><td>count</td><td class="type">uint8</td><td>1–4, how many fixes follow</td></tr>
+          <tr><td class="field">2–6</td><td>boatId</td><td class="type">5B ASCII</td><td>shared by every fix in this batch</td></tr>
+          <tr><td class="field">7–</td><td>count × fix record</td><td class="type">19B each</td><td>same time/lat/lon/speed/heading/status layout as the position frame's own bytes 2–20</td></tr>
+          <tr><td class="field">last</td><td>checksum</td><td class="type">uint8</td><td></td></tr>
+        </table>
       </div>
     </section>
 

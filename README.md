@@ -21,7 +21,7 @@ browser).
 | Component | Notes |
 |---|---|
 | GPS | ZED-F9P, `UBX-NAV-PVT` binary messages (position, speed, heading, fix type, RTK carrier solution, satellite count) - no NMEA needed |
-| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - optionally batched, see `TX_BATCH_SIZE` below |
+| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 4 at a time by default, see `TX_BATCH_SIZE` below |
 | SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
 ## Wiring notes
@@ -242,12 +242,13 @@ RF-level bit corruption (see `radioLink.js`'s own `sync-error` event), not
 local serial buffering, since bandwidth used stayed well under the new
 ceiling. This fleet's actual radios' real sustainable RF throughput tops
 out around ~11-12 KB/s regardless of serial baud - 115200 was accidentally
-already throttling right at that ceiling, not artificially limiting it. If
-you need more real fix throughput, use `TX_BATCH_SIZE` instead (reduces
-actual RF bytes-per-fix, not just how fast the serial link can be fed) -
-see "Batching multiple fixes per send" below - and re-run the same
-`radio-congestion` test checking sync-error rate, not just bandwidth
-headroom, before trusting any higher baud.
+already throttling right at that ceiling, not artificially limiting it.
+`TX_BATCH_SIZE` (reduces actual RF bytes-per-fix, not just how fast the
+serial link can be fed - see "Batching multiple fixes per send" below) is
+already at its practical ceiling by default (4, `MAX_BATCH_COUNT`) - there's
+no more headroom left there to reach for if you need still more real fix
+throughput. Re-run the same `radio-congestion` test checking sync-error
+rate, not just bandwidth headroom, before trusting any higher baud.
 
 Running only 1-2 boats? Leave everything at factory defaults and set
 `RADIO_BAUD` to match. Higher baud = faster delivery but shorter
@@ -406,24 +407,29 @@ sequential ids.
 
 ### Batching multiple fixes per send (TX_BATCH_SIZE)
 
-`TX_BATCH_SIZE` (default 1 - one frame per fix, this app's original
-behavior, byte-for-byte unchanged) packs that many consecutive fixes from
-one boat into a single radio transmission instead of sending each on its
-own - fewer, larger over-the-air transmissions instead of many small ones.
-Whether that's actually worth the added latency (fixes wait to fill a
-batch, though never longer than `TX_INTERVAL_S` - see below) depends on
-whether your bottleneck is per-transmission overhead or per-byte airtime;
-see the XBee-PRO 900HP/XSC S3B's own `NP` command (max RF payload - 256
-bytes on the standard 900HP, but read-only and check it yourself: the
-"900HP 200K" variant's higher RF data rate caps it much lower, 100 bytes on
-this fleet's actual radios) for the ceiling a batch frame stays comfortably
-under - `MAX_BATCH_COUNT` (protocol.js) is capped at 4 fixes (84 bytes) to
-fit that, not the standard 900HP's larger default.
+`TX_BATCH_SIZE` (default **4**) packs that many consecutive fixes from one
+boat into a single radio transmission instead of sending each on its own -
+fewer, larger over-the-air transmissions instead of many small ones. Set
+`TX_BATCH_SIZE=1` to go back to one frame per fix, this app's original
+behavior (boatAgent.js never touches the batch frame type at all at that
+setting). Whether batching is actually worth the added latency (fixes wait
+to fill a batch, though never longer than `TX_INTERVAL_S` - see below)
+depends on whether your bottleneck is per-transmission overhead or
+per-byte airtime; see the XBee-PRO 900HP/XSC S3B's own `NP` command (max
+RF payload - 256 bytes on the standard 900HP, but read-only and check it
+yourself: the "900HP 200K" variant's higher RF data rate caps it much
+lower, 100 bytes on this fleet's actual radios) for the ceiling a batch
+frame stays comfortably under - `MAX_BATCH_COUNT` (protocol.js) is capped
+at 4 fixes (84 bytes) to fit that, not the standard 900HP's larger
+default, which is also why 4 is this app's own default rather than a
+higher number: this fleet's own congestion-testing (see "Congestion-
+testing the radio" above) found it comfortably improves aggregate
+throughput at this hardware's real payload ceiling.
 
 Test it with the same tool "Congestion-testing the radio" above uses -
 `radio-congestion` respects `TX_BATCH_SIZE` too, so you can compare real
-transmission rates with and without batching at your actual fleet size
-before ever touching a real boat:
+transmission rates at different batch sizes (or against `TX_BATCH_SIZE=1`)
+at your actual fleet size before ever touching a real boat:
 
 ```
 BOAT_COUNT=30 TX_BATCH_SIZE=4 RADIO_PORT=/dev/cu.usbserial-A npm run radio-congestion
@@ -431,12 +437,12 @@ BOAT_COUNT=30 TX_BATCH_SIZE=4 RADIO_PORT=/dev/cu.usbserial-A npm run radio-conge
 
 The console's own "X frames sent, Y tx/s actual average" line (and the
 base's `[radio] link quality` log) reflect actual transmissions, not
-fixes - with batching on, that number should drop roughly in proportion to
-`TX_BATCH_SIZE` for the same fix rate. Once you're happy with a value,
-set it the same way on real boats:
+fixes - with batching on, that number drops roughly in proportion to
+`TX_BATCH_SIZE` for the same fix rate. No env var needs setting on a real
+boat to get this - `TX_BATCH_SIZE=4` is already the default:
 
 ```
-TX_BATCH_SIZE=4 npm run boat
+npm run boat
 ```
 
 ### What happens when a send fails (and why it never retries stale data)
@@ -1483,7 +1489,7 @@ actually use. Redis password is redacted.
 | `TX_FINISH_APPROACH_ZONE_M` | 0 (off) | Boat only - within this many meters of the finish line, closing on it while sailing upwind, `TX_DISTANCE_M` is replaced by `TX_FINISH_DISTANCE_M` below for much more frequent reporting right at a close finish. `0` disables this entirely (`TX_DISTANCE_M` applies everywhere) - off by default until the rover's actual achievable fix spacing at real finish speeds is validated in the field |
 | `TX_FINISH_DISTANCE_M` | 0.3 | Boat only - the tightened movement gate itself, only in effect inside `TX_FINISH_APPROACH_ZONE_M` |
 | `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` - always sends at least this often. `0` disables (distance gate only) |
-| `TX_BATCH_SIZE` | 1 | How many consecutive fixes to pack into one radio transmission - `1` (default) sends one frame per fix, unchanged from before this existed. Clamped to `MAX_BATCH_COUNT` (4 - this fleet's actual radio hardware's own payload limit, see "Batching multiple fixes per send" above), not the wire format's own theoretical cap |
+| `TX_BATCH_SIZE` | 4 | How many consecutive fixes to pack into one radio transmission - defaults to 4 (`MAX_BATCH_COUNT`, this fleet's actual radio hardware's own payload limit, see "Batching multiple fixes per send" above); `1` sends one frame per fix, this app's original behavior |
 | `ROVER_SHUTDOWN_AT` | unset (off) | Boat only - 24h local time (`"HH:MM"`) after which shutdown can trigger |
 | `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only - continuous idle minutes required after `ROVER_SHUTDOWN_AT` |
 | `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only - speed below which a fix counts as stationary |
