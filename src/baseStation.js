@@ -2041,7 +2041,7 @@ function main() {
     // ...) is caught, tracked, and rate-limit logged inside redisStore.js
     // itself now (see its own comment), surfaced on the admin dashboard's
     // Redis card rather than needing a .catch() here.
-    redisStore.recordFix(decoded, new Date());
+    redisStore.recordFix(decoded);
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
     const now = Date.now();

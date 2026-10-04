@@ -57,15 +57,22 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 // Stored members use short keys (see packFix/unpackFix) rather than the
 // full field names - with a fleet reporting every couple seconds over a
 // multi-hour race, the field names alone (`boatId`, `speedKnots`,
-// `headingDeg`, `gnssFixOk`, `receivedAt`, ...) would otherwise account for
+// `headingDeg`, `gnssFixOk`, `carrSoln`, ...) would otherwise account for
 // close to half of every stored record. `timestamp` isn't stored at all -
 // it's already the sorted-set score, so it's recovered via WITHSCORES on
 // read instead of being duplicated in the payload. Callers still get back
 // full, friendly field names from getBoatTrack/getAllTrack - the shortening
 // is purely a storage-format detail.
-const FIX_KEYS = { b: 'boatId', la: 'lat', lo: 'lon', s: 'speedKnots', h: 'headingDeg', f: 'gnssFixOk', c: 'carrSoln', n: 'numSV', r: 'receivedAt' };
+// No arrival-time field is stored (an `r: receivedAt` key used to be): a fix's
+// time is its own GPS timestamp, which is already the sorted-set score. The
+// base used to stamp each unpacked fix with `new Date()`, and since a batch
+// frame (see protocol.js) delivers up to 4 fixes in one radio read, all of
+// them got an identical value - a consumer reading it saw 4 fixes at one
+// instant and then a jump. Nothing in a stored fix may come from when the
+// base happened to receive it.
+const FIX_KEYS = { b: 'boatId', la: 'lat', lo: 'lon', s: 'speedKnots', h: 'headingDeg', f: 'gnssFixOk', c: 'carrSoln', n: 'numSV' };
 
-function packFix(decoded, receivedAt) {
+function packFix(decoded) {
   return JSON.stringify({
     b: decoded.boatId,
     la: decoded.lat,
@@ -75,7 +82,6 @@ function packFix(decoded, receivedAt) {
     f: decoded.gnssFixOk,
     c: decoded.carrSoln,
     n: decoded.numSV,
-    r: receivedAt.getTime(),
   });
 }
 
@@ -83,7 +89,11 @@ function unpackFix(member, timestamp) {
   const packed = JSON.parse(member);
   const fix = { timestamp };
   for (const [short, full] of Object.entries(FIX_KEYS)) fix[full] = packed[short];
-  fix.receivedAt = new Date(fix.receivedAt).toISOString();
+  // Kept only so existing consumers that read a `receivedAt` field keep
+  // working - it is now just the fix's own GPS timestamp, never arrival
+  // time. Also applies to members written before this change: any stored
+  // `r` (arrival) value is ignored, so archived tracks read correctly too.
+  fix.receivedAt = new Date(timestamp).toISOString();
   return fix;
 }
 
@@ -248,11 +258,11 @@ class RedisStore {
     return !!(last && distanceMeters(last.lat, last.lon, decoded.lat, decoded.lon) < this.minMovementM);
   }
 
-  async recordFix(decoded, receivedAt) {
+  async recordFix(decoded) {
     await this.ready;
     if (this.wouldSkipRecordFix(decoded)) return;
 
-    const member = packFix(decoded, receivedAt);
+    const member = packFix(decoded);
     const score = decoded.timestamp;
     const prefix = this._prefix();
     const boatTrackKey = `${prefix}boat:${decoded.boatId}:track`;

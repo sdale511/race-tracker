@@ -445,6 +445,15 @@ boat to get this - `TX_BATCH_SIZE=4` is already the default:
 npm run boat
 ```
 
+**Timestamps inside a batch.** A fix's time is always its own GPS
+`timestamp` (the Redis sorted-set score), so a 2Hz simulator produces fixes
+500ms apart even when 4 arrive in one batch frame. The base stores no
+arrival time in a fix: it used to stamp each unpacked fix with `new Date()`
+(a `receivedAt`), which gave every fix in a batch the identical value. Track
+points returned from Redis still carry a `receivedAt` field for existing
+consumers, but it is now just the GPS timestamp, including for fixes stored
+before this change.
+
 ### What happens when a send fails (and why it never retries stale data)
 
 A boat never queues-and-retries a fix that fails to go out - it's always
