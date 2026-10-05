@@ -424,6 +424,18 @@ module.exports = {
   // with the base, a wake request is repeated every wakeRepeatMs for a full
   // cycle plus a listen window (see baseStation.js's wakeFleet).
   sleep: {
+    // GPS sleep (see gpsSleep.js): the GPS board is put into u-blox software
+    // backup mode for the whole sleep, and woken (by a byte on its UART RX
+    // line) only when the rover wakes - not on every listen window, since
+    // each wake costs a reacquisition. Real-GPS only, except `simWakeDelayMs`.
+    gps: {
+      // The receiver refuses backup while its USB port is connected; set
+      // GPS_SLEEP_FORCE_USB=1 to force it anyway (disables its USB).
+      forceUsb: process.env.GPS_SLEEP_FORCE_USB === '1' || process.env.GPS_SLEEP_FORCE_USB === 'true',
+      // SIMULATE only: how long the simulated GPS reports nothing after a
+      // wake, standing in for a hot-start reacquisition (a few seconds).
+      simWakeDelayMs: parseInt(process.env.GPS_SIM_WAKE_DELAY_MS || '3000', 10),
+    },
     // Seconds asleep between listen windows. Carried in the sleep frame, so
     // the base's value wins; a rover only falls back to its own for a frame
     // that carries 0. Max 255 (one byte on the wire).

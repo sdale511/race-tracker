@@ -87,6 +87,7 @@ function startShutdownScheduler({
   shutdownSpeedKn,
   shutdownCheckIntervalMs,
   getLastFix,
+  isSuspended = () => false,
   runShutdown = defaultRunShutdown,
 }) {
   const capable = isShutdownCapablePlatform();
@@ -116,6 +117,13 @@ function startShutdownScheduler({
 
   function tick() {
     if (state.triggered || !state.shutdownAt || !capable) return;
+    // Radio sleep mode (see roverSleep.js) silences the GPS on purpose; that
+    // silence must not count toward the idle shutdown, or a rover put to
+    // sleep past its shutdown time would power itself off and could not be woken.
+    if (isSuspended()) {
+      state.idleSince = null;
+      return;
+    }
     const result = evaluateGate({
       shutdownAt: state.shutdownAt,
       shutdownSpeedKn: state.shutdownSpeedKn,

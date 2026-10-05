@@ -429,8 +429,33 @@ class UbxParser extends EventEmitter {
 const TMODE3_MODE_NAMES = { 0: 'disabled', 1: 'survey-in', 2: 'fixed' };
 const RTCM_MSG_USED_NAMES = { 0: 'unknown', 1: 'not used', 2: 'used' };
 
+// UBX-RXM-PMREQ (0x02 0x41): puts the receiver into software backup mode -
+// "sleep" - until a wake source fires. Used by gpsSleep.js. Layout (16
+// bytes, message version 0): version(1) reserved(3) duration(4, ms; 0 =
+// stay in backup until a wake edge) flags(4) wakeupSources(4). flags bit 1 =
+// backup, bit 2 = force (backup even with USB connected; the receiver
+// refuses plain backup while USB is attached). wakeupSources bit 3 = an edge
+// on the UART RX pin, so any byte written to the receiver wakes it. The
+// receiver then restarts; with its backup RAM intact it hot-starts. Not
+// available on UART2 (u-blox integration manual, 3.1.x) - this app's GPS
+// is on UART1.
+const ID_RXM_PMREQ = 0x41;
+const PMREQ_FLAG_BACKUP = 0x02;
+const PMREQ_FLAG_FORCE = 0x04;
+const PMREQ_WAKE_UARTRX = 0x08;
+
+function encodePmreq({ durationMs = 0, force = false } = {}) {
+  const payload = Buffer.alloc(16);
+  payload.writeUInt8(0, 0); // version
+  payload.writeUInt32LE(durationMs, 4);
+  payload.writeUInt32LE(PMREQ_FLAG_BACKUP | (force ? PMREQ_FLAG_FORCE : 0), 8);
+  payload.writeUInt32LE(PMREQ_WAKE_UARTRX, 12);
+  return buildFrame(CLASS_RXM, ID_RXM_PMREQ, payload);
+}
+
 module.exports = {
   UbxParser,
+  encodePmreq,
   PVT_LENGTH,
   SVIN_LENGTH,
   TMODE3_LENGTH,

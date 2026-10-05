@@ -517,11 +517,58 @@ link itself, using one frame type (`protocol.js`'s `encodePower`, sync
   (Digi datasheet). Sleeping 10 s with a ~1 s listen window saves roughly
   90 mW of the radio's ~96 mW, which is small next to the Pi Zero 2 W
   (~0.5 W) - so measure whole-rover current before relying on it. The GPS
-  board is not put to sleep yet.
+  board sleeps too, see "GPS sleep and cold starts" below.
 - **Try it in simulation:** `SIMULATE=1` boats and base use a UDP "radio"
   that really goes deaf while asleep - start `npm run base` and a boat or
   `npm run fleet`, then use the Radio sleep card. `SLEEP_CYCLE_S=4` keeps
   the wait short.
+
+#### GPS sleep and cold starts
+
+When a rover sleeps, its GPS board sleeps with it (`gpsSleep.js`) - for the
+whole sleep, not each 10 s listen window, because every wake costs a
+reacquisition. The base's wake frame wakes the radio, and the rover then wakes
+the GPS; the first fresh fix is sent straight away (not the stale pre-sleep
+one), and the idle-shutdown timer ignores a sleeping rover's silence.
+
+- **How:** a `UBX-RXM-PMREQ` command (`ubxParser.js`'s `encodePmreq`) puts the
+  ZED-F9P in *software backup mode* with a UART RX edge as the wake source;
+  any byte written to it wakes it. The rover also sends one such byte when it
+  starts, so a rover restarted while its GPS slept recovers. Backup mode is
+  not available on UART2, and the receiver refuses it while its USB port is
+  connected - set `GPS_SLEEP_FORCE_USB=1` to force it (that disables the
+  receiver's USB).
+- **Power:** software backup draws about 1.4 mA (ZED-F9P-04B datasheet,
+  `I_SWBCKP`) against about 68 mA at 3.0 V tracking (ZED-F9P product summary) -
+  roughly 4 mW instead of 200 mW at the chip. The 45 uA figure in the same
+  datasheet is *hardware* backup (main supply removed), which this is not.
+  The ArduSimple board's own draw on 5 V is unmeasured.
+- **Staying hot:** the receiver keeps its ephemeris, almanac, position, time
+  and saved configuration in battery-backed RAM (BBR), which survives as long as
+  its `V_BCKP` pin is supplied. Software backup leaves the main supply on, so
+  this should hold without a battery *if* the board feeds `V_BCKP` from its
+  3.3 V rail (u-blox: "if no backup supply voltage is available, connect the
+  V_BCKP pin to VCC"). ArduSimple offers an optional `V_BCKP` backup battery
+  (its hand-soldering service) and its Budget user guide does not say whether
+  the pin is otherwise tied to the rail - ask them, or check the schematic,
+  for your SKU. u-blox's own manual is not explicit about BBR in software
+  backup, and others have reported losing it, so **measure it**: the rover
+  logs `[gps] first valid fix N.Ns after waking` and `[gps] RTK fixed N.Ns after
+  waking` after every wake. A hot start is a few seconds; 20-40 s means a
+  cold start (a warning is logged past 15 s). If it is cold, fit the
+  `V_BCKP` battery.
+- **Expected non-failures:** ephemeris is only good for about 4 hours, so a
+  rover asleep longer than that warm-starts (18-36 s to download ephemeris).
+  And a hot start does not shortcut RTK: reaching an RTK fix needs fresh
+  observations and correction data either way, so expect the RTK-fixed line to
+  come well after the first-fix one.
+- **Receiver configuration** must live in flash/BBR, not just RAM, to survive the
+  restart - the `ubxtool ... ,7` commands above write all layers.
+- Optional extra check: `UBX-MON-SYS` `bootType` reads 5 (software backup)
+  after a proper backup wake.
+- **In simulation** the simulated boat keeps moving but reports nothing while
+  asleep, then stays silent for `GPS_SIM_WAKE_DELAY_MS` (3000) after waking,
+  standing in for a hot start.
 
 ### What happens when a send fails (and why it never retries stale data)
 
@@ -1576,6 +1623,8 @@ actually use. Redis password is redacted.
 | `RADIO_SLEEP_GPIO` | unset | Boat only - BCM number of the Pi GPIO wired to the XBee's SLEEP_RQ pin (17 recommended) - without it a real rover ignores sleep commands; simulation always supports sleep |
 | `SLEEP_CYCLE_S` | 10 | Seconds a sleeping rover stays asleep between listen windows (1-255). The base's value rides in the sleep frame |
 | `SLEEP_LISTEN_MS` | 1500 | Boat only - how long the radio stays on each cycle listening for a wake frame - must cover the real XBee's wake-up time |
+| `GPS_SLEEP_FORCE_USB` | unset | Boat only - force the GPS into backup mode even with its USB port connected (disables its USB) - see "GPS sleep and cold starts" |
+| `GPS_SIM_WAKE_DELAY_MS` | 3000 | `SIMULATE` only - how long the simulated GPS reports nothing after a wake (a stand-in hot start) |
 | `WAKE_REPEAT_MS` | 250 | Base only - gap between repeats of a wake frame |
 | `HELLO_STARTUP_JITTER_MS` | 3000 | Boat only - max random delay before the first hello announcement (and, since the retry interval inherits it, every retry after) - see "Boat startup announcement" above |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
@@ -1622,6 +1671,9 @@ actually use. Redis password is redacted.
   the XBee takes to wake after the pin drops (sets the minimum useful
   `SLEEP_LISTEN_MS`), and whole-rover current with the radio asleep. Only
   the simulated UDP radio has been exercised so far.
+- GPS sleep on a real ZED-F9P: that `UBX-RXM-PMREQ` actually enters backup on
+  your board, that a byte on UART1 RX wakes it, and above all the time to first
+  fix after a wake (the rover logs it) - i.e. whether `V_BCKP` is supplied.
 - Actual achievable baud/range tradeoff for your specific radio model
 - Whether the Pi's hardware UART (`/dev/ttyAMA0`) holds up as reliably over
   a full race day as the simpleRTK2B LR's own USB port did before this

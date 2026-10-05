@@ -285,6 +285,7 @@ IDs are stable so the tool can reference them. MUST = required, SHOULD = strongl
 7. Does the Pi Zero 2 W's micro-USB data port supply 5 V when a device is attached? Check the Pi Zero 2 W reduced schematic (R-RAD-4).
 8. USB-serial bridge IC choice, by stock and price at 100 units.
 9. Target board outline limit (R-MECH-3).
+10. Is the GPS board's `V_BCKP` pin supplied (tied to the board's 3.3 V rail, or a fitted backup battery)? Rover GPS sleep relies on it to hot-start; see README "GPS sleep and cold starts". Not a carrier-board item unless the GPS module is ever mounted on the carrier itself.
 
 ## 7. Known errors in earlier project material - do not use
 

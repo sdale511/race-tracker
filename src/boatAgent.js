@@ -18,6 +18,7 @@ const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const { RoverSleep } = require('./roverSleep');
+const { GpsSleep } = require('./gpsSleep');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -189,6 +190,33 @@ if (config.simulate) {
 // while asleep; they just aren't transmitted until the base wakes the rover.
 const sleeper = new RoverSleep({ radio, listenMs: config.sleep.listenMs, defaultCycleS: config.sleep.cycleS });
 radio.on('power', (frame) => sleeper.handlePower(frame, config.boatId));
+
+// The GPS board sleeps along with the radio (see gpsSleep.js) - for its whole
+// sleep, not each listen window. `gpsSerial` is the real GPS's open serial
+// port (set by openGps), which GpsSleep writes its backup/wake commands to.
+let gpsSerial = null;
+const gpsSleep = new GpsSleep({
+  mode: gpsMode,
+  write: (buf) => !!gpsSerial && gpsSerial.isOpen && gpsSerial.write(buf),
+  forceUsb: config.sleep.gps.forceUsb,
+  simWakeDelayMs: config.sleep.gps.simWakeDelayMs,
+});
+// True from a wake until the first fresh fix has been reported - the stale
+// pre-sleep fix mustn't be sent as if it were current.
+let announceNextFix = false;
+
+// Every fix from the GPS source (real or simulated) comes through here: while
+// the GPS sleeps (or is still reacquiring) it's dropped, and the first fresh
+// fix after a wake is sent immediately instead of waiting for the movement gate.
+function onGpsFix(pvt) {
+  if (gpsSleep.shouldDrop(pvt, { valid: hasValidFix(pvt), rtkFixed: pvt.carrSoln === 2 })) return;
+  handlePvt(pvt);
+  if (announceNextFix && hasValidFix(pvt) && !sleeper.isSleeping()) {
+    announceNextFix = false;
+    if (pendingBatch.length) flushPendingBatch();
+    else if (lastTxTime !== pvt.timestamp) transmitFix(pvt);
+  }
+}
 // Nothing transmits while the rover is in sleep mode - including during a
 // listen window, when the radio is physically up but only to hear a wake
 // frame. Enforced here, once, rather than relying on every send call site.
@@ -789,16 +817,21 @@ radio.on('ping', () => {
 // them rather than sending them as a "fresh" batch afterwards.
 sleeper.on('sleep', () => {
   pendingBatch = [];
+  announceNextFix = false;
+  gpsSleep.sleep();
 });
 
-// Waking from radio sleep: announce this rover straight away so the base
-// sees it come back, same jittered reply a ping gets (see above) so a whole
-// fleet woken by one "all" frame doesn't key up in the same instant. A
-// rover with no valid fix yet says hello instead.
+// Waking from radio sleep: wake the GPS, and announce this rover straight
+// away so the base sees it come back - a hello now (jittered like a ping
+// reply, so a whole fleet woken by one "all" frame doesn't key up in the same
+// instant), then the position itself as soon as the GPS has a fresh fix (see
+// onGpsFix). A rover with no GPS at all just reports its last known fix.
 sleeper.on('wake', () => {
+  gpsSleep.wake();
+  announceNextFix = gpsSleep.supported;
   const delayMs = Math.random() * config.pingResponseJitterMs;
   setTimeout(() => {
-    if (lastPvt && hasValidFix(lastPvt)) transmitFix(lastPvt);
+    if (!gpsSleep.supported && lastPvt && hasValidFix(lastPvt)) transmitFix(lastPvt);
     else radio.send(protocol.encodeHello(config.boatId));
   }, delayMs);
 });
@@ -813,6 +846,9 @@ function openGps() {
 
   const parser = new UbxParser();
 
+  gpsSerial = gpsPort;
+  gpsPort.on('open', () => gpsSleep.wakeOnStartup()); // see GpsSleep.wakeOnStartup
+
   gpsPort.on('data', (chunk) => parser.write(chunk));
   gpsPort.on('close', () => {
     console.warn('[gps] port closed, retrying in 3s');
@@ -825,7 +861,7 @@ function openGps() {
     // worry if this fires constantly.
   });
 
-  parser.on('nav-pvt', handlePvt);
+  parser.on('nav-pvt', onGpsFix);
 
   // The only direct evidence this app can show that RTCM corrections are
   // actually reaching the receiver - that link runs over the module's own
@@ -1016,7 +1052,7 @@ function startGpsSimIfReady() {
   // inside the constructor itself) before the 'on-grid' IPC message below,
   // so fleetSim.js's fleet-wide "on-grid" count never runs ahead of this
   // boat's actual position having been transmitted at least once.
-  gps.on('nav-pvt', handlePvt);
+  gps.on('nav-pvt', onGpsFix);
   gps.emitInitialFixIfDwelling();
   // The operator's start signal may have already arrived before this boat
   // even reached the grid (marks can take a moment - see freshMarksReceived
@@ -1105,7 +1141,7 @@ function getRoverStats() {
     radioMode,
     currentMarks,
     currentRegattaName,
-    sleep: sleeper.status(),
+    sleep: { ...sleeper.status(), gps: gpsSleep.status() },
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
     pendingCount: countPending(config.boatLogDir, config.boatId, config.logChunkMinutes),
@@ -1211,6 +1247,7 @@ const powerScheduler = startShutdownScheduler({
   shutdownSpeedKn: config.power.shutdownSpeedKn,
   shutdownCheckIntervalMs: config.power.shutdownCheckIntervalMs,
   getLastFix: () => lastPvt,
+  isSuspended: () => sleeper.isSleeping(), // a sleeping rover's GPS is silent on purpose - not "idle"
 });
 
 startRoverAdminServer({
