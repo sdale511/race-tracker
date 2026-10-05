@@ -220,7 +220,7 @@ function renderDashboard(s, power) {
 </style>
 </head>
 <body>
-  <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}</h1>
+  <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}${s.sleep && s.sleep.state !== 'awake' ? ' &middot; <span style="color:#58a6ff;">RADIO ASLEEP</span>' : ''}</h1>
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
     &nbsp;·&nbsp; Regatta: ${s.currentRegattaName || 'not set'}

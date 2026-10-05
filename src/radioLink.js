@@ -1,5 +1,6 @@
 const { SerialPort } = require('serialport');
 const { EventEmitter } = require('events');
+const { execFile } = require('child_process');
 const protocol = require('./protocol');
 
 // Wraps the telemetry radio's UART. Assumes a transparent-serial radio
@@ -8,10 +9,16 @@ const protocol = require('./protocol');
 // specific framing needed on our side; we handle framing at the app layer
 // with protocol.js.
 class RadioLink extends EventEmitter {
-  constructor({ port, baud }) {
+  constructor({ port, baud, sleepGpio = null }) {
     super();
     this.portPath = port;
     this.baud = baud;
+    // BCM number of the Pi GPIO wired to the XBee's SLEEP_RQ pin (pin 9), or
+    // null when it isn't wired - see README's "Radio sleep wiring". The
+    // XBee must also be set to SM=1 (pin sleep) for the pin to do anything.
+    this.sleepGpio = sleepGpio;
+    this._sleeping = false;
+    if (this.sleepGpio !== null) this._driveSleepPin(false); // start awake, whatever the pin was left at
     this._buf = Buffer.alloc(0);
     // True once the local serial write buffer has room - see send() below.
     // A fresh SerialPort (initial connect, or any reconnect via _open())
@@ -50,6 +57,28 @@ class RadioLink extends EventEmitter {
     });
   }
 
+  get canSleep() {
+    return this.sleepGpio !== null;
+  }
+
+  // Powers the XBee down (SLEEP_RQ high) or back up (low) - see
+  // roverSleep.js. While asleep the module can't receive RF or read the
+  // UART, so send() refuses rather than handing it bytes that would be
+  // lost. Uses Raspberry Pi OS's `pinctrl` tool (no native GPIO dependency);
+  // that's untested on real hardware as of this writing, same as the
+  // simulator-first rollout of the sleep feature as a whole.
+  setSleeping(sleeping) {
+    if (this.sleepGpio === null) return;
+    this._sleeping = !!sleeping;
+    this._driveSleepPin(this._sleeping);
+  }
+
+  _driveSleepPin(high) {
+    execFile('pinctrl', ['set', String(this.sleepGpio), 'op', high ? 'dh' : 'dl'], (err) => {
+      if (err) this.emit('error', new Error(`could not drive SLEEP_RQ on GPIO${this.sleepGpio}: ${err.message}`));
+    });
+  }
+
   _scheduleReconnect() {
     if (this._reconnecting) return;
     this._reconnecting = true;
@@ -72,6 +101,7 @@ class RadioLink extends EventEmitter {
   // next time" behavior (see boatAgent.js's transmitFix/flushPendingBatch)
   // covers congestion too, not just a literally-disconnected radio.
   send(buf) {
+    if (this._sleeping) return false; // radio powered down - see setSleeping()
     if (!this.port || !this.port.isOpen) return false;
     if (!this._writable) return false; // still draining a backed-up buffer - don't pile more on top of it
     if (!this.port.write(buf)) this._writable = false; // this write itself filled the buffer - wait for 'drain'
@@ -93,10 +123,11 @@ class RadioLink extends EventEmitter {
     return this.send(buf);
   }
 
-  // Six frame types share this one byte stream (position frames,
+  // Eight frame types share this one byte stream (position frames,
   // boat->base; mark broadcasts, base->boats; ping requests, base->boats;
   // hello announcements, boat->base; batched position frames, boat->base;
-  // set-mark requests, boat->base - see protocol.js's own comment on each)
+  // set-mark requests, boat->base; mark-log notes, boat->base; sleep/wake
+  // commands, base->boats - see protocol.js's own comment on each)
   // - each with its own sync byte, since a single radio link hears
   // everything broadcast on the network, not just frames addressed to
   // "me". Every type but the batch one has a fixed `len`; the batch
@@ -110,6 +141,7 @@ class RadioLink extends EventEmitter {
     { sync: protocol.BATCH_SYNC, getLen: protocol.batchFrameLenFromHeader, decode: protocol.decodeBatch, event: 'frame-batch' },
     { sync: protocol.SET_MARK_SYNC, len: protocol.SET_MARK_FRAME_LEN, decode: protocol.decodeSetMark, event: 'set-mark' },
     { sync: protocol.MARK_LOG_SYNC, len: protocol.MARK_LOG_FRAME_LEN, decode: protocol.decodeMarkLog, event: 'mark-log' },
+    { sync: protocol.POWER_SYNC, getLen: protocol.powerFrameLenFromHeader, decode: protocol.decodePower, event: 'power' },
   ];
 
   // Used on both ends: scans incoming bytes for valid frames of either type.

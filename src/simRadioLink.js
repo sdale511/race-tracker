@@ -19,6 +19,8 @@ function decodeDatagram(msg) {
   if (hello) return { event: 'hello', decoded: hello };
   const batch = protocol.decodeBatch(msg);
   if (batch) return { event: 'frame-batch', decoded: batch };
+  const power = protocol.decodePower(msg);
+  if (power) return { event: 'power', decoded: power };
   return null;
 }
 
@@ -41,10 +43,16 @@ class SimRadioLink extends EventEmitter {
     super();
     this.port = port;
     this.packetLossPct = packetLossPct;
+    // True while this node's radio is "powered down" for sleep mode (see
+    // roverSleep.js): it hears nothing and can't send, exactly like the
+    // real XBee in pin sleep. The UDP socket itself stays bound - only the
+    // application-visible radio is off.
+    this._sleeping = false;
     this.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     this.socket.on('error', (err) => this.emit('error', err));
 
     this.socket.on('message', (msg) => {
+      if (this._sleeping) return; // radio off - the datagram is simply never heard
       // Same 'bytes' event RadioLink emits, for interface consistency - see
       // baseStation.js's bandwidth card. SIMULATE=1 has no real airtime
       // limit (see radioCongestionTest.js's own comment on this), so this
@@ -73,7 +81,18 @@ class SimRadioLink extends EventEmitter {
     });
   }
 
+  // Sleep mode support (see roverSleep.js) - the simulated stand-in for the
+  // real RadioLink's SLEEP_RQ pin. Always available in simulation.
+  get canSleep() {
+    return true;
+  }
+
+  setSleeping(sleeping) {
+    this._sleeping = !!sleeping;
+  }
+
   send(buf) {
+    if (this._sleeping) return false; // radio off
     if (this.packetLossPct > 0 && Math.random() * 100 < this.packetLossPct) {
       return true; // simulate a frame lost over the air; still "sent" from the caller's perspective
     }

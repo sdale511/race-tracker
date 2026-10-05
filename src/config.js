@@ -408,6 +408,34 @@ module.exports = {
     enabled: process.env.RADIO_ENABLED !== '0' && process.env.RADIO_ENABLED !== 'false',
     port: process.env.RADIO_PORT || '/dev/ttyUSB0',
     baud: parseInt(process.env.RADIO_BAUD || '115200', 10),
+    // BCM GPIO number wired to the XBee's SLEEP_RQ pin (pin 9), used by
+    // radio sleep mode (see `sleep` below / roverSleep.js). Unset = not
+    // wired, so a real rover ignores sleep commands (SIMULATE=1 always
+    // supports them). GPIO17 (header pin 11) is the recommended choice -
+    // see README's "Radio sleep wiring". The XBee also needs SM=1.
+    sleepGpio: process.env.RADIO_SLEEP_GPIO ? parseInt(process.env.RADIO_SLEEP_GPIO, 10) : null,
+  },
+
+  // --- Radio sleep mode (base commands it, rovers obey it) ---
+  // The base can put rovers to sleep (and wake them again) with a power
+  // frame - see protocol.js's encodePower. A sleeping rover powers its radio
+  // down and wakes it for a short listen window every cycleS seconds, long
+  // enough to catch a wake frame. Because each rover's cycle is unsynchronised
+  // with the base, a wake request is repeated every wakeRepeatMs for a full
+  // cycle plus a listen window (see baseStation.js's wakeFleet).
+  sleep: {
+    // Seconds asleep between listen windows. Carried in the sleep frame, so
+    // the base's value wins; a rover only falls back to its own for a frame
+    // that carries 0. Max 255 (one byte on the wire).
+    cycleS: Math.max(1, Math.min(255, parseInt(process.env.SLEEP_CYCLE_S || '10', 10) || 10)),
+    // How long a rover keeps its radio on each cycle listening for a wake
+    // frame. Must cover the radio's own wake-up time (unmeasured on the real
+    // XBee) plus a few of the base's repeats.
+    listenMs: parseInt(process.env.SLEEP_LISTEN_MS || '1500', 10),
+    // Base only: gap between repeats of a wake frame, and how many times the
+    // sleep command itself is sent (rovers are awake then, so a few suffice).
+    wakeRepeatMs: parseInt(process.env.WAKE_REPEAT_MS || '250', 10),
+    sleepRepeats: 3,
   },
 
   // --- Scheduled shutdown (boat only) ---

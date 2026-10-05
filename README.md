@@ -53,6 +53,39 @@ sudo raspi-config   # Interface Options -> Serial Port
   for RTCM correction radios, unrelated to this app), so a general
   breakout pin is more likely UART1 - verify, don't assume (see below).
 
+### Radio sleep wiring (XBee SLEEP_RQ)
+
+Optional - only needed for rover radio sleep mode (see "Radio sleep mode"
+below). One extra wire from a Pi GPIO to the XBee's SLEEP_RQ pin, next to
+the radio's UART wiring above:
+
+| From | To | Notes |
+|---|---|---|
+| Pi **GPIO17** (header pin 11, 3.3 V) | XBee **pin 9** (SLEEP_RQ / DTR) | High = radio asleep, low = awake |
+| Pi GND (header pin 9, right next to pin 11) | XBee GND | Shared ground, usually already there via the UART wiring |
+| 10 kohm resistor | XBee pin 9 to GND | Pull-down, so the radio stays awake while the Pi is off or still booting |
+
+- **Why GPIO17:** GPIO9-27 are pulled *down* at boot, whereas GPIO0-8 are
+  pulled *up* and would put the radio to sleep during every Pi boot. GPIO17
+  also isn't claimed by anything this app uses or by a default overlay (UART
+  GPIO14/15, I2C GPIO2/3, SPI GPIO7-11, 1-wire GPIO4, PWM/PCM GPIO12/13/18/19),
+  and sits on header pin 11 with GND on pin 9 beside it, so one short
+  cable can carry the UART (pins 8/10) and this wire. Any other free GPIO
+  from 9-27 works; set `RADIO_SLEEP_GPIO` to its BCM number.
+- **XBee setting:** the radio must be in pin-sleep mode - `ATSM1`, then `ATWR`
+  (for example from XCTU). `xbee_configure_at.py` does not set this. Do it only
+  once the wire and pull-down are in place, because in `SM=1` a pin driven
+  high puts the radio to sleep and it cannot be reached over the UART until
+  the pin goes low again.
+- **If the radio is on a USB-serial bridge** whose DTR line is also wired to
+  XBee pin 9 (needed only for serial firmware updates), use a jumper or
+  solder bridge so just one of the two drives the pin - never both.
+- Optional: XBee ON_SLEEP (pin 13) to a spare Pi GPIO input, or an LED, to
+  see the radio's actual sleep state. The app doesn't read it.
+- `RADIO_SLEEP_GPIO=17` tells the rover app which pin to drive. Unset (the
+  default), a real rover ignores sleep commands. It uses Raspberry Pi OS's
+  `pinctrl` command to drive the pin.
+
 ## GPS configuration (one-time, via u-center or ubxtool)
 
 Each UART is configured independently - a GPIO-wired UART may still be at
@@ -453,6 +486,42 @@ arrival time in a fix: it used to stamp each unpacked fix with `new Date()`
 points returned from Redis still carry a `receivedAt` field for existing
 consumers, but it is now just the GPS timestamp, including for fixes stored
 before this change.
+
+### Radio sleep mode (base sleeps/wakes rovers to save power)
+
+The base can put rovers' radios to sleep and wake them again over the radio
+link itself, using one frame type (`protocol.js`'s `encodePower`, sync
+`0x99`, base to boats). From the base dashboard's **Radio sleep** card, or
+`POST /api/fleet-sleep` with `{ "action": "sleep" | "wake", "boatIds": [...],
+"cycleS": 10 }` - leave `boatIds` empty for every rover in range.
+
+```
+[0] 0x99   [1] action (1 sleep, 2 wake)   [2] sleepS   [3] count (0 = all)   [4..] boatIds x count   [last] checksum
+```
+
+- **Sleep:** the rover powers its radio down (the XBee's SLEEP_RQ pin, see
+  "Radio sleep wiring") and wakes it for `SLEEP_LISTEN_MS` every `cycleS`
+  seconds to listen for a wake frame. Nothing is transmitted while it is
+  asleep, but GPS fixes keep logging to the SD card.
+- **Wake:** a sleeping rover's listen windows aren't synchronised with the
+  base, so a single wake frame would almost always be missed. The base
+  repeats it every `WAKE_REPEAT_MS` for one full cycle plus a listen window.
+  A wake naming specific rovers stops early once they've all answered;
+  "all" runs the full duration. A woken rover immediately reports its
+  position (or a hello if it has no fix yet).
+- **"Asleep" on the dashboard** is the base's belief: it is set when the
+  command is sent and cleared the first time that rover is heard again.
+- A list frame carries up to 18 ids (95 bytes, under the fleet's NP=100
+  limit); longer lists are split across several frames.
+- **Power:** the radio draws about 29 mA receiving and about 2.5 uA asleep
+  (Digi datasheet). Sleeping 10 s with a ~1 s listen window saves roughly
+  90 mW of the radio's ~96 mW, which is small next to the Pi Zero 2 W
+  (~0.5 W) - so measure whole-rover current before relying on it. The GPS
+  board is not put to sleep yet.
+- **Try it in simulation:** `SIMULATE=1` boats and base use a UDP "radio"
+  that really goes deaf while asleep - start `npm run base` and a boat or
+  `npm run fleet`, then use the Radio sleep card. `SLEEP_CYCLE_S=4` keeps
+  the wait short.
 
 ### What happens when a send fails (and why it never retries stale data)
 
@@ -1504,6 +1573,10 @@ actually use. Redis password is redacted.
 | `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only - speed below which a fix counts as stationary |
 | `ROVER_SHUTDOWN_CHECK_INTERVAL_MS` | 30000 | Boat only - shutdown gate re-check interval |
 | `PING_RESPONSE_JITTER_MS` | 3000 | Boat only - max random delay replying to "Ping fleet" |
+| `RADIO_SLEEP_GPIO` | unset | Boat only - BCM number of the Pi GPIO wired to the XBee's SLEEP_RQ pin (17 recommended) - without it a real rover ignores sleep commands; simulation always supports sleep |
+| `SLEEP_CYCLE_S` | 10 | Seconds a sleeping rover stays asleep between listen windows (1-255). The base's value rides in the sleep frame |
+| `SLEEP_LISTEN_MS` | 1500 | Boat only - how long the radio stays on each cycle listening for a wake frame - must cover the real XBee's wake-up time |
+| `WAKE_REPEAT_MS` | 250 | Base only - gap between repeats of a wake frame |
 | `HELLO_STARTUP_JITTER_MS` | 3000 | Boat only - max random delay before the first hello announcement (and, since the retry interval inherits it, every retry after) - see "Boat startup announcement" above |
 | `MARKS_BROADCAST_INTERVAL_MS` | 60000 | Base only - course re-broadcast heartbeat |
 | `LOG_RECEIVED_FIXES` | unset (off) | Base only - `1` = console-echo every received frame. CSV/Redis/detection always run regardless |
@@ -1545,6 +1618,10 @@ actually use. Redis password is redacted.
 
 ## What still needs real-hardware testing
 
+- Radio sleep mode on real hardware: the `pinctrl`-driven SLEEP_RQ pin, how long
+  the XBee takes to wake after the pin drops (sets the minimum useful
+  `SLEEP_LISTEN_MS`), and whole-rover current with the radio asleep. Only
+  the simulated UDP radio has been exercised so far.
 - Actual achievable baud/range tradeoff for your specific radio model
 - Whether the Pi's hardware UART (`/dev/ttyAMA0`) holds up as reliably over
   a full race day as the simpleRTK2B LR's own USB port did before this

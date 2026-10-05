@@ -17,6 +17,7 @@ const { distanceMeters, MARK_NAMES } = require('./course');
 const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
+const { RoverSleep } = require('./roverSleep');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -160,6 +161,7 @@ let radioConnected = false;
 // cable/port problem vs. a congested link) instead of always blaming "not
 // connected" regardless of which one it really was.
 function radioDropReason() {
+  if (sleeper.isSleeping()) return 'asleep (radio sleep mode)';
   return radioConnected ? 'backed up (congested link?)' : 'not connected';
 }
 
@@ -173,7 +175,7 @@ if (config.simulate) {
   radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
 } else if (config.radio.enabled) {
-  radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+  radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud, sleepGpio: config.radio.sleepGpio });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
@@ -181,6 +183,17 @@ if (config.simulate) {
   radio = new EventEmitter(); // RADIO_ENABLED=0 - never emits 'frame'/'marks', other outputs still testable
   radio.send = () => false;
 }
+
+// Radio sleep mode (see roverSleep.js): the base can put this rover's radio to
+// sleep and wake it again with a power frame. GPS fixes keep logging to SD
+// while asleep; they just aren't transmitted until the base wakes the rover.
+const sleeper = new RoverSleep({ radio, listenMs: config.sleep.listenMs, defaultCycleS: config.sleep.cycleS });
+radio.on('power', (frame) => sleeper.handlePower(frame, config.boatId));
+// Nothing transmits while the rover is in sleep mode - including during a
+// listen window, when the radio is physically up but only to hear a wake
+// frame. Enforced here, once, rather than relying on every send call site.
+const rawRadioSend = radio.send.bind(radio);
+radio.send = (buf) => (sleeper.isSleeping() ? false : rawRadioSend(buf));
 
 // Course marks (windward/leeward/pin/committeeStart/committeeFinish/finish),
 // as last broadcast by
@@ -305,6 +318,7 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort, regattaName }) => {
 // is guaranteed to read as on-grid (see onGridWatcher.js) regardless of
 // which slot this boat ends up drawing once it actually starts.
 function sendMarksPing() {
+  if (sleeper.isSleeping()) return; // radio sleep mode - retries on its own interval once awake
   const pos = currentMarks
     ? {
         lat: (currentMarks.pin.lat + currentMarks.committeeStart.lat) / 2,
@@ -634,6 +648,7 @@ function handlePvt(pvt) {
 // (and therefore logging) every single fix forever.
 function transmitFix(pvt) {
   sdLogger.logPvt(pvt);
+  if (sleeper.isSleeping()) return; // radio sleep mode - SD-logged above, nothing to transmit
   const frame = protocol.encode(config.boatId, pvt);
   const sent = radio.send(frame);
   if (sent || !radioExpected) {
@@ -687,6 +702,7 @@ function flushPendingBatch() {
   const fixes = pendingBatch;
   pendingBatch = [];
   if (fixes.length === 0) return;
+  if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
 
   const frame = fixes.length === 1 ? protocol.encode(config.boatId, fixes[0]) : protocol.encodeBatch(config.boatId, fixes);
   const sent = radio.send(frame);
@@ -726,6 +742,7 @@ function sendHello() {
     helloIntervalId = null;
     return;
   }
+  if (sleeper.isSleeping()) return; // keeps retrying on its interval once awake
   const sent = radio.send(protocol.encodeHello(config.boatId));
   if (!sent && radioExpected) console.warn(`[radio] ${radioDropReason()}, dropped a hello frame (will keep retrying)`);
 }
@@ -765,6 +782,25 @@ radio.on('ping', () => {
   if (!lastPvt || !hasValidFix(lastPvt)) return; // no fix yet, or not a valid one - nothing to report
   const delayMs = Math.random() * config.pingResponseJitterMs;
   setTimeout(() => transmitFix(lastPvt), delayMs);
+});
+
+// Going to sleep: whatever fixes were still waiting to batch are already on
+// SD (logged as each was queued) and would be stale by wake time, so drop
+// them rather than sending them as a "fresh" batch afterwards.
+sleeper.on('sleep', () => {
+  pendingBatch = [];
+});
+
+// Waking from radio sleep: announce this rover straight away so the base
+// sees it come back, same jittered reply a ping gets (see above) so a whole
+// fleet woken by one "all" frame doesn't key up in the same instant. A
+// rover with no valid fix yet says hello instead.
+sleeper.on('wake', () => {
+  const delayMs = Math.random() * config.pingResponseJitterMs;
+  setTimeout(() => {
+    if (lastPvt && hasValidFix(lastPvt)) transmitFix(lastPvt);
+    else radio.send(protocol.encodeHello(config.boatId));
+  }, delayMs);
 });
 
 function openGps() {
@@ -1069,6 +1105,7 @@ function getRoverStats() {
     radioMode,
     currentMarks,
     currentRegattaName,
+    sleep: sleeper.status(),
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
     pendingCount: countPending(config.boatLogDir, config.boatId, config.logChunkMinutes),

@@ -344,6 +344,7 @@ function renderDashboard(s, rtkControlsEnabled) {
     return a < b ? -1 : a > b ? 1 : 0;
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (boats[id].pending || 0), 0);
+  const sleepingIds = s.sleep ? Object.keys(s.sleep.sleeping) : [];
 
   const redisStatus = redisStatusFor(s);
 
@@ -431,7 +432,7 @@ function renderDashboard(s, rtkControlsEnabled) {
         : '<span class="muted">—</span>';
       return `
         <tr>
-          <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
+          <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${sleepingIds.includes(id) ? ' <span class="muted" title="Put to sleep from the Radio sleep card - radio off until woken">💤 asleep</span>' : ''}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
           <td>${lastSeenRadio}</td>
           <td>${fixRate}</td>
@@ -630,6 +631,17 @@ function renderDashboard(s, rtkControlsEnabled) {
       <div class="sub">Asks every boat to report its current position now, even a stationary one that's already sent its one and only frame (e.g. sitting on the line since before this dashboard was up). Replies trickle in over the next few seconds.</div>
       <button type="button" class="card-btn" onclick="pingFleet(this)">Ping fleet</button>
     </div>
+    <div class="card">
+      <div class="label">Radio sleep</div>
+      <div class="sub">Powers rovers' radios down to save battery. A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas.</div>
+      <input type="text" id="sleepIds" placeholder="boat ids (blank = all)" style="width:100%;box-sizing:border-box;margin:6px 0;">
+      <input type="number" id="sleepCycle" min="1" max="255" value="${s.sleep ? s.sleep.cycleS : 10}" style="width:5em;"> <span class="muted">sec between listens</span>
+      <div style="margin-top:6px;">
+        <button type="button" class="card-btn" onclick="fleetSleep('sleep', this)">Sleep</button>
+        <button type="button" class="card-btn" onclick="fleetSleep('wake', this)">Wake</button>
+      </div>
+      ${sleepingIds.length ? `<div class="sub" style="margin-top:6px;">Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}</div>` : ''}
+    </div>
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${rtkControlsEnabled ? renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${rtkControlsEnabled ? renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
@@ -687,6 +699,29 @@ function renderDashboard(s, rtkControlsEnabled) {
     // Fleet table on this page's own next 5s refresh, so there's nothing
     // for this handler itself to wait on or reflect - just fire the
     // request and briefly confirm it went out.
+    // Radio sleep card (see fleetSleep.js) - confirms before sleeping, since a
+    // slept rover can't be reached until it hears a wake frame.
+    async function fleetSleep(action, btn) {
+      const ids = document.getElementById('sleepIds').value.split(',').map((x) => x.trim()).filter(Boolean);
+      const target = ids.length ? 'boat(s) ' + ids.join(', ') : 'EVERY rover in range';
+      if (action === 'sleep' && !confirm('Put ' + target + ' to sleep? They will not report positions until woken.')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/fleet-sleep', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, boatIds: ids, cycleS: Number(document.getElementById('sleepCycle').value) }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        btn.textContent = action === 'sleep' ? 'Sent' : 'Waking...';
+        setTimeout(() => location.reload(), 1500);
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
     async function pingFleet(btn) {
       btn.disabled = true;
       try {
@@ -1828,6 +1863,8 @@ function startAdminServer({
   setPinBoundaryEnabled,
   resetCourseToDefault,
   pingFleet,
+  sleepFleet,
+  wakeFleet,
   selectRegatta,
   getMarkAssignment,
   setMarkAssignment,
@@ -1877,6 +1914,26 @@ function startAdminServer({
     if (req.url === '/api/ping-fleet' && req.method === 'POST') {
       try {
         pingFleet();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Radio sleep mode (see fleetSleep.js) - the dashboard's "Radio sleep"
+    // card. Body: { action: 'sleep'|'wake', boatIds?: string[], cycleS?: number }.
+    // No boatIds = every rover. Fire-and-forget like ping-fleet: a wake keeps
+    // repeating in the background for up to a full sleep cycle.
+    if (req.url === '/api/fleet-sleep' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        const boatIds = Array.isArray(body.boatIds) ? body.boatIds : [];
+        if (body.action === 'sleep') sleepFleet({ boatIds, ...(body.cycleS ? { cycleS: Number(body.cycleS) } : {}) });
+        else if (body.action === 'wake') wakeFleet({ boatIds });
+        else throw new Error('action must be "sleep" or "wake"');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

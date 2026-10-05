@@ -587,6 +587,101 @@ function decodeMarkLog(buf) {
   };
 }
 
+// Eighth frame type: base -> boats, a sleep/wake command for the rover's
+// radio (see roverSleep.js) - "power" because it's the only frame that
+// changes a rover's power state. One frame type for both directions of the
+// command, since the two share every field:
+//
+//   sleep  Tells the targeted rovers to power their radio down and wake it
+//          for a short listen window every `sleepS` seconds. Sent while the
+//          rovers are awake and listening, so a few quick repeats are enough.
+//   wake   Tells whichever targeted rovers hear it to leave sleep. A
+//          sleeping rover only listens briefly every `sleepS` seconds and
+//          its timer isn't synchronised with the base's, so one wake frame
+//          is almost always missed - the base repeats it for a full sleep
+//          cycle plus a listen window (see baseStation.js's wakeFleet).
+//
+// Targeting: count 0 means EVERY rover in range ("all"); otherwise exactly
+// `count` boatIds follow and only those rovers act on the frame. A list is
+// capped at MAX_POWER_IDS so the frame stays under this fleet's NP=100
+// radio payload limit (5 + 18*5 = 95 bytes).
+//
+// Layout (all little-endian):
+//   [0]      sync byte  0x99
+//   [1]      action     uint8 (1 = sleep, 2 = wake)
+//   [2]      sleepS     uint8 - seconds between listen windows (sleep only;
+//                       0 = rover uses its own SLEEP_CYCLE_S default)
+//   [3]      count      uint8 - number of boatIds that follow (0 = all)
+//   [4..]    boatIds    count * BOAT_ID_LEN raw ASCII bytes
+//   [last]   checksum   uint8 (sum of bytes 1..N-2 mod 256)
+
+const POWER_SYNC = 0x99;
+const POWER_HEADER_LEN = 4; // sync + action + sleepS + count
+const MAX_POWER_IDS = 18; // 4 + 18*5 + 1 = 95 bytes
+const POWER_ACTIONS = { sleep: 1, wake: 2 };
+const POWER_ACTION_NAMES = { 1: 'sleep', 2: 'wake' };
+
+function powerFrameLen(count) {
+  return POWER_HEADER_LEN + count * BOAT_ID_LEN + 1;
+}
+
+// Same idea as batchFrameLenFromHeader: lets radioLink.js's byte-stream
+// scanner learn the full length from the header alone, and never computes a
+// length from an out-of-range count (a false 0x99 on noise must not make the
+// scanner wait on a frame that will never arrive).
+function powerFrameLenFromHeader(buf) {
+  if (buf.length < POWER_HEADER_LEN) return null;
+  const count = buf.readUInt8(3);
+  if (count > MAX_POWER_IDS) return POWER_HEADER_LEN + 1;
+  return powerFrameLen(count);
+}
+
+// boatIds: omit/empty = every rover ("all"); otherwise 1..MAX_POWER_IDS ids.
+function encodePower(action, { sleepS = 0, boatIds = [] } = {}) {
+  if (!POWER_ACTIONS[action]) throw new Error(`power action must be "sleep" or "wake", got ${JSON.stringify(action)}`);
+  if (!Number.isInteger(sleepS) || sleepS < 0 || sleepS > 255) throw new Error(`sleepS must be 0-255 seconds, got ${sleepS}`);
+  if (!Array.isArray(boatIds) || boatIds.length > MAX_POWER_IDS) {
+    throw new Error(`a power frame carries at most ${MAX_POWER_IDS} boatIds, got ${Array.isArray(boatIds) ? boatIds.length : typeof boatIds}`);
+  }
+  for (const id of boatIds) {
+    if (typeof id !== 'string' || id.length !== BOAT_ID_LEN) {
+      throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(id)}`);
+    }
+  }
+  const len = powerFrameLen(boatIds.length);
+  const buf = Buffer.alloc(len);
+  buf.writeUInt8(POWER_SYNC, 0);
+  buf.writeUInt8(POWER_ACTIONS[action], 1);
+  buf.writeUInt8(sleepS, 2);
+  buf.writeUInt8(boatIds.length, 3);
+  boatIds.forEach((id, i) => buf.write(id, POWER_HEADER_LEN + i * BOAT_ID_LEN, BOAT_ID_LEN, 'ascii'));
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, len - 1);
+  return buf;
+}
+
+// Returns { action: 'sleep'|'wake', sleepS, all, boatIds }, or null if the
+// buffer isn't a valid power frame. `all` is true when no ids are listed.
+function decodePower(buf) {
+  if (buf.length < POWER_HEADER_LEN + 1 || buf[0] !== POWER_SYNC) return null;
+  const action = POWER_ACTION_NAMES[buf.readUInt8(1)];
+  if (!action) return null;
+  const count = buf.readUInt8(3);
+  if (count > MAX_POWER_IDS) return null;
+  const len = powerFrameLen(count);
+  if (buf.length !== len) return null;
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[len - 1]) return null;
+  const boatIds = [];
+  for (let i = 0; i < count; i++) {
+    const at = POWER_HEADER_LEN + i * BOAT_ID_LEN;
+    boatIds.push(buf.toString('ascii', at, at + BOAT_ID_LEN));
+  }
+  return { action, sleepS: buf.readUInt8(2), all: count === 0, boatIds };
+}
+
 module.exports = {
   encode,
   decode,
@@ -619,4 +714,10 @@ module.exports = {
   decodeMarkLog,
   MARK_LOG_FRAME_LEN,
   MARK_LOG_SYNC,
+  encodePower,
+  decodePower,
+  powerFrameLen,
+  powerFrameLenFromHeader,
+  POWER_SYNC,
+  MAX_POWER_IDS,
 };

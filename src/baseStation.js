@@ -37,6 +37,7 @@ const path = require('path');
 const dgram = require('dgram');
 const util = require('util');
 const logBuffer = require('./logBuffer');
+const { FleetSleep } = require('./fleetSleep');
 
 // True while the cursor is sitting mid-line after an in-place base-GPS log
 // overwrite (see baseGps.js's own nav-pvt handler, wired to this via
@@ -849,6 +850,29 @@ function main() {
     lastOnGridSentByBoat.clear();
     radio.broadcast(protocol.encodePing());
     console.log(`[baseStation] ${new Date().toISOString()} pinged the fleet for current positions`);
+  }
+
+  // Radio sleep mode (see fleetSleep.js/roverSleep.js): the dashboard's
+  // "Radio sleep" card puts rovers to sleep and wakes them again with power
+  // frames. Only meaningful with a radio to talk over.
+  const fleetSleep = new FleetSleep({
+    radio,
+    sleepConfig: config.sleep,
+    getKnownBoatIds: () =>
+      Object.entries(stats.snapshot().boats)
+        .filter(([, b]) => b.lastSeen != null)
+        .map(([id]) => id),
+  });
+  function requireRadioForSleep() {
+    if (typeof radio.broadcast !== 'function') throw new Error('this base has no radio to send sleep/wake commands over');
+  }
+  function sleepFleet(opts) {
+    requireRadioForSleep();
+    return fleetSleep.sleep(opts);
+  }
+  function wakeFleet(opts) {
+    requireRadioForSleep();
+    return fleetSleep.wake(opts);
   }
 
   // The regatta this base station is currently reporting for is an
@@ -1994,6 +2018,7 @@ function main() {
   // re-broadcast, reconnect/marks-rebroadcast detection, and lap/on-grid/
   // mark-rounding/foul detection.
   function handleDecodedFrame(decoded) {
+    fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
     // No regatta selected - every course/mark/on-grid-zone/track key is
     // namespaced by regatta (see redisStore.js's own module comment), so
     // recording this fix now would silently write it under the "none"
@@ -2119,6 +2144,7 @@ function main() {
   // every retry; the console only needs to announce the boat once.
   const helloLoggedBoatIds = new Set();
   radio.on('hello', ({ boatId }) => {
+    fleetSleep.noteHeard(boatId);
     stats.recordFrame(boatId, null, null);
     if (!helloLoggedBoatIds.has(boatId)) {
       helloLoggedBoatIds.add(boatId);
@@ -2399,6 +2425,7 @@ function main() {
       },
       course: raceMarks ? { marks: raceMarks, boatsKnown: lastSeenByBoat.size } : null,
       lapCounts,
+      sleep: fleetSleep.status(),
       redis: redisStats,
       // maxmemoryBytes falls back to the operator-configured
       // REDIS_MEMORY_LIMIT_MB whenever Redis itself won't report its own
@@ -2510,6 +2537,8 @@ function main() {
     setPinBoundaryEnabled,
     resetCourseToDefault,
     pingFleet,
+    sleepFleet,
+    wakeFleet,
     selectRegatta,
     getMarkAssignment,
     setMarkAssignment,

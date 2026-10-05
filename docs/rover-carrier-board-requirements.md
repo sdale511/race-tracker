@@ -140,7 +140,7 @@ Pin assignments [V] (Digi user guide, "Pin signals"):
 | 6 | DIO10 / PWM0 / RSSI | both | optional RSSI LED; else unconnected |
 | 7 | DIO11 / PWM1 | both | unconnected |
 | 8 | Reserved | - | **do not connect** |
-| 9 | DTR / SLEEP_RQ / DIO8 | in | to bridge DTR (needed for serial firmware update) |
+| 9 | DTR / SLEEP_RQ / DIO8 | in | driven by Pi GPIO17 for radio sleep (R-RAD-5), 10 kohm pull-down to GND; bridge DTR only via a jumper (needed for serial firmware update) |
 | 10 | GND | - | ground |
 | 11 | DIO4 / SPI_MOSI | both | unconnected |
 | 12 | CTS / DIO7 | out | to bridge flow control, or test point |
@@ -206,9 +206,14 @@ IDs are stable so the tool can reference them. MUST = required, SHOULD = strongl
   stock in quantity [A: part choice open, see Open item 8].
 - **R-RAD-2 (MUST)** UART at 3.3 V, 115200 baud, 8N1 [R]. Bridge TX to XBee DIN (pin 3), bridge RX from
   XBee DOUT (pin 2).
-- **R-RAD-3 (MUST)** Also connect XBee DTR (pin 9), RTS (pin 16), CTS (pin 12) and RESET (pin 5) to the bridge or to
-  test points, so Digi's serial firmware update and XCTU configuration work through the carrier [V].
+- **R-RAD-3 (MUST)** Also connect XBee RTS (pin 16), CTS (pin 12) and RESET (pin 5), and DTR (pin 9, through the jumper in
+  R-RAD-5), to the bridge or to test points, so Digi's serial firmware update and XCTU configuration work through the carrier [V].
   Verify the RTS/CTS crossover against the chosen bridge datasheet; do not assume it.
+- **R-RAD-5 (MUST)** Radio sleep control: XBee SLEEP_RQ (pin 9) is driven by Pi header GPIO17 (BCM, physical pin 11, 3.3 V),
+  with a 10 kohm pull-down from pin 9 to GND so the radio stays awake while the Pi is unpowered or booting [R: the app drives
+  high = asleep, see README "Radio sleep wiring"]. GPIO17 is a pull-down GPIO at reset and is not used by the UART, I2C, SPI or
+  1-wire functions. The bridge's DTR output must reach pin 9 only through a jumper or solder bridge that is open by default,
+  so two drivers never fight. Optional: XBee ON_SLEEP (pin 13) to a spare Pi GPIO input (suggest GPIO27, pin 13) or an LED.
 - **R-RAD-4 (MUST)** The bridge is a USB device and the Pi is the host. Connect only data lines and ground
   between them. The bridge takes its power from the carrier's 5 V rail, not from the Pi's USB port.
   Whether the Pi Zero 2 W's data port supplies 5 V to the cable must be checked on the Pi schematic [A]; if it does,
