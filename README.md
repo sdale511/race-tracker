@@ -86,6 +86,13 @@ the radio's UART wiring above:
   default), a real rover ignores sleep commands. It uses Raspberry Pi OS's
   `pinctrl` command to drive the pin.
 
+### GPS backup battery (V_BCKP)
+
+Not a wire - a factory option on the ArduSimple board. It keeps the GPS's
+satellite data alive so the rover restarts hot instead of cold. Whether your board
+needs it is something to check, not assume: see "Checking and fitting the GPS
+backup battery" under "Radio sleep mode".
+
 ## GPS configuration (one-time, via u-center or ubxtool)
 
 Each UART is configured independently - a GPIO-wired UART may still be at
@@ -556,7 +563,7 @@ one), and the idle-shutdown timer ignores a sleeping rover's silence.
   logs `[gps] first valid fix N.Ns after waking` and `[gps] RTK fixed N.Ns after
   waking` after every wake. A hot start is a few seconds; 20-40 s means a
   cold start (a warning is logged past 15 s). If it is cold, fit the
-  `V_BCKP` battery.
+  `V_BCKP` battery - see "Checking and fitting the GPS backup battery" below.
 - **Expected non-failures:** ephemeris is only good for about 4 hours, so a
   rover asleep longer than that warm-starts (18-36 s to download ephemeris).
   And a hot start does not shortcut RTK: reaching an RTK fix needs fresh
@@ -569,6 +576,45 @@ one), and the idle-shutdown timer ignores a sleeping rover's silence.
 - **In simulation** the simulated boat keeps moving but reports nothing while
   asleep, then stays silent for `GPS_SIM_WAKE_DELAY_MS` (3000) after waking,
   standing in for a hot start.
+
+##### Checking and fitting the GPS backup battery (V_BCKP)
+
+The receiver's backup supply pin, `V_BCKP`, is what keeps its satellite data
+(and so a fast restart) alive. Sleep mode may not need a battery, but anything
+that fully removes power does: the scheduled shutdown, a battery swap, or a
+rover simply switched off. Without a backup supply every power-up is a cold
+start, so a first fix takes 20-40 s and RTK longer. Do these steps once on one
+rover, then on a sample from each batch of boards.
+
+1. **Find out what your board does with `V_BCKP`.** Read the SKU off the board
+   (for example `AS-RTK2B-F9P-L1L2-NH-03`) and ask ArduSimple whether `V_BCKP`
+   is fed from the board's 3.3 V rail and whether a backup battery is fitted.
+   ArduSimple lists a "Hand Soldering Service" option on its simpleRTK2B boards
+   that mounts the backup battery - confirm it is offered for your SKU. The
+   Budget board's user guide does not say either way.
+2. **Test sleep/wake.** With the rover on and an RTK fix, sleep it from the base
+   dashboard's Radio sleep card, wait a minute, wake it, and read the log:
+   `[gps] first valid fix N.Ns after waking`. A few seconds = hot start, the
+   backup data survived. 20 s or more = cold start.
+3. **Test a full power-off.** Switch the rover off for about a minute and
+   switch it on again, with a clear sky view. Time how long until the `[status]`
+   line shows a fix. Get a baseline to compare against by forcing a cold start
+   first:
+   ```
+   ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -p COLDBOOT
+   ```
+   (stop the app first so nothing else is using the port; `-p HOTBOOT` forces
+   the opposite). The power-off restart should be clearly faster than the
+   forced cold start.
+4. **If either test is cold,** have the battery fitted (step 1). Before
+   re-testing, run the rover with a clear sky view for several minutes so the
+   receiver has real data to keep, then repeat steps 2 and 3.
+5. **Fleet:** when ordering boards for the fleet, specify the backup battery option
+   up front, and keep the sleep and power-off tests above as the acceptance
+   check for each board.
+
+This is a hardware change on the GPS board itself - nothing in the wiring above
+or the carrier board changes.
 
 ### What happens when a send fails (and why it never retries stale data)
 
