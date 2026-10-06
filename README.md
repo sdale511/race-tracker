@@ -1330,6 +1330,14 @@ memory and writes them to `race-config/course_marks.json`, so a
 reboot/restart has a last-known course immediately. Best-effort, not
 guaranteed sync - a missed broadcast just waits for the next one.
 
+The marks frame is exactly 100 bytes - the most this fleet's radios send as
+one RF packet (`NP`; see "Batching"), because a longer frame is split in two
+over the air and lost if either half is. The regatta name it carries is
+therefore truncated to 25 characters (`protocol.js`'s `REGATTA_NAME_LEN`); the
+base logs a warning once if the selected regatta's name is longer. The full
+name is still shown on the base's own pages. `protocol.js` refuses to load if
+any frame's largest form would exceed the 100-byte limit.
+
 The base broadcasts the moment marks resolve (polls Redis every 5s until
 published, not a one-shot check) and again immediately whenever a
 previously-unseen `boatId` is heard from. `MARKS_BROADCAST_INTERVAL_MS`

@@ -157,12 +157,25 @@ function decode(buf) {
 // edited later without a fresh gate broadcast landing at the same instant.
 
 const MARKS_SYNC = 0xbb;
+// The most bytes this fleet's radios can send as one RF packet (the XBee-PRO
+// 900HP 200K's read-only NP - see config/README's "Batching" notes). A frame
+// longer than this is split by the radio into two over-the-air packets with
+// no acknowledgement: if either is lost, or another transmitter's packet lands
+// between them, the whole frame is lost (see radioLink.js's scanner). Every
+// frame here is kept at or under it - checked at load time below.
+const RADIO_MAX_PAYLOAD = 100;
+
 // Truncated if longer - this is a small dashboard label, not the
 // authoritative name (RegattaUp's own record is that), so a long real
 // regatta name losing its tail here costs nothing beyond the display hint
-// itself being less complete.
-const REGATTA_NAME_LEN = 32;
+// itself being less complete. Sized so the whole marks frame is exactly
+// RADIO_MAX_PAYLOAD (it was 75 bytes before the name existed): 1 + 8*8 + 4 +
+// 2 + 2 + 1 + 25 + 1 = 100.
+const REGATTA_NAME_LEN = 25;
 const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 2 + 1 + REGATTA_NAME_LEN + 1;
+if (MARKS_FRAME_LEN > RADIO_MAX_PAYLOAD) {
+  throw new Error(`marks frame is ${MARKS_FRAME_LEN} bytes, over the radio's ${RADIO_MAX_PAYLOAD}-byte payload limit - shorten REGATTA_NAME_LEN`);
+}
 
 function encodeMarks(marks, baseInfo = {}) {
   const buf = Buffer.alloc(MARKS_FRAME_LEN);
@@ -682,6 +695,15 @@ function decodePower(buf) {
   return { action, sleepS: buf.readUInt8(2), all: count === 0, boatIds };
 }
 
+// The variable-length frames' largest forms must fit the radio's payload limit
+// too (the marks frame is checked where it's defined above).
+for (const [name, len] of [
+  ['batch', batchFrameLen(MAX_BATCH_COUNT)],
+  ['power', powerFrameLen(MAX_POWER_IDS)],
+]) {
+  if (len > RADIO_MAX_PAYLOAD) throw new Error(`largest ${name} frame is ${len} bytes, over the radio's ${RADIO_MAX_PAYLOAD}-byte payload limit`);
+}
+
 module.exports = {
   encode,
   decode,
@@ -691,6 +713,8 @@ module.exports = {
   encodeMarks,
   decodeMarks,
   MARKS_FRAME_LEN,
+  REGATTA_NAME_LEN,
+  RADIO_MAX_PAYLOAD,
   MARKS_SYNC,
   encodePing,
   decodePing,

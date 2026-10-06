@@ -798,12 +798,22 @@ function main() {
   // this Redis instance can be shared with a real course). An edit
   // genuinely changed a mark's position, so the zone MUST be recomputed to
   // match, or it'd be left silently stale/wrong for the rest of the race.
+  let warnedLongRegattaName = null;
   function broadcastMarksNow(forceZoneUpdate = false) {
     if (!raceMarks) return;
     // selectedRegatta is always set here - raceMarks only ever resolves
     // once a regatta is selected (see resolveCourseForCurrentRegatta above
     // and its only two call sites), so there's no "no regatta" case to
     // hedge for on this path.
+    // The radio's 100-byte payload limit caps how much of the name fits (see
+    // protocol.js's REGATTA_NAME_LEN) - say so once per regatta, not every
+    // broadcast.
+    if ((selectedRegatta.name || '').length > protocol.REGATTA_NAME_LEN && warnedLongRegattaName !== selectedRegatta.id) {
+      warnedLongRegattaName = selectedRegatta.id;
+      console.warn(
+        `[baseStation] regatta name "${selectedRegatta.name}" is longer than ${protocol.REGATTA_NAME_LEN} characters - rovers will show "${selectedRegatta.name.slice(0, protocol.REGATTA_NAME_LEN)}"`
+      );
+    }
     radio.broadcast(
       protocol.encodeMarks(raceMarks, { ip: baseIp, port: config.upload.port, adminPort: config.admin.port, regattaName: selectedRegatta.name })
     );

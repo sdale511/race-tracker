@@ -420,14 +420,16 @@ sequenceDiagram
 
       <div class="grid-2">
         <div class="panel">
-          <div class="panel-title">Marks frame — 1 + 8×N + 9 bytes</div>
-          <p style="color:var(--ink-muted); font-size:13px; margin:0 0 14px;">Sync <code class="mono">0xBB</code>, then one <code class="mono">{lat, lon}</code> pair per course mark in <code class="mono">MARK_NAMES</code> order (8 marks today), then the base's own upload/admin address so a rover can link back without guessing.</p>
+          <div class="panel-title">Marks frame — 100 bytes (1 + 8×N + 9 + 25 + 1)</div>
+          <p style="color:var(--ink-muted); font-size:13px; margin:0 0 14px;">Sync <code class="mono">0xBB</code>, then one <code class="mono">{lat, lon}</code> pair per course mark in <code class="mono">MARK_NAMES</code> order (8 marks today), then the base's own upload/admin address so a rover can link back without guessing, the pin-boundary flag, and the regatta name (truncated to 25 characters so the whole frame fits the radio's 100-byte payload limit - a longer frame is split in two over the air and lost if either half is).</p>
           <table class="data">
             <tr><th>Segment</th><th>Bytes</th></tr>
             <tr><td class="field">8 × mark {lat,lon}</td><td>8 marks × 8B = 64</td></tr>
             <tr><td class="field">base IP</td><td>4 (one octet each)</td></tr>
             <tr><td class="field">upload port</td><td>2</td></tr>
             <tr><td class="field">admin port</td><td>2</td></tr>
+            <tr><td class="field">pin boundary enabled</td><td>1</td></tr>
+            <tr><td class="field">regatta name</td><td>25 (ASCII, zero-padded)</td></tr>
             <tr><td class="field">checksum</td><td>1</td></tr>
           </table>
         </div>
