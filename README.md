@@ -742,6 +742,17 @@ explicit), this mode always opens one, falling back to the boat GPS
 defaults. Same `ADMIN_PORT` (8092) as other dashboards - run one mode per
 machine unless overridden. Has its own filtered `GET /config`.
 
+**Map (`GET /map`, linked from the dashboard):** shows where the base thinks
+it is - the live antenna fix (blue, with its accuracy circle) and the
+reference position the receiver is using (red): the fixed TMODE3 position, or
+the survey-in result so far. It also shows the distance between them, which
+is the number to check before trusting corrections (a survey still wandering,
+or a typed-in fixed position off from where the antenna really is). With no
+fix, the last known position is shown in grey with a warning, since the
+receiver keeps reporting a remembered position it may not currently have. It
+updates in place every 2 s and needs an internet connection for the Leaflet
+library and satellite tiles (the readout still works without).
+
 ### Base + RTK combined
 
 ```
