@@ -10,16 +10,22 @@ no gpsd/ubxtool dependency.
 
 Two profiles (--role base|rover), picked from what a live audit of this
 fleet's own pair of boards actually found wrong:
-  - base:  the boards shipped by ArduSimple with only RTCM3 TYPE1005 (station
-    coordinates) enabled and no satellite observation message - exactly the
-    failure mode the README's own "RTK base GPS: enabling RTCM3 output"
-    section warns about (looks "locked and working" while a rover receives
-    nothing usable). Enables all four constellations (GPS/GLONASS/Galileo/
-    BeiDou) by default, not gated behind opt-in flags - this fleet operates
-    in the US, where all four have real satellites in view, and more
-    satellites means better RTK fix reliability under real-world sky
-    obstruction. Also enables UBX-NAV-SVIN so the admin dashboard's own
-    survey-in card has something to show.
+  - base:  a clean MSM4 setup. The boards ship from ArduSimple with only
+    RTCM3 TYPE1005 (station coordinates) plus a stock MSM4 set - which an
+    earlier version of this script then topped up with MSM7, leaving a live
+    board sending BOTH observation sets on UART2 every second (about 2.5x the
+    bytes the rover needs, over a radio with a 100-byte packet limit - see the
+    README's "RTK base GPS: enabling RTCM3 output"). This profile sends exactly
+    one set: 1005 (station), MSM4 observations 1074/1084/1094/1124 (GPS/
+    GLONASS/Galileo/BeiDou) and 1230 (GLONASS biases), with the MSM7 messages
+    (1077/1087/1097/1127) explicitly switched OFF, on the ports chosen by
+    --rtcm-ports (default UART2 = the onboard correction radio, plus USB = the
+    host connection) and switched off on any other port. --constellations picks
+    which constellations' observations are sent (default all four - this fleet
+    operates in the US, where all four have real satellites in view and more
+    satellites mean better RTK fix reliability under real-world sky
+    obstruction; leave one out to save bytes). Also enables UBX-NAV-SVIN so the
+    admin dashboard's own survey-in card has something to show.
   - rover: UBX-NAV-PVT on (or this app sees nothing from it at all), TMODE3
     disabled (a rover is not a stationary reference station), UBX-RXM-RTCM on
     (GPS_LOG_RTCM visibility into corrections actually arriving), and fix
@@ -42,6 +48,8 @@ USAGE
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base --dry-run
+    python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-ports uart2,usb,uart1
+    python3 ubx_config_set.py --port /dev/ttyACM0 --role base --constellations gps,galileo,beidou
 """
 
 import argparse
@@ -68,49 +76,119 @@ RESPONSE_TIMEOUT_S = 1.5
 # name -> (key ID, decode kind, short label for the one-line log output) -
 # decode kind needed both to build the right size value field for VALSET
 # and to interpret the VALGET read-back. Key IDs cross-checked against
-# SparkFun's u-blox_config_keys.h AND pyubx2's ubxtypes_configdb.py - see
-# ubx_config_report.py's own module comment (its own KEYS list has the full
-# explanatory labels this one deliberately doesn't repeat - see the
-# module docstring/README for what each of these actually does/why).
+# u-blox's own interface description (and SparkFun's u-blox_config_keys.h /
+# pyubx2's ubxtypes_configdb.py) - see ubx_config_report.py's own module
+# comment (its own KEYS list has the full explanatory labels this one
+# deliberately doesn't repeat - see the module docstring/README for what
+# each of these actually does/why).
 KEY_INFO = {
-    "CFG-MSGOUT-RTCM_3X_TYPE1077_UART2": (0x209102CE, "u1", "RTCM 1077 (GPS)"),
-    "CFG-MSGOUT-RTCM_3X_TYPE1087_UART2": (0x209102D3, "u1", "RTCM 1087 (GLONASS)"),
-    "CFG-MSGOUT-RTCM_3X_TYPE1097_UART2": (0x2091031A, "u1", "RTCM 1097 (Galileo)"),
-    "CFG-MSGOUT-RTCM_3X_TYPE1127_UART2": (0x209102D8, "u1", "RTCM 1127 (BeiDou)"),
     "CFG-MSGOUT-UBX_NAV_SVIN_UART1": (0x20910089, "u1", "NAV-SVIN rate"),
     "CFG-MSGOUT-UBX_NAV_PVT_UART1": (0x20910007, "u1", "NAV-PVT rate"),
     "CFG-TMODE-MODE": (0x20030001, "tmode", "TMODE3 mode"),
     "CFG-MSGOUT-UBX_RXM_RTCM_UART1": (0x20910269, "u1", "RXM-RTCM rate"),
     "CFG-RATE-MEAS": (0x30210001, "u2", "fix rate (ms)"),
+    "CFG-UART2INPROT-RTCM3X": (0x10750004, "bool", "RTCM3 input UART2"),
 }
 
-# All four constellations on by default, not gated behind opt-in flags -
-# this fleet operates in the US, where GPS/GLONASS/Galileo/BeiDou (BeiDou-3,
-# not the old Asia-Pacific-only BeiDou-2) all have real satellites in view;
-# more satellites means better RTK fix reliability/convergence under any
-# real-world sky obstruction. GLONASS observations (1087) in particular pair
-# with CFG-MSGOUT-RTCM_3X_TYPE1230_UART2 (GLONASS code-phase biases), which
-# this fleet's base already had ON with no 1087 to pair it with before this
-# script existed - a half-configured combination fixed by enabling 1087.
-BASE_SETTINGS = {
-    "CFG-MSGOUT-RTCM_3X_TYPE1077_UART2": 1,  # GPS observations - the missing piece a base needs to actually correct anything
-    "CFG-MSGOUT-RTCM_3X_TYPE1087_UART2": 1,  # GLONASS observations - pairs with TYPE1230, already on
-    "CFG-MSGOUT-RTCM_3X_TYPE1097_UART2": 1,  # Galileo observations
-    "CFG-MSGOUT-RTCM_3X_TYPE1127_UART2": 1,  # BeiDou observations
-    "CFG-MSGOUT-UBX_NAV_SVIN_UART1": 1,  # so the admin dashboard's survey-in card has something to show
+# The RTCM message types this profile cares about: type -> (what it is,
+# which constellation it belongs to - None for messages that aren't
+# per-constellation). MSM4 is what this profile sends; MSM7 carries the same
+# observations at higher resolution and about 1.5x the bytes, and is switched
+# OFF so a board never sends both sets (see the module docstring).
+RTCM_MESSAGES = {
+    "1005": ("station", None),
+    "1074": ("GPS MSM4", "gps"),
+    "1084": ("GLO MSM4", "glonass"),
+    "1094": ("GAL MSM4", "galileo"),
+    "1124": ("BDS MSM4", "beidou"),
+    "1230": ("GLO bias", "glonass"),
+    "1077": ("GPS MSM7", "gps"),
+    "1087": ("GLO MSM7", "glonass"),
+    "1097": ("GAL MSM7", "galileo"),
+    "1127": ("BDS MSM7", "beidou"),
 }
+MSM4_TYPES = ("1074", "1084", "1094", "1124")
+MSM7_TYPES = ("1077", "1087", "1097", "1127")
+
+# Which RTCM outputs this profile manages. UART2 is the onboard correction
+# radio's port; USB is the host connection (the machine running the RTK
+# dashboard, or a forwarder); UART1 is the Pi header UART - only needed if
+# something reads the board there. Key IDs per port from u-blox's interface
+# description (tables for CFG-MSGOUT-RTCM_3X_TYPE*_UART1/_UART2/_USB).
+RTCM_PORTS = ("uart2", "usb", "uart1")
+RTCM_KEY_IDS = {
+    # type: (UART1, UART2, USB)
+    "1005": (0x209102BE, 0x209102BF, 0x209102C0),
+    "1074": (0x2091035F, 0x20910360, 0x20910361),
+    "1084": (0x20910364, 0x20910365, 0x20910366),
+    "1094": (0x20910369, 0x2091036A, 0x2091036B),
+    "1124": (0x2091036E, 0x2091036F, 0x20910370),
+    "1230": (0x20910304, 0x20910305, 0x20910306),
+    "1077": (0x209102CD, 0x209102CE, 0x209102CF),
+    "1087": (0x209102D2, 0x209102D3, 0x209102D4),
+    "1097": (0x20910319, 0x2091031A, 0x2091031B),
+    "1127": (0x209102D7, 0x209102D8, 0x209102D9),
+}
+# CFG-<port>OUTPROT-RTCM3X: whether RTCM3 may be sent on that port at all.
+RTCM_OUTPROT_IDS = {"uart1": 0x10740004, "uart2": 0x10760004, "usb": 0x10780004}
+PORT_INDEX = {"uart1": 0, "uart2": 1, "usb": 2}
+PORT_NAME = {"uart1": "UART1", "uart2": "UART2", "usb": "USB"}
+
+for _t, (_what, _c) in RTCM_MESSAGES.items():
+    for _p in RTCM_PORTS:
+        KEY_INFO[f"CFG-MSGOUT-RTCM_3X_TYPE{_t}_{PORT_NAME[_p]}"] = (
+            RTCM_KEY_IDS[_t][PORT_INDEX[_p]],
+            "u1",
+            f"{_t} {_what} {PORT_NAME[_p]}",
+        )
+for _p in RTCM_PORTS:
+    KEY_INFO[f"CFG-{PORT_NAME[_p]}OUTPROT-RTCM3X"] = (RTCM_OUTPROT_IDS[_p], "bool", f"RTCM3 output {PORT_NAME[_p]}")
+
+ALL_CONSTELLATIONS = ("gps", "glonass", "galileo", "beidou")
+
+
+def build_base_settings(rtcm_ports, constellations):
+    """The base profile as an ordered {key name: target value}.
+
+    On every port in `rtcm_ports`: 1005 on, the MSM4 observation message for
+    each constellation in `constellations` on (and the others off), 1230 on
+    only if GLONASS is among them (it pairs with 1084), every MSM7 message
+    off, RTCM3 allowed as an output protocol. On every OTHER port: every RTCM
+    message off, so nothing is sent where nothing reads it. NAV-SVIN stays on
+    for the dashboard's survey-in card.
+    """
+    settings = {}
+    for port in RTCM_PORTS:
+        name = PORT_NAME[port]
+        on = port in rtcm_ports
+        for t, (_what, constellation) in RTCM_MESSAGES.items():
+            if not on:
+                want = 0
+            elif t in MSM7_TYPES:
+                want = 0
+            elif t == "1005":
+                want = 1
+            else:  # MSM4 or 1230 - per-constellation
+                want = 1 if constellation in constellations else 0
+            settings[f"CFG-MSGOUT-RTCM_3X_TYPE{t}_{name}"] = want
+        if on:
+            settings[f"CFG-{name}OUTPROT-RTCM3X"] = True
+    settings["CFG-MSGOUT-UBX_NAV_SVIN_UART1"] = 1  # so the admin dashboard's survey-in card has something to show
+    return settings
+
 
 ROVER_SETTINGS = {
     "CFG-MSGOUT-UBX_NAV_PVT_UART1": 1,  # must be on, or this app sees nothing from this rover at all
     "CFG-TMODE-MODE": 0,  # disabled - a rover is not a stationary reference station
     "CFG-MSGOUT-UBX_RXM_RTCM_UART1": 1,  # GPS_LOG_RTCM visibility into corrections actually arriving
+    "CFG-UART2INPROT-RTCM3X": True,  # corrections must be accepted on the port the correction radio is wired to (already the default - set explicitly so a board that was changed is put right)
     # 10Hz, not the 20Hz spec ceiling - u-blox's own correction-link-latency
     # guidance (< nav period - 50ms) leaves ~0ms margin at 20Hz, meaning a
     # real correction-radio link (not a bench test) risks carrSoln
     # flickering fixed->float right at the moment precision matters most.
     # 10Hz keeps a comfortable 50ms margin instead. Not the base's own
     # concern - a stationary reference station has no reason to move this
-    # off BASE_SETTINGS' effective default (whatever this board already had).
+    # off the base profile's effective default (whatever this board already had).
     "CFG-RATE-MEAS": 100,
 }
 
@@ -252,7 +330,7 @@ def set_key(ser, key_id, kind, value):
 # a normal terminal. The full raw CFG- key name and why-it-matters
 # explanation live in KEY_INFO's own comment/README/config.js, not repeated
 # here on every run.
-LABEL_WIDTH = 20
+LABEL_WIDTH = 20  # longest label is 17 characters
 
 
 def apply_setting(ser, name, target_value, dry_run):
@@ -286,9 +364,37 @@ def main():
     ap.add_argument("--baud", type=int, default=115200, help="Baud to connect at (default 115200, matches GPS_BAUD)")
     ap.add_argument("--role", required=True, choices=["base", "rover"], help="Which settings profile to apply")
     ap.add_argument("--dry-run", action="store_true", help="Read current values and show what would change - write nothing")
+    ap.add_argument(
+        "--rtcm-ports",
+        default="uart2,usb",
+        help="base role only: comma-separated ports that carry RTCM (uart1, uart2, usb); every other port has its RTCM messages "
+        "switched off. Default uart2,usb - UART2 is the onboard correction radio, USB the host connection",
+    )
+    ap.add_argument(
+        "--constellations",
+        default=",".join(ALL_CONSTELLATIONS),
+        help="base role only: comma-separated constellations whose observations are sent (gps, glonass, galileo, beidou). "
+        "Default all four; a constellation left out has its MSM4 message switched off, and 1230 goes with GLONASS",
+    )
     args = ap.parse_args()
 
-    settings = BASE_SETTINGS if args.role == "base" else ROVER_SETTINGS
+    if args.role == "base":
+        rtcm_ports = [p.strip().lower() for p in args.rtcm_ports.split(",") if p.strip()]
+        constellations = [c.strip().lower() for c in args.constellations.split(",") if c.strip()]
+        for p in rtcm_ports:
+            if p not in RTCM_PORTS:
+                ap.error(f"--rtcm-ports: unknown port {p!r} (choose from {', '.join(RTCM_PORTS)})")
+        for c in constellations:
+            if c not in ALL_CONSTELLATIONS:
+                ap.error(f"--constellations: unknown constellation {c!r} (choose from {', '.join(ALL_CONSTELLATIONS)})")
+        if not rtcm_ports or not constellations:
+            ap.error("--rtcm-ports and --constellations must each name at least one")
+        if "uart2" not in rtcm_ports:
+            print("[ubx_config_set] note: uart2 is not selected - the onboard correction radio will receive no RTCM")
+        settings = build_base_settings(rtcm_ports, constellations)
+        print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}")
+    else:
+        settings = ROVER_SETTINGS
 
     print(f"[ubx_config_set] connecting to {args.port} @ {args.baud}, role={args.role}{' (dry run)' if args.dry_run else ''}")
     try:

@@ -161,17 +161,28 @@ something you'd jumper yourself):
 | Message | Content |
 |---|---|
 | `1005` | Station coordinates (depends on the fixed position) |
-| `1077`/`1087`/`1097`/`1127` | MSM7 observations: GPS/GLONASS/Galileo/BeiDou |
-| `1230` | GLONASS code-phase biases (needed alongside `1087`) |
+| `1074`/`1084`/`1094`/`1124` | MSM4 observations: GPS/GLONASS/Galileo/BeiDou |
+| `1230` | GLONASS code-phase biases (needed alongside `1084`) |
+
+Send **one** observation set, MSM4, not MSM4 and MSM7 together. MSM7 carries
+the same observations at higher resolution and about 1.5x the bytes; sending
+both is duplicate traffic (an audit found a board doing exactly that - the
+factory MSM4 plus an MSM7 set added on top - roughly 2.5x the bytes the rover
+needs). MSM4 is also the better fit for this fleet's radios: a whole epoch is
+about 400 bytes, and individual messages stay near the 100-byte radio packet
+limit (MSM7 messages go well past it and get split in two over the air, and
+losing either half loses the message).
 
 ```
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1005_UART2,1,7
-ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1077_UART2,1,7
-ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1087_UART2,1,7
-ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1097_UART2,1,7
-ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1127_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1074_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1084_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1094_UART2,1,7
+ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1124_UART2,1,7
 ubxtool -f <base GPS port> -s <baud> -P 27.11 -z CFG-MSGOUT-RTCM_3X_TYPE1230_UART2,1,7
 ```
+`ubx_config_set.py --role base` (below) does all of this on both UART1 and
+UART2 and also switches the MSM7 messages off, which these commands alone don't.
 Only enable constellations you're actually tracking. `,7` saves to flash
 immediately (bare `,1` is RAM-only, for testing before committing).
 
@@ -180,7 +191,7 @@ on the rover's own GPS UART and set `GPS_LOG_RTCM=1` (off by default):
 ```
 ubxtool -f /dev/ttyAMA0 -s <baud> -P 27.11 -z CFG-MSGOUT-UBX_RXM_RTCM_UART1,1,7
 ```
-Watch `[rtcm]` lines (`type=1077 station=0 used=used`) - `used=not used` on
+Watch `[rtcm]` lines (`type=1074 station=0 used=used`) - `used=not used` on
 its own is normal (unused constellations), `CRC-FAILED` means a correction
 arrived corrupted. Message counts/CRC failures are always tracked
 internally (`GET /api/stats`) regardless of this flag.
@@ -229,16 +240,32 @@ memory - see its own module comment.
 python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base
 python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
 ```
-`--role base` enables RTCM3 observations for all four constellations
-(`1077`/`1087`/`1097`/`1127` - GPS/GLONASS/Galileo/BeiDou) and `UBX-NAV-SVIN`
-- the exact gap a live audit of this fleet's own base unit found (`1005`
-station coordinates on, no observation message at all, so a rover would
-never get a usable correction from it - see "RTK base GPS: enabling RTCM3
-output" above). All four on by default, not gated behind opt-in flags -
-this fleet operates in the US, where all four have real satellites in view
-(including BeiDou-3's global coverage, not just the old Asia-Pacific-only
-BeiDou-2), and more satellites means better RTK fix reliability under
-real-world sky obstruction; edit `BASE_SETTINGS` directly if you want fewer.
+`--role base` makes the base's RTCM output clean: `1005`, the MSM4 observations
+(`1074`/`1084`/`1094`/`1124` - GPS/GLONASS/Galileo/BeiDou) and `1230` on, the
+MSM7 messages (`1077`/`1087`/`1097`/`1127`) explicitly off, RTCM3 allowed as an
+output protocol, and `UBX-NAV-SVIN` on - on the ports named by `--rtcm-ports`
+(default `uart2,usb`: UART2 is the onboard correction radio, USB the host
+connection), with every other port's RTCM switched off so nothing is sent where
+nothing reads it. Add `uart1` only if something reads the board on the Pi header
+UART. `--constellations` (default all four) leaves constellations out to save
+bytes - a left-out one has its MSM4 message off, and `1230` goes with GLONASS.
+Run it with `--dry-run` first to see exactly what would change, and
+`ubx_config_report.py` afterwards to confirm; it writes RAM+BBR+flash, so it
+survives a power cycle.
+```
+python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --dry-run
+python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --constellations gps,galileo,beidou
+```
+
+This replaces an earlier profile that added MSM7 on top of the board's factory
+MSM4 (a live audit then found both sets going out the radio). The original gap
+it was written for - `1005` station coordinates on and no observation message at
+all, so a rover would never get a usable correction - is still covered. All four
+constellations are on by default, not gated behind opt-in flags - this fleet
+operates in the US, where all four have real satellites in view (including
+BeiDou-3's global coverage, not just the old Asia-Pacific-only BeiDou-2), and more
+satellites means better RTK fix reliability under real-world sky obstruction;
+edit `BASE_SETTINGS` directly if you want fewer.
 `--role rover` enables `UBX-NAV-PVT`
 (required, or this app sees nothing from it), disables TMODE3 (a rover
 isn't a stationary reference station), enables `UBX-RXM-RTCM` (for

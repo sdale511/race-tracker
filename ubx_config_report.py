@@ -26,6 +26,11 @@ both agree on every value used here.
 USAGE
     pip install pyserial
     python3 ubx_config_report.py --port /dev/ttyAMA0 --baud 115200
+
+    Connect on whichever port reaches the receiver (the board's USB port,
+    e.g. /dev/ttyACM0 or /dev/cu.usbmodem*, or UART1). The "_UART2" rows are
+    that port's own output settings, read over any connection - you do NOT
+    connect to UART2 itself to see them.
 """
 
 import argparse
@@ -64,12 +69,63 @@ KEYS = [
     ("CFG-MSGOUT-UBX_NAV_SVIN_UART1", 0x20910089, "u1", "UBX-NAV-SVIN rate on UART1 - needed for the admin dashboard's survey-in card"),
     ("CFG-MSGOUT-UBX_RXM_RTCM_UART1", 0x20910269, "u1", "UBX-RXM-RTCM rate on UART1 - needed for GPS_LOG_RTCM visibility into corrections arriving"),
     ("CFG-TMODE-MODE", 0x20030001, "tmode", "TMODE3 mode - 0=disabled, 1=survey-in, 2=fixed"),
+    # Rover-side checks: corrections must be ACCEPTED on the port the correction
+    # radio is wired to (UART2 on the simpleRTK2B), and the rover must track the
+    # same constellations/signals the base sends observations for (the base's
+    # MSM4 messages carry GPS/GLONASS/Galileo/BeiDou L1+L2-class signals - the
+    # receiver's defaults already enable all of them).
+    ("CFG-UART2INPROT-RTCM3X", 0x10750004, "bool", "RTCM3 accepted as INPUT on UART2 - a rover needs this on"),
+    ("CFG-UART1INPROT-RTCM3X", 0x10730004, "bool", "RTCM3 accepted as INPUT on UART1 (only matters if corrections are fed in over the Pi)"),
+    ("CFG-NAVHPG-DGNSSMODE", 0x20140011, "u1", "Differential mode - 3 = RTK fixed (default), 2 = float only"),
+    ("CFG-NAVSPG-DYNMODEL", 0x20110021, "u1", "Dynamic platform model - 0 portable (default), 4 automotive"),
+    ("CFG-SIGNAL-GPS_ENA", 0x1031001F, "bool", "GPS tracking enabled (must match what the base sends)"),
+    ("CFG-SIGNAL-GLO_ENA", 0x10310025, "bool", "GLONASS tracking enabled"),
+    ("CFG-SIGNAL-GAL_ENA", 0x10310021, "bool", "Galileo tracking enabled"),
+    ("CFG-SIGNAL-BDS_ENA", 0x10310022, "bool", "BeiDou tracking enabled"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1005_UART2", 0x209102BF, "u1", "Station coordinates"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1077_UART2", 0x209102CE, "u1", "GPS MSM7 observations"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1087_UART2", 0x209102D3, "u1", "GLONASS MSM7 observations"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1097_UART2", 0x2091031A, "u1", "Galileo MSM7 observations"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1127_UART2", 0x209102D8, "u1", "BeiDou MSM7 observations"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1230_UART2", 0x20910305, "u1", "GLONASS code-phase biases"),
+    # MSM4 observations (the smaller RTCM message set - ArduSimple's own
+    # factory default for a base, and what a board left at defaults actually
+    # sends), UART2. The MSM7 rows above are what this project's own
+    # ubx_config_set.py --role base asks for; a board showing these on and
+    # those off hasn't had that script applied.
+    ("CFG-MSGOUT-RTCM_3X_TYPE1074_UART2", 0x20910360, "u1", "GPS MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1084_UART2", 0x20910365, "u1", "GLONASS MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1094_UART2", 0x2091036A, "u1", "Galileo MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1124_UART2", 0x2091036F, "u1", "BeiDou MSM4 observations"),
+    ("CFG-UART2OUTPROT-RTCM3X", 0x10760004, "bool", "RTCM3 allowed as an OUTPUT protocol on UART2 - must be on or the messages above never leave"),
+    # The same set on UART1 - the port a Pi reads, e.g. a forwarder for a
+    # one-radio design. ubx_config_set.py --role base keeps UART1 and UART2
+    # identical: MSM4 on, MSM7 off.
+    ("CFG-MSGOUT-RTCM_3X_TYPE1005_UART1", 0x209102BE, "u1", "UART1: station coordinates"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1074_UART1", 0x2091035F, "u1", "UART1: GPS MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1084_UART1", 0x20910364, "u1", "UART1: GLONASS MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1094_UART1", 0x20910369, "u1", "UART1: Galileo MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1124_UART1", 0x2091036E, "u1", "UART1: BeiDou MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1230_UART1", 0x20910304, "u1", "UART1: GLONASS code-phase biases"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1077_UART1", 0x209102CD, "u1", "UART1: GPS MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1087_UART1", 0x209102D2, "u1", "UART1: GLONASS MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1097_UART1", 0x20910319, "u1", "UART1: Galileo MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1127_UART1", 0x209102D7, "u1", "UART1: BeiDou MSM7 observations"),
+    ("CFG-UART1OUTPROT-RTCM3X", 0x10740004, "bool", "RTCM3 allowed as an OUTPUT protocol on UART1"),
+    # The same messages on the USB port - a PC tool such as PyGPSClient
+    # connected over USB sees THESE, not the UART2 settings above, so compare
+    # the two before assuming a USB capture shows what the correction radio gets.
+    ("CFG-MSGOUT-RTCM_3X_TYPE1005_USB", 0x209102C0, "u1", "USB: station coordinates"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1074_USB", 0x20910361, "u1", "USB: GPS MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1084_USB", 0x20910366, "u1", "USB: GLONASS MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1094_USB", 0x2091036B, "u1", "USB: Galileo MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1124_USB", 0x20910370, "u1", "USB: BeiDou MSM4 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1077_USB", 0x209102CF, "u1", "USB: GPS MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1087_USB", 0x209102D4, "u1", "USB: GLONASS MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1097_USB", 0x2091031B, "u1", "USB: Galileo MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1127_USB", 0x209102D9, "u1", "USB: BeiDou MSM7 observations"),
+    ("CFG-MSGOUT-RTCM_3X_TYPE1230_USB", 0x20910306, "u1", "USB: GLONASS code-phase biases"),
+    ("CFG-USBOUTPROT-RTCM3X", 0x10780004, "bool", "RTCM3 allowed as an OUTPUT protocol on USB"),
 ]
 
 DECODE_SIZE = {"u1": 1, "u2": 2, "u4": 4, "bool": 1, "tmode": 1}
@@ -174,7 +230,7 @@ def poll_key(ser, name, key_id, kind, label):
         msg_class, msg_id, payload = frame
         if msg_class == CLASS_ACK and msg_id == ID_ACK_NAK:
             print("  (NAK - key not recognized on this firmware, or wrong layer)")
-            return
+            return None
         if msg_class == CLASS_CFG and msg_id == ID_VALGET:
             # version(1), layer(1), position(2), then keyID(4)+value(N) - one
             # entry, since we only ever ask for one key at a time.
@@ -187,11 +243,39 @@ def poll_key(ser, name, key_id, kind, label):
             value_bytes = payload[8 : 8 + size]
             if len(value_bytes) < size:
                 continue
-            print(f"  {decode_value(kind, value_bytes)}")
-            return
+            value = decode_value(kind, value_bytes)
+            print(f"  {value}")
+            return value
         # anything else (a NAV-PVT the rover is already streaming, etc.) -
         # not what we asked for, keep scanning until the deadline.
     print("  (no response - not supported on this firmware, or wrong port/baud)")
+    return None
+
+
+# RTCM message types compared between UART2 (what the onboard correction radio
+# actually sends) and USB (what a PC tool such as PyGPSClient sees) - a capture
+# over USB only reflects the radio if the two match.
+RTCM_TYPES = ("1005", "1074", "1084", "1094", "1124", "1230", "1077", "1087", "1097", "1127")
+
+
+def compare_uart2_usb(values):
+    diffs = []
+    for t in RTCM_TYPES:
+        u2 = values.get(f"CFG-MSGOUT-RTCM_3X_TYPE{t}_UART2")
+        usb = values.get(f"CFG-MSGOUT-RTCM_3X_TYPE{t}_USB")
+        if u2 != usb:
+            diffs.append(f"{t}: UART2={u2}, USB={usb}")
+    print("\n=== RTCM on UART2 (the radio) vs USB (a PC capture) ===")
+    if not diffs:
+        print("  IDENTICAL - a capture over USB shows what the correction radio sends")
+    else:
+        print("  DIFFERENT - a capture over USB does NOT match what the radio sends:")
+        for d in diffs:
+            print(f"    {d}")
+    both = [t for t in ("1074", "1084", "1094", "1124") if values.get(f"CFG-MSGOUT-RTCM_3X_TYPE{t}_UART2")]
+    msm7 = [t for t in ("1077", "1087", "1097", "1127") if values.get(f"CFG-MSGOUT-RTCM_3X_TYPE{t}_UART2")]
+    if both and msm7:
+        print(f"  WARNING: UART2 sends BOTH MSM4 ({', '.join(both)}) and MSM7 ({', '.join(msm7)}) - duplicate observations over the radio")
 
 
 def main():
@@ -208,10 +292,13 @@ def main():
         sys.exit(1)
 
     try:
+        values = {}
         for name, key_id, kind, label in KEYS:
-            poll_key(ser, name, key_id, kind, label)
+            values[name] = poll_key(ser, name, key_id, kind, label)
     finally:
         ser.close()
+
+    compare_uart2_usb(values)
 
     print(
         "\n[ubx_config_report] done - a board acting as a rover should show the "
