@@ -98,7 +98,7 @@ function recordHealthCheckOk() {
 }
 
 // msg: the same object emitted by ubxParser.js's 'rxm-rtcm' event. Tracked
-// independent of GPS_LOG_RTCM (see boatAgent.js's openGps) - that flag only
+// independent of RTCM_LOG (see boatAgent.js's openGps) - that flag only
 // gates the console line, not whether the rover dashboard's own RTK
 // corrections card sees this at all.
 function recordRadioRtcm(frame, forwarded) {

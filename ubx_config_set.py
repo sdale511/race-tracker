@@ -28,7 +28,7 @@ fleet's own pair of boards actually found wrong:
     admin dashboard's own survey-in card has something to show.
   - rover: UBX-NAV-PVT on (or this app sees nothing from it at all), TMODE3
     disabled (a rover is not a stationary reference station), UBX-RXM-RTCM on
-    (GPS_LOG_RTCM visibility into corrections actually arriving), and fix
+    (RTCM_LOG visibility into corrections actually arriving), and fix
     rate set to 10Hz (not the 20Hz spec ceiling - see CFG-RATE-MEAS's own
     comment on why 20Hz risks carrSoln instability under a real correction
     radio link, not just a bench test).
@@ -193,7 +193,7 @@ def build_base_settings(rtcm_ports, constellations):
 ROVER_SETTINGS = {
     "CFG-MSGOUT-UBX_NAV_PVT_UART1": 1,  # must be on, or this app sees nothing from this rover at all
     "CFG-TMODE-MODE": 0,  # disabled - a rover is not a stationary reference station
-    "CFG-MSGOUT-UBX_RXM_RTCM_UART1": 1,  # GPS_LOG_RTCM visibility into corrections actually arriving
+    "CFG-MSGOUT-UBX_RXM_RTCM_UART1": 1,  # RTCM_LOG visibility into corrections actually arriving
     "CFG-UART2INPROT-RTCM3X": True,  # corrections must be accepted on the port the correction radio is wired to (already the default - set explicitly so a board that was changed is put right)
     # With one shared radio the Pi writes the RTCM it receives to the receiver's
     # UART1 (or USB when developing) - make sure it is accepted there too.

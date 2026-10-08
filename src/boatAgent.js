@@ -7,7 +7,7 @@ const dgram = require('dgram');
 const util = require('util');
 const config = require('./config');
 const logBuffer = require('./logBuffer');
-const { UbxParser, encodeNavPvt, RTCM_MSG_USED_NAMES } = require('./ubxParser');
+const { UbxParser, encodeNavPvt } = require('./ubxParser');
 const { toGGA } = require('./nmea');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
@@ -19,6 +19,7 @@ const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const { RoverSleep } = require('./roverSleep');
 const { GpsSleep } = require('./gpsSleep');
+const { createRtcmLogger } = require('./rtcmLog');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -819,13 +820,14 @@ radio.on('ping', () => {
 // Never forwarded while the rover is sleeping: any byte written to a sleeping
 // receiver wakes it (see gpsSleep.js), and a listen window would then wake the
 // GPS on every correction burst.
+// null unless RTCM_LOG is set (1 = a tight line per second, 2 = a decoded line per message)
+const rtcmLogger = config.rtcm.log ? createRtcmLogger({ level: config.rtcm.log }) : null;
+
 radio.on('rtcm', (frame) => {
-  const forward = config.gps.forwardRtcm && !sleeper.isSleeping() && !gpsSleep.isAsleep() && !!gpsSerial && gpsSerial.isOpen;
+  const forward = config.rtcm.forward && !sleeper.isSleeping() && !gpsSleep.isAsleep() && !!gpsSerial && gpsSerial.isOpen;
   if (forward) gpsSerial.write(frame.raw);
   roverStats.recordRadioRtcm(frame, forward);
-  if (config.gps.logConsole && config.gps.logRtcm) {
-    console.log(`[rtcm-radio] type=${frame.type} ${frame.length}B${forward ? ' -> GPS' : ''}`);
-  }
+  if (rtcmLogger) rtcmLogger.radio(frame, forward);
 });
 
 // Going to sleep: whatever fixes were still waiting to batch are already on
@@ -888,7 +890,7 @@ function openGps() {
   // receiver itself (see ubxParser.js's own comment - off by default there
   // too, so seeing nothing doesn't by itself mean no corrections are
   // arriving, only that this message hasn't been turned on to report it),
-  // and GPS_LOG_RTCM=1 here (see config.js - off by default so a one-off
+  // and RTCM_LOG=1 here (see config.js - off by default so a one-off
   // diagnostic enable on the receiver doesn't also start scrolling
   // unwanted lines on every ordinary run afterward). crcFailed is a real
   // problem (a corrupted correction, dropped); msgUsed='not used' on its
@@ -896,11 +898,7 @@ function openGps() {
   // tracking) are legitimately ignored.
   parser.on('rxm-rtcm', (msg) => {
     roverStats.recordRtcm(msg);
-    if (!config.gps.logConsole || !config.gps.logRtcm) return;
-    const used = RTCM_MSG_USED_NAMES[msg.msgUsed] || msg.msgUsed;
-    const line = `[rtcm] type=${msg.msgType} station=${msg.refStation} used=${used}${msg.crcFailed ? ' CRC-FAILED' : ''}`;
-    if (msg.crcFailed) console.warn(line);
-    else console.log(line);
+    if (rtcmLogger) rtcmLogger.receiver(msg);
   });
 }
 

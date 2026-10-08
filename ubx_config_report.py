@@ -74,7 +74,7 @@ KEYS = [
     ("CFG-MSGOUT-UBX_NAV_PVT_UART1", 0x20910007, "u1", "UBX-NAV-PVT rate on UART1 - must be on (1) or this app sees nothing"),
     ("CFG-UART1OUTPROT-NMEA", 0x10740002, "bool", "NMEA on UART1 - fine either way, disabling just saves bandwidth"),
     ("CFG-MSGOUT-UBX_NAV_SVIN_UART1", 0x20910089, "u1", "UBX-NAV-SVIN rate on UART1 - needed for the admin dashboard's survey-in card"),
-    ("CFG-MSGOUT-UBX_RXM_RTCM_UART1", 0x20910269, "u1", "UBX-RXM-RTCM rate on UART1 - needed for GPS_LOG_RTCM visibility into corrections arriving"),
+    ("CFG-MSGOUT-UBX_RXM_RTCM_UART1", 0x20910269, "u1", "UBX-RXM-RTCM rate on UART1 - needed for RTCM_LOG visibility into corrections arriving"),
     ("CFG-TMODE-MODE", 0x20030001, "tmode", "TMODE3 mode - 0=disabled, 1=survey-in, 2=fixed"),
     # Rover-side checks: corrections must be ACCEPTED on the port the correction
     # radio is wired to (UART2 on the simpleRTK2B), and the rover must track the

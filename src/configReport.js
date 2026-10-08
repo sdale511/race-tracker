@@ -94,13 +94,20 @@ const sections = [
       { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud', roles: ['base', 'boat', 'rtk'] },
       { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG', roles: ['base', 'boat', 'rtk'] },
       { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE', roles: ['base', 'boat', 'rtk'] },
-      { label: 'logRtcm', value: config.gps.logRtcm, envVar: 'GPS_LOG_RTCM', roles: ['boat'] },
       // rtk only - plain `npm run base` opens the same GPS_PORT but never
       // wires the TMODE3/survey-in controls that actually read these (see
       // baseStation.js's rtkControlsEnabled); `basertk` sees them via the
       // rtk half of renderConfigPage's base∪rtk union, not this tag.
       { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's', roles: ['rtk'] },
       { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm', roles: ['rtk'] },
+    ],
+  },
+  {
+    title: 'RTCM corrections (boat only)',
+    roles: ['boat'],
+    rows: [
+      { label: 'log', value: config.rtcm.log, envVar: 'RTCM_LOG', note: 'old name GPS_LOG_RTCM still works' },
+      { label: 'forward', value: config.rtcm.forward, envVar: 'RTCM_FORWARD' },
     ],
   },
   {

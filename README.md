@@ -187,7 +187,7 @@ Only enable constellations you're actually tracking. `,7` saves to flash
 immediately (bare `,1` is RAM-only, for testing before committing).
 
 For visibility into corrections arriving rover-side, enable `UBX-RXM-RTCM`
-on the rover's own GPS UART and set `GPS_LOG_RTCM=1` (off by default):
+on the rover's own GPS UART and set `RTCM_LOG=1` (off by default; `GPS_LOG_RTCM` is the old name and still works):
 ```
 ubxtool -f /dev/ttyAMA0 -s <baud> -P 27.11 -z CFG-MSGOUT-UBX_RXM_RTCM_UART1,1,7
 ```
@@ -269,7 +269,7 @@ edit `BASE_SETTINGS` directly if you want fewer.
 `--role rover` enables `UBX-NAV-PVT`
 (required, or this app sees nothing from it), disables TMODE3 (a rover
 isn't a stationary reference station), enables `UBX-RXM-RTCM` (for
-`GPS_LOG_RTCM` visibility), and sets the fix rate to 10Hz (`CFG-RATE-MEAS`)
+`RTCM_LOG` visibility), and sets the fix rate to 10Hz (`CFG-RATE-MEAS`)
 - not the ZED-F9P's 20Hz spec ceiling, since u-blox's own correction-link-
 latency guidance (link latency should stay under nav-period minus 50ms)
 leaves ~0ms margin at 20Hz - a real correction-radio link (not a bench
@@ -368,7 +368,7 @@ recorded in [`docs/xbee-radio-settings.md`](docs/xbee-radio-settings.md).
 paired on their own network ID (`0x1985`); running this script for real on one
 would change its settings (a dry run is safe and just reads them). `--role rtcm` is
 for replacing *both* ends of the correction link with XBee-PRO 900HPs; try it on the
-bench first (ZED to radio to radio to ZED, with `GPS_LOG_RTCM=1` on the rover) before
+bench first (ZED to radio to radio to ZED, with `RTCM_LOG=1` on the rover) before
 relying on it. `CM` (the channel mask) is still not set by this script, so two
 900HP networks on one yacht still hop across the same frequencies.
 
@@ -579,9 +579,19 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   nothing around it.
 - **Counted.** The rover counts what arrives over the radio (`radioRtcm` in `GET /api/stats`:
   frames, bytes, forwarded, last type). That is separate from `rtcm`, which counts what the GPS
-  receiver reports applying (`UBX-RXM-RTCM`). `GPS_LOG=1 GPS_LOG_RTCM=1` also prints a
-  `[rtcm-radio] type=1074 129B` line per message. A base's telemetry station hears the same
-  RTCM and simply ignores it.
+  receiver reports applying (`UBX-RXM-RTCM`). `RTCM_LOG=1` prints one tight line
+  per second per source instead of a line per message:
+  ```
+  [rtcm-radio] 449B 6msg MSM4 1005:stn 1074:GPS8 1084:GLO7 1094:GAL3 1124:BDS7 1230:bias
+  [rtcm] 6/6 used: 1005 1074 1084 1094 1124 1230
+  ```
+  The first is what arrived over the radio (bytes, message count, MSM level, and the number
+  of satellites in each constellation's message, each tagged with its RTCM message number (`1074:GPS8` = message 1074, GPS, 8 satellites); `->GPS` is added when `RTCM_FORWARD` also
+  wrote them to the receiver, and `!set changed (...)` appears if a burst's set of messages
+  differs from the previous one). The second is what the GPS receiver reports applying; it
+  names any message not used, and any with a CRC failure. `RTCM_LOG=2` prints a decoded line
+  per message instead, e.g. `[rtcm-radio] 1074 GPS 8sv 12c 129B` (`c` = signal cells) and
+  `[rtcm] 1074 used`. `GPS_LOG_RTCM` is the old name for this setting. A base's telemetry station hears the same RTCM and simply ignores it.
 - **Forwarded to the GPS only if asked.** With `RTCM_FORWARD=1` the rover writes each message,
   byte for byte, to the GPS receiver's serial port, which is what makes the shared radio an RTK
   link. That needs the Pi's TX line wired to the receiver's RX (nothing in this app wrote to the
@@ -1759,9 +1769,9 @@ actually use. Redis password is redacted.
 | `GPS_OUTPUT_FORMAT` | `ubx` | Local UDP broadcast format: `ubx` (synthetic NAV-PVT) or `nmea` (`$GPGGA`) |
 | `UDP_PORT` / `UDP_BROADCAST_ADDR` | 10110 / `255.255.255.255` | Local UDP broadcast target, both roles |
 | `GPS_PORT` / `GPS_BAUD` | `/dev/ttyAMA0` / 115200 | GPS UART. Boat always opens it unless `SIMULATE`/`NO_GPS`. `rtk`/`basertk` always try it. Plain `base` only if explicitly set and not `SIMULATE=1` |
-| `GPS_LOG` | unset (on) | `0` = silence the per-fix `[gps]`/`[baseGps]` console line |
+| `GPS_LOG` | unset (off) | `0` = silence the per-fix `[gps]`/`[baseGps]` console line |
 | `GPS_LOG_REPLACE` | unset (on) | In-place overwrite of the console line on a real TTY (a real radio-send commit still scrolls). `0` = always scroll |
-| `GPS_LOG_RTCM` | unset (off) | Boat only - `1` logs `[rtcm]` per `UBX-RXM-RTCM` message; also needs that message enabled on the receiver |
+| `RTCM_LOG` | unset (off) | Boat only - `1` = one tight line per second per source (`[rtcm-radio]` for RTCM arriving over the telemetry radio, `[rtcm]` for what the GPS receiver reports applying - that message must also be enabled on the receiver); `2` = a decoded line per message. Old name `GPS_LOG_RTCM` still works; no GPS needed; independent of `GPS_LOG` |
 | `RTCM_FORWARD` | unset (off) | Boat only - `1` = write RTCM3 messages that arrive over the radio to the GPS receiver's serial port (shared-radio setup; needs the Pi's TX wired to the receiver's RX) - see "RTCM on the shared radio" |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |

@@ -745,6 +745,64 @@ function decodeRtcm(buf) {
   return { type: (buf[3] << 4) | (buf[4] >> 4), length: buf.length, raw: Buffer.from(buf) };
 }
 
+// A short, human-readable description of an RTCM3 message for console logs - not
+// a full decoder. Reads just the header bits that say what the message is and how
+// big it is: for the MSM observation messages (1071-1127, GPS 107x, GLONASS 108x,
+// Galileo 109x, SBAS 110x, QZSS 111x, BeiDou 112x) the number of satellites and of
+// signal cells (satellite mask x signal mask, then the cell mask); for 1005/1006
+// the reference station id. Returns { type, name, sats, signals, cells, station }
+// with whatever applies (others undefined).
+const MSM_SYSTEMS = { 107: 'GPS', 108: 'GLO', 109: 'GAL', 110: 'SBS', 111: 'QZS', 112: 'BDS' };
+
+function readBits(buf, startBit, n) {
+  let v = 0;
+  for (let i = 0; i < n; i++) {
+    const bit = startBit + i;
+    v = v * 2 + ((buf[bit >> 3] >> (7 - (bit & 7))) & 1);
+  }
+  return v;
+}
+
+function countBits(buf, startBit, n) {
+  let c = 0;
+  for (let i = 0; i < n; i++) {
+    const bit = startBit + i;
+    c += (buf[bit >> 3] >> (7 - (bit & 7))) & 1;
+  }
+  return c;
+}
+
+function describeRtcm(frame) {
+  const out = { type: frame.type };
+  const payload = frame.raw.subarray(3, frame.raw.length - 3);
+  if (frame.type === 1005 || frame.type === 1006) {
+    out.name = 'stn';
+    if (payload.length >= 3) out.station = readBits(payload, 12, 12);
+    return out;
+  }
+  if (frame.type === 1230) {
+    out.name = 'bias';
+    return out;
+  }
+  const system = MSM_SYSTEMS[Math.floor(frame.type / 10)];
+  const msm = frame.type % 10;
+  if (system && msm >= 1 && msm <= 7 && payload.length >= 22) {
+    // header: 12 msg + 12 station + 30 epoch + 1 + 3 + 7 + 2 + 2 + 1 + 3 = 73 bits,
+    // then the 64-bit satellite mask and the 32-bit signal mask
+    out.name = system;
+    out.msm = msm;
+    out.station = readBits(payload, 12, 12);
+    out.sats = countBits(payload, 73, 64);
+    out.signals = countBits(payload, 137, 32);
+    if (out.sats && out.signals && out.sats * out.signals <= 64 && payload.length * 8 >= 169 + out.sats * out.signals) {
+      out.cells = countBits(payload, 169, out.sats * out.signals);
+    }
+    return out;
+  }
+  out.name = String(frame.type);
+  return out;
+}
+
 // The variable-length frames' largest forms must fit the radio's payload limit
 // too (the marks frame is checked where it's defined above).
 for (const [name, len] of [
@@ -796,6 +854,7 @@ module.exports = {
   MAX_POWER_IDS,
   RTCM_SYNC,
   crc24q,
+  describeRtcm,
   rtcmFrameLenFromHeader,
   decodeRtcm,
 };

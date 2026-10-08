@@ -352,25 +352,6 @@ module.exports = {
     // applied in the first place - see isTTY check).
     logReplace: process.env.GPS_LOG_REPLACE !== '0' && process.env.GPS_LOG_REPLACE !== 'false',
     // Off by default, boat only (see boatAgent.js's openGps) - logs a
-    // `[rtcm]` line for every UBX-RXM-RTCM message the receiver reports
-    // (RTCM message type, whether it was applied, CRC failures), the only
-    // direct evidence this app can show that correction data is actually
-    // reaching the receiver. Defaults off since UBX-RXM-RTCM is itself off
-    // on the receiver by default too (a separate enable step - see
-    // README's "Wiring notes") - without this flag, turning that message
-    // on for a one-off diagnostic check would otherwise start scrolling
-    // unwanted lines on every ordinary run afterward. Still gated by
-    // logConsole above (GPS_LOG=0 silences this too).
-    logRtcm: process.env.GPS_LOG_RTCM === '1' || process.env.GPS_LOG_RTCM === 'true',
-    // Rover only - when the telemetry radio is ALSO the RTK correction link
-    // (one shared radio - see README's "RTCM on the shared radio"), RTCM3
-    // messages arrive on the radio's serial port mixed in with telemetry.
-    // RTCM_FORWARD=1 writes each one, untouched, to the GPS receiver's serial
-    // port so it can use them. Off by default: it needs the Pi's TX line wired to
-    // the receiver's RX (nothing in this app wrote to the GPS before), and with a
-    // separate correction radio there is nothing to forward. The messages are
-    // recognised and counted either way, so they never show up as radio errors.
-    forwardRtcm: process.env.RTCM_FORWARD === '1' || process.env.RTCM_FORWARD === 'true',
     // Base station only - parameters sent along with a UBX-CFG-TMODE3
     // survey-in request (see adminServer.js's "Start survey-in" button).
     // svinMinDurS is the minimum time the receiver must spend surveying
@@ -423,6 +404,37 @@ module.exports = {
     // supports them). GPIO17 (header pin 11) is the recommended choice -
     // see README's "Radio sleep wiring". The XBee also needs SM=1.
     sleepGpio: process.env.RADIO_SLEEP_GPIO ? parseInt(process.env.RADIO_SLEEP_GPIO, 10) : null,
+  },
+
+  // --- RTCM correction messages (boat only) ---
+  // Not tied to having a GPS: with one shared radio the corrections arrive over
+  // the telemetry radio itself, so none of this needs a GPS attached.
+  rtcm: {
+    // Console line for every RTCM correction message: `[rtcm-radio]` for each
+    // message that arrives over the telemetry radio, and `[rtcm]` for each
+    // UBX-RXM-RTCM message the GPS receiver reports (message type, whether it
+    // was applied, CRC failures - the only direct evidence this app can show
+    // that correction data is actually reaching the receiver; that message also
+    // has to be enabled on the receiver). Defaults off so a one-off diagnostic
+    // check doesn't start scrolling unwanted lines on every ordinary run
+    // afterward. RTCM_LOG=1 is all it takes (GPS_LOG, the per-fix line, is
+    // independent). GPS_LOG_RTCM is the old name, still honoured.
+    // RTCM_LOG=1 prints ONE tight line per second per source; RTCM_LOG=2 prints a
+    // decoded line per message (see rtcmLog.js). 0 = off.
+    log: (() => {
+      const v = process.env.RTCM_LOG || process.env.GPS_LOG_RTCM;
+      if (v === '2') return 2;
+      return v === '1' || v === 'true' ? 1 : 0;
+    })(),
+    // When the telemetry radio is ALSO the RTK correction link (one shared
+    // radio - see README's "RTCM on the shared radio"), RTCM3 messages arrive
+    // on the radio's serial port mixed in with telemetry. RTCM_FORWARD=1 writes
+    // each one, untouched, to the GPS receiver's serial port so it can use
+    // them. Off by default: it needs the Pi's TX line wired to the receiver's RX
+    // (nothing in this app wrote to the GPS before), and with a separate
+    // correction radio there is nothing to forward. The messages are recognised
+    // and counted either way, so they never show up as radio errors.
+    forward: process.env.RTCM_FORWARD === '1' || process.env.RTCM_FORWARD === 'true',
   },
 
   // --- Radio sleep mode (base commands it, rovers obey it) ---
