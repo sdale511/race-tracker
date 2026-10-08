@@ -64,6 +64,13 @@ WHAT THIS DOES
       bit 1 - routing/relay on this node) according to --mode - see MODES
       below for the exact TO/CE pair each mode sets and why.
     - Sets ID, DH/DL, HP, MT, BD to the values below.
+    - --role picks the preset: telemetry (default - the boat/base position
+      link) or rtcm (the RTK correction link: separate network, MT=1, no
+      flow control) - see ROLES below. --network-id/--preamble-id/--mt
+      override any single value of either preset.
+    - Sets UART flow control (D7 = CTS output, D6 = RTS input) according to
+      --flow-control - see FLOW_CONTROL below for what each choice does and
+      the one way it can silence a radio.
     - Writes the config to non-volatile memory (so it survives power
       cycling), reads every value back within THIS session to confirm it
       stuck, then does a real soft reset and re-checks everything again
@@ -87,6 +94,9 @@ USAGE
     python3 xbee_configure_at.py --port /dev/ttyUSB0 --mode digimesh       # DigiMesh, routing/relay OFF
     python3 xbee_configure_at.py --port /dev/ttyUSB0 --mode digimesh-routing  # DigiMesh, routing/relay ON
     python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run             # read current config, change nothing
+    python3 xbee_configure_at.py --port /dev/ttyUSB0 --flow-control rtscts # CTS + RTS flow control (default: cts)
+    python3 xbee_configure_at.py --port /dev/ttyUSB0 --role rtcm           # an XBee-PRO 900HP as the RTK correction radio
+    python3 xbee_configure_at.py --port /dev/ttyUSB0 --role rtcm --network-id 0x2A10   # ...on a network ID of your choosing
 """
 
 import argparse
@@ -135,6 +145,56 @@ MODES = {
 }
 DEFAULT_MODE = "p2mp"
 
+# UART flow control, selected with --flow-control (default "cts") - the D7
+# (DIO7/CTS, pin 12) / D6 (DIO6/RTS, pin 16) pair. Both are about what the
+# radio's serial port tells the HOST, and none of it does anything unless the
+# host's side is wired and honours it:
+#   - CTS (D7=1, also Digi's own factory default) is an OUTPUT: the radio
+#     raises it when its serial receive buffer is nearly full, to tell the host
+#     to stop sending. Safe to leave on even if the host ignores it - the host
+#     just keeps sending and the radio drops what doesn't fit. It only helps
+#     once the host (the Pi's / adapter's driver, and race-tracker's own serial
+#     port settings) actually obeys it.
+#   - RTS (D6=1) is an INPUT: the radio stops sending received data out to the
+#     host while RTS is held high. If the host side never drives RTS (a USB
+#     adapter with the RTS line unwired or floating), the radio goes SILENT to
+#     the host - nothing it receives ever reaches the app. So it is off unless
+#     asked for, and only for an adapter whose RTS is known to be wired.
+FLOW_CONTROL = {
+    "none": {"D7": 0, "D6": 0, "label": "no hardware flow control"},
+    "cts": {"D7": 1, "D6": 0, "label": "CTS only (radio tells the host to pause; Digi's factory default)"},
+    "rtscts": {"D7": 1, "D6": 1, "label": "CTS + RTS (host can also pause the radio's output)"},
+}
+DEFAULT_FLOW_CONTROL = "cts"
+
+# Presets for what the radio is FOR, selected with --role (default
+# "telemetry"). Everything not listed here (TO/CE from --mode, DH/DL broadcast,
+# BD from --target-baud) is the same for both. The two roles differ so that a
+# boat's/base's TELEMETRY radio and its RTK-correction radio never form one
+# network when both are XBee-PRO 900HPs: different network ID AND different
+# preamble ID (HP), because the radios only talk to others whose preamble ID
+# matches and whose network ID matches - otherwise the correction radio would
+# also hear every telemetry frame (and the telemetry radio every RTCM message).
+# Both ends of each link must use the same role/values.
+#   telemetry: this fleet's position link - one transmission per broadcast
+#              (MT=0, throughput over redundancy), flow control per
+#              DEFAULT_FLOW_CONTROL.
+#   rtcm:      RTK corrections, one burst a second with no acknowledgements -
+#              each broadcast sent twice (MT=1, what the stock ArduSimple long-
+#              range radios use), and NO flow control: the ArduSimple board's
+#              UART2 it plugs into doesn't use it, and RTS left floating would
+#              silence the radio. The network ID 0x1985 is the one the stock
+#              ArduSimple pair uses - harmless to reuse, since an XBee SX can't
+#              hear a 900HP anyway - and HP=1 keeps it off the telemetry network.
+ROLES = {
+    "telemetry": {"ID": 0x7FFF, "HP": 0, "MT": 0, "flow": DEFAULT_FLOW_CONTROL,
+                  "label": "position telemetry link"},
+    "rtcm": {"ID": 0x1985, "HP": 1, "MT": 1, "flow": "none",
+             "label": "RTK correction (RTCM) link - separate network, repeat once, no flow control"},
+}
+DEFAULT_ROLE = "telemetry"
+DIO_LABELS = {0: "disabled", 1: "flow control", 3: "digital input", 4: "digital output low", 5: "digital output high"}
+
 # ─── CONFIG ─────────────────────────────────────────────────────────────
 
 CONFIG = {
@@ -164,6 +224,10 @@ CONFIG = {
     # Placeholder values only; always overwritten before use.
     "TRANSMIT_OPTIONS": None,
     "CE": None,
+    # D7 (CTS)/D6 (RTS) are filled in from FLOW_CONTROL[args.flow_control]
+    # the same way, in main() - placeholders only.
+    "D7": None,
+    "D6": None,
 
     # Destination addressing: broadcast (DH=0, DL=0xFFFF) -- default.
     "DH": "0",
@@ -332,8 +396,12 @@ def dry_run_report(ser, target_baud):
     changed += compare_row("HP (Preamble ID)", query(ser, "HP"), format(CONFIG["HP"], "X"))
     changed += compare_row("MT (Broadcast Multi-Tx)", query(ser, "MT"), format(CONFIG["MT"], "X"))
     changed += compare_row("CE (Node Msg Options)", query(ser, "CE"), format(CONFIG["CE"], "X"))
+    changed += compare_row("D7 (CTS flow control)", query(ser, "D7"), format(CONFIG["D7"], "X"),
+                            decode=lambda v: DIO_LABELS.get(v, "other"))
+    changed += compare_row("D6 (RTS flow control)", query(ser, "D6"), format(CONFIG["D6"], "X"),
+                            decode=lambda v: DIO_LABELS.get(v, "other"))
 
-    total = 7  # TO, ID, DH, DL, HP, MT, CE - kept in sync with the calls above
+    total = 9  # TO, ID, DH, DL, HP, MT, CE, D7, D6 - kept in sync with the calls above
 
     bd_code = BAUD_CODE_MAP.get(target_baud)
     if bd_code is not None:
@@ -377,6 +445,10 @@ def read_config(ser):
 
     ce = query(ser, "CE")
     print(f"  {'CE (Node Msg Options)':28s} {hex_to_int(ce)}")
+
+    for name, label in (("D7", "D7 (CTS flow control)"), ("D6", "D6 (RTS flow control)")):
+        v = hex_to_int(query(ser, name))
+        print(f"  {label:28s} {v if v is not None else '?'}  ({DIO_LABELS.get(v, 'other') if v is not None else 'no response'})")
 
     bd = query(ser, "BD")
     bd_val = hex_to_int(bd)
@@ -445,7 +517,43 @@ def main():
              f"or digimesh-routing (TO=0xC0, routing/relay ON - only needed if a course/fleet layout ever "
              f"genuinely requires multi-hop relaying).",
     )
+    ap.add_argument(
+        "--flow-control",
+        choices=sorted(FLOW_CONTROL.keys()),
+        default=None,
+        help=f"UART flow control (default: the --role preset - {ROLES['telemetry']['flow']} for telemetry, {ROLES['rtcm']['flow']} for rtcm) - none (D7=0, D6=0), cts (D7=1, D6=0 - Digi's own "
+             f"factory default) or rtscts (D7=1, D6=1). rtscts makes the radio stop sending to the host whenever "
+             f"RTS is held high, so use it only with an adapter whose RTS line is wired and driven - otherwise "
+             f"the radio goes silent to the app. See FLOW_CONTROL in this script.",
+    )
+    ap.add_argument(
+        "--role",
+        choices=sorted(ROLES.keys()),
+        default=DEFAULT_ROLE,
+        help=f"What this radio is for (default {DEFAULT_ROLE}): telemetry = the position link (network ID "
+             f"0x{ROLES['telemetry']['ID']:X}, HP {ROLES['telemetry']['HP']}, MT {ROLES['telemetry']['MT']}); "
+             f"rtcm = the RTK correction link on its OWN network (ID 0x{ROLES['rtcm']['ID']:X}, HP {ROLES['rtcm']['HP']}, "
+             f"MT {ROLES['rtcm']['MT']}, no flow control). Set BOTH ends of each link the same.",
+    )
+    ap.add_argument("--network-id", type=lambda v: int(v, 0), default=None,
+                     help="Override the role's network ID (ID), 0 - 0x7FFF, e.g. 0x2A10")
+    ap.add_argument("--preamble-id", type=int, default=None, choices=range(0, 8),
+                     help="Override the role's preamble ID (HP), 0 - 7")
+    ap.add_argument("--mt", type=int, default=None, choices=range(0, 6),
+                     help="Override the role's broadcast multi-transmits (MT), 0 - 5 (each broadcast is sent MT+1 times)")
     args = ap.parse_args()
+
+    # Role preset first, then any explicit overrides, into CONFIG - the single
+    # source of truth the rest of this script reads from.
+    role = ROLES[args.role]
+    network_id = role["ID"] if args.network_id is None else args.network_id
+    if not 0 <= network_id <= 0x7FFF:
+        ap.error("--network-id must be between 0 and 0x7FFF")
+    CONFIG["NETWORK_ID"] = f"0x{network_id:X}"
+    CONFIG["HP"] = role["HP"] if args.preamble_id is None else args.preamble_id
+    CONFIG["MT"] = role["MT"] if args.mt is None else args.mt
+    if args.flow_control is None:
+        args.flow_control = role["flow"]
 
     # Fills in the two MODE-dependent CONFIG values before anything below
     # reads them - CONFIG stays the single source of truth the rest of this
@@ -453,9 +561,13 @@ def main():
     # from, so nothing past this point needs to know --mode exists at all.
     CONFIG["TRANSMIT_OPTIONS"] = MODES[args.mode]["TRANSMIT_OPTIONS"]
     CONFIG["CE"] = MODES[args.mode]["CE"]
+    CONFIG["D7"] = FLOW_CONTROL[args.flow_control]["D7"]
+    CONFIG["D6"] = FLOW_CONTROL[args.flow_control]["D6"]
 
     ser = open_and_enter_command_mode(args.port, args.connect_baud)
     print(f"Mode: {args.mode} ({MODES[args.mode]['label']}) - TO=0x{CONFIG['TRANSMIT_OPTIONS']:02X}, CE={CONFIG['CE']}")
+    print(f"Role: {args.role} ({role['label']}) - ID={CONFIG['NETWORK_ID']}, HP={CONFIG['HP']}, MT={CONFIG['MT']}")
+    print(f"Flow control: {args.flow_control} ({FLOW_CONTROL[args.flow_control]['label']}) - D7={CONFIG['D7']}, D6={CONFIG['D6']}")
 
     try:
         if args.dry_run:
@@ -482,6 +594,8 @@ def main():
         all_ok &= set_and_verify(ser, "HP", format(CONFIG["HP"], "X"), "HP (Preamble ID)")
         all_ok &= set_and_verify(ser, "MT", format(CONFIG["MT"], "X"), "MT (Broadcast Multi-Tx)")
         all_ok &= set_and_verify(ser, "CE", format(CONFIG["CE"], "X"), "CE (Node Msg Options)")
+        all_ok &= set_and_verify(ser, "D7", format(CONFIG["D7"], "X"), "D7 (CTS flow control)")
+        all_ok &= set_and_verify(ser, "D6", format(CONFIG["D6"], "X"), "D6 (RTS flow control)")
 
         # Write everything set so far, BEFORE touching baud - once BD
         # changes, this session's own connection (still at connect-baud)

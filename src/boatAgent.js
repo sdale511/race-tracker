@@ -812,6 +812,22 @@ radio.on('ping', () => {
   setTimeout(() => transmitFix(lastPvt), delayMs);
 });
 
+// RTCM3 corrections arriving over the telemetry radio itself (one shared radio
+// for telemetry AND corrections - see README's "RTCM on the shared radio"):
+// recognised by radioLink.js so they never read as radio errors, counted for the
+// dashboard, and - with RTCM_FORWARD=1 - written untouched to the GPS receiver.
+// Never forwarded while the rover is sleeping: any byte written to a sleeping
+// receiver wakes it (see gpsSleep.js), and a listen window would then wake the
+// GPS on every correction burst.
+radio.on('rtcm', (frame) => {
+  const forward = config.gps.forwardRtcm && !sleeper.isSleeping() && !gpsSleep.isAsleep() && !!gpsSerial && gpsSerial.isOpen;
+  if (forward) gpsSerial.write(frame.raw);
+  roverStats.recordRadioRtcm(frame, forward);
+  if (config.gps.logConsole && config.gps.logRtcm) {
+    console.log(`[rtcm-radio] type=${frame.type} ${frame.length}B${forward ? ' -> GPS' : ''}`);
+  }
+});
+
 // Going to sleep: whatever fixes were still waiting to batch are already on
 // SD (logged as each was queued) and would be stale by wake time, so drop
 // them rather than sending them as a "fresh" batch afterwards.

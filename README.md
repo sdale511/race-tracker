@@ -275,6 +275,17 @@ latency guidance (link latency should stay under nav-period minus 50ms)
 leaves ~0ms margin at 20Hz - a real correction-radio link (not a bench
 test) risks `carrSoln` flickering fixed→float right at the moment
 precision matters most. 10Hz keeps a comfortable 50ms margin instead.
+It also accepts RTCM3 as an input on UART2 (the correction radio's port),
+makes sure GPS/GLONASS/Galileo/BeiDou tracking are all on (the rover can only
+use corrections for constellations it tracks) and sets the differential mode to
+3 = RTK fixed (2 would stop at float).
+
+**Both roles** set UART2's baud (`--uart2-baud`, default 115200) - UART2 is the
+port the onboard correction radio is wired to, so it **must equal that radio's
+own baud** (the base's reads 115200). Only UART2 is touched, never the port the
+script is connected through. If your correction radios aren't at 115200, pass
+their baud instead of accepting the default.
+
 Every write goes to
 RAM+BBR+Flash (survives a power cycle) and is read back afterward to
 confirm it actually stuck - a silently-failed write is worse than a loud
@@ -338,6 +349,7 @@ pip install pyserial
 
 python3 xbee_configure_at.py --port /dev/ttyUSB0             # every radio
 python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run    # read only
+python3 xbee_configure_at.py --port /dev/ttyUSB0 --role rtcm  # an XBee-PRO 900HP as the RTK correction radio
 ```
 
 | Flag | Default | Notes |
@@ -345,9 +357,23 @@ python3 xbee_configure_at.py --port /dev/ttyUSB0 --dry-run    # read only
 | `--connect-baud` | 115200 | The radio's CURRENT speed - pass its actual current baud if already reconfigured, or `9600` for a genuinely factory-fresh radio |
 | `--target-baud` | 115200 | Applied last (changes how the script itself talks to the radio), matches `RADIO_BAUD` |
 | `--mode` | `p2mp` | `p2mp` / `digimesh` / `digimesh-routing` |
+| `--role` | `telemetry` | What the radio is for. `telemetry`: network ID `0x7FFF`, `HP` 0, `MT` 0 (the position link). `rtcm`: network ID `0x1985`, `HP` 1, `MT` 1 (each broadcast sent twice), no flow control - the RTK correction link on its **own network**, so a yacht's two XBee-PRO 900HP radios never hear each other's data. Set **both ends** of each link the same |
+| `--network-id` / `--preamble-id` / `--mt` | from `--role` | Override a single value of the preset: `ID` (0 - 0x7FFF), `HP` (0 - 7), `MT` (0 - 5) |
+| `--flow-control` | `cts` | `none` (D7=0, D6=0) / `cts` (D7=1, D6=0 - Digi's own factory default) / `rtscts` (D7=1, D6=1). CTS is an output the radio raises when its serial buffer is nearly full - harmless if the host ignores it. **RTS makes the radio stop sending to the app while RTS is held high**, so use `rtscts` only with an adapter whose RTS line is wired and driven, or the radio goes silent to the app. The app itself opens the port without hardware flow control today, so these settings only take effect once it (or the adapter's driver) honours them |
+
+The stock ArduSimple LR radio's settings, side by side with each preset above, are
+recorded in [`docs/xbee-radio-settings.md`](docs/xbee-radio-settings.md).
+
+**Not for the stock ArduSimple long-range radios.** Those are XBee SX modules
+paired on their own network ID (`0x1985`); running this script for real on one
+would change its settings (a dry run is safe and just reads them). `--role rtcm` is
+for replacing *both* ends of the correction link with XBee-PRO 900HPs; try it on the
+bench first (ZED to radio to radio to ZED, with `GPS_LOG_RTCM=1` on the rover) before
+relying on it. `CM` (the channel mask) is still not set by this script, so two
+900HP networks on one yacht still hop across the same frequencies.
 
 Config values (network ID, DH/DL, etc.) live in the `CONFIG` dict at the
-top of the script, not as flags. Channel selection (`CM`) isn't touched at
+top of the script, not as flags, except those the flags above override. Channel selection (`CM`) isn't touched at
 all - set by hand first if avoiding specific frequencies. Only one process
 can hold a serial port - stop any running `npm run base`/`boat`/`radio-test`
 or XCTU on that port first.
@@ -383,6 +409,21 @@ with a sequence number in the timestamp field. Listener logs received
 frames and prints a running summary every 10s (received count, estimated
 missed, loss %). Start close together to confirm connectivity, then
 separate to find where the link degrades.
+
+**Looking at the raw bytes on a radio's port (macOS).** Don't use `stty -f <port> 115200`
+followed by `cat <port> | xxd`: macOS resets the port to its default 9600 baud when
+`cat` reopens it, so a 115200 radio's output reads as noise. Use a tool that sets the
+baud itself when it opens the port - `python3 -m serial.tools.miniterm <port> 115200 --raw`,
+or `rtcm_listen.py`:
+
+```
+python3 rtcm_listen.py --port /dev/cu.usbserial-0001 --seconds 20
+```
+
+`rtcm_listen.py` decodes the stream rather than dumping hex: checksum-valid RTCM3
+messages (with type and size), UBX frames and NMEA sentences, how many bytes it
+couldn't recognise, and how wide each second's burst is. "No valid frames" there
+means the bytes really are corrupted, unlike a wrong-baud `cat`.
 
 ### Congestion-testing the radio
 
@@ -520,6 +561,36 @@ arrival time in a fix: it used to stamp each unpacked fix with `new Date()`
 points returned from Redis still carry a `receivedAt` field for existing
 consumers, but it is now just the GPS timestamp, including for fixes stored
 before this change.
+
+### RTCM on the shared radio (telemetry and corrections on one radio)
+
+If the radio on a boat's/base's serial port is also the RTK correction link (every radio on
+the same network ID and `HP` - see `docs/xbee-radio-settings.md`), the RTK base's RTCM3
+messages arrive on that same serial port, mixed in with position frames, marks and the rest.
+
+- **Recognised, never an error.** `radioLink.js` (and the UDP simulator) now treat an RTCM3
+  message as its own frame type: `0xD3`, a 10-bit length, the payload, and a CRC-24Q that must
+  check out (`protocol.js`'s `decodeRtcm`). Before this, RTCM bytes looked like noise: the same
+  5-second test stream produced 965 sync errors, because payload bytes that happen to equal one
+  of our own sync bytes (`0xAA`, `0xBB`, ...) were taken for the start of a frame; now it
+  produces none, and the telemetry frames in between all decode. A false `0xD3` with an
+  implausible length (over 300 bytes) is rejected straight away, so it can't make the scanner
+  wait on a frame that never arrives. A corrupted RTCM message costs a couple of sync errors and
+  nothing around it.
+- **Counted.** The rover counts what arrives over the radio (`radioRtcm` in `GET /api/stats`:
+  frames, bytes, forwarded, last type). That is separate from `rtcm`, which counts what the GPS
+  receiver reports applying (`UBX-RXM-RTCM`). `GPS_LOG=1 GPS_LOG_RTCM=1` also prints a
+  `[rtcm-radio] type=1074 129B` line per message. A base's telemetry station hears the same
+  RTCM and simply ignores it.
+- **Forwarded to the GPS only if asked.** With `RTCM_FORWARD=1` the rover writes each message,
+  byte for byte, to the GPS receiver's serial port, which is what makes the shared radio an RTK
+  link. That needs the Pi's TX line wired to the receiver's RX (nothing in this app wrote to the
+  GPS before), and `ubx_config_set.py --role rover` now also accepts RTCM3 as an input on UART1
+  and USB. Nothing is forwarded while the rover is in radio sleep: a byte written to a sleeping
+  receiver wakes it.
+
+Not built yet: pacing telemetry around the correction burst (see the burst-timing note in
+`docs/`), and nothing here has been run on a real rover.
 
 ### Radio sleep mode (base sleeps/wakes rovers to save power)
 
@@ -1691,6 +1762,7 @@ actually use. Redis password is redacted.
 | `GPS_LOG` | unset (on) | `0` = silence the per-fix `[gps]`/`[baseGps]` console line |
 | `GPS_LOG_REPLACE` | unset (on) | In-place overwrite of the console line on a real TTY (a real radio-send commit still scrolls). `0` = always scroll |
 | `GPS_LOG_RTCM` | unset (off) | Boat only - `1` logs `[rtcm]` per `UBX-RXM-RTCM` message; also needs that message enabled on the receiver |
+| `RTCM_FORWARD` | unset (off) | Boat only - `1` = write RTCM3 messages that arrive over the radio to the GPS receiver's serial port (shared-radio setup; needs the Pi's TX wired to the receiver's RX) - see "RTCM on the shared radio" |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |

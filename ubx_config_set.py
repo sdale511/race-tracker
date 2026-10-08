@@ -32,6 +32,11 @@ fleet's own pair of boards actually found wrong:
     rate set to 10Hz (not the 20Hz spec ceiling - see CFG-RATE-MEAS's own
     comment on why 20Hz risks carrSoln instability under a real correction
     radio link, not just a bench test).
+  Both roles also set UART2's baud (--uart2-baud, default 115200) - UART2 is
+  the port the onboard correction radio is wired to, so it MUST equal that
+  radio's own baud (the base's was 115200). The rover profile also makes sure
+  GPS/GLONASS/Galileo/BeiDou tracking is on and the differential mode is 3 (RTK
+  fixed), so it can use everything the base sends.
 
 Every key ID is the same cross-checked (SparkFun u-blox GNSS library +
 pyubx2) set ubx_config_report.py already uses - see its own module comment.
@@ -88,6 +93,14 @@ KEY_INFO = {
     "CFG-MSGOUT-UBX_RXM_RTCM_UART1": (0x20910269, "u1", "RXM-RTCM rate"),
     "CFG-RATE-MEAS": (0x30210001, "u2", "fix rate (ms)"),
     "CFG-UART2INPROT-RTCM3X": (0x10750004, "bool", "RTCM3 input UART2"),
+    "CFG-UART2-BAUDRATE": (0x40530001, "u4", "UART2 baud"),
+    "CFG-UART1INPROT-RTCM3X": (0x10730004, "bool", "RTCM3 input UART1"),
+    "CFG-USBINPROT-RTCM3X": (0x10770004, "bool", "RTCM3 input USB"),
+    "CFG-NAVHPG-DGNSSMODE": (0x20140011, "u1", "DGNSS mode (3=fixed)"),
+    "CFG-SIGNAL-GPS_ENA": (0x1031001F, "bool", "GPS tracking"),
+    "CFG-SIGNAL-GLO_ENA": (0x10310025, "bool", "GLONASS tracking"),
+    "CFG-SIGNAL-GAL_ENA": (0x10310021, "bool", "Galileo tracking"),
+    "CFG-SIGNAL-BDS_ENA": (0x10310022, "bool", "BeiDou tracking"),
 }
 
 # The RTCM message types this profile cares about: type -> (what it is,
@@ -182,6 +195,20 @@ ROVER_SETTINGS = {
     "CFG-TMODE-MODE": 0,  # disabled - a rover is not a stationary reference station
     "CFG-MSGOUT-UBX_RXM_RTCM_UART1": 1,  # GPS_LOG_RTCM visibility into corrections actually arriving
     "CFG-UART2INPROT-RTCM3X": True,  # corrections must be accepted on the port the correction radio is wired to (already the default - set explicitly so a board that was changed is put right)
+    # With one shared radio the Pi writes the RTCM it receives to the receiver's
+    # UART1 (or USB when developing) - make sure it is accepted there too.
+    "CFG-UART1INPROT-RTCM3X": True,
+    "CFG-USBINPROT-RTCM3X": True,
+    # RTK needs the rover to track every constellation the base sends observations
+    # for (the base's default is all four) - a rover with one switched off just
+    # ignores that constellation's corrections. All four are the receiver's own
+    # default; set explicitly so a board that was changed is put right.
+    "CFG-SIGNAL-GPS_ENA": True,
+    "CFG-SIGNAL-GLO_ENA": True,
+    "CFG-SIGNAL-GAL_ENA": True,
+    "CFG-SIGNAL-BDS_ENA": True,
+    # 3 = RTK fixed (the default) - 2 would stop at float and never reach cm-level.
+    "CFG-NAVHPG-DGNSSMODE": 3,
     # 10Hz, not the 20Hz spec ceiling - u-blox's own correction-link-latency
     # guidance (< nav period - 50ms) leaves ~0ms margin at 20Hz, meaning a
     # real correction-radio link (not a bench test) risks carrSoln
@@ -376,6 +403,13 @@ def main():
         help="base role only: comma-separated constellations whose observations are sent (gps, glonass, galileo, beidou). "
         "Default all four; a constellation left out has its MSM4 message switched off, and 1230 goes with GLONASS",
     )
+    ap.add_argument(
+        "--uart2-baud",
+        type=int,
+        default=115200,
+        help="both roles: baud for UART2, the port the onboard correction radio is wired to - must equal that radio's own baud "
+        "(default 115200). Only UART2 is touched, never the port this script is connected through",
+    )
     args = ap.parse_args()
 
     if args.role == "base":
@@ -394,7 +428,9 @@ def main():
         settings = build_base_settings(rtcm_ports, constellations)
         print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}")
     else:
-        settings = ROVER_SETTINGS
+        settings = dict(ROVER_SETTINGS)
+    settings["CFG-UART2-BAUDRATE"] = args.uart2_baud
+    print(f"[ubx_config_set] UART2 baud {args.uart2_baud} - must equal the correction radio's own baud")
 
     print(f"[ubx_config_set] connecting to {args.port} @ {args.baud}, role={args.role}{' (dry run)' if args.dry_run else ''}")
     try:

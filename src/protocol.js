@@ -695,6 +695,56 @@ function decodePower(buf) {
   return { action, sleepS: buf.readUInt8(2), all: count === 0, boatIds };
 }
 
+// Ninth "frame type": RTCM3 correction messages riding the same shared radio as
+// telemetry (see README's "RTCM on the shared radio"). Not a frame this app
+// defines - it is the standard RTCM3 transport the RTK base's ZED-F9P already
+// emits - but every radio on the network hears it, so the byte-stream scanner
+// (radioLink.js) must recognise it, otherwise its bytes read as noise: false
+// sync matches on payload bytes that happen to equal one of our own sync bytes,
+// counted as radio errors and able to swallow real frames.
+//
+// Layout (RTCM 10403.x transport): [0] 0xD3, [1] 6 reserved bits (zero) +
+// top 2 bits of the length, [2] low 8 bits of the length, then `length` payload
+// bytes, then a 3-byte CRC-24Q over everything before it. The message number is
+// the first 12 bits of the payload. Passed through untouched (raw bytes) so it
+// can be forwarded verbatim to a GPS receiver.
+const RTCM_SYNC = 0xd3;
+const RTCM_MAX_PAYLOAD = 300; // this fleet's biggest message is ~140 bytes; a larger length is treated as a false sync, so one stray 0xD3 can't make the scanner wait on ~1000 bytes
+
+function crc24q(buf, end) {
+  let crc = 0;
+  for (let i = 0; i < end; i++) {
+    crc ^= buf[i] << 16;
+    for (let b = 0; b < 8; b++) {
+      crc <<= 1;
+      if (crc & 0x1000000) crc ^= 0x1864cfb;
+    }
+  }
+  return crc & 0xffffff;
+}
+
+// Full frame length from the 3-byte header, like batchFrameLenFromHeader: null
+// until the header is in hand, and a small definite length (so decode fails fast)
+// whenever the header can't be a real RTCM frame.
+function rtcmFrameLenFromHeader(buf) {
+  if (buf.length < 3) return null;
+  if ((buf[1] & 0xfc) !== 0) return 3;
+  const length = ((buf[1] & 0x03) << 8) | buf[2];
+  if (length < 2 || length > RTCM_MAX_PAYLOAD) return 3;
+  return 3 + length + 3;
+}
+
+// Returns { type, length, raw } (raw = a copy of the whole frame, for
+// forwarding), or null if the buffer isn't one valid RTCM3 frame.
+function decodeRtcm(buf) {
+  if (buf.length < 8 || buf[0] !== RTCM_SYNC) return null;
+  if (rtcmFrameLenFromHeader(buf) !== buf.length) return null;
+  const end = buf.length - 3;
+  const crc = (buf[end] << 16) | (buf[end + 1] << 8) | buf[end + 2];
+  if (crc24q(buf, end) !== crc) return null;
+  return { type: (buf[3] << 4) | (buf[4] >> 4), length: buf.length, raw: Buffer.from(buf) };
+}
+
 // The variable-length frames' largest forms must fit the radio's payload limit
 // too (the marks frame is checked where it's defined above).
 for (const [name, len] of [
@@ -744,4 +794,8 @@ module.exports = {
   powerFrameLenFromHeader,
   POWER_SYNC,
   MAX_POWER_IDS,
+  RTCM_SYNC,
+  crc24q,
+  rtcmFrameLenFromHeader,
+  decodeRtcm,
 };

@@ -28,6 +28,15 @@ let uploadBytesTotal = 0;
 let lastUploadAt = null;
 let lastHealthCheckOkAt = null;
 
+// RTCM3 messages that arrived over the telemetry radio itself (shared-radio
+// setup), as opposed to rtcmCount below, which counts what the GPS RECEIVER
+// reports applying (UBX-RXM-RTCM).
+let radioRtcmFrames = 0;
+let radioRtcmBytes = 0;
+let radioRtcmForwarded = 0;
+let lastRadioRtcmAt = null;
+let lastRadioRtcmType = null;
+
 let rtcmCount = 0;
 let rtcmCrcFailures = 0;
 let lastRtcmAt = null;
@@ -92,6 +101,14 @@ function recordHealthCheckOk() {
 // independent of GPS_LOG_RTCM (see boatAgent.js's openGps) - that flag only
 // gates the console line, not whether the rover dashboard's own RTK
 // corrections card sees this at all.
+function recordRadioRtcm(frame, forwarded) {
+  radioRtcmFrames++;
+  radioRtcmBytes += frame.length;
+  if (forwarded) radioRtcmForwarded++;
+  lastRadioRtcmAt = Date.now();
+  lastRadioRtcmType = frame.type;
+}
+
 function recordRtcm(msg) {
   rtcmCount++;
   if (msg.crcFailed) rtcmCrcFailures++;
@@ -115,6 +132,13 @@ function snapshot() {
       lastUploadAt,
       lastHealthCheckOkAt,
     },
+    radioRtcm: {
+      frames: radioRtcmFrames,
+      bytes: radioRtcmBytes,
+      forwarded: radioRtcmForwarded,
+      lastReceivedAt: lastRadioRtcmAt,
+      lastMsgType: lastRadioRtcmType,
+    },
     rtcm: {
       count: rtcmCount,
       crcFailures: rtcmCrcFailures,
@@ -134,5 +158,6 @@ module.exports = {
   recordUploadFailure,
   recordHealthCheckOk,
   recordRtcm,
+  recordRadioRtcm,
   snapshot,
 };

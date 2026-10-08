@@ -27,6 +27,13 @@ USAGE
     pip install pyserial
     python3 ubx_config_report.py --port /dev/ttyAMA0 --baud 115200
 
+    python3 ubx_config_report.py --port /dev/cu.usbmodem101 --comms
+        Instead of the settings, measures how many bytes the receiver is actually
+        sending and receiving on each of its ports (UBX-MON-COMMS), twice a few
+        seconds apart. UART2 is the correction radio's port: its sent rate should
+        be roughly the size of one RTCM epoch per second (about 450-500 bytes/s
+        on a base), and on a rover its RECEIVED rate should be about the same.
+
     Connect on whichever port reaches the receiver (the board's USB port,
     e.g. /dev/ttyACM0 or /dev/cu.usbmodem*, or UART1). The "_UART2" rows are
     that port's own output settings, read over any connection - you do NOT
@@ -98,6 +105,10 @@ KEYS = [
     ("CFG-MSGOUT-RTCM_3X_TYPE1094_UART2", 0x2091036A, "u1", "Galileo MSM4 observations"),
     ("CFG-MSGOUT-RTCM_3X_TYPE1124_UART2", 0x2091036F, "u1", "BeiDou MSM4 observations"),
     ("CFG-UART2OUTPROT-RTCM3X", 0x10760004, "bool", "RTCM3 allowed as an OUTPUT protocol on UART2 - must be on or the messages above never leave"),
+    # UART2 feeds the correction radio, so anything but RTCM leaving it is junk
+    # in the radio link. u-blox's own defaults are UBX off and NMEA off here.
+    ("CFG-UART2OUTPROT-UBX", 0x10760001, "bool", "UBX allowed as an OUTPUT protocol on UART2 - should be OFF (the radio would transmit it)"),
+    ("CFG-UART2OUTPROT-NMEA", 0x10760002, "bool", "NMEA allowed as an OUTPUT protocol on UART2 - should be OFF (the radio would transmit it)"),
     # The same set on UART1 - the port a Pi reads, e.g. a forwarder for a
     # one-radio design. ubx_config_set.py --role base keeps UART1 and UART2
     # identical: MSM4 on, MSM7 off.
@@ -278,10 +289,65 @@ def compare_uart2_usb(values):
         print(f"  WARNING: UART2 sends BOTH MSM4 ({', '.join(both)}) and MSM7 ({', '.join(msm7)}) - duplicate observations over the radio")
 
 
+CLASS_MON = 0x0A
+ID_MON_COMMS = 0x36
+PORT_NAMES = {0x0000: "I2C", 0x0100: "UART1", 0x0201: "UART2", 0x0300: "USB", 0x0400: "SPI"}
+
+
+def poll_comms(ser):
+    """One UBX-MON-COMMS poll -> {port name: (txBytes, rxBytes)}, or None.
+    A port only appears once something has been sent or received on it."""
+    ser.reset_input_buffer()
+    ser.write(build_frame(CLASS_MON, ID_MON_COMMS, b""))
+    deadline = time.time() + RESPONSE_TIMEOUT_S
+    while time.time() < deadline:
+        frame = read_next_frame(ser, deadline)
+        if frame is None:
+            break
+        msg_class, msg_id, payload = frame
+        if msg_class == CLASS_MON and msg_id == ID_MON_COMMS and len(payload) >= 8:
+            n_ports = payload[1]
+            ports = {}
+            for i in range(n_ports):
+                blk = payload[8 + i * 40 : 8 + (i + 1) * 40]
+                if len(blk) < 40:
+                    break
+                port_id = struct.unpack("<H", blk[0:2])[0]
+                tx_bytes = struct.unpack("<I", blk[4:8])[0]
+                rx_bytes = struct.unpack("<I", blk[12:16])[0]
+                ports[PORT_NAMES.get(port_id, f"0x{port_id:04X}")] = (tx_bytes, rx_bytes)
+            return ports
+    return None
+
+
+def comms_report(ser, seconds):
+    first = poll_comms(ser)
+    if first is None:
+        print("  (no UBX-MON-COMMS response - wrong port/baud, or this firmware doesn't support it)")
+        return
+    print(f"  sampling for {seconds}s ...")
+    time.sleep(seconds)
+    second = poll_comms(ser)
+    if second is None:
+        print("  (second poll got no response)")
+        return
+    print(f"\n  {'port':8s} {'sent B/s':>10s} {'received B/s':>14s}   (total sent / received since power-up)")
+    for name in sorted(second):
+        tx0, rx0 = first.get(name, (0, 0))
+        tx1, rx1 = second[name]
+        print(f"  {name:8s} {(tx1 - tx0) / seconds:10.1f} {(rx1 - rx0) / seconds:14.1f}   ({tx1} / {rx1})")
+    if "UART2" not in second:
+        print("\n  UART2 is not listed: nothing has been sent or received on it since power-up.")
+    print("\n  UART2 is the correction radio's port. A base with RTCM enabled should SEND roughly one RTCM epoch a second "
+          "(about 450-500 bytes/s with four constellations); a rover should RECEIVE about the same.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyAMA0 or COM5")
     ap.add_argument("--baud", type=int, default=115200, help="Baud to connect at (default 115200, matches GPS_BAUD)")
+    ap.add_argument("--comms", action="store_true", help="Measure bytes sent/received per port (UBX-MON-COMMS) instead of reading settings")
+    ap.add_argument("--comms-seconds", type=int, default=5, help="Seconds between the two samples for --comms (default 5)")
     args = ap.parse_args()
 
     print(f"[ubx_config_report] connecting to {args.port} @ {args.baud}")
@@ -290,6 +356,13 @@ def main():
     except serial.SerialException as e:
         print(f"[ubx_config_report] failed to open {args.port}: {e}")
         sys.exit(1)
+
+    if args.comms:
+        try:
+            comms_report(ser, args.comms_seconds)
+        finally:
+            ser.close()
+        return
 
     try:
         values = {}

@@ -362,6 +362,15 @@ module.exports = {
     // unwanted lines on every ordinary run afterward. Still gated by
     // logConsole above (GPS_LOG=0 silences this too).
     logRtcm: process.env.GPS_LOG_RTCM === '1' || process.env.GPS_LOG_RTCM === 'true',
+    // Rover only - when the telemetry radio is ALSO the RTK correction link
+    // (one shared radio - see README's "RTCM on the shared radio"), RTCM3
+    // messages arrive on the radio's serial port mixed in with telemetry.
+    // RTCM_FORWARD=1 writes each one, untouched, to the GPS receiver's serial
+    // port so it can use them. Off by default: it needs the Pi's TX line wired to
+    // the receiver's RX (nothing in this app wrote to the GPS before), and with a
+    // separate correction radio there is nothing to forward. The messages are
+    // recognised and counted either way, so they never show up as radio errors.
+    forwardRtcm: process.env.RTCM_FORWARD === '1' || process.env.RTCM_FORWARD === 'true',
     // Base station only - parameters sent along with a UBX-CFG-TMODE3
     // survey-in request (see adminServer.js's "Start survey-in" button).
     // svinMinDurS is the minimum time the receiver must spend surveying
