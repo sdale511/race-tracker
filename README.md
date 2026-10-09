@@ -444,6 +444,27 @@ phase of the second), `LATENCY_BATCH` (1 = a 26-byte frame, 2-4 = a batch of tha
 `LATENCY_FOCUS=1` (send only in a sweep from 80 ms before to 160 ms after each predicted correction burst, one frame per burst, to find exactly where sending hurts; needs the base running; 150 frames, about 150 s), `RADIO_BAUD` (115200). The guard it suggests is a starting point: one machine, two adapters. It does
 not include a Raspberry Pi's own delays, so repeat it on a Pi before setting slot timing.
 
+**Testing the transmit scheduler itself (`LATENCY_SCHEDULE`).** The same two-radio setup can run
+the real `TxScheduler` instead of sending at random times, so you can see what the gate and the
+slots do to the corrections. The sender radio listens for the base's bursts to learn the timing
+(it waits for 3 bursts before sending), then each virtual boat sends through its own scheduler.
+
+```
+# A: no gate (baseline) - existing random-phase run, same load
+LATENCY_BATCH=2 LATENCY_FRAMES=300 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
+# B: gate only - telemetry held out of the correction window
+LATENCY_SCHEDULE=gate  LATENCY_BATCH=2 LATENCY_FRAMES=300 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
+# C: gate + slots - two virtual boats in slots 3 and 7, 40 ms apart
+LATENCY_SCHEDULE=slots LATENCY_SLOTS=3,7 LATENCY_SLOT_MS=40 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
+```
+
+The report shows, per boat, when each frame was actually written relative to the burst start
+(slot mode: it should sit at the slot's opening, `30 + slot x slot width` ms), how long frames were
+held, frames written inside the conflict window (should be 0), arrivals from different boats within
+25 ms of each other (should be 0), and bursts that came through incomplete with and without a
+frame near them. Compare the incomplete-burst rate in A against B and C. `LATENCY_BOATS` sets the
+number of virtual boats (default 1 for `gate`, one per `LATENCY_SLOTS` entry for `slots`).
+
 **Looking at the raw bytes on a radio's port (macOS).** Don't use `stty -f <port> 115200`
 followed by `cat <port> | xxd`: macOS resets the port to its default 9600 baud when
 `cat` reopens it, so a 115200 radio's output reads as noise. Use a tool that sets the

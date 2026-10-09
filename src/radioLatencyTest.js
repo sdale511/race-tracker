@@ -25,6 +25,14 @@
 //                                      0-40 ms is added so sends sweep every phase of the second)
 //   LATENCY_BATCH                      1 = a 26-byte position frame (default),
 //                                      2-4 = a batch frame of that many fixes (up to 84 bytes)
+//   LATENCY_SCHEDULE                   off (default) | gate | slots - send the test frames through the
+//                                      real transmit scheduler (txScheduler.js) on the sending radio
+//                                      instead of straight to the radio. `gate` keeps writes clear of
+//                                      the correction burst; `slots` also gives each of LATENCY_BOATS
+//                                      virtual boats its own slot (LATENCY_SLOTS, e.g. 3,7 and
+//                                      LATENCY_SLOT_MS, default 40). Compare a run with `off` and one
+//                                      with `gate`: same load, same radios - the difference is the
+//                                      scheduler's effect on the corrections and on latency
 //   LATENCY_FOCUS                      1 = send only in a sweep AROUND the predicted correction
 //                                      bursts (80 ms before to 160 ms after, in 10 ms steps, one frame
 //                                      per burst) to find exactly where sending hurts; needs the base
@@ -283,7 +291,181 @@ function report(r, batch) {
   }
 }
 
-module.exports = { runLatencyTest, report, summarize, percentile, buildFrame };
+// ---- scheduled mode: the same load as above, but sent through the real TxScheduler ----
+// The sending radio listens for the correction bursts itself (as a boat would) and each virtual
+// boat's frames go through its own scheduler. Measured at the listening radio: when each frame
+// was actually WRITTEN relative to the nearest burst, how long it was held, latency after the
+// write, loss, and whether the bursts came through complete.
+function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot: 3 }], frames = 150, gapMs = 250, batch = 1, slotMs = 40, now = () => performance.now() }) {
+  const { BurstTracker } = require('./burstTracker');
+  const { TxGate } = require('./txGate');
+  const { TxScheduler } = require('./txScheduler');
+  return new Promise((resolve) => {
+    const tracker = new BurstTracker({ now });
+    tx.on('rtcm', (f) => tracker.onRtcm(f.type));
+    const gate = new TxGate({ tracker, now });
+
+    const rec = new Map(); // `${boat}:${seq}` -> { boat, submittedAt, writtenAt, receivedAt }
+    const key = (b, q) => `${b}:${q}`;
+    const decodeKey = (buf) => {
+      const d = buf[0] === 0xaa ? protocol.decode(buf) : protocol.decodeBatch(buf);
+      const first = Array.isArray(d) ? d[0] : d;
+      return key(first.boatId, Math.floor(first.timestamp / 1000));
+    };
+
+    // bursts as heard by the LISTENER (the reference the conflict window was measured against)
+    const bursts = [];
+    let lastRtcm = -Infinity;
+    rx.on('rtcm', () => {
+      const t = now();
+      if (t - lastRtcm > 400) bursts.push({ start: t, end: t, msgs: 0 });
+      const b = bursts[bursts.length - 1];
+      b.end = t;
+      b.msgs++;
+      lastRtcm = t;
+    });
+    const onRx = (boatId, seq) => {
+      const r = rec.get(key(boatId, seq));
+      if (r && r.receivedAt === undefined) r.receivedAt = now();
+    };
+    rx.on('frame', (f) => onRx(f.boatId, Math.floor(f.timestamp / 1000)));
+    rx.on('frame-batch', (fx) => onRx(fx[0].boatId, Math.floor(fx[0].timestamp / 1000)));
+
+    const schedulers = boats.map(
+      (b) =>
+        new TxScheduler({
+          send: (buf) => {
+            const r = rec.get(decodeKey(buf));
+            if (r) r.writtenAt = now();
+            return tx.send(buf);
+          },
+          tracker,
+          gate,
+          slot: { enabled: mode === 'slots', index: b.slot, count: Math.max(...boats.map((x) => x.slot)) + 1, widthMs: slotMs },
+          maxQueue: 30,
+          now,
+          log: (m) => console.log(m),
+        })
+    );
+
+    const build = (id, seq) => {
+      const pvt = (extra) => ({ timestamp: seq * 1000 + extra, lat: 40.8898, lon: -118.3821, gSpeedMmS: 5000, headMotDeg: 90, gnssFixOk: true, carrSoln: 2, numSV: 14 });
+      return batch <= 1 ? protocol.encode(id, pvt(0)) : protocol.encodeBatch(id, Array.from({ length: batch }, (_, j) => pvt(j * 100)));
+    };
+
+    // Don't start until the sender's own tracker has heard a few bursts - before that the scheduler
+    // (correctly) holds nothing back, which would put the first seconds of the run outside the test.
+    const startSending = () => {
+    let done = 0;
+    boats.forEach((b, i) => {
+      let seq = 0;
+      const next = () => {
+        if (seq >= frames) {
+          if (++done === boats.length) setTimeout(finish, 3000);
+          return;
+        }
+        const buf = build(b.id, seq);
+        rec.set(key(b.id, seq), { boat: b.id, submittedAt: now() });
+        schedulers[i].submit(buf);
+        seq++;
+        setTimeout(next, gapMs + Math.random() * 40);
+      };
+      setTimeout(next, i * (gapMs / boats.length));
+    });
+    };
+    let waited = 0;
+    const waitForBursts = () => {
+      if (tracker.isActive(now()) && tracker.bursts >= 3) return startSending();
+      waited += 250;
+      if (waited > 15000) {
+        console.error('[radioLatency] the sender radio has not heard correction bursts - is the base running and on this network? Sending anyway; nothing will be held back.');
+        return startSending();
+      }
+      setTimeout(waitForBursts, 250);
+    };
+    waitForBursts();
+
+    function finish() {
+      const all = [...rec.values()];
+      const starts = bursts.map((x) => x.start);
+      const widths = bursts.map((x) => x.end - x.start).sort((a, c) => a - c);
+      const period = (() => {
+        const iv = starts.slice(1).map((t, k) => t - starts[k]).filter((p) => p > 400).sort((a, c) => a - c);
+        return iv.length ? percentile(iv, 50) : null;
+      })();
+      const written = all.filter((r) => r.writtenAt !== undefined);
+      const phaseOf = (t) => {
+        const prior = starts.filter((x) => x <= t).pop();
+        return prior === undefined ? null : t - prior;
+      };
+      const perBoat = boats.map((b) => {
+        const mine = all.filter((r) => r.boat === b.id);
+        const w = mine.filter((r) => r.writtenAt !== undefined);
+        const phases = w.map((r) => phaseOf(r.writtenAt)).filter((p) => p !== null).sort((x, y) => x - y);
+        const held = w.map((r) => r.writtenAt - r.submittedAt).sort((x, y) => x - y);
+        const lat = w.filter((r) => r.receivedAt !== undefined).map((r) => r.receivedAt - r.writtenAt);
+        return {
+          id: b.id,
+          slot: b.slot,
+          submitted: mine.length,
+          written: w.length,
+          lost: w.length - lat.length,
+          phases: phases.length ? { min: phases[0], p50: percentile(phases, 50), max: phases[phases.length - 1] } : null,
+          held: held.length ? { p50: percentile(held, 50), p90: percentile(held, 90), max: held[held.length - 1] } : null,
+          latency: summarize(lat),
+        };
+      });
+      // frames written inside the measured conflict window (-45..+25 ms around a burst start)
+      const inWindow = written.filter((r) => {
+        const prior = starts.filter((x) => x <= r.writtenAt).pop();
+        const next = starts.find((x) => x > r.writtenAt);
+        return (prior !== undefined && r.writtenAt - prior <= 25) || (next !== undefined && next - r.writtenAt <= 45);
+      }).length;
+      // did the corrections survive? a burst is "hit" if a frame was written in its conflict window
+      let hit = 0, hitBad = 0, clean = 0, cleanBad = 0;
+      const maxMsgs = bursts.length ? Math.max(...bursts.map((x) => x.msgs)) : 0;
+      for (const b of bursts) {
+        const isHit = written.some((r) => r.writtenAt >= b.start - 45 && r.writtenAt <= b.start + 25);
+        const bad = b.msgs < maxMsgs;
+        if (isHit) { hit++; if (bad) hitBad++; } else { clean++; if (bad) cleanBad++; }
+      }
+      // boats' frames arriving on top of each other (different boats within 25 ms at the listener)
+      const arrivals = all.filter((r) => r.receivedAt !== undefined).sort((x, y) => x.receivedAt - y.receivedAt);
+      let overlaps = 0;
+      for (let k = 1; k < arrivals.length; k++) if (arrivals[k].boat !== arrivals[k - 1].boat && arrivals[k].receivedAt - arrivals[k - 1].receivedAt < 25) overlaps++;
+      resolve({
+        mode, perBoat, inWindow, written: written.length, slotMs,
+        bursts: { n: bursts.length, period, width: widths.length ? percentile(widths, 95) : null, hit, hitBad, clean, cleanBad },
+        overlaps, stats: schedulers.map((s) => s.stats()),
+      });
+    }
+  });
+}
+
+function reportScheduled(r) {
+  const f = (v) => (v === null || v === undefined ? '  -  ' : v.toFixed(0).padStart(5));
+  console.log(`\nMode: ${r.mode}${r.mode === 'slots' ? `  (slot width ${r.slotMs} ms)` : ''}   frames written: ${r.written}`);
+  for (const b of r.perBoat) {
+    console.log(`\nBoat ${b.id}${r.mode === 'slots' ? ` (slot ${b.slot})` : ''}: submitted ${b.submitted}, written ${b.written}, lost ${b.lost}`);
+    if (b.phases) console.log(`  written ms after a burst start:  min ${f(b.phases.min)}  median ${f(b.phases.p50)}  max ${f(b.phases.max)}${r.mode === 'slots' ? `   (slot opens at ${30 + b.slot * r.slotMs} ms)` : ''}`);
+    if (b.held) console.log(`  held before the write (ms):      p50 ${f(b.held.p50)}  p90 ${f(b.held.p90)}  max ${f(b.held.max)}`);
+    if (b.latency) console.log(`  latency after the write (ms):    p50 ${f(b.latency.p50)}  p90 ${f(b.latency.p90)}  p99 ${f(b.latency.p99)}  max ${f(b.latency.max)}`);
+  }
+  console.log(`\nFrames written inside the conflict window (-45..+25 ms around a burst start): ${r.inWindow} of ${r.written}`);
+  if (r.mode === 'slots') console.log(`Frames from different boats arriving within 25 ms of each other: ${r.overlaps}`);
+  const b = r.bursts;
+  if (b.n) {
+    console.log(`\nRTCM bursts heard by the listener: ${b.n}, every ${b.period ? b.period.toFixed(0) : '?'} ms`);
+    console.log(`  bursts with a frame written in their conflict window: ${b.hit}, incomplete: ${b.hitBad}`);
+    console.log(`  bursts with none:                                      ${b.clean}, incomplete: ${b.cleanBad}`);
+  } else {
+    console.log('\nNo RTCM bursts heard - start the base so there are corrections to protect.');
+  }
+  const s = r.stats[0];
+  console.log(`\nScheduler (first boat): ${s.passedThrough} sent at once, ${s.held} held (longest ${s.heldMsMax.toFixed(0)} ms), ${s.dropped} dropped, ${s.expired} expired, ${s.spilled} slot spills; bursts tracked: ${s.tracker.bursts}${s.tracker.active ? '' : '  (tracker NOT active - nothing was held)'}`);
+}
+
+module.exports = { runLatencyTest, report, summarize, percentile, buildFrame, runScheduledTest, reportScheduled };
 
 if (require.main === module) {
   const { RadioLink } = require('./radioLink');
@@ -302,6 +484,7 @@ if (require.main === module) {
     console.error('[radioLatency] the sender and listener must be two different radios');
     process.exit(1);
   }
+  const schedule = (process.env.LATENCY_SCHEDULE || 'off').toLowerCase();
   const tx = new RadioLink({ port: txPort, baud });
   const rx = new RadioLink({ port: rxPort, baud });
   for (const [name, radio] of [['tx', tx], ['rx', rx]]) {
@@ -310,6 +493,20 @@ if (require.main === module) {
   let connected = 0;
   const start = () => {
     if (++connected < 2) return;
+    if (schedule === 'gate' || schedule === 'slots') {
+      const slots = (process.env.LATENCY_SLOTS || '3,7').split(',').map((x) => parseInt(x, 10));
+      const nBoats = Math.max(1, parseInt(process.env.LATENCY_BOATS || (schedule === 'slots' ? String(slots.length) : '1'), 10));
+      const boats = Array.from({ length: nBoats }, (_, i) => ({ id: `LAT${String(i + 1).padStart(2, '0')}`, slot: slots[i % slots.length] }));
+      const slotMs = parseInt(process.env.LATENCY_SLOT_MS || '40', 10);
+      const defFrames = parseInt(process.env.LATENCY_FRAMES || '150', 10);
+      console.log(`[radioLatency] scheduled mode "${schedule}": ${nBoats} virtual boat(s), ${defFrames} frames each, about ${Math.round((defFrames * (gapMs + 20)) / 1000)}s ...`);
+      console.log('[radioLatency] the sender radio listens for the correction bursts itself, as a boat would - the base must be running.');
+      runScheduledTest({ tx, rx, mode: schedule, boats, frames: defFrames, gapMs, batch, slotMs }).then((r) => {
+        reportScheduled(r);
+        process.exit(0);
+      });
+      return;
+    }
     const secs = focus ? Math.round(frames * 1.3) : Math.round((frames * (gapMs + 20)) / 1000);
     console.log(`[radioLatency] sending ${frames} ${batch > 1 ? `${batch}-fix batch` : 'position'} frames from ${txPort}, listening on ${rxPort} (about ${secs}s)${focus ? ', focus mode: sweeping around the correction bursts' : ''} ...`);
     runLatencyTest({ tx, rx, frames, gapMs, batch, focus }).then((r) => {
