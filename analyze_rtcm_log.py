@@ -91,7 +91,7 @@ def stats3(values):
     return {"min": min(values), "mean": round(st.mean(values), 1), "max": max(values)} if values else None
 
 
-def analyze(path):
+def analyze(path, expect_interval_s=1):
     with open(path, errors="replace") as fh:
         objs = split_objects(fh.read())
     kinds = collections.Counter(o.split("(")[0] for o in objs)
@@ -209,8 +209,8 @@ def analyze(path):
     if not (present & set(MSM4_TYPES)) and not (present & set(MSM7_TYPES)):
         flags.append("No observation messages (MSM4/MSM7) at all.")
     for t, c in cadence.items():
-        if set(c["intervals_ms"]) - {1000}:
-            flags.append(f"{t}: epochs are not all 1000 ms apart: {c['intervals_ms']}")
+        if set(c["intervals_ms"]) - {1000 * expect_interval_s}:
+            flags.append(f"{t}: epochs are not all {1000 * expect_interval_s} ms apart: {c['intervals_ms']}")
     counts = {t: len(v) for t, v in by_type.items() if t in MSM4_TYPES or t in (1005, 1230)}
     if len(set(counts.values())) > 1:
         flags.append(f"Message counts differ between types (missed epochs?): {counts}")
@@ -267,9 +267,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("log", help="PyGPSClient parsed data log")
     ap.add_argument("--json", action="store_true", help="print the full result as JSON")
+    ap.add_argument("--interval", type=int, default=1, help="seconds the base is set to send each message every (default 1)")
     args = ap.parse_args()
     try:
-        r = analyze(args.log)
+        r = analyze(args.log, args.interval)
     except OSError as e:
         print(f"could not read {args.log}: {e}")
         sys.exit(1)

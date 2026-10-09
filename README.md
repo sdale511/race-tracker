@@ -249,6 +249,10 @@ connection), with every other port's RTCM switched off so nothing is sent where
 nothing reads it. Add `uart1` only if something reads the board on the Pi header
 UART. `--constellations` (default all four) leaves constellations out to save
 bytes - a left-out one has its MSM4 message off, and `1230` goes with GLONASS.
+`--rtcm-interval N` (default 1) sends every enabled message every N seconds instead of every
+second (it sets the messages' output rate; the receiver's own 1 Hz measurement rate is untouched):
+`--rtcm-interval 2` halves the correction airtime, at the cost of rovers working from corrections up
+to 2 s old and a lost message costing 2 s. Check that RTK still holds at speed before relying on it.
 Run it with `--dry-run` first to see exactly what would change, and
 `ubx_config_report.py` afterwards to confirm; it writes RAM+BBR+flash, so it
 survives a power cycle.
@@ -270,11 +274,12 @@ edit `BASE_SETTINGS` directly if you want fewer.
 (required, or this app sees nothing from it), disables TMODE3 (a rover
 isn't a stationary reference station), enables `UBX-RXM-RTCM` (for
 `RTCM_LOG` visibility), and sets the fix rate to 10Hz (`CFG-RATE-MEAS`)
-- not the ZED-F9P's 20Hz spec ceiling, since u-blox's own correction-link-
-latency guidance (link latency should stay under nav-period minus 50ms)
-leaves ~0ms margin at 20Hz - a real correction-radio link (not a bench
-test) risks `carrSoln` flickering fixed→float right at the moment
-precision matters most. 10Hz keeps a comfortable 50ms margin instead.
+- not the ZED-F9P's 20Hz spec ceiling, to leave headroom. (An earlier version of
+this note cited u-blox's "link latency under nav-period minus 50ms" rule; the
+integration manual gives that rule for *moving-base* RTK only, not for a
+stationary base like this one, so it isn't a reason for 10Hz here. For a
+stationary base the manual's documented limit is that the rover stops using
+corrections older than 60 s - `CFG-NAVSPG-CONSTR_DGNSSTO`.)
 It also accepts RTCM3 as an input on UART2 (the correction radio's port),
 makes sure GPS/GLONASS/Galileo/BeiDou tracking are all on (the rover can only
 use corrections for constellations it tracks) and sets the differential mode to

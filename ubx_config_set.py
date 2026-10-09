@@ -55,6 +55,7 @@ USAGE
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base --dry-run
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-ports uart2,usb,uart1
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --constellations gps,galileo,beidou
+    python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-interval 2     # corrections every 2 s
 """
 
 import argparse
@@ -94,6 +95,8 @@ KEY_INFO = {
     "CFG-RATE-MEAS": (0x30210001, "u2", "fix rate (ms)"),
     "CFG-UART2INPROT-RTCM3X": (0x10750004, "bool", "RTCM3 input UART2"),
     "CFG-UART2-BAUDRATE": (0x40530001, "u4", "UART2 baud"),
+    "CFG-UART2OUTPROT-UBX": (0x10760001, "bool", "UBX output UART2"),
+    "CFG-UART2OUTPROT-NMEA": (0x10760002, "bool", "NMEA output UART2"),
     "CFG-UART1INPROT-RTCM3X": (0x10730004, "bool", "RTCM3 input UART1"),
     "CFG-USBINPROT-RTCM3X": (0x10770004, "bool", "RTCM3 input USB"),
     "CFG-NAVHPG-DGNSSMODE": (0x20140011, "u1", "DGNSS mode (3=fixed)"),
@@ -160,7 +163,7 @@ for _p in RTCM_PORTS:
 ALL_CONSTELLATIONS = ("gps", "glonass", "galileo", "beidou")
 
 
-def build_base_settings(rtcm_ports, constellations):
+def build_base_settings(rtcm_ports, constellations, interval=1):
     """The base profile as an ordered {key name: target value}.
 
     On every port in `rtcm_ports`: 1005 on, the MSM4 observation message for
@@ -169,6 +172,10 @@ def build_base_settings(rtcm_ports, constellations):
     off, RTCM3 allowed as an output protocol. On every OTHER port: every RTCM
     message off, so nothing is sent where nothing reads it. NAV-SVIN stays on
     for the dashboard's survey-in card.
+
+    `interval` is each enabled message's output rate in navigation epochs: 1 =
+    every epoch, 2 = every second epoch, and so on (the receiver's measurement
+    rate is left alone, so at its 1 Hz that is every `interval` seconds).
     """
     settings = {}
     for port in RTCM_PORTS:
@@ -180,9 +187,9 @@ def build_base_settings(rtcm_ports, constellations):
             elif t in MSM7_TYPES:
                 want = 0
             elif t == "1005":
-                want = 1
+                want = interval
             else:  # MSM4 or 1230 - per-constellation
-                want = 1 if constellation in constellations else 0
+                want = interval if constellation in constellations else 0
             settings[f"CFG-MSGOUT-RTCM_3X_TYPE{t}_{name}"] = want
         if on:
             settings[f"CFG-{name}OUTPROT-RTCM3X"] = True
@@ -197,6 +204,16 @@ ROVER_SETTINGS = {
     "CFG-UART2INPROT-RTCM3X": True,  # corrections must be accepted on the port the correction radio is wired to (already the default - set explicitly so a board that was changed is put right)
     # With one shared radio the Pi writes the RTCM it receives to the receiver's
     # UART1 (or USB when developing) - make sure it is accepted there too.
+    # On a rover, UART2 is the radio's serial line and the receiver must NEVER
+    # transmit on it: in a one-radio setup where the radio sits in the board's
+    # socket, anything the receiver sent there would be broadcast as if it were
+    # telemetry, and could collide with the Pi's own bytes on the radio's input.
+    # (u-blox's defaults already have UBX and NMEA off here; RTCM output is on by
+    # default but a rover has no RTCM messages enabled - set all three off so a
+    # changed board is put right.)
+    "CFG-UART2OUTPROT-UBX": False,
+    "CFG-UART2OUTPROT-NMEA": False,
+    "CFG-UART2OUTPROT-RTCM3X": False,
     "CFG-UART1INPROT-RTCM3X": True,
     "CFG-USBINPROT-RTCM3X": True,
     # RTK needs the rover to track every constellation the base sends observations
@@ -209,13 +226,14 @@ ROVER_SETTINGS = {
     "CFG-SIGNAL-BDS_ENA": True,
     # 3 = RTK fixed (the default) - 2 would stop at float and never reach cm-level.
     "CFG-NAVHPG-DGNSSMODE": 3,
-    # 10Hz, not the 20Hz spec ceiling - u-blox's own correction-link-latency
-    # guidance (< nav period - 50ms) leaves ~0ms margin at 20Hz, meaning a
-    # real correction-radio link (not a bench test) risks carrSoln
-    # flickering fixed->float right at the moment precision matters most.
-    # 10Hz keeps a comfortable 50ms margin instead. Not the base's own
-    # concern - a stationary reference station has no reason to move this
-    # off the base profile's effective default (whatever this board already had).
+    # 10Hz, not the 20Hz spec ceiling, to leave headroom. (An earlier version of this
+    # comment cited u-blox's "link latency under nav-period minus 50ms" rule; the
+    # integration manual gives that rule for MOVING-BASE RTK only, not for a
+    # stationary base like this fleet's, so it is not a reason for 10Hz here. For a
+    # stationary base the documented limit is that the rover stops using corrections
+    # older than 60 s - CFG-NAVSPG-CONSTR_DGNSSTO.) Not the base's own concern - a
+    # stationary reference station has no reason to move this off the base profile's
+    # effective default (whatever this board already had).
     "CFG-RATE-MEAS": 100,
 }
 
@@ -404,6 +422,17 @@ def main():
         "Default all four; a constellation left out has its MSM4 message switched off, and 1230 goes with GLONASS",
     )
     ap.add_argument(
+        "--rtcm-interval",
+        type=int,
+        default=1,
+        choices=range(1, 11),
+        metavar="SECONDS",
+        help="base role only: send the RTCM messages every N navigation epochs (default 1 = every second at the "
+        "receiver's 1 Hz; 2 = every 2 s). Halves the correction airtime at 2, but a rover then works from "
+        "corrections up to 2 s old (a lost message costs 2 s) - check that RTK still holds at speed. "
+        "Applies to every enabled RTCM message; the receiver's own 1 Hz measurement rate is not changed",
+    )
+    ap.add_argument(
         "--uart2-baud",
         type=int,
         default=115200,
@@ -425,8 +454,8 @@ def main():
             ap.error("--rtcm-ports and --constellations must each name at least one")
         if "uart2" not in rtcm_ports:
             print("[ubx_config_set] note: uart2 is not selected - the onboard correction radio will receive no RTCM")
-        settings = build_base_settings(rtcm_ports, constellations)
-        print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}")
+        settings = build_base_settings(rtcm_ports, constellations, args.rtcm_interval)
+        print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}; every {args.rtcm_interval} epoch(s)")
     else:
         settings = dict(ROVER_SETTINGS)
     settings["CFG-UART2-BAUDRATE"] = args.uart2_baud
