@@ -695,6 +695,96 @@ function decodePower(buf) {
   return { action, sleepS: buf.readUInt8(2), all: count === 0, boatIds };
 }
 
+// Tenth frame type: base -> boats, the transmit-slot table for the shared radio (see
+// txScheduler.js / slotTable.js). In slot mode each boat releases its position frames only in its
+// own slot of the correction cycle; this frame is how the base tells every boat which slot is
+// theirs, so slots don't have to be set by hand or derived from a boat id (which can collide).
+//
+// The base broadcasts the whole table every few seconds, split over as many of these frames as
+// needed (each is self-contained: it also carries the slot count and width, so a boat that hears
+// any frame with its own id in it knows everything it needs).
+//
+// Layout (all little-endian):
+//   [0]      sync byte      0xA7
+//   [1]      version        uint8 - bumps whenever an assignment changes (diagnostic only)
+//   [2]      slotCount      uint8 - slots in a cycle
+//   [3]      slotWidthMs    uint8 - width of each slot
+//   [4]      count          uint8 - entries in this frame
+//   [5..]    entries        count * (BOAT_ID_LEN raw ASCII bytes + slot uint8)
+//   [last]   checksum       uint8 (sum of bytes 1..N-2 mod 256)
+
+const SLOT_TABLE_SYNC = 0xa7;
+const SLOT_TABLE_HEADER_LEN = 5; // sync + version + slotCount + slotWidthMs + count
+const SLOT_TABLE_ENTRY_LEN = BOAT_ID_LEN + 1;
+const MAX_SLOT_ENTRIES = 15; // 5 + 15*6 + 1 = 96 bytes
+
+function slotTableFrameLen(count) {
+  return SLOT_TABLE_HEADER_LEN + count * SLOT_TABLE_ENTRY_LEN + 1;
+}
+
+// Like powerFrameLenFromHeader: never computes a length from an out-of-range count, so a false
+// 0xA7 on noise can't make the scanner wait for a frame that will never arrive.
+function slotTableFrameLenFromHeader(buf) {
+  if (buf.length < SLOT_TABLE_HEADER_LEN) return null;
+  const count = buf.readUInt8(4);
+  if (count > MAX_SLOT_ENTRIES) return SLOT_TABLE_HEADER_LEN + 1;
+  return slotTableFrameLen(count);
+}
+
+// entries: [{ boatId, slot }] (0..MAX_SLOT_ENTRIES of them; an empty frame is valid).
+function encodeSlotTable({ version = 0, slotCount, slotWidthMs, entries = [] }) {
+  if (!Number.isInteger(version) || version < 0 || version > 255) throw new Error(`slot table version must be 0-255, got ${version}`);
+  if (!Number.isInteger(slotCount) || slotCount < 1 || slotCount > 255) throw new Error(`slotCount must be 1-255, got ${slotCount}`);
+  if (!Number.isInteger(slotWidthMs) || slotWidthMs < 1 || slotWidthMs > 255) throw new Error(`slotWidthMs must be 1-255, got ${slotWidthMs}`);
+  if (!Array.isArray(entries) || entries.length > MAX_SLOT_ENTRIES) {
+    throw new Error(`a slot table frame carries at most ${MAX_SLOT_ENTRIES} entries, got ${Array.isArray(entries) ? entries.length : typeof entries}`);
+  }
+  for (const { boatId, slot } of entries) {
+    if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+    if (!Number.isInteger(slot) || slot < 0 || slot >= slotCount) throw new Error(`slot for ${boatId} must be 0-${slotCount - 1}, got ${slot}`);
+  }
+  const len = slotTableFrameLen(entries.length);
+  const buf = Buffer.alloc(len);
+  buf.writeUInt8(SLOT_TABLE_SYNC, 0);
+  buf.writeUInt8(version, 1);
+  buf.writeUInt8(slotCount, 2);
+  buf.writeUInt8(slotWidthMs, 3);
+  buf.writeUInt8(entries.length, 4);
+  entries.forEach(({ boatId, slot }, i) => {
+    const at = SLOT_TABLE_HEADER_LEN + i * SLOT_TABLE_ENTRY_LEN;
+    buf.write(boatId, at, BOAT_ID_LEN, 'ascii');
+    buf.writeUInt8(slot, at + BOAT_ID_LEN);
+  });
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, len - 1);
+  return buf;
+}
+
+// Returns { version, slotCount, slotWidthMs, entries: [{ boatId, slot }] }, or null if the buffer
+// isn't a valid slot-table frame.
+function decodeSlotTable(buf) {
+  if (buf.length < SLOT_TABLE_HEADER_LEN + 1 || buf[0] !== SLOT_TABLE_SYNC) return null;
+  const count = buf.readUInt8(4);
+  if (count > MAX_SLOT_ENTRIES) return null;
+  const len = slotTableFrameLen(count);
+  if (buf.length !== len) return null;
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[len - 1]) return null;
+  const slotCount = buf.readUInt8(2);
+  const slotWidthMs = buf.readUInt8(3);
+  if (slotCount < 1 || slotWidthMs < 1) return null;
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    const at = SLOT_TABLE_HEADER_LEN + i * SLOT_TABLE_ENTRY_LEN;
+    const slot = buf.readUInt8(at + BOAT_ID_LEN);
+    if (slot >= slotCount) return null;
+    entries.push({ boatId: buf.toString('ascii', at, at + BOAT_ID_LEN), slot });
+  }
+  return { version: buf.readUInt8(1), slotCount, slotWidthMs, entries };
+}
+
 // Ninth "frame type": RTCM3 correction messages riding the same shared radio as
 // telemetry (see README's "RTCM on the shared radio"). Not a frame this app
 // defines - it is the standard RTCM3 transport the RTK base's ZED-F9P already
@@ -808,6 +898,7 @@ function describeRtcm(frame) {
 for (const [name, len] of [
   ['batch', batchFrameLen(MAX_BATCH_COUNT)],
   ['power', powerFrameLen(MAX_POWER_IDS)],
+  ['slot table', slotTableFrameLen(MAX_SLOT_ENTRIES)],
 ]) {
   if (len > RADIO_MAX_PAYLOAD) throw new Error(`largest ${name} frame is ${len} bytes, over the radio's ${RADIO_MAX_PAYLOAD}-byte payload limit`);
 }
@@ -852,6 +943,12 @@ module.exports = {
   powerFrameLenFromHeader,
   POWER_SYNC,
   MAX_POWER_IDS,
+  encodeSlotTable,
+  decodeSlotTable,
+  slotTableFrameLen,
+  slotTableFrameLenFromHeader,
+  SLOT_TABLE_SYNC,
+  MAX_SLOT_ENTRIES,
   RTCM_SYNC,
   crc24q,
   describeRtcm,

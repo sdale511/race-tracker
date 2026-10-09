@@ -123,11 +123,11 @@ class RadioLink extends EventEmitter {
     return this.send(buf);
   }
 
-  // Eight frame types share this one byte stream (position frames,
+  // Ten frame types share this one byte stream (position frames,
   // boat->base; mark broadcasts, base->boats; ping requests, base->boats;
   // hello announcements, boat->base; batched position frames, boat->base;
   // set-mark requests, boat->base; mark-log notes, boat->base; sleep/wake
-  // commands, base->boats - see protocol.js's own comment on each)
+  // commands, base->boats; transmit-slot tables, base->boats - see protocol.js's own comment on each)
   // - each with its own sync byte, since a single radio link hears
   // everything broadcast on the network, not just frames addressed to
   // "me". Every type but the batch one has a fixed `len`; the batch
@@ -142,6 +142,7 @@ class RadioLink extends EventEmitter {
     { sync: protocol.SET_MARK_SYNC, len: protocol.SET_MARK_FRAME_LEN, decode: protocol.decodeSetMark, event: 'set-mark' },
     { sync: protocol.MARK_LOG_SYNC, len: protocol.MARK_LOG_FRAME_LEN, decode: protocol.decodeMarkLog, event: 'mark-log' },
     { sync: protocol.POWER_SYNC, getLen: protocol.powerFrameLenFromHeader, decode: protocol.decodePower, event: 'power' },
+    { sync: protocol.SLOT_TABLE_SYNC, getLen: protocol.slotTableFrameLenFromHeader, decode: protocol.decodeSlotTable, event: 'slot-table' },
     { sync: protocol.RTCM_SYNC, getLen: protocol.rtcmFrameLenFromHeader, decode: protocol.decodeRtcm, event: 'rtcm' },
   ];
 

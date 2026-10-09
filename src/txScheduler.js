@@ -16,9 +16,9 @@
 // Everything else (hello, ping replies, set-mark, mark-log, sleep/wake) is gated but not slotted:
 // it is rare and shouldn't wait a whole cycle.
 //
-// A slot only works if every boat uses a different slot number, so boats are given one: either
-// explicitly (TX_SLOT) or derived from the boat id - which can collide, so for a real fleet pick
-// them. Timing the slots on this machine is limited by its serial/USB delay (see the
+// A slot only works if every boat uses a different slot number, so boats are given one: by the
+// base's slot table (slotTable.js - the normal way), explicitly (TX_SLOT), or, until a table is
+// heard, derived from the boat id - which can collide. Timing the slots on this machine is limited by its serial/USB delay (see the
 // radio-latency test).
 
 const { performance } = require('perf_hooks');
@@ -83,6 +83,24 @@ class TxScheduler {
     this.slotFitNeededMs = needed; // compared with the real period once bursts are heard
   }
 
+  // Move this boat to a different slot (or change the slot count/width) while running - used
+  // when the base's slot table assigns one (slotTable.js). Frames already queued are re-timed
+  // against the new slot.
+  setSlot({ index, count = this.slot.count, widthMs = this.slot.widthMs }) {
+    this.slot = { ...this.slot, enabled: true, index, count, widthMs };
+    this.window = { start: null, used: 0 };
+    this._checkSlotFit();
+    this._warnIfSlotsOverrun();
+    if (this.queue.length) this._schedule(0);
+  }
+
+  _warnIfSlotsOverrun() {
+    const p = this.tracker.period;
+    if (this.slot.enabled && p && this.tracker.isActive(this.now()) && this.slotFitNeededMs > p) {
+      this.log(`[txgate] WARNING: ${this.slot.count} slots of ${this.slot.widthMs} ms need ~${Math.round(this.slotFitNeededMs)} ms but the burst period is ${Math.round(p)} ms - the last slots would overrun`);
+    }
+  }
+
   submit(buf) {
     const t = this.now();
     this.counters.submitted++;
@@ -95,9 +113,7 @@ class TxScheduler {
           ? `[txgate] correction bursts heard (every ${p ? Math.round(p) : '?'} ms) - telemetry now keeps clear of them${this.slot.enabled ? `, slot ${this.slot.index} of ${this.slot.count}` : ''}`
           : '[txgate] no correction bursts heard - telemetry unrestricted'
       );
-      if (active && this.slot.enabled && p && this.slotFitNeededMs > p) {
-        this.log(`[txgate] WARNING: ${this.slot.count} slots of ${this.slot.widthMs} ms need ~${Math.round(this.slotFitNeededMs)} ms but the burst period is ${Math.round(p)} ms - the last slots would overrun`);
-      }
+      if (active) this._warnIfSlotsOverrun();
     }
     const slotted = this.slot.enabled && SLOTTED_SYNCS.has(buf[0]);
     if (this.queue.length === 0) {

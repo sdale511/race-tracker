@@ -461,16 +461,24 @@ module.exports = {
     maxQueue: parseInt(process.env.TX_GATE_MAX_QUEUE || '12', 10),
     // A held frame older than this is dropped rather than sent stale.
     maxAgeMs: parseInt(process.env.TX_GATE_MAX_AGE_MS || '5000', 10),
-    // Boat only. TX_SLOT_MODE=1: release position/batch frames only in this boat's slot of each
-    // cycle. index = TX_SLOT; unset derives one from the boat id, which CAN collide with another
-    // boat's - for a real fleet give each boat its own number (0 to count-1). Each slot must hold
-    // the boat's frames for a cycle: 30 ms fits about 5 fixes (a 1 s cycle at 5 Hz); size it up
-    // for faster rates, and keep count x widthMs inside the gap between bursts.
+    // TX_SLOT_MODE=1 (boat and base): release position/batch frames only in this boat's slot of
+    // each cycle. Slots are assigned by the base: with TX_SLOT_MODE=1 on the base it keeps a table
+    // of the boats it hears (lowest free slot, sticky - slotTable.js) and broadcasts it, and each
+    // boat follows its entry. index = TX_SLOT pins one boat to a slot by hand and ignores the table
+    // (0 to count-1); with neither a table nor TX_SLOT, a boat derives a slot from its id, which
+    // CAN collide with another boat's. count and widthMs are the base's (boats adopt them from the
+    // table; a pinned boat uses its own). Each slot must hold the boat's frames for a cycle: 30 ms
+    // fits about 5 fixes (a 1 s cycle at 5 Hz); size it up for faster rates, and keep
+    // count x widthMs inside the gap between bursts.
     slot: {
       enabled: process.env.TX_SLOT_MODE === '1' || process.env.TX_SLOT_MODE === 'true',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
       count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '30', 10) || 30),
       widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '30', 10) || 30),
+      // Base only: how often the slot table is rebroadcast, and how long a boat can be silent
+      // before its slot is given up. A new boat triggers an extra broadcast straight away.
+      tableIntervalS: Math.max(1, parseInt(process.env.TX_SLOT_TABLE_S || '10', 10) || 10),
+      staleS: Math.max(10, parseInt(process.env.TX_SLOT_STALE_S || '600', 10) || 600),
     },
   },
 

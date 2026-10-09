@@ -23,6 +23,7 @@ const { createRtcmLogger } = require('./rtcmLog');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler, hashSlot } = require('./txScheduler');
+const { SlotTableFollower } = require('./slotTable');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -239,7 +240,9 @@ if (config.txGate.enabled && radioExpected) {
   if (config.txGate.slot.enabled) {
     console.log(
       `[txgate] slot mode: slot ${slotIndex} of ${slotCount}, ${config.txGate.slot.widthMs} ms each` +
-        (config.txGate.slot.index === null ? ' (derived from the boat id - another boat may share it; set TX_SLOT to choose)' : '')
+        (config.txGate.slot.index === null
+          ? ' (derived from the boat id until the base assigns one - it may be shared with another boat)'
+          : ' (set by TX_SLOT; the base\'s slot table is ignored)')
     );
   }
   const gateRawSend = radio.send; // already includes the radio-sleep wrapper above
@@ -253,6 +256,15 @@ if (config.txGate.enabled && radioExpected) {
     log: (m) => console.log(m),
   });
   radio.send = (buf) => txScheduler.submit(buf);
+  if (config.txGate.slot.enabled) {
+    const slotFollower = new SlotTableFollower({
+      boatId: config.boatId,
+      scheduler: txScheduler,
+      pinned: config.txGate.slot.index !== null,
+      log: (m) => console.log(m),
+    });
+    radio.on('slot-table', (table) => slotFollower.onTable(table));
+  }
 }
 
 // Course marks (windward/leeward/pin/committeeStart/committeeFinish/finish),

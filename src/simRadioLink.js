@@ -21,6 +21,8 @@ function decodeDatagram(msg) {
   if (batch) return { event: 'frame-batch', decoded: batch };
   const power = protocol.decodePower(msg);
   if (power) return { event: 'power', decoded: power };
+  const slotTable = protocol.decodeSlotTable(msg);
+  if (slotTable) return { event: 'slot-table', decoded: slotTable };
   const rtcm = protocol.decodeRtcm(msg);
   if (rtcm) return { event: 'rtcm', decoded: rtcm };
   return null;

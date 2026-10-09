@@ -41,6 +41,7 @@ const { FleetSleep } = require('./fleetSleep');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler } = require('./txScheduler');
+const { SlotAllocator } = require('./slotTable');
 const { startSimRtcm } = require('./simRtcm');
 
 // True while the cursor is sitting mid-line after an in-place base-GPS log
@@ -912,6 +913,30 @@ function main() {
         .filter(([, b]) => b.lastSeen != null)
         .map(([id]) => id),
   });
+  // Transmit-slot table for the shared radio (see slotTable.js): with TX_SLOT_MODE=1 the base hands
+  // each boat it hears a slot and rebroadcasts the table every TX_SLOT_TABLE_S seconds, sooner when
+  // a boat joins or leaves, so boats don't need a hand-set TX_SLOT. Skipped with no radio to send
+  // it on.
+  let slotAllocator = null;
+  if (config.txGate.enabled && config.txGate.slot.enabled && radioMode !== 'none') {
+    slotAllocator = new SlotAllocator({
+      count: config.txGate.slot.count,
+      widthMs: config.txGate.slot.widthMs,
+      staleMs: config.txGate.slot.staleS * 1000,
+      log: (m) => console.log(m),
+    });
+    console.log(`[slots] slot table on: ${slotAllocator.count} slots of ${slotAllocator.widthMs} ms, rebroadcast every ${config.txGate.slot.tableIntervalS} s`);
+    let lastTableAt = 0;
+    const slotTimer = setInterval(() => {
+      const nowMs = Date.now();
+      const freed = slotAllocator.sweep().length > 0;
+      const changed = slotAllocator.takeChanged() || freed;
+      if (!changed && nowMs - lastTableAt < config.txGate.slot.tableIntervalS * 1000) return;
+      lastTableAt = nowMs;
+      for (const frame of slotAllocator.frames()) radio.broadcast(frame);
+    }, 1000);
+    if (slotTimer.unref) slotTimer.unref();
+  }
   function requireRadioForSleep() {
     if (typeof radio.broadcast !== 'function') throw new Error('this base has no radio to send sleep/wake commands over');
   }
@@ -2068,6 +2093,7 @@ function main() {
   // mark-rounding/foul detection.
   function handleDecodedFrame(decoded) {
     fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
+    if (slotAllocator) slotAllocator.noteHeard(decoded.boatId);
     // No regatta selected - every course/mark/on-grid-zone/track key is
     // namespaced by regatta (see redisStore.js's own module comment), so
     // recording this fix now would silently write it under the "none"
@@ -2194,6 +2220,7 @@ function main() {
   const helloLoggedBoatIds = new Set();
   radio.on('hello', ({ boatId }) => {
     fleetSleep.noteHeard(boatId);
+    if (slotAllocator) slotAllocator.noteHeard(boatId);
     stats.recordFrame(boatId, null, null);
     if (!helloLoggedBoatIds.has(boatId)) {
       helloLoggedBoatIds.add(boatId);
@@ -2475,6 +2502,7 @@ function main() {
       course: raceMarks ? { marks: raceMarks, boatsKnown: lastSeenByBoat.size } : null,
       lapCounts,
       sleep: fleetSleep.status(),
+      slots: slotAllocator ? slotAllocator.status() : null,
       redis: redisStats,
       // maxmemoryBytes falls back to the operator-configured
       // REDIS_MEMORY_LIMIT_MB whenever Redis itself won't report its own
