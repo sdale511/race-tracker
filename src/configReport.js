@@ -111,6 +111,22 @@ const sections = [
     ],
   },
   {
+    title: 'Shared-radio transmit scheduling',
+    roles: ['base', 'boat'],
+    rows: [
+      { label: 'enabled', value: config.txGate.enabled, envVar: 'TX_GATE' },
+      { label: 'blockBeforeMs', value: config.txGate.blockBeforeMs, envVar: 'TX_GATE_BEFORE_MS', unit: 'ms' },
+      { label: 'blockAfterMs', value: config.txGate.blockAfterMs, envVar: 'TX_GATE_AFTER_MS', unit: 'ms' },
+      { label: 'guardMs', value: config.txGate.guardMs, envVar: 'TX_GATE_GUARD_MS', unit: 'ms' },
+      { label: 'maxQueue', value: config.txGate.maxQueue, envVar: 'TX_GATE_MAX_QUEUE' },
+      { label: 'maxAgeMs', value: config.txGate.maxAgeMs, envVar: 'TX_GATE_MAX_AGE_MS', unit: 'ms' },
+      { label: 'slotMode', value: config.txGate.slot.enabled, envVar: 'TX_SLOT_MODE', roles: ['boat'] },
+      { label: 'slot', value: config.txGate.slot.index === null ? '(from boat id)' : config.txGate.slot.index, envVar: 'TX_SLOT', roles: ['boat'] },
+      { label: 'slotCount', value: config.txGate.slot.count, envVar: 'TX_SLOT_COUNT', roles: ['boat'] },
+      { label: 'slotWidthMs', value: config.txGate.slot.widthMs, envVar: 'TX_SLOT_MS', unit: 'ms', roles: ['boat'] },
+    ],
+  },
+  {
     title: 'Radio (telemetry)',
     // Not rtk - that mode never opens the telemetry radio at all.
     roles: ['base', 'boat'],

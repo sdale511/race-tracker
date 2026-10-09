@@ -20,6 +20,9 @@ const { startRoverAdminServer } = require('./roverAdminServer');
 const { RoverSleep } = require('./roverSleep');
 const { GpsSleep } = require('./gpsSleep');
 const { createRtcmLogger } = require('./rtcmLog');
+const { BurstTracker } = require('./burstTracker');
+const { TxGate } = require('./txGate');
+const { TxScheduler, hashSlot } = require('./txScheduler');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -223,6 +226,34 @@ function onGpsFix(pvt) {
 // frame. Enforced here, once, rather than relying on every send call site.
 const rawRadioSend = radio.send.bind(radio);
 radio.send = (buf) => (sleeper.isSleeping() ? false : rawRadioSend(buf));
+
+// Shared-radio transmit scheduling (see txScheduler.js): when the base's RTCM correction bursts
+// are heard on this radio, keep writes clear of them and - in TX_SLOT_MODE - send in this boat's
+// own slot. Does nothing while no bursts are heard, so a separate correction radio (or no base)
+// behaves exactly as before.
+const burstTracker = new BurstTracker();
+let txScheduler = null;
+if (config.txGate.enabled && radioExpected) {
+  const slotCount = config.txGate.slot.count;
+  const slotIndex = config.txGate.slot.index !== null ? config.txGate.slot.index % slotCount : hashSlot(config.boatId, slotCount);
+  if (config.txGate.slot.enabled) {
+    console.log(
+      `[txgate] slot mode: slot ${slotIndex} of ${slotCount}, ${config.txGate.slot.widthMs} ms each` +
+        (config.txGate.slot.index === null ? ' (derived from the boat id - another boat may share it; set TX_SLOT to choose)' : '')
+    );
+  }
+  const gateRawSend = radio.send; // already includes the radio-sleep wrapper above
+  txScheduler = new TxScheduler({
+    send: gateRawSend,
+    tracker: burstTracker,
+    gate: new TxGate({ tracker: burstTracker, ...config.txGate }),
+    slot: { ...config.txGate.slot, index: slotIndex },
+    maxQueue: config.txGate.maxQueue,
+    maxAgeMs: config.txGate.maxAgeMs,
+    log: (m) => console.log(m),
+  });
+  radio.send = (buf) => txScheduler.submit(buf);
+}
 
 // Course marks (windward/leeward/pin/committeeStart/committeeFinish/finish),
 // as last broadcast by
@@ -824,6 +855,7 @@ radio.on('ping', () => {
 const rtcmLogger = config.rtcm.log ? createRtcmLogger({ level: config.rtcm.log }) : null;
 
 radio.on('rtcm', (frame) => {
+  burstTracker.onRtcm(frame.type);
   const forward = config.rtcm.forward && !sleeper.isSleeping() && !gpsSleep.isAsleep() && !!gpsSerial && gpsSerial.isOpen;
   if (forward) gpsSerial.write(frame.raw);
   roverStats.recordRadioRtcm(frame, forward);
@@ -1156,6 +1188,7 @@ function getRoverStats() {
     currentMarks,
     currentRegattaName,
     sleep: { ...sleeper.status(), gps: gpsSleep.status() },
+    txGate: txScheduler ? txScheduler.stats() : null,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
     pendingCount: countPending(config.boatLogDir, config.boatId, config.logChunkMinutes),

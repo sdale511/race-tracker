@@ -38,6 +38,10 @@ const dgram = require('dgram');
 const util = require('util');
 const logBuffer = require('./logBuffer');
 const { FleetSleep } = require('./fleetSleep');
+const { BurstTracker } = require('./burstTracker');
+const { TxGate } = require('./txGate');
+const { TxScheduler } = require('./txScheduler');
+const { startSimRtcm } = require('./simRtcm');
 
 // True while the cursor is sitting mid-line after an in-place base-GPS log
 // overwrite (see baseGps.js's own nav-pvt handler, wired to this via
@@ -192,6 +196,7 @@ function main() {
   const markMode = process.env.MARK_MODE === '1';
 
   let radio;
+  let simRawSend = null; // SIMULATE only: the simulated radio's own send, below any gate
   // Tracked alongside the radio object itself so the dashboard's "Radio
   // frames" card (see adminServer.js) can show which port/mode is actually
   // in play, not just the frame/error counters - useful for confirming
@@ -214,6 +219,7 @@ function main() {
   } else if (config.simulate) {
     const { SimRadioLink } = require('./simRadioLink');
     radio = new SimRadioLink({ port: config.sim.port });
+    simRawSend = (buf) => SimRadioLink.prototype.send.call(radio, buf);
   } else if (config.radio.enabled) {
     // Deferred - a real radio's serial port opening (RadioLink's own
     // constructor, see radioLink.js) fails loudly and retries forever with
@@ -240,6 +246,35 @@ function main() {
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('disconnected', () => console.warn('[radio] disconnected, retrying...'));
 
+  // Shared-radio transmit scheduling (see txScheduler.js): the base's own frames (marks, pings,
+  // sleep/wake) are held out of the RTK correction burst once bursts are heard on this radio.
+  // Gate only - slots are for boats. Installed over radio.send/broadcast once a real or
+  // simulated radio exists to wrap.
+  const baseBurstTracker = new BurstTracker();
+  radio.on('rtcm', (f) => baseBurstTracker.onRtcm(f.type));
+  let baseTxScheduler = null;
+  function installTxGate(rawSend) {
+    if (!config.txGate.enabled || baseTxScheduler) return;
+    baseTxScheduler = new TxScheduler({
+      send: rawSend,
+      tracker: baseBurstTracker,
+      gate: new TxGate({ tracker: baseBurstTracker, ...config.txGate }),
+      maxQueue: config.txGate.maxQueue,
+      maxAgeMs: config.txGate.maxAgeMs,
+      log: (m) => console.log(m),
+    });
+    radio.send = (buf) => baseTxScheduler.submit(buf);
+    radio.broadcast = radio.send;
+  }
+  if (simRawSend) {
+    installTxGate(simRawSend);
+    // A synthetic RTK base for exercising the gate in simulation (SIM_RTCM_INTERVAL_S=1).
+    if (config.sim.rtcmIntervalS > 0) {
+      startSimRtcm(simRawSend, config.sim.rtcmIntervalS);
+      console.log(`[baseStation] simulated RTK base: RTCM burst every ${config.sim.rtcmIntervalS}s`);
+    }
+  }
+
   // Opens the real radio's serial port for the first time - see the
   // radioMode 'real' comment above for why this is deferred rather than
   // happening in the constructor the way RadioLink normally works (and
@@ -256,9 +291,13 @@ function main() {
     const real = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
     radio.send = (buf) => real.send(buf);
     radio.broadcast = (buf) => real.broadcast(buf);
-    for (const evt of ['error', 'disconnected', 'connected', 'frame', 'frame-batch', 'hello', 'sync-error', 'bytes']) {
+    // 'set-mark' and 'mark-log' are base-bound frames from the rovers; 'rtcm' is the correction
+    // burst the transmit gate keys off. (set-mark/mark-log were missing from this list, so over a
+    // REAL radio the base never saw a rover's set-mark or mark-log - only simulation delivered them.)
+    for (const evt of ['error', 'disconnected', 'connected', 'frame', 'frame-batch', 'hello', 'set-mark', 'mark-log', 'rtcm', 'sync-error', 'bytes']) {
       real.on(evt, (...args) => radio.emit(evt, ...args));
     }
+    installTxGate((buf) => real.send(buf));
   }
 
   // Surfaced on the dashboard (see adminServer.js's "Radio frames" card) so

@@ -228,6 +228,10 @@ module.exports = {
     centerLon: parseFloat(process.env.SIM_CENTER_LON || '-118.3821'),
     // % chance (0-100) each frame is dropped, to simulate radio range dropouts.
     packetLossPct: parseFloat(process.env.SIM_PACKET_LOSS || '0'),
+    // SIMULATE=1 base only: broadcast a synthetic RTCM correction burst (six messages the size of
+    // a real epoch) every N seconds, so the shared-radio gate and slots can be exercised without
+    // hardware. 0 = off (default).
+    rtcmIntervalS: parseFloat(process.env.SIM_RTCM_INTERVAL_S || '0'),
     // Off by default - set to 1 to skip the simulated race entirely and
     // just sit the boat at its start position (see simGps.js's _tick())
     // forever, emitting a stationary but otherwise normal fix stream.
@@ -435,6 +439,39 @@ module.exports = {
     // correction radio there is nothing to forward. The messages are recognised
     // and counted either way, so they never show up as radio errors.
     forward: process.env.RTCM_FORWARD === '1' || process.env.RTCM_FORWARD === 'true',
+  },
+
+  // --- Shared-radio transmit scheduling (boat and base) ---
+  // When the telemetry radio is also the RTK correction link, every radio hears the base's
+  // RTCM burst once per correction interval, and a frame written during it is delayed and
+  // leaves the corrections incomplete (measured - see docs/radio-latency-findings-2026-10-09.pdf).
+  // The gate keeps writes clear of the burst; slot mode additionally gives each boat its own
+  // slot in the cycle. With no bursts heard (no base, out of range, a separate correction
+  // radio) neither does anything. See txScheduler.js/txGate.js/burstTracker.js.
+  txGate: {
+    // TX_GATE=0 turns the whole thing off.
+    enabled: process.env.TX_GATE !== '0' && process.env.TX_GATE !== 'false',
+    // Conflict window around a burst start, as the listening radio decodes it: from blockBeforeMs
+    // before to blockAfterMs after (measured: about 40 ms before to 10-20 ms after), plus guardMs
+    // each side for timing jitter (measured about 3 ms for clear frames, 10 ms covers most).
+    blockBeforeMs: parseInt(process.env.TX_GATE_BEFORE_MS || '40', 10),
+    blockAfterMs: parseInt(process.env.TX_GATE_AFTER_MS || '20', 10),
+    guardMs: parseInt(process.env.TX_GATE_GUARD_MS || '10', 10),
+    // Most frames held at once; beyond that the oldest is dropped (positions are on the SD card).
+    maxQueue: parseInt(process.env.TX_GATE_MAX_QUEUE || '12', 10),
+    // A held frame older than this is dropped rather than sent stale.
+    maxAgeMs: parseInt(process.env.TX_GATE_MAX_AGE_MS || '5000', 10),
+    // Boat only. TX_SLOT_MODE=1: release position/batch frames only in this boat's slot of each
+    // cycle. index = TX_SLOT; unset derives one from the boat id, which CAN collide with another
+    // boat's - for a real fleet give each boat its own number (0 to count-1). Each slot must hold
+    // the boat's frames for a cycle: 30 ms fits about 5 fixes (a 1 s cycle at 5 Hz); size it up
+    // for faster rates, and keep count x widthMs inside the gap between bursts.
+    slot: {
+      enabled: process.env.TX_SLOT_MODE === '1' || process.env.TX_SLOT_MODE === 'true',
+      index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
+      count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '30', 10) || 30),
+      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '30', 10) || 30),
+    },
   },
 
   // --- Radio sleep mode (base commands it, rovers obey it) ---

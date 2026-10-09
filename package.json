@@ -19,7 +19,8 @@
     "radio-test": "node src/radioTest.js",
     "radio-congestion": "node src/radioCongestionTest.js",
     "radio-latency": "node src/radioLatencyTest.js",
-    "print-config": "node src/printConfig.js"
+    "print-config": "node src/printConfig.js",
+    "test": "node --test test/"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

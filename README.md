@@ -633,8 +633,50 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   and USB. Nothing is forwarded while the rover is in radio sleep: a byte written to a sleeping
   receiver wakes it.
 
-Not built yet: pacing telemetry around the correction burst (see the burst-timing note in
-`docs/`), and nothing here has been run on a real rover.
+### Shared-radio transmit scheduling (keep clear of the correction burst; optional time slots)
+
+With one radio for telemetry and corrections, a frame written into the base's once-a-second RTCM burst is
+delayed and leaves the corrections incomplete (measured: 46% of bursts incomplete with a frame sent in the
+conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`). This keeps writes clear of it.
+
+- **Burst tracker** (`burstTracker.js`): times the first RTCM message of each burst as this radio decodes it,
+  learns the period, predicts the next burst, and back-dates the start if the first messages of a burst were
+  lost. It goes inactive after a few missed cycles.
+- **Gate** (`txGate.js`): holds a write from 40 ms before a predicted burst start to 20 ms after it, plus a
+  10 ms guard each side (a bigger frame starts blocking earlier: 0.087 ms per byte more) - about 80 ms of
+  every second. While no bursts are heard it holds nothing, so a separate correction radio, or no base,
+  behaves exactly as before.
+- **Scheduler** (`txScheduler.js`): wraps the radio's `send()` on the boat, and `send()`/`broadcast()` on the base
+  (gate only there). A held frame waits, in order, and goes out when the gate clears; at most
+  `TX_GATE_MAX_QUEUE` wait, and one held longer than `TX_GATE_MAX_AGE_MS` is dropped, not sent stale
+  (positions are already on the SD card).
+- **Slot mode** (`TX_SLOT_MODE=1`, boats): position and batch frames are released only in this boat's slot of
+  each cycle. A cycle starts at a burst; slot `i` opens `after + guard + i x TX_SLOT_MS` after it (30 ms
+  + `i` x 30 ms by default, 30 slots), so boats with different `TX_SLOT` numbers never overlap. Frames queue and
+  go out back to back as far as the slot's air-time budget allows (estimated at 8 ms per packet plus
+  0.04 ms per byte, less the guard); the rest wait for the next cycle. Other frames (hello, ping replies,
+  set-mark, ...) are gated but not slotted.
+
+**Slots need care.** Give every boat its own `TX_SLOT` (0 to `TX_SLOT_COUNT - 1`); unset, it is derived from
+the boat id, which can collide. Size `TX_SLOT_MS` for the boat's traffic per cycle: a slot must hold all the
+frames produced in one correction interval. A 84-byte batch frame needs about 11 ms plus the 10 ms guard, so
+the default 30 ms holds one batch per cycle; a boat sending 6 fixes a second (1.5 batches) needs about
+40 ms, and one at 10 fixes a second more. The boat logs a warning when frames keep spilling to later
+cycles. `TX_SLOT_COUNT x TX_SLOT_MS` plus the blocked time must fit inside the correction interval
+(the boat warns if not). A slotted frame can be up to one cycle old on arrival.
+
+The timing comes from this radio's own view of the burst, so no GPS time or clock sync is involved. What
+limits it is the serial/USB delay on the host: the measurements behind the defaults were taken on one Mac
+with two adapters (`radio-latency`); repeat them on a Pi before trusting a 10 ms guard.
+
+**Trying it without hardware:** `SIM_RTCM_INTERVAL_S=1` makes the simulated base broadcast a synthetic RTCM burst
+(six valid messages the size of a real epoch) every second; run boats with `SIMULATE=1` and `TX_SLOT_MODE=1`.
+The unit tests (`npm test`, in virtual time) check the tracker, the gate, and that two boats in different
+slots never transmit in a blocked window or on top of each other.
+
+The boat reports what the scheduler is doing under `txGate` in `GET /api/stats` (frames submitted, passed
+through, held, longest hold, dropped, expired, slotted, spilled, and the tracker's state).
+
 
 ### Radio sleep mode (base sleeps/wakes rovers to save power)
 
@@ -1807,6 +1849,13 @@ actually use. Redis password is redacted.
 | `GPS_LOG_REPLACE` | unset (on) | In-place overwrite of the console line on a real TTY (a real radio-send commit still scrolls). `0` = always scroll |
 | `RTCM_LOG` | unset (off) | Boat only - `1` = one tight line per second per source (`[rtcm-radio]` for RTCM arriving over the telemetry radio, `[rtcm]` for what the GPS receiver reports applying - that message must also be enabled on the receiver); `2` = a decoded line per message. Old name `GPS_LOG_RTCM` still works; no GPS needed; independent of `GPS_LOG` |
 | `RTCM_FORWARD` | unset (off) | Boat only - `1` = write RTCM3 messages that arrive over the radio to the GPS receiver's serial port (shared-radio setup; needs the Pi's TX wired to the receiver's RX) - see "RTCM on the shared radio" |
+| `TX_GATE` | on | `0` = never hold telemetry back around a correction burst (see "Shared-radio transmit scheduling") |
+| `TX_GATE_BEFORE_MS` / `TX_GATE_AFTER_MS` / `TX_GATE_GUARD_MS` | 40 / 20 / 10 | The blocked window around a burst start (measured conflict window plus a guard each side) |
+| `TX_GATE_MAX_QUEUE` / `TX_GATE_MAX_AGE_MS` | 12 / 5000 | Most frames held at once (oldest dropped beyond it); a held frame older than this is dropped |
+| `TX_SLOT_MODE` | unset (off) | Boat only - `1` = send position/batch frames only in this boat's slot of each correction cycle |
+| `TX_SLOT` | derived from the boat id | Boat only - this boat's slot number, 0 to `TX_SLOT_COUNT - 1` (give each boat its own) |
+| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 30 / 30 | Number of slots per cycle and each slot's width in ms |
+| `SIM_RTCM_INTERVAL_S` | 0 (off) | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots can be tried without hardware |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |
