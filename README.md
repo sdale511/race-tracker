@@ -415,6 +415,35 @@ frames and prints a running summary every 10s (received count, estimated
 missed, loss %). Start close together to confirm connectivity, then
 separate to find where the link degrades.
 
+**Measuring radio latency and the slot guard (`radio-latency`).** A time-slot schedule needs a
+*guard time* - how much a frame's arrival can vary - and that should be measured, not guessed.
+Two radios on one machine, one sending and one listening, give one-way latency from "the app wrote
+the frame" to "the other radio's app decoded it", with the send and receive times from the same clock:
+
+```
+LATENCY_TX_PORT=/dev/cu.usbserial-5 LATENCY_RX_PORT=/dev/cu.usbserial-0001 npm run radio-latency
+```
+
+1. Power the RTK base and let it send corrections (so there are RTCM bursts to measure against).
+   With the base off the test still gives latency, just without the near-burst comparison.
+2. Put two radios on the machine, both on the **same network** as the base (same `ID` and `HP`,
+   115200 baud). `ls /dev/cu.*` before and after plugging each in to find their ports.
+3. Stop anything else holding those ports (`cat`, miniterm, `npm run boat`, `rtcm_listen.py`).
+4. Run the command above (about 80 seconds for 300 frames). Leave the radios alone while it runs.
+5. Read the report: one-way latency percentiles (min, p50, p90, p99, max) and jitter (p99 - p50);
+   latency and loss for frames sent *near* an RTCM burst versus *clear* of it; whether bursts that
+   had a test frame near them came through incomplete more often than the others (that is what a
+   telemetry transmission costs the corrections); and a suggested guard.
+6. Repeat for a bigger frame and a longer run: `LATENCY_BATCH=4 LATENCY_FRAMES=600 ...` (an 84-byte
+   batch frame, the largest this app sends).
+7. Swap which radio sends and which listens (the two ports) and run again, to see that the numbers
+   don't depend on the radio.
+
+Settings: `LATENCY_FRAMES` (300), `LATENCY_GAP_MS` (250, plus a random 0-40 ms so sends cover every
+phase of the second), `LATENCY_BATCH` (1 = a 26-byte frame, 2-4 = a batch of that many fixes),
+`LATENCY_FOCUS=1` (send only in a sweep from 80 ms before to 160 ms after each predicted correction burst, one frame per burst, to find exactly where sending hurts; needs the base running; 150 frames, about 150 s), `RADIO_BAUD` (115200). The guard it suggests is a starting point: one machine, two adapters. It does
+not include a Raspberry Pi's own delays, so repeat it on a Pi before setting slot timing.
+
 **Looking at the raw bytes on a radio's port (macOS).** Don't use `stty -f <port> 115200`
 followed by `cat <port> | xxd`: macOS resets the port to its default 9600 baud when
 `cat` reopens it, so a 115200 radio's output reads as noise. Use a tool that sets the

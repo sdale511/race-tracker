@@ -378,28 +378,37 @@ def set_key(ser, key_id, kind, value):
 LABEL_WIDTH = 20  # longest label is 17 characters
 
 
+def show(name, value):
+    """How a value reads in the log. A CFG-MSGOUT-* value is a message's output rate
+    in navigation epochs (0 = off, 1 = every epoch, 2 = every second epoch ...), so
+    say so alongside the number - at the receiver's 1 Hz an epoch is a second."""
+    if name.startswith("CFG-MSGOUT-") and isinstance(value, int) and not isinstance(value, bool):
+        return f"{value} (off)" if value == 0 else (f"{value} (every epoch)" if value == 1 else f"{value} (every {value} epochs)")
+    return value
+
+
 def apply_setting(ser, name, target_value, dry_run):
     key_id, kind, label = KEY_INFO[name]
     current = poll_key(ser, key_id, kind)
-    current_display = current if current is not None else "?"
+    current_display = show(name, current) if current is not None else "?"
     prefix = f"  {label:<{LABEL_WIDTH}}"
     if current == target_value:
-        print(f"{prefix} = {target_value} (unchanged)")
+        print(f"{prefix} = {show(name, target_value)} (unchanged)")
         return True
     if dry_run:
-        print(f"{prefix} {current_display} -> {target_value} [dry run]")
+        print(f"{prefix} {current_display} -> {show(name, target_value)} [dry run]")
         return True
     if not set_key(ser, key_id, kind, target_value):
-        print(f"{prefix} {current_display} -> {target_value} [FAILED]")
+        print(f"{prefix} {current_display} -> {show(name, target_value)} [FAILED]")
         return False
     # Read back to confirm it actually stuck, same reasoning as
     # xbee_configure_at.py's own set_and_verify - a write ACK alone doesn't
     # prove the receiver is now actually running the new value.
     verified = poll_key(ser, key_id, kind)
     if verified == target_value:
-        print(f"{prefix} {current_display} -> {target_value} [OK]")
+        print(f"{prefix} {current_display} -> {show(name, target_value)} [OK]")
         return True
-    print(f"{prefix} {current_display} -> {target_value} [wrote, read back {verified} - did not stick]")
+    print(f"{prefix} {current_display} -> {target_value} [wrote, read back {show(name, verified)} - did not stick]")
     return False
 
 

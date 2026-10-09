@@ -18,6 +18,7 @@
     "reset-regatta": "node src/resetRegatta.js",
     "radio-test": "node src/radioTest.js",
     "radio-congestion": "node src/radioCongestionTest.js",
+    "radio-latency": "node src/radioLatencyTest.js",
     "print-config": "node src/printConfig.js"
   },
   "dependencies": {

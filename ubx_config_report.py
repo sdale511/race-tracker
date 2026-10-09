@@ -255,7 +255,11 @@ def poll_key(ser, name, key_id, kind, label):
             if len(value_bytes) < size:
                 continue
             value = decode_value(kind, value_bytes)
-            print(f"  {value}")
+            note = ""
+            if name.startswith("CFG-MSGOUT-") and kind == "u1":
+                # an output rate in navigation epochs: 0 off, 1 every epoch, 2 every second epoch ...
+                note = "  (off)" if value == 0 else "  (every epoch)" if value == 1 else f"  (every {value} epochs)"
+            print(f"  {value}{note}")
             return value
         # anything else (a NAV-PVT the rover is already streaming, etc.) -
         # not what we asked for, keep scanning until the deadline.
