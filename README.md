@@ -684,7 +684,13 @@ and keeps it, and a slot is given up only after the boat has been silent for `TX
 nobody else's slot ever moves. It broadcasts the table every `TX_SLOT_TABLE_S` seconds (10), and straight
 away when a boat joins or leaves, as slot-table frames (sync `0xA7`, up to 15 boats per frame; larger
 tables use several). A boat that hears its own entry moves to that slot and adopts the base's slot count
-and width (`TX_SLOT_COUNT` / `TX_SLOT_MS` on the **base** are the ones that count). Until it hears a table
+and width (`TX_SLOT_MS` and `TX_SLOT_COUNT` on the **base** are the ones that count). Leave `TX_SLOT_COUNT`
+unset on the base and it works the number of slots out once, at startup, from `RTCM_INTERVAL_S` (default 1) -
+the correction interval the base's GPS is set to (`ubx_config_set.py --rtcm-interval`): the cycle minus the
+time blocked around each burst, divided by the slot width (40 ms slots: 22 at 1 s, 47 at 2 s). So when you
+change the GPS to 2 s, set `RTCM_INTERVAL_S=2` on the base and restart it; the table then carries 47 slots from
+the first broadcast. If the corrections it hears arrive at a different interval, the base warns once. Set
+`TX_SLOT_COUNT` to fix the count instead. Until it hears a table
 it uses a slot hashed from its id, which can collide briefly. A boat with `TX_SLOT` set is pinned to that
 slot and ignores the table. With more boats than slots the extras get no entry (the base logs it), keep
 their hashed slot, and may collide. Slot width is fixed - it does not change with the number of boats.
@@ -1889,7 +1895,8 @@ actually use. Redis password is redacted.
 | `TX_GATE_MAX_QUEUE` / `TX_GATE_MAX_AGE_MS` | 12 / 5000 | Most frames held at once (oldest dropped beyond it); a held frame older than this is dropped |
 | `TX_SLOT_MODE` | unset (off) | Boat: `1` = send position/batch frames only in this boat's slot of each correction cycle. Base: `1` = keep and broadcast the slot table that assigns the boats their slots |
 | `TX_SLOT` | assigned by the base's slot table | Boat only - pin this boat to a slot number, 0 to `TX_SLOT_COUNT - 1`, ignoring the table (without a table it is derived from the boat id) |
-| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 30 / 30 | Number of slots per cycle and each slot's width in ms (the base's values are broadcast to the boats) |
+| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 30 / 30 | Number of slots per cycle and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
+| `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 600 | Base only - how often the slot table is rebroadcast, and how long a silent boat keeps its slot |
 | `SIM_RTCM_INTERVAL_S` | 0 (off) | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots can be tried without hardware |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |

@@ -467,14 +467,19 @@ module.exports = {
     // boat follows its entry. index = TX_SLOT pins one boat to a slot by hand and ignores the table
     // (0 to count-1); with neither a table nor TX_SLOT, a boat derives a slot from its id, which
     // CAN collide with another boat's. count and widthMs are the base's (boats adopt them from the
-    // table; a pinned boat uses its own). Each slot must hold the boat's frames for a cycle: 30 ms
+    // table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
+    // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 30 ms
     // fits about 5 fixes (a 1 s cycle at 5 Hz); size it up for faster rates, and keep
     // count x widthMs inside the gap between bursts.
     slot: {
       enabled: process.env.TX_SLOT_MODE === '1' || process.env.TX_SLOT_MODE === 'true',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
       count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '30', 10) || 30),
-      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '30', 10) || 30),
+      // Base only: the RTK correction interval the base's GPS is set to (see ubx_config_set.py
+      // --rtcm-interval). With TX_SLOT_COUNT unset the base works the slot count out from it once, at
+      // startup: a 2 s interval has room for about twice as many slots as a 1 s one.
+      rtcmIntervalS: Math.max(0.1, parseFloat(process.env.RTCM_INTERVAL_S || process.env.SIM_RTCM_INTERVAL_S || '1') || 1),
+      countAuto: process.env.TX_SLOT_COUNT === undefined || process.env.TX_SLOT_COUNT === '',
       // Base only: how often the slot table is rebroadcast, and how long a boat can be silent
       // before its slot is given up. A new boat triggers an extra broadcast straight away.
       tableIntervalS: Math.max(1, parseInt(process.env.TX_SLOT_TABLE_S || '10', 10) || 10),

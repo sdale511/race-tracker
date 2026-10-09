@@ -41,7 +41,7 @@ const { FleetSleep } = require('./fleetSleep');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler } = require('./txScheduler');
-const { SlotAllocator } = require('./slotTable');
+const { SlotAllocator, slotCountForPeriod } = require('./slotTable');
 const { startSimRtcm } = require('./simRtcm');
 
 // True while the cursor is sitting mid-line after an in-place base-GPS log
@@ -919,16 +919,36 @@ function main() {
   // it on.
   let slotAllocator = null;
   if (config.txGate.enabled && config.txGate.slot.enabled && radioMode !== 'none') {
+    // The slot count: TX_SLOT_COUNT if set, otherwise what fits in the correction interval the
+    // operator says the GPS is set to (RTCM_INTERVAL_S) - worked out once, here.
+    const slotWidthMs = config.txGate.slot.widthMs;
+    const slotCount = config.txGate.slot.countAuto
+      ? slotCountForPeriod(config.txGate.slot.rtcmIntervalS * 1000, slotWidthMs, new TxGate({ tracker: baseBurstTracker, ...config.txGate }))
+      : config.txGate.slot.count;
     slotAllocator = new SlotAllocator({
-      count: config.txGate.slot.count,
-      widthMs: config.txGate.slot.widthMs,
+      count: slotCount,
+      widthMs: slotWidthMs,
       staleMs: config.txGate.slot.staleS * 1000,
       log: (m) => console.log(m),
     });
-    console.log(`[slots] slot table on: ${slotAllocator.count} slots of ${slotAllocator.widthMs} ms, rebroadcast every ${config.txGate.slot.tableIntervalS} s`);
+    console.log(
+      `[slots] slot table on: ${slotAllocator.count} slots of ${slotAllocator.widthMs} ms` +
+        (config.txGate.slot.countAuto ? ` (fits a ${config.txGate.slot.rtcmIntervalS} s correction interval - RTCM_INTERVAL_S)` : ' (TX_SLOT_COUNT)') +
+        `, rebroadcast every ${config.txGate.slot.tableIntervalS} s`
+    );
+    // If the corrections actually heard don't arrive at the interval it was told, say so once: the
+    // slots were sized for the wrong cycle.
+    let warnedInterval = false;
     let lastTableAt = 0;
     const slotTimer = setInterval(() => {
       const nowMs = Date.now();
+      if (!warnedInterval && baseBurstTracker.isActive() && baseBurstTracker.period) {
+        const want = config.txGate.slot.rtcmIntervalS * 1000;
+        if (Math.abs(baseBurstTracker.period - want) > want * 0.15) {
+          warnedInterval = true;
+          console.warn(`[slots] WARNING: corrections arrive every ${Math.round(baseBurstTracker.period)} ms but RTCM_INTERVAL_S=${config.txGate.slot.rtcmIntervalS} - the ${slotAllocator.count} slots were sized for ${want} ms. Set RTCM_INTERVAL_S (or TX_SLOT_COUNT) to match the GPS`);
+        }
+      }
       const freed = slotAllocator.sweep().length > 0;
       const changed = slotAllocator.takeChanged() || freed;
       if (!changed && nowMs - lastTableAt < config.txGate.slot.tableIntervalS * 1000) return;

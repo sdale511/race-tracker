@@ -14,9 +14,19 @@
 
 const protocol = require('./protocol');
 
+const MAX_SLOTS = 250;
+
+// How many slots of widthMs fit in one correction cycle: the cycle (burst to burst) minus the time
+// blocked after a burst and, before the next one, what the biggest frame (a full batch) needs.
+// `gate` is a TxGate (only its beforeMs/afterMs are used).
+function slotCountForPeriod(periodMs, widthMs, gate) {
+  const usable = periodMs - gate.afterMs() - gate.beforeMs(84);
+  return Math.max(1, Math.min(MAX_SLOTS, Math.floor(usable / widthMs)));
+}
+
 class SlotAllocator {
   constructor({ count, widthMs, staleMs = 10 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
-    this.count = Math.max(1, Math.min(255, count));
+    this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     this.staleMs = staleMs;
     this.now = now;
@@ -141,4 +151,4 @@ class SlotTableFollower {
   }
 }
 
-module.exports = { SlotAllocator, SlotTableFollower };
+module.exports = { SlotAllocator, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };

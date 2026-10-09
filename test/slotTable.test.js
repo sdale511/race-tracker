@@ -97,3 +97,13 @@ test('follower: a boat pinned with TX_SLOT ignores the table', () => {
   assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT02', slot: 5 }] }), false);
   assert.strictEqual(sched.slot.index, 11);
 });
+
+const { slotCountForPeriod } = require('../src/slotTable');
+
+test('slot count follows the correction interval: 1 s -> 22 slots of 40 ms, 2 s -> 47', () => {
+  const gate = new TxGate({ tracker: new BurstTracker() });
+  assert.strictEqual(slotCountForPeriod(1001, 40, gate), 22);
+  assert.strictEqual(slotCountForPeriod(2002, 40, gate), 47);
+  assert.strictEqual(slotCountForPeriod(1001, 30, gate), 30);
+  assert.strictEqual(slotCountForPeriod(50, 40, gate), 1, 'never below one slot');
+});
