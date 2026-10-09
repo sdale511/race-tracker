@@ -694,8 +694,9 @@ the first broadcast. If the corrections it hears arrive at a different interval,
 it uses a slot hashed from its id, which can collide briefly. A boat with `TX_SLOT` set is pinned to that
 slot and ignores the table. With more boats than slots the extras get no entry (the base logs it), keep
 their hashed slot, and may collide. Slot width is fixed - it does not change with the number of boats.
-The base lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment as
-`[slots] <boat> -> slot N`. The base's own frames (marks, pings, the table itself) are gated clear of the
+The admin dashboard's boat table has a **Slot** column (hover for the slot count and width; "none (full)" for a boat
+the table had no room for), shown only when the base runs the table. The base also lists the table under `slots`
+in its status (`GET /api/stats`) and logs each assignment as `[slots] <boat> -> slot N`. The base's own frames (marks, pings, the table itself) are gated clear of the
 burst but not slotted, so they can occasionally land on top of a boat's slot.
 
 **Slots need care.** Size `TX_SLOT_MS` for the boat's traffic per cycle: a slot must hold all the

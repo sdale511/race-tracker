@@ -345,6 +345,16 @@ function renderDashboard(s, rtkControlsEnabled) {
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (boats[id].pending || 0), 0);
   const sleepingIds = s.sleep ? Object.keys(s.sleep.sleeping) : [];
+  // Transmit slot each boat was assigned by the base's slot table (TX_SLOT_MODE=1 on the base - see
+  // slotTable.js); null when the table is off, so the column is left out entirely.
+  const slotByBoat = s.slots ? new Map(s.slots.boats.map((b) => [b.boatId, b.slot])) : null;
+  const slotOverflow = s.slots ? new Set(s.slots.overflow) : null;
+  const slotCell = (id) => {
+    if (!slotByBoat) return '';
+    if (slotByBoat.has(id)) return `<td title="Slot ${slotByBoat.get(id)} of ${s.slots.slotCount}, ${s.slots.slotWidthMs} ms each, assigned by the base's slot table">${slotByBoat.get(id)}</td>`;
+    if (slotOverflow.has(id)) return '<td title="All slots are taken - this boat keeps its own fallback slot and may collide with another boat"><span class="muted">none (full)</span></td>';
+    return '<td><span class="muted">—</span></td>';
+  };
 
   const redisStatus = redisStatusFor(s);
 
@@ -433,6 +443,7 @@ function renderDashboard(s, rtkControlsEnabled) {
       return `
         <tr>
           <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${sleepingIds.includes(id) ? ' <span class="muted" title="Put to sleep from the Radio sleep card - radio off until woken">💤 asleep</span>' : ''}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
+          ${slotCell(id)}
           <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
           <td>${lastSeenRadio}</td>
           <td>${fixRate}</td>
@@ -658,6 +669,7 @@ function renderDashboard(s, rtkControlsEnabled) {
       <thead>
         <tr>
           <th title="Green dot = heard from (radio or WiFi) within the last minute">Boat</th>
+          ${s.slots ? `<th title="Transmit slot assigned by the base's slot table: this boat sends its position frames in slot N of each correction cycle (${s.slots.slotCount} slots of ${s.slots.slotWidthMs} ms, starting just after the correction burst)">Slot</th>` : ''}
           <th title="Most recent activity from either the radio link or the WiFi health-check ping, whichever is more recent - marked (WiFi) when that ping is the only reason this looks current">Last seen</th>
           <th title="Most recent actual position frame received over radio specifically - unlike &quot;Last seen&quot;, not satisfied by the WiFi health-check ping alone, so a boat with a dead radio link but working WiFi shows stale here even while Last seen looks current">Last seen (radio)</th>
           <th title="How often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Fix rate</th>
