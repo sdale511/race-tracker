@@ -463,7 +463,7 @@ module.exports = {
     maxAgeMs: parseInt(process.env.TX_GATE_MAX_AGE_MS || '5000', 10),
     // TX_SLOT_MODE=1 (boat and base): release position/batch frames only in this boat's slot of
     // each cycle. Slots are assigned by the base: with TX_SLOT_MODE=1 on the base it keeps a table
-    // of the boats it hears (lowest free slot, sticky - slotTable.js) and broadcasts it, and each
+    // of the boats it hears (spread-out order, sticky - slotTable.js) and broadcasts it, and each
     // boat follows its entry. index = TX_SLOT pins one boat to a slot by hand and ignores the table
     // (0 to count-1); with neither a table nor TX_SLOT, a boat derives a slot from its id, which
     // CAN collide with another boat's. count and widthMs are the base's (boats adopt them from the

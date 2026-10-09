@@ -5,7 +5,8 @@
 //   SlotTableFollower  (boat) reads those frames and points its scheduler at the assigned slot.
 //
 // Assignment rules, chosen so a boat joining or leaving never moves anyone else:
-//   - a boat gets the lowest free slot the first time the base hears it, and keeps it;
+//   - a boat gets the next free slot in a spread-out order (0, halfway, quarters, ... - see
+//     slotOrder) the first time the base hears it, and keeps it;
 //   - a slot is freed only after the boat has been silent for staleMs (minutes, not seconds -
 //     a boat that is briefly out of range or asleep should find its slot waiting);
 //   - with more boats than slots, the extras get no entry and keep using their own fallback slot
@@ -22,6 +23,34 @@ const MAX_SLOTS = 250;
 function slotCountForPeriod(periodMs, widthMs, gate) {
   const usable = periodMs - gate.afterMs() - gate.beforeMs(84);
   return Math.max(1, Math.min(MAX_SLOTS, Math.floor(usable / widthMs)));
+}
+
+// Slots in the order boats are given them: 0, then halfway, then the quarters, and so on (the
+// slot numbers bit-reversed, skipping any past the count). The first boats land far apart, and the
+// first half of the slots handed out are exactly every other slot - 0, 2, 4, ... for an even
+// count - so a fleet of up to half the slot count never has two boats side by side. Neighbouring
+// slots are the ones that can overlap (timing jitter, a second frame spilling past its slot).
+const orderCache = new Map();
+function slotOrder(count) {
+  let order = orderCache.get(count);
+  if (order) return order;
+  let bits = 0;
+  while (1 << bits < count) bits++;
+  order = [];
+  for (let i = 0; i < 1 << bits; i++) {
+    let r = 0;
+    for (let b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b);
+    if (r < count) order.push(r);
+  }
+  orderCache.set(count, order);
+  return order;
+}
+
+// The first free slot in that order, or null when every slot is taken. Holes left by boats that
+// have gone are reused the same way, so the spread is kept without moving anyone.
+function pickSlot(taken, count) {
+  for (const slot of slotOrder(count)) if (!taken.has(slot)) return slot;
+  return null;
 }
 
 class SlotAllocator {
@@ -47,10 +76,8 @@ class SlotAllocator {
       existing.lastHeard = t;
       return existing.slot;
     }
-    const taken = new Set([...this.byBoat.values()].map((e) => e.slot));
-    let slot = 0;
-    while (slot < this.count && taken.has(slot)) slot++;
-    if (slot >= this.count) {
+    const slot = pickSlot(new Set([...this.byBoat.values()].map((e) => e.slot)), this.count);
+    if (slot === null) {
       if (!this.overflow.has(boatId)) {
         this.overflow.add(boatId);
         this.log(`[slots] no free slot for ${boatId}: all ${this.count} are taken - it keeps its own fallback slot`);
@@ -151,4 +178,4 @@ class SlotTableFollower {
   }
 }
 
-module.exports = { SlotAllocator, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };
+module.exports = { SlotAllocator, pickSlot, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };

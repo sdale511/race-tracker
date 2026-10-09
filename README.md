@@ -679,8 +679,10 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   set-mark, ...) are gated but not slotted.
 
 **Slot assignment (the slot table).** Run the base with `TX_SLOT_MODE=1` as well as the boats. The base
-keeps a table of the boats it hears (position, batch or hello frames): a new boat gets the lowest free slot
-and keeps it, and a slot is given up only after the boat has been silent for `TX_SLOT_STALE_S` (600 s), so
+keeps a table of the boats it hears (position, batch or hello frames): a new boat gets the next free slot in a
+spread-out order (slot 0, then halfway, then the quarters, ...: three boats in 22 slots get 0, 16 and 8, and
+the first 11 boats get exactly every other slot) so boats are only ever side by side once the fleet is
+bigger than half the slot count, and keeps it, and a slot is given up only after the boat has been silent for `TX_SLOT_STALE_S` (600 s), so
 nobody else's slot ever moves. It broadcasts the table every `TX_SLOT_TABLE_S` seconds (10), and straight
 away when a boat joins or leaves, as slot-table frames (sync `0xA7`, up to 15 boats per frame; larger
 tables use several). A boat that hears its own entry moves to that slot and adopts the base's slot count
