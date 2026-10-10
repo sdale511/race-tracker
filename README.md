@@ -855,7 +855,7 @@ the radio's 9-byte encryption overhead), the slot table can reach 97 and the pow
 | `0xEE` | batch | boat to base | 27 to 84 (7 + 19 per fix + 1) | 1 to 4 full fixes (`TX_DELTA=0`) |
 | `0xE7` | delta batch | boat to base | 35 to 83 (26 + 8 per later fix + 1) | 2 to 8 fixes, first in full, the rest as changes |
 | `0xFF` | set mark | boat to base | 17 | "set this mark to my position" |
-| `0x88` | mark log | boat to base | 27 | a note logged against a mark |
+| `0x88` | mark log | boat to base | 27 | a short text note (20 characters) typed on the rover's dashboard, which the base prints on its console and, when rate-stats logging is on, adds as a timestamped line to its rate-stats log - no position, just a text line marking that moment |
 | `0x99` | power | base to boats | 5 to 95 | radio sleep / wake, for all boats or up to 18 listed |
 | `0xA7` | slot table | base to boats | 7 to 97 | which transmit slot each boat has |
 | `0xD3` | RTCM3 | base to boats | variable | the RTK corrections (standard RTCM3, see above) |
