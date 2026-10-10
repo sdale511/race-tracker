@@ -269,7 +269,8 @@ function main() {
   }
   if (simRawSend) {
     installTxGate(simRawSend);
-    // A synthetic RTK base for exercising the gate in simulation (SIM_RTCM_INTERVAL_S=1).
+    // A synthetic RTK base for exercising the gate and slots in simulation: a burst every
+    // SIM_RTCM_INTERVAL_S seconds (default 1; 0 turns it off).
     if (config.sim.rtcmIntervalS > 0) {
       startSimRtcm(simRawSend, config.sim.rtcmIntervalS);
       console.log(`[baseStation] simulated RTK base: RTCM burst every ${config.sim.rtcmIntervalS}s`);

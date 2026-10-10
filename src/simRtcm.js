@@ -1,4 +1,4 @@
-// A synthetic RTK base for SIMULATE=1 (SIM_RTCM_INTERVAL_S=N on the simulated base): broadcasts a
+// A synthetic RTK base for SIMULATE=1 (on by default on the simulated base, every SIM_RTCM_INTERVAL_S=1 seconds; 0 turns it off): broadcasts a
 // burst of RTCM3 messages the size of a real epoch every N seconds, spaced a few ms apart like the
 // receiver's serial output, so the shared-radio gate and slots (txScheduler.js) can be exercised
 // with no hardware. The messages are valid RTCM3 frames (correct CRC) with filler payloads.

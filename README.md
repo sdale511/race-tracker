@@ -731,8 +731,7 @@ The timing comes from this radio's own view of the burst, so no GPS time or cloc
 limits it is the serial/USB delay on the host: the measurements behind the defaults were taken on one Mac
 with two adapters (`radio-latency`); repeat them on a Pi before trusting a 10 ms guard.
 
-**Trying it without hardware:** `SIM_RTCM_INTERVAL_S=1` makes the simulated base broadcast a synthetic RTCM burst
-(six valid messages the size of a real epoch) every second; run boats with `SIMULATE=1` (slot mode is on by default).
+**Trying it without hardware:** a `SIMULATE=1` base broadcasts a synthetic RTCM burst (six valid messages the size of a real epoch), every `SIM_RTCM_INTERVAL_S` seconds (default 1; `0` turns it off); run boats with `SIMULATE=1` (slot mode is on by default).
 The unit tests (`npm test`, in virtual time) check the tracker, the gate, that two boats in different
 slots never transmit in a blocked window or on top of each other, and the slot table (frame, allocation,
 following).
@@ -1921,7 +1920,7 @@ actually use. Redis password is redacted.
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MAX_HZ` | 4 | Boat, slot mode - most fixes per second sent in the slot (4 = one 84-byte frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 600 | Base only - how often the slot table is rebroadcast, and how long a silent boat keeps its slot |
-| `SIM_RTCM_INTERVAL_S` | 0 (off) | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots can be tried without hardware |
+| `SIM_RTCM_INTERVAL_S` | 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |
