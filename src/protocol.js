@@ -168,13 +168,17 @@ const RADIO_MAX_PAYLOAD = 100;
 // Truncated if longer - this is a small dashboard label, not the
 // authoritative name (RegattaUp's own record is that), so a long real
 // regatta name losing its tail here costs nothing beyond the display hint
-// itself being less complete. Sized so the whole marks frame is exactly
-// RADIO_MAX_PAYLOAD (it was 75 bytes before the name existed): 1 + 8*8 + 4 +
-// 2 + 2 + 1 + 25 + 1 = 100.
-const REGATTA_NAME_LEN = 25;
+// itself being less complete. Sized so the whole marks frame is 91 bytes - the
+// radio's 100-byte payload less the 9 bytes the XBee's encryption takes when
+// it is on (MARKS_MAX_LEN below), so it stays ONE RF packet either way
+// (it was 75 bytes before the name existed): 1 + 8*8 + 4 + 2 + 2 + 1 + 16 + 1 = 91.
+const REGATTA_NAME_LEN = 16;
 const MARKS_FRAME_LEN = 1 + MARK_NAMES.length * 8 + 4 + 2 + 2 + 1 + REGATTA_NAME_LEN + 1;
-if (MARKS_FRAME_LEN > RADIO_MAX_PAYLOAD) {
-  throw new Error(`marks frame is ${MARKS_FRAME_LEN} bytes, over the radio's ${RADIO_MAX_PAYLOAD}-byte payload limit - shorten REGATTA_NAME_LEN`);
+// Largest RF payload when the XBee's encryption is on (100 - 9), the size the marks frame - which has to
+// reach every boat in one packet - is held to.
+const MARKS_MAX_LEN = RADIO_MAX_PAYLOAD - 9;
+if (MARKS_FRAME_LEN > MARKS_MAX_LEN) {
+  throw new Error(`marks frame is ${MARKS_FRAME_LEN} bytes, over the ${MARKS_MAX_LEN} that fits one RF packet with the radio's encryption on - shorten REGATTA_NAME_LEN`);
 }
 
 function encodeMarks(marks, baseInfo = {}) {

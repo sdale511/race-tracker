@@ -20,6 +20,7 @@ replacing the radio on **both** ends (base and every rover).
 | `CE` Node messaging options | Routing / relay | `0` | `2` (routing off, single hop) | `2` | `2` |
 | `D7` CTS flow control | `1` = radio drives CTS; `0` = off | `1` | `1` (`--flow-control cts`) | `0` (`--flow-control none`) | `0` |
 | `D6` RTS flow control | `1` = radio waits for the host's RTS | `0` | `0` | `0` | `0` |
+| `EE` Security Enable | AES encryption (9 bytes less payload per RF packet when on) | not recorded | `0` (off) | `0` | `0` |
 | `BD` Baud rate | Serial speed to the host | `0x7` = 115200 | `0x7` = 115200 | `0x7` = 115200 | `0x7` = 115200 |
 
 Differences from the original LR radio that matter:

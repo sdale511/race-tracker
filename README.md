@@ -366,6 +366,8 @@ python3 xbee_configure_at.py --port /dev/ttyUSB0 --role rtcm  # an XBee-PRO 900H
 | `--network-id` / `--preamble-id` / `--mt` | from `--role` | Override a single value of the preset: `ID` (0 - 0x7FFF), `HP` (0 - 7), `MT` (0 - 5) |
 | `--flow-control` | `cts` | `none` (D7=0, D6=0) / `cts` (D7=1, D6=0 - Digi's own factory default) / `rtscts` (D7=1, D6=1). CTS is an output the radio raises when its serial buffer is nearly full - harmless if the host ignores it. **RTS makes the radio stop sending to the app while RTS is held high**, so use `rtscts` only with an adapter whose RTS line is wired and driven, or the radio goes silent to the app. The app itself opens the port without hardware flow control today, so these settings only take effect once it (or the adapter's driver) honours them |
 
+**Encryption (`EE`) is switched off** by the script (and `--dry-run` shows it as the `EE (Encryption)` row). With AES on, every RF packet loses 9 bytes of its 100-byte payload, so the marks frame (91 bytes) would still fit but the slot table (up to 97) and power (up to 95) frames would be split across two packets and lost if either half is. `EE` has to be the same on every radio in the network, so run the script on all of them (or check each with `--dry-run`).
+
 The stock ArduSimple LR radio's settings, side by side with each preset above, are
 recorded in [`docs/xbee-radio-settings.md`](docs/xbee-radio-settings.md).
 
@@ -802,13 +804,13 @@ through, held, longest hold, dropped, expired, slotted, spilled, and the tracker
 Every frame type on the telemetry radio starts with its own sync byte, so a radio hearing everything on the
 network can tell them apart; all multi-byte numbers are little-endian, and the checksum is the sum of every
 byte after the sync byte, modulo 256 (RTCM3 has its own CRC-24Q). The layouts live in `src/protocol.js`.
-The radio's payload limit on this fleet is 100 bytes (`NP`); the largest frame, the marks broadcast, is exactly 100,
-and the biggest of the rest is 97.
+The radio's payload limit on this fleet is 100 bytes (`NP`); the marks broadcast is 91 (so it stays one packet even with
+the radio's 9-byte encryption overhead), the slot table can reach 97 and the power frame 95.
 
 | Sync | Frame | Direction | Size (bytes) | What it carries |
 |---|---|---|---|---|
 | `0xAA` | position | boat to base | 26 | one fix: boat id, time, lat, lon, speed, heading, status |
-| `0xBB` | marks | base to boats | 100 | the course marks, regatta name (25 chars), and the base's upload address |
+| `0xBB` | marks | base to boats | 91 | the course marks, regatta name (16 chars), and the base's upload address |
 | `0xCC` | ping | base to boats | 6 | "report your position now" |
 | `0xDD` | hello | boat to base | 7 | "my radio is up", before a GPS fix |
 | `0xEE` | batch | boat to base | 27 to 84 (7 + 19 per fix + 1) | 1 to 4 full fixes (`TX_DELTA=0`) |
@@ -1704,13 +1706,14 @@ memory and writes them to `race-config/course_marks.json`, so a
 reboot/restart has a last-known course immediately. Best-effort, not
 guaranteed sync - a missed broadcast just waits for the next one.
 
-The marks frame is exactly 100 bytes - the most this fleet's radios send as
-one RF packet (`NP`; see "Batching"), because a longer frame is split in two
-over the air and lost if either half is. The regatta name it carries is
-therefore truncated to 25 characters (`protocol.js`'s `REGATTA_NAME_LEN`); the
-base logs a warning once if the selected regatta's name is longer. The full
-name is still shown on the base's own pages. `protocol.js` refuses to load if
-any frame's largest form would exceed the 100-byte limit.
+The marks frame is 91 bytes: the radios send at most 100 bytes as one RF packet (`NP`; see "Batching"), a longer
+frame is split in two over the air and lost if either half is, and the XBee's encryption, if on, takes 9 of
+those 100. The regatta name it carries is therefore truncated to 16 characters (`protocol.js`'s
+`REGATTA_NAME_LEN`); the base logs a warning once if the selected regatta's name is longer. The full name is
+still shown on the base's own pages. `protocol.js` refuses to load if the marks frame would exceed 91 bytes,
+or any other frame's largest form the 100-byte limit. With slot mode on, the marks broadcast goes out in the
+base's own slot (the same one as the slot table - see "Shared-radio transmit scheduling"), so a boat's frame
+can't land on it.
 
 The base broadcasts the moment marks resolve (polls Redis every 5s until
 published, not a one-shot check) and again immediately whenever a

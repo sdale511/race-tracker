@@ -63,7 +63,7 @@ WHAT THIS DOES
     - Sets TO (Transmit Options) bits 6:7 and CE (Node Messaging Options,
       bit 1 - routing/relay on this node) according to --mode - see MODES
       below for the exact TO/CE pair each mode sets and why.
-    - Sets ID, DH/DL, HP, MT, BD to the values below.
+    - Sets ID, DH/DL, HP, MT, EE (encryption off), BD to the values below.
     - --role picks the preset: telemetry (default - the boat/base position
       link) or rtcm (the RTK correction link: separate network, MT=1, no
       flow control) - see ROLES below. --network-id/--preamble-id/--mt
@@ -236,6 +236,11 @@ CONFIG = {
     # Preamble ID (HP) -- default.
     "HP": 0,
 
+    # EE (Security Enable) -- AES encryption OFF. With it on, each RF packet loses 9 bytes of payload, so a
+    # frame that exactly fits the 100-byte packet (the slot table at 97 bytes, the power frame at 95) would be
+    # split in two and lost if either half is. Must be the same on every radio in a network.
+    "EE": 0,
+
     # MT (Broadcast Multi-Transmits) -- how many EXTRA times a broadcast
     # is repeated (packets sent = MT+1). Was 3 by default, set to 0.
     "MT": 0,
@@ -400,8 +405,10 @@ def dry_run_report(ser, target_baud):
                             decode=lambda v: DIO_LABELS.get(v, "other"))
     changed += compare_row("D6 (RTS flow control)", query(ser, "D6"), format(CONFIG["D6"], "X"),
                             decode=lambda v: DIO_LABELS.get(v, "other"))
+    changed += compare_row("EE (Encryption)", query(ser, "EE"), format(CONFIG["EE"], "X"),
+                            decode=lambda v: "encryption ON - 9 bytes less payload per packet" if v else "encryption off")
 
-    total = 9  # TO, ID, DH, DL, HP, MT, CE, D7, D6 - kept in sync with the calls above
+    total = 10  # TO, ID, DH, DL, HP, MT, CE, D7, D6, EE - kept in sync with the calls above
 
     bd_code = BAUD_CODE_MAP.get(target_baud)
     if bd_code is not None:
@@ -449,6 +456,10 @@ def read_config(ser):
     for name, label in (("D7", "D7 (CTS flow control)"), ("D6", "D6 (RTS flow control)")):
         v = hex_to_int(query(ser, name))
         print(f"  {label:28s} {v if v is not None else '?'}  ({DIO_LABELS.get(v, 'other') if v is not None else 'no response'})")
+
+    ee = hex_to_int(query(ser, "EE"))
+    print(f"  {'EE (Encryption)':28s} {ee if ee is not None else '?'}  "
+          f"({'encryption ON - 9 bytes less payload per packet' if ee else 'encryption off' if ee == 0 else 'no response'})")
 
     bd = query(ser, "BD")
     bd_val = hex_to_int(bd)
@@ -596,6 +607,7 @@ def main():
         all_ok &= set_and_verify(ser, "CE", format(CONFIG["CE"], "X"), "CE (Node Msg Options)")
         all_ok &= set_and_verify(ser, "D7", format(CONFIG["D7"], "X"), "D7 (CTS flow control)")
         all_ok &= set_and_verify(ser, "D6", format(CONFIG["D6"], "X"), "D6 (RTS flow control)")
+        all_ok &= set_and_verify(ser, "EE", format(CONFIG["EE"], "X"), "EE (Encryption)")
 
         # Write everything set so far, BEFORE touching baud - once BD
         # changes, this session's own connection (still at connect-baud)
