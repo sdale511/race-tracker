@@ -695,6 +695,10 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   replies, set-mark, ...) are gated but not slotted. The three parts below say how a boat gets its slot, what
   it sends in it, and how big a slot should be.
 
+What one cycle looks like (a 1 s correction interval, 35 ms slots; the *B* is the base's own slot):
+
+![One 1 s cycle: RTCM burst and guard, 23 boat slots, 2 join slots, the base slot, then a blocked stretch before the next burst](docs/tdma-cycle-1s.svg)
+
 **Slot assignment (the slot table).** Slot mode is on by default for the base and the boats (set `TX_SLOT_MODE=0`
 on a node to turn it off there; like the gate, it does nothing until correction bursts are heard). The base keeps
 a table of the boats it hears and broadcasts it every `TX_SLOT_TABLE_S` seconds (10), and straight away when it
@@ -753,6 +757,12 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
 Slot width is fixed; it does not change with the number of boats. Separate fleets that race at the same time
 should have their own base and radio network (`ID`/`HP`); that keeps one base from hearing the other fleet's
 boats, though both still share the radio band.
+
+**1 s against 2 s.** The same schedule at the two correction intervals, drawn to the same time scale - at 2 s
+there are 54 slots instead of 26 (51 for boats instead of 23), and each boat sends once per cycle, so once every
+2 s:
+
+![The 1 s and 2 s intervals at the same scale: 26 slots (23 boats, 2 join, 1 base) against 54 (51 boats, 2 join, 1 base)](docs/tdma-1s-vs-2s.svg)
 
 **How many slots.** `TX_SLOT_COUNT` is the number of slots for boats in a cycle, including the `TX_SLOT_JOIN`
 join slots; the base's own slot comes after them. Leave it unset on the base and it works the count out once, at
