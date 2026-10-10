@@ -930,6 +930,8 @@ function main() {
       count: slotCount,
       widthMs: slotWidthMs,
       staleMs: config.txGate.slot.staleS * 1000,
+      activeFrames: config.txGate.slot.activeFrames,
+      activeWindowMs: config.txGate.slot.activeWindowS * 1000,
       log: (m) => console.log(m),
     });
     console.log(
@@ -2241,7 +2243,6 @@ function main() {
   const helloLoggedBoatIds = new Set();
   radio.on('hello', ({ boatId }) => {
     fleetSleep.noteHeard(boatId);
-    if (slotAllocator) slotAllocator.noteHeard(boatId);
     stats.recordFrame(boatId, null, null);
     if (!helloLoggedBoatIds.has(boatId)) {
       helloLoggedBoatIds.add(boatId);

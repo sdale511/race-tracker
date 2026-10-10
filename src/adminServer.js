@@ -353,7 +353,7 @@ function renderDashboard(s, rtkControlsEnabled) {
     if (!slotByBoat) return '';
     if (slotByBoat.has(id)) return `<td title="Slot ${slotByBoat.get(id)} of ${s.slots.slotCount}, ${s.slots.slotWidthMs} ms each, assigned by the base's slot table">${slotByBoat.get(id)}</td>`;
     if (slotOverflow.has(id)) return '<td title="All slots are taken - this boat keeps its own fallback slot and may collide with another boat"><span class="muted">none (full)</span></td>';
-    return '<td><span class="muted">—</span></td>';
+    return '<td title="No slot: only boats that are actively reporting get one (a boat sitting still sends one heartbeat fix a minute)"><span class="muted">—</span></td>';
   };
 
   const redisStatus = redisStatusFor(s);

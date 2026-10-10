@@ -7,8 +7,11 @@
 // Assignment rules, chosen so a boat joining or leaving never moves anyone else:
 //   - a boat gets the next free slot in a spread-out order (0, halfway, quarters, ... - see
 //     slotOrder) the first time the base hears it, and keeps it;
-//   - a slot is freed only after the boat has been silent for staleMs (minutes, not seconds -
-//     a boat that is briefly out of range or asleep should find its slot waiting);
+//   - a boat only gets a slot once it is actively reporting (activeFrames fixes within
+//     activeWindowMs), so idle boats - a moored fleet sending one heartbeat fix a minute - take none;
+//   - a slot is freed only after the boat has stopped reporting actively for staleMs (a couple of
+//     minutes - a boat briefly out of range finds its slot waiting; an idle one gives it up, and a
+//     lone heartbeat fix does not count as reporting);
 //   - with more boats than slots, the extras get no entry and keep using their own fallback slot
 //     (hashed from the boat id) - the base logs it once. Slot size is fixed; it does not change
 //     with the number of boats.
@@ -54,10 +57,13 @@ function pickSlot(taken, count) {
 }
 
 class SlotAllocator {
-  constructor({ count, widthMs, staleMs = 10 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
+  constructor({ count, widthMs, staleMs = 2 * 60 * 1000, activeFrames = 2, activeWindowMs = 20 * 1000, now = () => Date.now(), log = () => {} }) {
     this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     this.staleMs = staleMs;
+    this.activeFrames = Math.max(1, activeFrames);
+    this.activeWindowMs = activeWindowMs;
+    this.recent = new Map(); // boatId -> times of recent fixes, for boats without a slot yet
     this.now = now;
     this.log = log;
     this.version = 0;
@@ -66,16 +72,24 @@ class SlotAllocator {
     this.changed = false; // an assignment changed since the table was last taken
   }
 
-  // Call for every frame (position, batch, hello) heard from a boat. Returns its slot, or null
-  // when every slot is taken.
+  // Call for every position fix heard from a boat (a batch counts each of its fixes). A boat gets a
+  // slot only once it is actively reporting - activeFrames fixes within activeWindowMs - so boats
+  // sitting idle (a moored fleet sending one heartbeat fix a minute) never take one. Returns its
+  // slot, or null when it has none (not active yet, or every slot is taken).
   noteHeard(boatId) {
     if (typeof boatId !== 'string' || boatId.length !== protocol.BOAT_ID_LEN) return null;
     const t = this.now();
+    const times = (this.recent.get(boatId) || []).filter((x) => t - x <= this.activeWindowMs);
+    times.push(t);
+    this.recent.set(boatId, times);
     const existing = this.byBoat.get(boatId);
     if (existing) {
-      existing.lastHeard = t;
+      // A slot is kept alive only by active reporting too: a lone heartbeat fix (one a minute from a
+      // boat sitting still) must not hold a slot that the stale time would otherwise free.
+      if (times.length >= this.activeFrames) existing.lastHeard = t;
       return existing.slot;
     }
+    if (times.length < this.activeFrames) return null;
     const slot = pickSlot(new Set([...this.byBoat.values()].map((e) => e.slot)), this.count);
     if (slot === null) {
       if (!this.overflow.has(boatId)) {
@@ -102,6 +116,14 @@ class SlotAllocator {
         this.log(`[slots] ${boatId} silent for ${Math.round((t - e.lastHeard) / 60000)} min - slot ${e.slot} freed`);
       }
     }
+    // boats that were waiting (or overflowed) and have gone quiet are no longer in the queue
+    for (const [boatId, times] of this.recent) {
+      if (t - times[times.length - 1] > this.activeWindowMs) {
+        this.recent.delete(boatId);
+        this.overflow.delete(boatId);
+      }
+    }
+    for (const boatId of freed) this.recent.delete(boatId);
     if (freed.length) this._changed();
     return freed;
   }

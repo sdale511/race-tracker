@@ -23,7 +23,7 @@ test('slot table frame round-trips and rejects a bad checksum or slot', () => {
 
 test('allocator: new boats are spread out, assignments are sticky, a slot is freed only after the stale time', () => {
   let now = 0;
-  const a = new SlotAllocator({ count: 4, widthMs: 40, staleMs: 60000, now: () => now });
+  const a = new SlotAllocator({ activeFrames: 1, count: 4, widthMs: 40, staleMs: 60000, now: () => now });
   assert.strictEqual(a.noteHeard('AAAAA'), 0);
   assert.strictEqual(a.noteHeard('BBBBB'), 2, 'the second boat goes halfway');
   assert.strictEqual(a.noteHeard('CCCCC'), 1);
@@ -42,7 +42,7 @@ test('allocator: new boats are spread out, assignments are sticky, a slot is fre
 
 test('allocator: boats stay as far apart as the slot count allows, for any fleet size', () => {
   for (const [count, boats] of [[22, 2], [22, 3], [22, 5], [22, 11], [22, 22], [47, 10]]) {
-    const a = new SlotAllocator({ count, widthMs: 40 });
+    const a = new SlotAllocator({ activeFrames: 1, count, widthMs: 40 });
     const slots = ids(boats).map((id) => a.noteHeard(id)).sort((x, y) => x - y);
     assert.strictEqual(new Set(slots).size, boats, 'every boat has its own slot');
     const minGap = Math.min(...slots.slice(1).map((s, i) => s - slots[i]));
@@ -52,14 +52,14 @@ test('allocator: boats stay as far apart as the slot count allows, for any fleet
 });
 
 test('allocator: more boats than slots - the extras get none and nobody is moved', () => {
-  const a = new SlotAllocator({ count: 3, widthMs: 40 });
+  const a = new SlotAllocator({ activeFrames: 1, count: 3, widthMs: 40 });
   const got = ids(5).map((id) => a.noteHeard(id));
   assert.deepStrictEqual(got, [0, 2, 1, null, null]);
   assert.deepStrictEqual(a.status().overflow, [ids(5)[3], ids(5)[4]]);
 });
 
 test('allocator: a big table is split over frames of at most MAX_SLOT_ENTRIES, together covering every boat', () => {
-  const a = new SlotAllocator({ count: 40, widthMs: 25 });
+  const a = new SlotAllocator({ activeFrames: 1, count: 40, widthMs: 25 });
   ids(37).forEach((id) => a.noteHeard(id));
   const frames = a.frames();
   assert.strictEqual(frames.length, 3);
@@ -136,4 +136,54 @@ test('config: the slot settings are all real numbers', () => {
   for (const k of ['count', 'widthMs', 'rtcmIntervalS', 'tableIntervalS', 'staleS', 'maxHz']) {
     assert.ok(Number.isFinite(txGate.slot[k]), `txGate.slot.${k} is ${txGate.slot[k]}`);
   }
+});
+
+test('allocator: only boats that are actively reporting get a slot', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 4, widthMs: 35, staleMs: 120000, activeFrames: 2, activeWindowMs: 20000, now: () => now });
+  // an idle fleet: one heartbeat fix a minute each, for ten minutes - never earns a slot
+  for (let min = 0; min < 10; min++) {
+    now = min * 60000;
+    ids(8).forEach((id) => assert.strictEqual(a.noteHeard(id), null));
+    a.sweep();
+  }
+  assert.strictEqual(a.status().boats.length, 0);
+  assert.deepStrictEqual(a.status().overflow, [], 'idle boats are not counted as waiting for a slot either');
+  // a boat that starts racing (a fix a second) gets one on its second fix
+  now = 700000;
+  assert.strictEqual(a.noteHeard('RACER'), null);
+  now = 701000;
+  assert.strictEqual(a.noteHeard('RACER'), 0);
+  // a batch of four fixes arriving together counts as active straight away
+  now = 702000;
+  const got = [1, 2, 3, 4].map(() => a.noteHeard('BATCH'));
+  assert.strictEqual(got[1], 2, 'second fix of the batch earns the slot');
+});
+
+test('allocator: a racing boat that stops loses its slot after the stale time; idle boats are not in the queue', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 1, widthMs: 35, staleMs: 120000, activeFrames: 2, activeWindowMs: 20000, now: () => now });
+  a.noteHeard('AAAAA'); now = 1000; a.noteHeard('AAAAA'); // AAAAA has the only slot
+  now = 2000; a.noteHeard('BBBBB'); now = 3000;
+  assert.strictEqual(a.noteHeard('BBBBB'), null, 'BBBBB is active but there is no slot left');
+  assert.deepStrictEqual(a.status().overflow, ['BBBBB']);
+  now = 60000; a.noteHeard('AAAAA'); a.sweep();
+  assert.deepStrictEqual(a.status().overflow, [], 'BBBBB went quiet, so it is no longer waiting');
+  now = 190000; // AAAAA silent 130 s
+  assert.deepStrictEqual(a.sweep(), ['AAAAA']);
+  a.noteHeard('BBBBB'); now = 191000;
+  assert.strictEqual(a.noteHeard('BBBBB'), 0, 'the freed slot goes to the next active boat');
+});
+
+test('allocator: a heartbeat fix once a minute does not keep a slot alive', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 4, widthMs: 35, staleMs: 120000, activeFrames: 2, activeWindowMs: 20000, now: () => now });
+  for (let i = 0; i < 10; i++) { now = i * 1000; a.noteHeard('BOAT1'); } // racing for 10 s: has a slot
+  assert.strictEqual(a.status().boats.length, 1);
+  // then it sits still, sending one heartbeat fix a minute
+  for (let min = 1; min <= 5; min++) { now = 10000 + min * 60000; a.noteHeard('BOAT1'); a.sweep(); }
+  assert.strictEqual(a.status().boats.length, 0, 'the slot was freed even though heartbeats kept arriving');
+  // it starts racing again and gets a slot again
+  now += 1000; a.noteHeard('BOAT1'); now += 1000;
+  assert.notStrictEqual(a.noteHeard('BOAT1'), null);
 });

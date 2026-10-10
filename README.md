@@ -678,17 +678,24 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   it sends in it, and how big a slot should be.
 
 **Slot assignment (the slot table).** Slot mode is on by default for the base and the boats (set `TX_SLOT_MODE=0` on a node to turn it off there; like the gate, it does nothing until correction bursts are heard). The base
-keeps a table of the boats it hears (position, batch or hello frames). A new boat gets the next free slot in
+keeps a table of the boats it hears. Only boats that are **actively reporting** get a slot: a boat needs
+`TX_SLOT_ACTIVE_FRAMES` position fixes (2) within `TX_SLOT_ACTIVE_WINDOW_S` seconds (20), counting every fix in
+a batch. A boat sitting still sends one heartbeat fix a minute (`TX_INTERVAL_S`), which never qualifies, so
+a fleet that is moored or not racing takes no slots even though the base can hear it; hello frames don't
+count either. A newly active boat gets the next free slot in
 a spread-out order - slot 0, then halfway, then the quarters, and so on (three boats in 26 slots get 0, 16
 and 8; the first 13 get exactly every other slot) - so boats are only ever in neighbouring slots once the fleet
 is bigger than half the slot count. A boat keeps its slot, and the slot is given up only after the boat has
-been silent for `TX_SLOT_STALE_S` (600 s), so nobody else's slot ever moves. The base broadcasts the table
+been without active reporting for `TX_SLOT_STALE_S` (120 s - a boat briefly out of range finds it waiting; an
+idle one gives it up, since a lone heartbeat fix does not count as active reporting and does not hold a slot), so nobody else's slot ever moves. A boat that stops and starts again later is simply assigned a slot
+again (briefly it uses its fallback slot until it hears the updated table). The base broadcasts the table
 every `TX_SLOT_TABLE_S` seconds (10), and straight away when a boat joins or leaves, as slot-table frames
 (sync `0xA7`, up to 15 boats per frame; larger tables use several). A boat that hears its own entry moves to
 that slot and adopts the base's slot count and width, so `TX_SLOT_MS` and `TX_SLOT_COUNT` only need setting on
 the **base**. Until a boat hears a table it uses a slot hashed from its id, which can collide briefly. A boat
-with `TX_SLOT` set is pinned to that slot and ignores the table. With more boats than slots the extras get no
-entry (the base logs it), keep their hashed slot, and may collide. Slot width is fixed; it does not change with
+with `TX_SLOT` set is pinned to that slot and ignores the table. With more *active* boats than slots the extras get no
+entry (the base logs it; the dashboard shows "none (full)"), keep their hashed slot, and may collide - a
+good reason to give separate fleets that race at the same time their own base and radio network. Slot width is fixed; it does not change with
 the number of boats. The admin dashboard's boat table has a **Slot** column (hover for the slot count and
 width; "none (full)" for a boat the table had no room for), shown only when the base runs the table. The base
 also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment as
@@ -1919,7 +1926,8 @@ actually use. Redis password is redacted.
 | `TX_SLOT_COUNT` / `TX_SLOT_MS` | 26 / 35 | Number of slots per cycle and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MAX_HZ` | 4 | Boat, slot mode - most fixes per second sent in the slot (4 = one 84-byte frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap |
-| `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 600 | Base only - how often the slot table is rebroadcast, and how long a silent boat keeps its slot |
+| `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 120 | Base only - how often the slot table is rebroadcast, and how long a boat that has stopped actively reporting keeps its slot |
+| `TX_SLOT_ACTIVE_FRAMES` / `TX_SLOT_ACTIVE_WINDOW_S` | 2 / 20 | Base only - a boat gets a slot only after this many position fixes within this many seconds, so idle boats (one heartbeat fix a minute) take none |
 | `SIM_RTCM_INTERVAL_S` | 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |

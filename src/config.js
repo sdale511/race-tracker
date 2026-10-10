@@ -486,10 +486,15 @@ module.exports = {
       // startup: a 2 s interval has room for about twice as many slots as a 1 s one.
       rtcmIntervalS: Math.max(0.1, parseFloat(process.env.RTCM_INTERVAL_S || process.env.SIM_RTCM_INTERVAL_S || '1') || 1),
       countAuto: process.env.TX_SLOT_COUNT === undefined || process.env.TX_SLOT_COUNT === '',
-      // Base only: how often the slot table is rebroadcast, and how long a boat can be silent
-      // before its slot is given up. A new boat triggers an extra broadcast straight away.
+      // Base only: how often the slot table is rebroadcast, and how long a boat can go without
+      // actively reporting (a lone heartbeat fix doesn't count) before its slot is given up. A new boat triggers an extra broadcast straight away.
       tableIntervalS: Math.max(1, parseInt(process.env.TX_SLOT_TABLE_S || '10', 10) || 10),
-      staleS: Math.max(10, parseInt(process.env.TX_SLOT_STALE_S || '600', 10) || 600),
+      staleS: Math.max(10, parseInt(process.env.TX_SLOT_STALE_S || '120', 10) || 120),
+      // Base only: a boat gets a slot only once it has sent activeFrames position fixes within
+      // activeWindowS seconds. A boat sitting still sends one heartbeat fix a minute (TX_INTERVAL_S),
+      // which never qualifies, so a fleet that isn't racing doesn't use up the slots.
+      activeFrames: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_FRAMES || '2', 10) || 2),
+      activeWindowS: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_WINDOW_S || '20', 10) || 20),
     },
   },
 
