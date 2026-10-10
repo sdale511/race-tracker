@@ -42,6 +42,7 @@ const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler } = require('./txScheduler');
 const { SlotAllocator, slotCountForPeriod } = require('./slotTable');
+const { LinkHealth, LinkHealthAlerter } = require('./linkHealth');
 const { startSimRtcm } = require('./simRtcm');
 
 // True while the cursor is sitting mid-line after an in-place base-GPS log
@@ -251,6 +252,14 @@ function main() {
   // sleep/wake) are held out of the RTK correction burst once bursts are heard on this radio.
   // Gate only - slots are for boats. Installed over radio.send/broadcast once a real or
   // simulated radio exists to wrap.
+  // Link health (see linkHealth.js): per-boat RTK-fixed share, gaps and silence plus the fleet's checksum-failure
+  // share, for the dashboard's Link health card and a console warning when something turns bad.
+  const linkHealth = new LinkHealth();
+  const linkHealthAlerter = new LinkHealthAlerter(linkHealth);
+  const linkHealthTimer = setInterval(() => {
+    for (const line of linkHealthAlerter.check()) console.warn(line);
+  }, 10000);
+  if (linkHealthTimer.unref) linkHealthTimer.unref();
   const baseBurstTracker = new BurstTracker();
   radio.on('rtcm', (f) => baseBurstTracker.onRtcm(f.type));
   // Slot layout (see slotTable.js): with slot mode on, the cycle holds boatSlots slots for the boats
@@ -671,8 +680,8 @@ function main() {
   });
   // Same "one batch = one radio-layer transmission" counting convention as
   // framesOk above (a batch frame counts once, not once per fix inside it).
-  radio.on('frame', () => bandwidthWindow.frames++);
-  radio.on('frame-batch', () => bandwidthWindow.frames++);
+  radio.on('frame', () => { bandwidthWindow.frames++; linkHealth.recordFrame(); });
+  radio.on('frame-batch', () => { bandwidthWindow.frames++; linkHealth.recordFrame(); });
   // Unlike frames above, this counts actual POSITION FIXES, not
   // transmissions - a batch frame carries however many fixes it actually
   // packed (see protocol.js's TX_BATCH_SIZE feature), so this only differs
@@ -687,7 +696,7 @@ function main() {
   // ever gets read from bandwidthHistory's own per-second snapshots below,
   // by config.logRateStats' own 10s logger, so the two loggers' different
   // cadences never fight over the same mutable counter.
-  radio.on('sync-error', () => bandwidthWindow.syncErrors++);
+  radio.on('sync-error', () => { bandwidthWindow.syncErrors++; linkHealth.recordSyncError(); });
   setInterval(() => {
     bandwidthHistory.push(bandwidthWindow);
     if (bandwidthHistory.length > BANDWIDTH_HISTORY_LEN) bandwidthHistory.shift();
@@ -2166,6 +2175,7 @@ function main() {
   // mark-rounding/foul detection.
   function handleDecodedFrame(decoded) {
     fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
+    linkHealth.recordFix(decoded.boatId, decoded, { parked: slotAllocator ? slotAllocator.isParked(decoded.boatId) : false });
     if (slotAllocator) {
       slotAllocator.noteHeard(decoded.boatId, {
         moving: config.txGate.slot.movingKn > 0 && decoded.speedKnots >= config.txGate.slot.movingKn,
@@ -2580,6 +2590,7 @@ function main() {
       lapCounts,
       sleep: fleetSleep.status(),
       slots: slotAllocator ? slotAllocator.status() : null,
+      linkHealth: linkHealth.status(),
       redis: redisStats,
       // maxmemoryBytes falls back to the operator-configured
       // REDIS_MEMORY_LIMIT_MB whenever Redis itself won't report its own

@@ -223,6 +223,12 @@ class SlotAllocator {
     return slot;
   }
 
+  // True while the boat is parked on the start grid (see noteHeard).
+  isParked(boatId) {
+    const z = this.zones.get(boatId);
+    return !!z && z.state.parked;
+  }
+
   // Frees the slots of the named boats (all of them when boatIds is empty/null) right away, without
   // waiting for the stale time - used when the base puts a fleet to sleep, so the next fleet can take
   // the slots. A boat that wakes and starts racing again gets the same slot back if it is still free.

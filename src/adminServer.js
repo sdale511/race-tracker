@@ -283,6 +283,43 @@ function renderBandwidthCard(bandwidth, mode) {
 // renderBaseGpsCard (the ordinary fix, for the map's "plant a mark at my
 // real position" feature) regardless - only the RTK-reconfiguring controls
 // are gated.
+// The dashboard's Link health card (see linkHealth.js): is the radio link working? A fleet summary, then the
+// boats that need a look first (bad, then warn), with why. `h` is baseStation's linkHealth.status().
+function renderLinkHealthCard(h) {
+  const dot = (level) => (level === 'bad' ? 'dot-red' : level === 'warn' ? 'dot-orange' : level === 'quiet' ? 'dot-gray' : 'dot-green');
+  const seen = h.boats.length;
+  const worst = h.boats.filter((b) => b.rtkPct !== null).sort((a, b) => a.rtkPct - b.rtkPct)[0];
+  const attention = h.boats.filter((b) => b.level === 'bad' || b.level === 'warn');
+  const shown = attention.slice(0, 10);
+  const rows = shown
+    .map(
+      (b) => `<tr>
+        <td><span class="dot ${dot(b.level)}"></span>${escapeHtml(b.boatId)}</td>
+        <td>${b.fixesPerSec}</td>
+        <td>${b.rtkPct === null ? '—' : b.rtkPct + '%'}</td>
+        <td>${b.gaps ? `${b.gaps} (longest ${b.longestGapS} s)` : '0'}</td>
+        <td>${b.silentS} s</td>
+        <td>${escapeHtml(b.why.join('; '))}</td>
+      </tr>`
+    )
+    .join('');
+  const syncText =
+    h.syncPct === null
+      ? '<span class="muted">too few frames to judge</span>'
+      : `${h.syncPct}% <span class="muted">(${h.syncErrors} of ${h.syncErrors + h.frames})</span>`;
+  return `<div class="card">
+      <div class="label">Link health</div>
+      <div class="value" style="font-size:20px;"><span class="dot ${dot(h.level)}"></span>${h.level === 'bad' ? 'Problem' : h.level === 'warn' ? 'Needs a look' : seen ? 'OK' : 'No boats yet'}</div>
+      <div class="sub">${seen} boat(s) heard in the last 2 min: ${h.counts.ok} ok, ${h.counts.warn} warn, ${h.counts.bad} bad${h.counts.quiet ? `, ${h.counts.quiet} idle` : ''}.
+        Radio frames failing their checksum: ${syncText}.${worst ? ` Lowest RTK-fixed share: ${worst.rtkPct}% (${escapeHtml(worst.boatId)}).` : ''}</div>
+      ${
+        shown.length
+          ? `<table style="margin-top:8px;"><thead><tr><th>Boat</th><th title="Fixes received per second over the last 10 s">Fixes/s</th><th title="Share of the last minute's fixes that were RTK fixed">RTK fixed</th><th title="Moving boat skipped more than 2 s of fixes: a lost frame or more">Gaps (1 min)</th><th>Last heard</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>${attention.length > shown.length ? `<div class="sub">+ ${attention.length - shown.length} more</div>` : ''}`
+          : ''
+      }
+    </div>`;
+}
+
 function renderDashboard(s, rtkControlsEnabled) {
   // Active fleet at the top, so it naturally floats above however boat IDs
   // happen to be numbered. "Active" is the more recent of lastSeen (an
@@ -656,6 +693,7 @@ function renderDashboard(s, rtkControlsEnabled) {
       </div>
       ${sleepingIds.length ? `<div class="sub" style="margin-top:6px;">Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}</div>` : ''}
     </div>
+    ${s.linkHealth ? renderLinkHealthCard(s.linkHealth) : ''}
     ${
       s.slots
         ? `<div class="card">

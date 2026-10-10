@@ -804,6 +804,30 @@ The boat reports what the scheduler is doing under `txGate` in `GET /api/stats` 
 through, held, longest hold, dropped, expired, slotted, spilled, and the tracker's state).
 
 
+### Link health (is the radio link working?)
+
+The base dashboard's **Link health** card answers that from what the base already receives (no extra radio
+traffic): one colour for the whole fleet - OK, Needs a look, or Problem - then the boats that need attention,
+worst first, with the reason. It is also in `GET /api/stats` as `linkHealth`. Per boat, over the last minute:
+
+| Measure | What it means | Warn / bad |
+|---|---|---|
+| RTK fixed % | share of the boat's fixes that were RTK fixed - the outcome that matters; a boat sliding to float has incomplete corrections | under 90% / under 50% |
+| Gaps | a boat that is moving (2 kn or faster, not parked on the start grid) skipped more than 2 s of fixes - a lost frame or more; gaps over a minute are out of range or asleep, not counted | 1 / 3 or more |
+| Last heard | for a boat that was moving | 5 s / 10 s |
+| Fixes/s | fixes received over the last 10 s (for reading, not judged) | |
+
+Fleet-wide, the card shows the share of radio frames that failed their checksum (sync errors) over the last
+minute, once at least 20 frames have been seen: warn at 1%, bad at 3%. A boat sitting still (heartbeat only) is
+shown as idle, not as a problem, and a boat not heard for 2 minutes drops off the card. When a boat or the
+fleet turns bad the base also logs one `[health] WARNING: ...` line with the reasons, and `[health] ... recovered`
+when it clears - never repeated while it stays bad. The thresholds are constants at the top of `src/linkHealth.js`.
+
+Where to look when it does go wrong: RTK fixed % falling with clean frames points at the corrections (the boat's
+own `[rtcm] n/6 used` line, `radioRtcm` and CRC counts in its `/api/stats`); gaps or silence with rising sync
+errors point at the radio link or collisions (the boat's `txGate` dropped/expired/spilled counts say whether it
+is held back or overloaded); a boat missing entirely is out of range, asleep or off.
+
 ### Radio frame reference
 
 Every frame type on the telemetry radio starts with its own sync byte, so a radio hearing everything on the
