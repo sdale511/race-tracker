@@ -349,9 +349,11 @@ function renderDashboard(s, rtkControlsEnabled) {
   // slotTable.js); null when the table is off, so the column is left out entirely.
   const slotByBoat = s.slots ? new Map(s.slots.boats.map((b) => [b.boatId, b.slot])) : null;
   const slotOverflow = s.slots ? new Set(s.slots.overflow) : null;
+  const slotParked = s.slots ? new Set(s.slots.parked || []) : null;
   const slotCell = (id) => {
     if (!slotByBoat) return '';
     const of = s.slots.slotCount - s.slots.joinSlots;
+    if (slotParked.has(id)) return '<td title="On the start grid: parked. A boat there takes no slot and reports only now and then, until it leaves the grid"><span class="muted">parked</span></td>';
     if (slotByBoat.has(id)) return `<td title="Slot ${slotByBoat.get(id)} of ${of}, ${s.slots.slotWidthMs} ms each, assigned by the base's slot table">${slotByBoat.get(id)}</td>`;
     if (slotOverflow.has(id)) return `<td title="All ${of} slots are taken - this boat shares the ${s.slots.joinSlots} join slots with other boats that have none, and may collide with them"><span class="muted">shared (full)</span></td>`;
     return '<td title="No slot: only boats that are actively reporting get one (a boat sitting still sends one heartbeat fix a minute)"><span class="muted">—</span></td>';
@@ -659,8 +661,7 @@ function renderDashboard(s, rtkControlsEnabled) {
         ? `<div class="card">
       <div class="label">Transmit slots</div>
       <div class="value" style="font-size:20px;">${s.slots.boats.length} <span class="muted" style="font-size:13px;">of ${s.slots.slotCount - s.slots.joinSlots} slots assigned</span></div>
-      <div class="sub">${s.slots.slotCount} slots of ${s.slots.slotWidthMs} ms per correction cycle, ${s.slots.joinSlots} kept free for boats without one.${s.slots.overflow.length ? ` <strong>${s.slots.overflow.length} boat(s) waiting for a slot.</strong>` : ''} Before a race start, clear the table down to the boats on the start grid: boats already starting keep their slot, the others give theirs up, and every boat on the grid gets one now.</div>
-      <div style="margin-top:6px;"><button type="button" class="card-btn" onclick="prepareSlotStart(this)">Prepare race start</button></div>
+      <div class="sub">${s.slots.slotCount} slots of ${s.slots.slotWidthMs} ms per correction cycle, ${s.slots.joinSlots} kept free for boats without one.${s.slots.overflow.length ? ` <strong>${s.slots.overflow.length} boat(s) waiting for a slot.</strong>` : ''}${(s.slots.parked || []).length ? ` ${s.slots.parked.length} parked on the start grid.` : ''}</div>
     </div>`
         : ''
     }
@@ -724,19 +725,6 @@ function renderDashboard(s, rtkControlsEnabled) {
     // request and briefly confirm it went out.
     // Radio sleep card (see fleetSleep.js) - confirms before sleeping, since a
     // slept rover can't be reached until it hears a wake frame.
-    async function prepareSlotStart(btn) {
-      btn.disabled = true;
-      try {
-        const res = await fetch('/api/slots/prepare-start', { method: 'POST' });
-        const result = await res.json();
-        if (!result.ok) throw new Error(result.error || 'request failed');
-        btn.textContent = result.assigned + ' assigned, ' + result.released + ' released';
-        setTimeout(() => location.reload(), 1500);
-      } catch (err) {
-        alert('Failed: ' + err.message);
-        btn.disabled = false;
-      }
-    }
     async function fleetSleep(action, btn) {
       const ids = document.getElementById('sleepIds').value.split(',').map((x) => x.trim()).filter(Boolean);
       const target = ids.length ? 'boat(s) ' + ids.join(', ') : 'EVERY rover in range';
@@ -1901,7 +1889,6 @@ function startAdminServer({
   pingFleet,
   sleepFleet,
   wakeFleet,
-  prepareSlotStart,
   selectRegatta,
   getMarkAssignment,
   setMarkAssignment,
@@ -1953,20 +1940,6 @@ function startAdminServer({
         pingFleet();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-      return;
-    }
-
-    // Transmit slots (see slotTable.js) - the dashboard's "Transmit slots" card: clear the table down to
-    // the boats on the start grid and give each a slot now.
-    if (req.url === '/api/slots/prepare-start' && req.method === 'POST') {
-      try {
-        const r = prepareSlotStart();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, basis: r.basis, kept: r.kept.length, assigned: r.assigned.length, released: r.released.length, overflow: r.overflow.length }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));

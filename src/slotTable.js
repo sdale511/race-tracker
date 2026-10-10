@@ -58,14 +58,69 @@ function pickSlot(taken, count) {
   return null;
 }
 
+// "Parked" boats are those inside the on-grid zone behind the start line (onGridWatcher.js): they take no
+// slot, and report only occasionally (see ParkedReporter), so a fleet queueing for a start can't use up the
+// slots - or swamp the shared join slots - while another fleet is still racing. ZoneState adds hysteresis
+// so a boat jostling at the edge of the zone doesn't flip in and out: it is parked on the first fix inside
+// and unparked only after unparkFixes fixes in a row outside.
+class ZoneState {
+  constructor(unparkFixes = 3) {
+    this.unparkFixes = Math.max(1, unparkFixes);
+    this.parked = false;
+    this.outside = 0;
+  }
+
+  update(inZone) {
+    if (inZone) {
+      this.parked = true;
+      this.outside = 0;
+    } else if (this.parked && ++this.outside >= this.unparkFixes) {
+      this.parked = false;
+      this.outside = 0;
+    }
+    return this.parked;
+  }
+}
+
+// Paces a parked boat's reports to one every intervalMs, plus or minus `jitter` (a fraction) chosen at
+// random each time so a fleet that entered the zone together does not report together.
+class ParkedReporter {
+  constructor({ intervalMs, jitter = 0.25, now = () => Date.now(), rand = Math.random }) {
+    this.intervalMs = intervalMs;
+    this.jitter = jitter;
+    this.now = now;
+    this.rand = rand;
+    this.nextAt = 0;
+  }
+
+  // Start of a parking spell: the first report comes a (jittered) interval from now.
+  reset() {
+    this.nextAt = this.now() + this._interval();
+  }
+
+  due() {
+    return this.now() >= this.nextAt;
+  }
+
+  sent() {
+    this.nextAt = this.now() + this._interval();
+  }
+
+  _interval() {
+    return this.intervalMs * (1 - this.jitter + 2 * this.jitter * this.rand());
+  }
+}
+
 class SlotAllocator {
-  constructor({ count, widthMs, joinSlots = 0, staleMs = 2 * 60 * 1000, activeFrames = 2, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
+  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, staleMs = 2 * 60 * 1000, activeFrames = 2, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
     this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     // The last joinSlots of the count are never assigned (see protocol.js's slot table frame): boats
     // without a slot send in those. Always leaves at least one slot to assign.
     this.joinSlots = Math.max(0, Math.min(joinSlots, this.count - 1));
     this.staleMs = staleMs;
+    this.unparkFixes = unparkFixes;
+    this.zones = new Map(); // boatId -> { state: ZoneState, lastHeard } for boats seen inside the on-grid zone
     this.holdMs = holdMs;
     this.released = new Map(); // boatId -> { slot, at } for slots given up, kept for holdMs
     this.activeFrames = Math.max(1, activeFrames);
@@ -87,9 +142,36 @@ class SlotAllocator {
   // slot only once it is actively reporting - activeFrames fixes within activeWindowMs - so boats
   // sitting idle (a moored fleet sending one heartbeat fix a minute) never take one. Returns its
   // slot, or null when it has none (not active yet, or every slot is taken).
-  noteHeard(boatId, { moving = false } = {}) {
+  noteHeard(boatId, { moving = false, inZone = false } = {}) {
     if (typeof boatId !== 'string' || boatId.length !== protocol.BOAT_ID_LEN) return null;
     const t = this.now();
+    // A boat inside the on-grid zone is parked: no slot while it is there, and one it had is freed (it
+    // is remembered, so the boat gets the same one back if it is still free when it leaves the zone).
+    let zone = this.zones.get(boatId);
+    if (inZone && !zone) {
+      zone = { state: new ZoneState(this.unparkFixes), lastHeard: t };
+      this.zones.set(boatId, zone);
+    }
+    if (zone) {
+      zone.lastHeard = t;
+      const wasParked = zone.state.parked;
+      const parked = zone.state.update(inZone);
+      if (!parked) this.zones.delete(boatId);
+      if (parked && !wasParked) this.log(`[slots] ${boatId} is on the start grid - parked`);
+      if (!parked && wasParked) this.log(`[slots] ${boatId} left the start grid`);
+      if (parked) {
+        const existing = this.byBoat.get(boatId);
+        if (existing) {
+          this.byBoat.delete(boatId);
+          this.released.set(boatId, { slot: existing.slot, at: t });
+          this._changed();
+          this.log(`[slots] ${boatId} parked - slot ${existing.slot} freed`);
+        }
+        this.recent.delete(boatId);
+        this.overflow.delete(boatId);
+        return null;
+      }
+    }
     const times = (this.recent.get(boatId) || []).filter((x) => t - x <= this.activeWindowMs);
     times.push(t);
     this.recent.set(boatId, times);
@@ -141,33 +223,6 @@ class SlotAllocator {
     return slot;
   }
 
-  // Before a race start: clear the table down to the boats that are about to start. Every boat not in
-  // `boatIds` gives its slot up; boats in it that already have a slot keep it (nothing moves for them),
-  // and the rest are assigned one now, without waiting for them to be heard moving. Returns
-  // { kept, assigned, released, overflow }.
-  prepareStart(boatIds) {
-    const t = this.now();
-    const want = [...new Set(boatIds.filter((id) => typeof id === 'string' && id.length === protocol.BOAT_ID_LEN))];
-    const wantSet = new Set(want);
-    // (release() with an empty list means "everyone", so only call it when there are ids)
-    const toRelease = [...this.byBoat.keys()].filter((id) => !wantSet.has(id));
-    const released = toRelease.length ? this.release(toRelease) : [];
-    const kept = want.filter((id) => this.byBoat.has(id));
-    const assigned = [];
-    const overflow = [];
-    for (const id of want) {
-      if (this.byBoat.has(id)) {
-        this.byBoat.get(id).lastHeard = t;
-        continue;
-      }
-      if (this._assign(id, t) !== null) assigned.push(id);
-      else overflow.push(id);
-    }
-    // forget boats that gave up a slot and are not starting, so they don't count as waiting
-    for (const id of [...this.overflow]) if (!wantSet.has(id)) this.overflow.delete(id);
-    return { kept, assigned, released, overflow };
-  }
-
   // Frees the slots of the named boats (all of them when boatIds is empty/null) right away, without
   // waiting for the stale time - used when the base puts a fleet to sleep, so the next fleet can take
   // the slots. A boat that wakes and starts racing again gets the same slot back if it is still free.
@@ -212,6 +267,7 @@ class SlotAllocator {
       }
     }
     for (const boatId of freed) this.recent.delete(boatId);
+    for (const [boatId, z] of this.zones) if (t - z.lastHeard > this.staleMs) this.zones.delete(boatId);
     for (const [boatId, r] of this.released) if (t - r.at > this.holdMs) this.released.delete(boatId);
     if (freed.length) this._changed();
     return freed;
@@ -255,6 +311,7 @@ class SlotAllocator {
       slotCount: this.count,
       slotWidthMs: this.widthMs,
       joinSlots: this.joinSlots,
+      parked: [...this.zones.entries()].filter(([, z]) => z.state.parked).map(([id]) => id),
       boats: [...this.byBoat.entries()]
         .map(([boatId, e]) => ({ boatId, slot: e.slot, silentS: Math.round((t - e.lastHeard) / 1000) }))
         .sort((a, b) => a.slot - b.slot),
@@ -275,16 +332,32 @@ class SlotTableFollower {
     this.pinned = pinned;
     this.log = log;
     this.assigned = null; // the slot the base gave us, once heard
+    this.parked = false; // inside the on-grid zone - see setParked
+    this.layout = null; // the count, width and join slots from the last table heard
     this.lastVersion = null;
     this.tablesHeard = 0;
+  }
+
+  // Called by the boat as it enters or leaves the on-grid zone. Parked, it goes back to the shared join
+  // slots (its old slot is being freed by the base and may be given to someone else) and ignores its table
+  // entry; after it leaves it stays there until a table assigns it a slot again.
+  setParked(parked) {
+    if (this.pinned || parked === this.parked) return;
+    this.parked = parked;
+    if (parked && this.layout && this.layout.joinSlots > 0) {
+      this.assigned = null;
+      const { slotCount, widthMs, joinSlots } = this.layout;
+      this.scheduler.setSlot({ count: slotCount, widthMs, join: { first: slotCount - joinSlots, n: joinSlots } });
+    }
   }
 
   onTable(table) {
     if (this.pinned) return false;
     this.tablesHeard++;
     this.lastVersion = table.version;
+    this.layout = { slotCount: table.slotCount, widthMs: table.slotWidthMs, joinSlots: table.joinSlots };
     const cur = this.scheduler.slot;
-    const mine = table.entries.find((e) => e.boatId === this.boatId);
+    const mine = this.parked ? undefined : table.entries.find((e) => e.boatId === this.boatId);
     if (!mine) {
       // Not (yet) in the table. Until it has had a slot of its own, share the join slots - at the count,
       // width and join slots the base is actually using.
@@ -302,4 +375,4 @@ class SlotTableFollower {
   }
 }
 
-module.exports = { SlotAllocator, pickSlot, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };
+module.exports = { SlotAllocator, ZoneState, ParkedReporter, pickSlot, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };

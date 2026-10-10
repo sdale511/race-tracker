@@ -262,32 +262,74 @@ test('allocator: one fix showing the boat under way earns a slot at once; a stat
   assert.strictEqual(a.status().boats.length, 0, 'heartbeats alone let it go');
 });
 
-test('allocator: prepareStart clears the table down to the starting boats; those already in keep their slot', () => {
-  let now = 0;
-  const a = new SlotAllocator({ activeFrames: 1, count: 10, joinSlots: 2, widthMs: 35, now: () => now });
-  const old = ['OLD01', 'OLD02', 'OLD03', 'OLD04'];
-  old.forEach((id) => a.noteHeard(id)); // a fleet that is finishing: slots 0, 4, 2, 6
-  const slotOf = (id) => a.status().boats.find((b) => b.boatId === id)?.slot;
-  const keepSlot = slotOf('OLD02');
-  const r = a.prepareStart(['OLD02', 'NEW01', 'NEW02', 'NEW03']);
-  assert.deepStrictEqual(r.kept, ['OLD02']);
-  assert.deepStrictEqual(r.assigned.sort(), ['NEW01', 'NEW02', 'NEW03']);
-  assert.deepStrictEqual(r.released.sort(), ['OLD01', 'OLD03', 'OLD04']);
-  assert.deepStrictEqual(r.overflow, []);
-  assert.strictEqual(slotOf('OLD02'), keepSlot, 'a boat that is starting does not move');
-  const slots = a.status().boats.map((b) => b.slot);
-  assert.strictEqual(new Set(slots).size, 4, 'every starting boat has its own slot');
-  assert.ok(a.takeChanged(), 'the new table is broadcast');
-  // more boats starting than there are slots: the rest share the join slots
-  const big = a.prepareStart(ids(10));
-  assert.strictEqual(big.assigned.length + big.kept.length, 8);
-  assert.strictEqual(big.overflow.length, 2);
+const { ZoneState, ParkedReporter } = require('../src/slotTable');
+
+test('zone state: parked on the first fix inside, unparked only after several in a row outside', () => {
+  const z = new ZoneState(3);
+  assert.strictEqual(z.update(false), false);
+  assert.strictEqual(z.update(true), true);
+  assert.strictEqual(z.update(false), true);
+  assert.strictEqual(z.update(false), true);
+  assert.strictEqual(z.update(true), true, 'back inside resets the count');
+  assert.strictEqual(z.update(false), true);
+  assert.strictEqual(z.update(false), true);
+  assert.strictEqual(z.update(false), false, 'the third fix in a row outside unparks it');
 });
 
-test('allocator: prepareStart with nobody keeps nobody (and does not release everyone by accident when the list is empty of changes)', () => {
-  const a = new SlotAllocator({ activeFrames: 1, count: 6, joinSlots: 1, widthMs: 35 });
-  ids(3).forEach((id) => a.noteHeard(id));
-  const r = a.prepareStart(ids(3)); // the same boats: nothing to release
-  assert.deepStrictEqual(r.released, []);
-  assert.strictEqual(a.status().boats.length, 3);
+test('allocator: a boat on the start grid takes no slot; a slot it had is freed and returned when it leaves', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, unparkFixes: 3, staleMs: 120000, now: () => now });
+  // racing outside the zone: gets a slot
+  const slot = a.noteHeard('BOAT1', { moving: true, inZone: false });
+  assert.strictEqual(slot, 0);
+  // enters the zone: parked, slot freed
+  assert.strictEqual(a.noteHeard('BOAT1', { moving: true, inZone: true }), null);
+  assert.deepStrictEqual(a.status().parked, ['BOAT1']);
+  assert.strictEqual(a.status().boats.length, 0);
+  // a newcomer moving in the zone does not get a slot either, however active
+  for (let i = 0; i < 5; i++) assert.strictEqual(a.noteHeard('BOAT2', { moving: true, inZone: true }), null);
+  assert.deepStrictEqual(a.status().overflow, [], 'parked boats are not "waiting for a slot"');
+  // somebody else takes slots meanwhile
+  assert.strictEqual(a.noteHeard('BOAT3', { moving: true }) !== null, true);
+  // it leaves the zone: needs 3 fixes outside, then a moving fix gets the slot it had
+  assert.strictEqual(a.noteHeard('BOAT1', { moving: true, inZone: false }), null);
+  assert.strictEqual(a.noteHeard('BOAT1', { moving: true, inZone: false }), null);
+  assert.strictEqual(a.status().parked.includes('BOAT1'), true);
+  assert.strictEqual(a.noteHeard('BOAT1', { moving: true, inZone: false }), slot, 'back to its previous slot');
+  assert.deepStrictEqual(a.status().parked, ['BOAT2']);
+});
+
+test('parked reporter: one report per interval, +-25%, nothing before the first interval', () => {
+  let t = 0;
+  const r = new ParkedReporter({ intervalMs: 15000, now: () => t, rand: () => 0.5 });
+  r.reset();
+  t = 14000; assert.strictEqual(r.due(), false);
+  t = 15000; assert.strictEqual(r.due(), true);
+  r.sent();
+  t = 29000; assert.strictEqual(r.due(), false);
+  t = 30000; assert.strictEqual(r.due(), true);
+  const lo = new ParkedReporter({ intervalMs: 15000, now: () => 0, rand: () => 0 });
+  lo.reset();
+  assert.strictEqual(lo.nextAt, 11250, 'jitter reaches down to 75%');
+  const hi = new ParkedReporter({ intervalMs: 15000, now: () => 0, rand: () => 1 });
+  hi.reset();
+  assert.strictEqual(hi.nextAt, 18750, 'and up to 125%');
+});
+
+test('follower: a parked boat goes back to the join slots and ignores its old entry until it leaves', () => {
+  const sim = { t: 0 };
+  const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 24, count: 25, widthMs: 35, join: { first: 23, n: 2 } });
+  const f = new SlotTableFollower({ boatId: 'LAT02', scheduler: sched });
+  f.onTable({ version: 1, slotCount: 25, slotWidthMs: 35, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 8 }] });
+  assert.strictEqual(sched.slot.index, 8);
+  f.setParked(true);
+  assert.deepStrictEqual(sched.slot.join, { first: 23, n: 2 });
+  // a stale table still listing the boat does not pull it back into the slot the base has freed
+  f.onTable({ version: 2, slotCount: 25, slotWidthMs: 35, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 8 }] });
+  assert.ok(sched.slot.join, 'still in the join slots while parked');
+  f.setParked(false);
+  assert.ok(sched.slot.join, 'and still there right after leaving, until a table assigns a slot');
+  f.onTable({ version: 3, slotCount: 25, slotWidthMs: 35, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 9 }] });
+  assert.strictEqual(sched.slot.index, 9);
+  assert.strictEqual(sched.slot.join, null);
 });

@@ -504,6 +504,13 @@ module.exports = {
       holdS: Math.max(0, parseInt(process.env.TX_SLOT_HOLD_S || '1800', 10) || 0),
       // Base only: a single fix at or above this speed (knots) counts as active on its own, so a boat
       // that is under way gets a slot on its first fix. 0 turns it off (the 2-fix rule alone applies).
+      // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
+      // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing
+      // for a start does not use up the slots or swamp the join slots. A boat leaves that state after
+      // unparkFixes fixes in a row outside the zone. 0 turns the throttle off (the base still assigns no slots
+      // to boats in the zone).
+      parkedReportS: Math.max(0, parseFloat(process.env.TX_PARKED_REPORT_S || '15') || 0),
+      unparkFixes: Math.max(1, parseInt(process.env.TX_SLOT_UNPARK_FIXES || '3', 10) || 3),
       movingKn: Math.max(0, parseFloat(process.env.TX_SLOT_MOVING_KN || '1') || 0),
       activeFrames: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_FRAMES || '2', 10) || 2),
       activeWindowS: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_WINDOW_S || '20', 10) || 20),

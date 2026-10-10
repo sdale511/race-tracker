@@ -23,7 +23,8 @@ const { createRtcmLogger } = require('./rtcmLog');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler } = require('./txScheduler');
-const { SlotTableFollower } = require('./slotTable');
+const { SlotTableFollower, ZoneState, ParkedReporter } = require('./slotTable');
+const { OnGridWatcher } = require('./onGridWatcher');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -234,6 +235,7 @@ radio.send = (buf) => (sleeper.isSleeping() ? false : rawRadioSend(buf));
 // behaves exactly as before.
 const burstTracker = new BurstTracker();
 let txScheduler = null;
+let slotFollower = null;
 if (config.txGate.enabled && radioExpected) {
   // Slot mode: pinned (TX_SLOT) to a slot by hand, or - until the base's slot table assigns one - sharing the
   // last few "join" slots, which are never assigned to anyone, so a boat that has no slot yet cannot land on
@@ -261,7 +263,7 @@ if (config.txGate.enabled && radioExpected) {
   });
   radio.send = (buf) => txScheduler.submit(buf);
   if (config.txGate.slot.enabled) {
-    const slotFollower = new SlotTableFollower({
+    slotFollower = new SlotTableFollower({
       boatId: config.boatId,
       scheduler: txScheduler,
       pinned: config.txGate.slot.index !== null,
@@ -321,6 +323,45 @@ function rebuildFinishApproachWatcher() {
 }
 rebuildFinishApproachWatcher();
 
+// Parked state (see slotTable.js): while this boat is inside the on-grid zone behind the start line - the
+// same zone the base uses - it takes no transmit slot and reports in the shared join slots only every
+// TX_PARKED_REPORT_S seconds, so a fleet queueing for a start cannot use up the slots or swamp the join slots
+// while another fleet races. Only in slot mode, only while the correction bursts are heard, and not for a
+// boat pinned to a slot with TX_SLOT. Needs the course marks; without them there is no zone.
+let zoneWatcher = null;
+function rebuildZoneWatcher() {
+  zoneWatcher = null;
+  if (!currentMarks || !currentMarks.committeeStart || !currentMarks.pin || !currentMarks.windwardGreen || !currentMarks.leewardGreen) return;
+  try {
+    zoneWatcher = new OnGridWatcher(currentMarks, config.regattaup.onGridZoneM);
+  } catch (err) {
+    zoneWatcher = null; // the marks don't describe a start line
+  }
+}
+rebuildZoneWatcher();
+const zoneState = new ZoneState(config.txGate.slot.unparkFixes);
+const parkedReporter = new ParkedReporter({ intervalMs: config.txGate.slot.parkedReportS * 1000 });
+let parked = false;
+const parkingEnabled = config.txGate.enabled && config.txGate.slot.enabled && config.txGate.slot.index === null;
+// True while the parked throttle applies to this boat's radio sends.
+function parkedThrottleActive() {
+  return parked && config.txGate.slot.parkedReportS > 0 && !!txScheduler && txScheduler.slotAligned();
+}
+function updateParked(pvt) {
+  if (!parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
+  const inZone = zoneWatcher.check(pvt.lat, pvt.lon) === 'ongrid';
+  const now = zoneState.update(inZone);
+  if (now === parked) return;
+  parked = now;
+  if (slotFollower) slotFollower.setParked(parked);
+  if (parked) parkedReporter.reset();
+  console.log(
+    parked
+      ? `[slots] on the start grid - parked: no slot, reporting every ~${config.txGate.slot.parkedReportS} s in the shared join slots`
+      : '[slots] left the start grid - waiting for the base to assign a slot'
+  );
+}
+
 // The base's address for log uploads (see uploadClient.js), as last
 // broadcast alongside the marks - not persisted to disk like currentMarks
 // below, since it's much more likely to go stale across a restart (a
@@ -349,6 +390,7 @@ radio.on('marks', ({ marks, baseIp, basePort, baseAdminPort, regattaName }) => {
   const isFirstMarks = !freshMarksReceived;
   currentMarks = marks;
   rebuildFinishApproachWatcher();
+  rebuildZoneWatcher();
   freshMarksReceived = true;
   stopMarksPingRetry();
   baseAddress = baseIp && baseIp !== '0.0.0.0' ? { ip: baseIp, port: basePort, adminPort: baseAdminPort } : null;
@@ -544,6 +586,7 @@ function handlePvt(pvt) {
   lastPvt = pvt;
   roverStats.recordFix(pvt);
   outputLocalFrame(pvt);
+  updateParked(pvt);
 
   // Primarily distance-based: send whenever the boat has actually moved
   // TX_DISTANCE_M since the last transmitted fix, regardless of how long
@@ -729,6 +772,10 @@ function handlePvt(pvt) {
 function transmitFix(pvt) {
   sdLogger.logPvt(pvt);
   if (sleeper.isSleeping()) return; // radio sleep mode - SD-logged above, nothing to transmit
+  if (parkedThrottleActive()) {
+    if (!parkedReporter.due()) return; // parked on the start grid: SD-logged above, reported only now and then
+    parkedReporter.sent();
+  }
   const frame = protocol.encode(config.boatId, pvt);
   const sent = radio.send(frame);
   if (sent || !radioExpected) {
@@ -753,6 +800,10 @@ function transmitFix(pvt) {
 // letting a partial batch sit indefinitely.
 function queueFixForTx(pvt) {
   sdLogger.logPvt(pvt);
+  if (parkedThrottleActive()) {
+    pendingBatch = [pvt]; // parked: only the latest fix is kept for the next (occasional) report
+    return;
+  }
   pendingBatch.push(pvt);
 
   // In slot mode (bursts heard) fixes are held for the boat's slot and sent together when it opens - see
@@ -788,6 +839,12 @@ function flushPendingBatch({ forSlot = false } = {}) {
   pendingBatch = [];
   if (fixes.length === 0) return;
   if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
+  if (parkedThrottleActive()) {
+    // parked: one fix, only when the next report is due (the rest are on the SD card)
+    if (!parkedReporter.due()) return;
+    parkedReporter.sent();
+    fixes = fixes.slice(-1);
+  }
 
   // The slot's frame budget: at most maxHz fixes a second (thinned evenly, newest kept; the rest are
   // on the SD card) over the cycle, then as few, full frames as that needs.

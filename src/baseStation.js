@@ -953,6 +953,7 @@ function main() {
       joinSlots: config.txGate.slot.joinSlots,
       staleMs: config.txGate.slot.staleS * 1000,
       activeFrames: config.txGate.slot.activeFrames,
+      unparkFixes: config.txGate.slot.unparkFixes,
       holdMs: config.txGate.slot.holdS * 1000,
       activeWindowMs: config.txGate.slot.activeWindowS * 1000,
       log: (m) => console.log(m),
@@ -982,24 +983,6 @@ function main() {
       for (const frame of slotAllocator.frames()) radio.broadcast(frame);
     }, 1000);
     if (slotTimer.unref) slotTimer.unref();
-  }
-  // "Prepare race start" (the dashboard's Transmit slots card): clear the slot table down to the boats
-  // that are about to start - those on the start grid (inside the on-grid zone around the line) - and
-  // give each of them a slot now, so a fleet arriving while another is still finishing doesn't have to
-  // compete for slots as its boats are heard. Boats already in the table that are starting keep their
-  // slot. With no course marks (so no grid), it keeps the boats that are actively reporting instead.
-  function prepareSlotStart() {
-    if (!slotAllocator) throw new Error('slot mode is off on this base (TX_SLOT_MODE=0)');
-    const onGrid = [...onGridWatchers.entries()].filter(([, w]) => w && w.onGrid).map(([id]) => id);
-    const t = Date.now();
-    const active = [...slotAllocator.byBoat.entries()].filter(([, e]) => t - e.lastHeard <= slotAllocator.activeWindowMs).map(([id]) => id);
-    const basis = onGrid.length > 0 ? 'on the start grid' : 'actively reporting';
-    const result = slotAllocator.prepareStart(onGrid.length > 0 ? onGrid : active);
-    console.log(
-      `[slots] prepared for a start (${basis}): ${result.kept.length} kept, ${result.assigned.length} assigned, ` +
-        `${result.released.length} released` + (result.overflow.length ? `, ${result.overflow.length} without room (${result.overflow.join(', ')})` : '')
-    );
-    return { basis, ...result };
   }
   function requireRadioForSleep() {
     if (typeof radio.broadcast !== 'function') throw new Error('this base has no radio to send sleep/wake commands over');
@@ -1878,6 +1861,29 @@ function main() {
     return watcher;
   }
 
+  // Is this fix inside the on-grid zone behind the start line? Used only for the slot table (boats there are
+  // "parked" - see slotTable.js), with its own watchers so it never disturbs the on-grid webhooks' state above.
+  // False when no course marks are known (so no zone exists).
+  let slotZoneMarks = null;
+  const slotZoneWatchers = new Map();
+  function inStartGrid(boatId, lat, lon) {
+    if (!raceMarks) return false;
+    if (slotZoneMarks !== raceMarks) {
+      slotZoneWatchers.clear();
+      slotZoneMarks = raceMarks;
+    }
+    let watcher = slotZoneWatchers.get(boatId);
+    if (watcher === undefined) {
+      try {
+        watcher = new OnGridWatcher(raceMarks, config.regattaup.onGridZoneM);
+      } catch (err) {
+        watcher = null; // the marks don't describe a start line yet
+      }
+      slotZoneWatchers.set(boatId, watcher);
+    }
+    return !!watcher && watcher.check(lat, lon) === 'ongrid';
+  }
+
   // One MarkRoundingWatcher per boat per gate in MARK_ROUNDING_GATES (see
   // markRoundingWatcher.js), same lazy-build pattern as the watchers above
   // - keyed by "boatId:markName" since a boat needs an independent watcher
@@ -2161,7 +2167,10 @@ function main() {
   function handleDecodedFrame(decoded) {
     fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
     if (slotAllocator) {
-      slotAllocator.noteHeard(decoded.boatId, { moving: config.txGate.slot.movingKn > 0 && decoded.speedKnots >= config.txGate.slot.movingKn });
+      slotAllocator.noteHeard(decoded.boatId, {
+        moving: config.txGate.slot.movingKn > 0 && decoded.speedKnots >= config.txGate.slot.movingKn,
+        inZone: inStartGrid(decoded.boatId, decoded.lat, decoded.lon),
+      });
     }
     // No regatta selected - every course/mark/on-grid-zone/track key is
     // namespaced by regatta (see redisStore.js's own module comment), so
@@ -2684,7 +2693,6 @@ function main() {
     pingFleet,
     sleepFleet,
     wakeFleet,
-    prepareSlotStart,
     selectRegatta,
     getMarkAssignment,
     setMarkAssignment,
