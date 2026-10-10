@@ -28,7 +28,7 @@ const { performance } = require('perf_hooks');
 // latencies (docs/radio-latency-findings-2026-10-09.pdf), not a measured air time.
 const AIR_MS_PER_PACKET = 8;
 const AIR_MS_PER_BYTE = 0.04;
-const SLOTTED_SYNCS = new Set([0xaa, 0xee]); // position frame, batch frame
+const SLOTTED_SYNCS = new Set([0xaa, 0xee, 0xe7]); // position frame, batch frame, delta batch frame
 
 function airMs(bytes) {
   return AIR_MS_PER_PACKET + bytes * AIR_MS_PER_BYTE;

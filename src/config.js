@@ -6,7 +6,8 @@ const { getPersistedRegattaId, persistRegattaId } = require('./regattaIdFile');
 const { getPersistedMarkName, persistMarkName } = require('./markNameFile');
 const { getPersistedPowerSchedule, persistPowerSchedule } = require('./powerScheduleFile');
 const { MARK_NAMES } = require('./course');
-const { MAX_BATCH_COUNT } = require('./protocol');
+const { MAX_BATCH_COUNT, MAX_DELTA_COUNT } = require('./protocol');
+const txDelta = process.env.TX_DELTA !== '0' && process.env.TX_DELTA !== 'false';
 
 // BOAT_ID always wins outright when set (by hand, or by fleetSim.js for
 // every boat it spawns) - only falls back to this device's own persisted id
@@ -470,7 +471,7 @@ module.exports = {
     // assigned) so it can't land on a racing boat's slot. count and widthMs are the base's (boats adopt them from the
     // table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
     // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 35 ms
-    // holds one 84-byte frame (4 fixes, TX_SLOT_MAX_HZ=4 at a 1 s cycle); size it up for faster
+    // holds one 84-byte frame - 8 delta-coded fixes at TX_SLOT_MAX_HZ=8 over a 1 s cycle; size it up for faster
     // rates, and keep count x widthMs inside the gap between bursts.
     slot: {
       enabled: process.env.TX_SLOT_MODE !== '0' && process.env.TX_SLOT_MODE !== 'false',
@@ -482,9 +483,10 @@ module.exports = {
       // base's value is broadcast; a boat uses its own until it hears a table.
       joinSlots: Math.max(0, parseInt(process.env.TX_SLOT_JOIN || '2', 10) || 0),
       // Boat only, slot mode: the most fixes per second a boat sends in its slot (the rest stay on its SD
-      // card). 4 fits one full 84-byte batch per 1 s cycle - a 5 Hz boat would need a second frame,
-      // and a slot big enough for two. 0 = no cap. Scales with the cycle (4 Hz over 2 s is 8 fixes).
-      maxHz: Math.max(0, parseFloat(process.env.TX_SLOT_MAX_HZ || '4') || 0),
+      // card). 8 fills one delta frame (83 bytes) per 1 s cycle - the biggest the 35 ms slot is
+      // sized for; with TX_DELTA=0 use 4 (one 84-byte batch frame). 0 = no cap. Scales with the cycle
+      // (8 Hz over 1 s is 8 fixes, and so is 4 Hz over 2 s).
+      maxHz: Math.max(0, parseFloat(process.env.TX_SLOT_MAX_HZ || '8') || 0),
       // Base only: the RTK correction interval the base's GPS is set to (see ubx_config_set.py
       // --rtcm-interval). With TX_SLOT_COUNT unset the base works the slot count out from it once, at
       // startup: a 2 s interval has room for about twice as many slots as a 1 s one.
@@ -658,7 +660,12 @@ module.exports = {
   // fleet's actual, read-only NP=100 max RF payload - see MAX_BATCH_COUNT's
   // own comment), not just trusted from the environment, since encodeBatch
   // throws on anything larger.
-  txBatchSize: Math.max(1, Math.min(MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '4', 10) || 4)),
+  txBatchSize: Math.max(1, Math.min(txDelta ? MAX_DELTA_COUNT : MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '4', 10) || 4)),
+  // Batches go out as delta frames (protocol.js's delta batch frame): the first fix in full and each later
+  // one as a change from the one before, 8 bytes instead of 19, so up to 8 fixes fit in 83 bytes. TX_DELTA=0
+  // sends the older batch frame (4 fixes in 84 bytes) instead - needed only if a base that does not know
+  // the delta frame yet is still in use (update the base first, then the boats).
+  txDelta,
 
   // Heartbeat alongside txDistanceM above: even a boat that hasn't moved
   // far enough to clear the distance gate still transmits at least once

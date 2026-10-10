@@ -600,6 +600,194 @@ function decodeMarkLog(buf) {
   };
 }
 
+// Eleventh frame type: boat -> base, a delta-coded batch - the same idea as the batch frame above (one
+// boat's consecutive fixes in one radio transmission) but only the FIRST fix is sent in full; every
+// later fix is sent as its change from the one before, which is 8 bytes instead of 19. Eight fixes
+// fit in 83 bytes (the old batch frame needed 84 for four), so a boat can send 8 Hz - or 5 Hz, or 7
+// Hz - in one frame per correction cycle without a bigger slot (see slotTable.js / txScheduler.js).
+//
+// What is exact and what is rounded, for the fixes after the first in a frame:
+//   lat, lon, speed   exact (changes in the same 1e-7 degree / 0.1 knot units the full fix uses)
+//   time              rounded to 2 ms (the change is a uint8 in 2 ms units, so up to 510 ms)
+//   heading           rounded to 0.5 degree (the change is an int8 in 0.5 degree units, +-63.5)
+// The encoder works from the values the decoder will rebuild, not the originals, so nothing drifts
+// along a frame. A fix whose change does not fit (a GPS jump, a gap over 510 ms, a turn of more than
+// 63 degrees between fixes) simply starts a new frame, which always opens with a full fix - see
+// encodeDeltaFrames. Frames are self-contained: losing one never corrupts the next.
+//
+// Layout (all little-endian):
+//   [0]      sync byte   0xE7
+//   [1]      count       uint8 (2..MAX_DELTA_COUNT) - fixes in this frame
+//   [2..6]   boatId      BOAT_ID_LEN bytes
+//   [7..25]  first fix   FIX_FIELDS_LEN bytes, exactly as in the plain frame
+//   then count-1 deltas of DELTA_FIX_LEN (8) bytes each:
+//     +0  dt        uint8   time since the previous fix, 2 ms units
+//     +1  dlat      int16   1e-7 degrees
+//     +3  dlon      int16   1e-7 degrees
+//     +5  dspeed    int8    0.1 knot units
+//     +6  dheading  int8    0.5 degree units, shortest way round
+//     +7  status    uint8   same bit layout as the full fix
+//   [last]   checksum    uint8 (sum of bytes 1..N-2 mod 256)
+
+const DELTA_SYNC = 0xe7;
+const DELTA_HEADER_LEN = 1 + 1 + BOAT_ID_LEN; // 7
+const DELTA_FIX_LEN = 8;
+const MAX_DELTA_COUNT = 8; // 7 + 19 + 7*8 + 1 = 83 bytes - no bigger than the 84-byte batch frame the slots are sized for
+
+function deltaFrameLen(count) {
+  return DELTA_HEADER_LEN + FIX_FIELDS_LEN + (count - 1) * DELTA_FIX_LEN + 1;
+}
+
+// Same job as batchFrameLenFromHeader: the length from the header alone, never from an out-of-range
+// count, so a false 0xE7 on noise can't stall the byte-stream scanner.
+function deltaFrameLenFromHeader(buf) {
+  if (buf.length < DELTA_HEADER_LEN) return null;
+  const count = buf.readUInt8(1);
+  if (count < 2 || count > MAX_DELTA_COUNT) return DELTA_HEADER_LEN + 1;
+  return deltaFrameLen(count);
+}
+
+function fixInts(pvt) {
+  const heading = ((pvt.headMotDeg % 360) + 360) % 360;
+  return {
+    ts: pvt.timestamp,
+    lat: Math.round(pvt.lat * 1e7),
+    lon: Math.round(pvt.lon * 1e7),
+    speed: Math.max(0, Math.min(65535, Math.round(((pvt.gSpeedMmS / 1000) * 1.94384) * 10))),
+    heading: Math.round(heading * 10),
+    status: (pvt.gnssFixOk ? 1 : 0) | ((pvt.carrSoln & 0x03) << 1) | ((Math.min(pvt.numSV, 31) & 0x1f) << 3),
+  };
+}
+
+// How `next` is written as a change from `prev` (both in fixInts form, prev being what the decoder will
+// have), or null when a field's change does not fit.
+function deltaOf(prev, next) {
+  const dt = Math.round((next.ts - prev.ts) / 2);
+  const dlat = next.lat - prev.lat;
+  const dlon = next.lon - prev.lon;
+  const dspeed = next.speed - prev.speed;
+  const diff = ((((next.heading - prev.heading) % 3600) + 5400) % 3600) - 1800; // shortest signed difference, 0.1 degree units
+  const dheading = Math.round(diff / 5);
+  if (dt < 0 || dt > 255) return null;
+  if (dlat < -32768 || dlat > 32767 || dlon < -32768 || dlon > 32767) return null;
+  if (dspeed < -128 || dspeed > 127) return null;
+  if (dheading < -128 || dheading > 127) return null;
+  return { dt, dlat, dlon, dspeed, dheading, status: next.status };
+}
+
+function applyDelta(prev, d) {
+  return {
+    ts: prev.ts + d.dt * 2,
+    lat: prev.lat + d.dlat,
+    lon: prev.lon + d.dlon,
+    speed: prev.speed + d.dspeed,
+    heading: (((prev.heading + d.dheading * 5) % 3600) + 3600) % 3600,
+    status: d.status,
+  };
+}
+
+// Packs `pvts` (oldest first) into as few frames as possible: each frame holds up to MAX_DELTA_COUNT
+// fixes, and a new one starts wherever the next fix's change does not fit. Returns
+// [{ buf, count }]; a lone fix becomes the plain position frame.
+function encodeDeltaFrames(boatId, pvts) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  if (!Array.isArray(pvts) || pvts.length < 1) throw new Error('encodeDeltaFrames needs at least one fix');
+  const out = [];
+  let i = 0;
+  while (i < pvts.length) {
+    const first = pvts[i];
+    const deltas = [];
+    let prev = fixInts(first);
+    // the first fix goes out exactly as the full frame writes it, so what the decoder holds is the full value
+    let j = i + 1;
+    while (j < pvts.length && deltas.length < MAX_DELTA_COUNT - 1) {
+      const d = deltaOf(prev, fixInts(pvts[j]));
+      if (!d) break;
+      deltas.push(d);
+      prev = applyDelta(prev, d);
+      j++;
+    }
+    const count = 1 + deltas.length;
+    if (count === 1) {
+      out.push({ buf: encode(boatId, first), count: 1 });
+    } else {
+      const len = deltaFrameLen(count);
+      const buf = Buffer.alloc(len);
+      buf.writeUInt8(DELTA_SYNC, 0);
+      buf.writeUInt8(count, 1);
+      buf.write(boatId, 2, BOAT_ID_LEN, 'ascii');
+      writeFixFields(buf, DELTA_HEADER_LEN, first);
+      let offset = DELTA_HEADER_LEN + FIX_FIELDS_LEN;
+      for (const d of deltas) {
+        buf.writeUInt8(d.dt, offset);
+        buf.writeInt16LE(d.dlat, offset + 1);
+        buf.writeInt16LE(d.dlon, offset + 3);
+        buf.writeInt8(d.dspeed, offset + 5);
+        buf.writeInt8(d.dheading, offset + 6);
+        buf.writeUInt8(d.status, offset + 7);
+        offset += DELTA_FIX_LEN;
+      }
+      let sum = 0;
+      for (let k = 1; k < len - 1; k++) sum = (sum + buf[k]) & 0xff;
+      buf.writeUInt8(sum, len - 1);
+      out.push({ buf, count });
+    }
+    i += count;
+  }
+  return out;
+}
+
+// Same shape as decodeBatch: an array of decoded fixes, oldest first, or null if the buffer isn't a valid
+// delta frame.
+function decodeDeltaBatch(buf) {
+  if (buf.length < DELTA_HEADER_LEN + 1 || buf[0] !== DELTA_SYNC) return null;
+  const count = buf.readUInt8(1);
+  if (count < 2 || count > MAX_DELTA_COUNT) return null;
+  const len = deltaFrameLen(count);
+  if (buf.length !== len) return null;
+  let sum = 0;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[len - 1]) return null;
+
+  const boatId = buf.toString('ascii', 2, 2 + BOAT_ID_LEN);
+  const firstFix = readFixFields(buf, DELTA_HEADER_LEN);
+  const fixes = [{ boatId, ...firstFix }];
+  let prev = {
+    ts: firstFix.timestamp,
+    lat: buf.readInt32LE(DELTA_HEADER_LEN + 6),
+    lon: buf.readInt32LE(DELTA_HEADER_LEN + 10),
+    speed: buf.readUInt16LE(DELTA_HEADER_LEN + 14),
+    heading: buf.readUInt16LE(DELTA_HEADER_LEN + 16),
+    status: buf.readUInt8(DELTA_HEADER_LEN + 18),
+  };
+  let offset = DELTA_HEADER_LEN + FIX_FIELDS_LEN;
+  for (let n = 1; n < count; n++) {
+    prev = applyDelta(prev, {
+      dt: buf.readUInt8(offset),
+      dlat: buf.readInt16LE(offset + 1),
+      dlon: buf.readInt16LE(offset + 3),
+      dspeed: buf.readInt8(offset + 5),
+      dheading: buf.readInt8(offset + 6),
+      status: buf.readUInt8(offset + 7),
+    });
+    fixes.push({
+      boatId,
+      timestamp: prev.ts,
+      lat: prev.lat / 1e7,
+      lon: prev.lon / 1e7,
+      speedKnots: prev.speed / 10,
+      headingDeg: prev.heading / 10,
+      gnssFixOk: !!(prev.status & 0x01),
+      carrSoln: (prev.status >> 1) & 0x03,
+      numSV: (prev.status >> 3) & 0x1f,
+    });
+    offset += DELTA_FIX_LEN;
+  }
+  return fixes;
+}
+
 // Eighth frame type: base -> boats, a sleep/wake command for the rover's
 // radio (see roverSleep.js) - "power" because it's the only frame that
 // changes a rover's power state. One frame type for both directions of the
@@ -907,6 +1095,7 @@ function describeRtcm(frame) {
 for (const [name, len] of [
   ['batch', batchFrameLen(MAX_BATCH_COUNT)],
   ['power', powerFrameLen(MAX_POWER_IDS)],
+  ['delta batch', deltaFrameLen(MAX_DELTA_COUNT)],
   ['slot table', slotTableFrameLen(MAX_SLOT_ENTRIES)],
 ]) {
   if (len > RADIO_MAX_PAYLOAD) throw new Error(`largest ${name} frame is ${len} bytes, over the radio's ${RADIO_MAX_PAYLOAD}-byte payload limit`);
@@ -952,6 +1141,12 @@ module.exports = {
   powerFrameLenFromHeader,
   POWER_SYNC,
   MAX_POWER_IDS,
+  encodeDeltaFrames,
+  decodeDeltaBatch,
+  deltaFrameLen,
+  deltaFrameLenFromHeader,
+  DELTA_SYNC,
+  MAX_DELTA_COUNT,
   encodeSlotTable,
   decodeSlotTable,
   slotTableFrameLen,

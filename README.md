@@ -21,7 +21,7 @@ browser).
 | Component | Notes |
 |---|---|
 | GPS | ZED-F9P, `UBX-NAV-PVT` binary messages (position, speed, heading, fix type, RTK carrier solution, satellite count) - no NMEA needed |
-| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 4 at a time by default, see `TX_BATCH_SIZE` below |
+| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 4 at a time by default (delta-coded, up to 8 fixes in 83 bytes), see `TX_BATCH_SIZE` below |
 | SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
 ## Wiring notes
@@ -589,6 +589,19 @@ higher number: this fleet's own congestion-testing (see "Congestion-
 testing the radio" above) found it comfortably improves aggregate
 throughput at this hardware's real payload ceiling.
 
+**Delta-coded frames (`TX_DELTA`, on by default).** Batches go out as *delta frames* (sync `0xE7`): the first
+fix in full (19 bytes) and every later fix as its change from the one before (8 bytes), so a frame holds up to
+**8 fixes in 83 bytes** (the older batch frame needed 84 bytes for 4). Sizes: 2 fixes 35 bytes, 4 fixes 51,
+5 fixes 59, 8 fixes 83, against 46/84/111/168 as batch frames. Latitude, longitude and speed are exact; fixes
+after the first in a frame have their time rounded to 2 ms and heading to 0.5 degree (the encoder works from
+what the decoder will rebuild, so nothing drifts along a frame). A fix whose change does not fit - a GPS jump,
+a gap over 510 ms, a turn of more than 63 degrees between two fixes, a 12 knot speed step - simply starts a new
+frame, which always opens with a full fix, so frames are self-contained and a lost frame never corrupts the
+next. A lone fix is the plain 26-byte frame. **Update the base before the boats**: the base decodes both
+frame types, but a base that does not know `0xE7` ignores delta frames. `TX_DELTA=0` makes boats send the
+older batch frame (4 fixes at most) for use with an old base; `TX_BATCH_SIZE` can then be up to 8 with delta
+frames (default still 4 outside slot mode).
+
 Test it with the same tool "Congestion-testing the radio" above uses -
 `radio-congestion` respects `TX_BATCH_SIZE` too, so you can compare real
 transmission rates at different batch sizes (or against `TX_BATCH_SIZE=1`)
@@ -737,12 +750,13 @@ broadcast. If the corrections it hears arrive at a different interval, the base 
 by default).
 
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
-cycle, sends everything gathered as few, full frames as it can (4 fixes = one 84-byte batch), instead of
-sending a batch whenever 4 fixes happen to have arrived (at 5 Hz that is 1.25 batches per cycle, so some
-cycles put two batches in the slot). Fixes are also capped at `TX_SLOT_MAX_HZ` (default 4) per second over
-the cycle: at 4 Hz and a 1 s cycle a boat sends exactly one 84-byte frame per slot; a faster GPS rate is
-thinned evenly (the newest fix is always kept; all of them stay on the SD card). `0` removes the cap, and a
-5 Hz boat then sends 4 + 1 each cycle and needs a bigger slot (about 40 ms). A fix can wait up to a cycle.
+cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
+instead of sending a batch whenever it happens to fill. Fixes are also capped at `TX_SLOT_MAX_HZ` (default 8)
+per second over the cycle: at 8 Hz and a 1 s cycle a boat sends exactly one delta frame per slot, which is no
+bigger than the 84-byte frame the 35 ms slot was measured with; a faster GPS rate is thinned evenly (the newest
+fix is always kept; all of them stay on the SD card). `0` removes the cap, and a boat above 8 Hz then needs a
+second frame and a bigger slot. A fix can wait up to a cycle, and the cap scales with it: at a 2 s correction interval 8 Hz is 16 fixes, two frames, so use `TX_SLOT_MAX_HZ=4` to keep one frame per cycle. With `TX_DELTA=0` (older batch frames, 4 fixes)
+set `TX_SLOT_MAX_HZ=4`.
 Without bursts heard, batching is the ordinary `TX_BATCH_SIZE` behaviour. Two safeguards in the scheduler: a
 frame is held to the next cycle if it would start so late in the slot that its air time plus the guard would
 not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms),
@@ -750,7 +764,8 @@ and frames beyond the slot's air-time budget (estimated at 8 ms per packet plus 
 guard) wait for the next cycle.
 
 **Slot size.** The 35 ms default holds one 84-byte frame per cycle (about 11 ms of air time plus the 10 ms
-guard) with room to spare, which is what a boat at or under 4 Hz sends. Measured on two radios with four
+guard) with room to spare, which is what a boat sends at up to 8 Hz with delta frames (83 bytes). The
+measurements below used 84-byte batch frames. Measured on two radios with four
 virtual boats in neighbouring slots (`radio-latency`, see below): 0 frames in the conflict window, 0 incomplete
 correction bursts, 0 spills, every frame written within 13 ms of its slot opening and heard about 25 ms after
 it, with neighbouring boats' frames at least about 22 ms apart at the listener. That was one sender radio;
@@ -1950,7 +1965,8 @@ actually use. Redis password is redacted.
 | `TX_SLOT` | assigned by the base's slot table | Boat only - pin this boat to a slot number, 0 to `TX_SLOT_COUNT - 1`, ignoring the table (unpinned and not yet assigned, a boat shares the join slots) |
 | `TX_SLOT_COUNT` / `TX_SLOT_MS` | 26 / 35 | Total slots per cycle (including the join slots) and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
-| `TX_SLOT_MAX_HZ` | 4 | Boat, slot mode - most fixes per second sent in the slot (4 = one 84-byte frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap |
+| `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = one 83-byte delta frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
+| `TX_DELTA` | on | Boat - send batches as delta-coded frames (up to 8 fixes in 83 bytes); `0` = the older batch frame (4 fixes in 84). Update the base first |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 120 | Base only - how often the slot table is rebroadcast, and how long a boat that has stopped actively reporting keeps its slot |
 | `TX_SLOT_JOIN` | 2 | Base (broadcast to boats) - how many of the last slots are never assigned and are shared by boats that have no slot yet |
 | `TX_SLOT_HOLD_S` | 1800 | Base only - how long a slot a boat gave up is kept for it (and handed to other boats last) |

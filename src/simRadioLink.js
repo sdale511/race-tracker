@@ -19,6 +19,8 @@ function decodeDatagram(msg) {
   if (hello) return { event: 'hello', decoded: hello };
   const batch = protocol.decodeBatch(msg);
   if (batch) return { event: 'frame-batch', decoded: batch };
+  const delta = protocol.decodeDeltaBatch(msg);
+  if (delta) return { event: 'frame-batch', decoded: delta };
   const power = protocol.decodePower(msg);
   if (power) return { event: 'power', decoded: power };
   const slotTable = protocol.decodeSlotTable(msg);

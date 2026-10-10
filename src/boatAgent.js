@@ -488,6 +488,8 @@ let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
 // flushPendingBatch below. Always empty when config.txBatchSize is 1 -
 // that path never touches this at all, see handlePvt.
 let pendingBatch = [];
+// Most fixes one frame can carry: a delta frame's 8, or the older batch frame's 4 (TX_DELTA=0).
+const maxFixesPerFrame = config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT;
 const SLOT_PENDING_CAP = 20; // slot mode: flush anyway beyond this many waiting fixes
 let lastPvt = null;
 // True once a dwelling/holding fix (pvt.stationary - see simGps.js's
@@ -793,24 +795,35 @@ function flushPendingBatch({ forSlot = false } = {}) {
     const cap = Math.max(1, Math.round((config.txGate.slot.maxHz * txScheduler.tracker.period) / 1000));
     if (fixes.length > cap) fixes = Array.from({ length: cap }, (_, i) => fixes[Math.floor(((i + 1) * fixes.length) / cap) - 1]);
   }
-  const perFrame = forSlot ? protocol.MAX_BATCH_COUNT : Math.max(1, config.txBatchSize);
+  const perFrame = forSlot ? maxFixesPerFrame : Math.max(1, config.txBatchSize);
   for (let i = 0; i < fixes.length; i += perFrame) sendFixes(fixes.slice(i, i + perFrame));
 }
 
+// Sends up to one frame's worth of fixes (more if delta coding has to split them - see
+// protocol.encodeDeltaFrames): delta frames carry up to MAX_DELTA_COUNT fixes in under 84 bytes, the
+// older batch frame MAX_BATCH_COUNT in 84 (TX_DELTA=0).
 function sendFixes(fixes) {
-  const frame = fixes.length === 1 ? protocol.encode(config.boatId, fixes[0]) : protocol.encodeBatch(config.boatId, fixes);
-  const sent = radio.send(frame);
-
-  const last = fixes[fixes.length - 1];
-  if (sent || !radioExpected) {
-    lastTxPosition = { lat: last.lat, lon: last.lon };
-    lastTxTime = last.timestamp;
-  }
-  if (sent) {
-    roverStats.recordFrameSent();
-  } else if (radioExpected) {
-    const what = fixes.length === 1 ? 'a frame' : `a batch of ${fixes.length} frames`;
-    console.warn(`[radio] ${radioDropReason()}, dropped ${what} (still logged to SD)`);
+  const frames =
+    fixes.length === 1
+      ? [{ buf: protocol.encode(config.boatId, fixes[0]), count: 1 }]
+      : config.txDelta
+      ? protocol.encodeDeltaFrames(config.boatId, fixes)
+      : [{ buf: protocol.encodeBatch(config.boatId, fixes), count: fixes.length }];
+  let consumed = 0;
+  for (const { buf, count } of frames) {
+    const sent = radio.send(buf);
+    consumed += count;
+    const last = fixes[consumed - 1];
+    if (sent || !radioExpected) {
+      lastTxPosition = { lat: last.lat, lon: last.lon };
+      lastTxTime = last.timestamp;
+    }
+    if (sent) {
+      roverStats.recordFrameSent();
+    } else if (radioExpected) {
+      const what = count === 1 ? 'a frame' : `a batch of ${count} frames`;
+      console.warn(`[radio] ${radioDropReason()}, dropped ${what} (still logged to SD)`);
+    }
   }
 }
 

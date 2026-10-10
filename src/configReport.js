@@ -205,6 +205,13 @@ const sections = [
         roles: ['boat'],
       },
       {
+        label: 'txDelta',
+        value: config.txDelta,
+        envVar: 'TX_DELTA',
+        note: 'on (default) = batches go out as delta-coded frames (up to 8 fixes in 83 bytes); off = the older batch frame (4 fixes in 84) - update the base first',
+        roles: ['boat'],
+      },
+      {
         label: 'txBatchSize',
         value: config.txBatchSize,
         envVar: 'TX_BATCH_SIZE',
