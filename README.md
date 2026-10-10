@@ -787,6 +787,66 @@ The boat reports what the scheduler is doing under `txGate` in `GET /api/stats` 
 through, held, longest hold, dropped, expired, slotted, spilled, and the tracker's state).
 
 
+### Radio frame reference
+
+Every frame type on the telemetry radio starts with its own sync byte, so a radio hearing everything on the
+network can tell them apart; all multi-byte numbers are little-endian, and the checksum is the sum of every
+byte after the sync byte, modulo 256 (RTCM3 has its own CRC-24Q). The layouts live in `src/protocol.js`.
+The radio's payload limit on this fleet is 100 bytes (`NP`); the largest frame, the marks broadcast, is exactly 100,
+and the biggest of the rest is 97.
+
+| Sync | Frame | Direction | Size (bytes) | What it carries |
+|---|---|---|---|---|
+| `0xAA` | position | boat to base | 26 | one fix: boat id, time, lat, lon, speed, heading, status |
+| `0xBB` | marks | base to boats | 100 | the course marks, regatta name (25 chars), and the base's upload address |
+| `0xCC` | ping | base to boats | 6 | "report your position now" |
+| `0xDD` | hello | boat to base | 7 | "my radio is up", before a GPS fix |
+| `0xEE` | batch | boat to base | 27 to 84 (7 + 19 per fix + 1) | 1 to 4 full fixes (`TX_DELTA=0`) |
+| `0xE7` | delta batch | boat to base | 35 to 83 (26 + 8 per later fix + 1) | 2 to 8 fixes, first in full, the rest as changes |
+| `0xFF` | set mark | boat to base | 17 | "set this mark to my position" |
+| `0x88` | mark log | boat to base | 27 | a note logged against a mark |
+| `0x99` | power | base to boats | 5 to 95 | radio sleep / wake, for all boats or up to 18 listed |
+| `0xA7` | slot table | base to boats | 7 to 97 | which transmit slot each boat has |
+| `0xD3` | RTCM3 | base to boats | variable | the RTK corrections (standard RTCM3, see above) |
+
+**Slot table frame (`0xA7`).** Sent by the base every `TX_SLOT_TABLE_S` seconds and whenever the table changes,
+as many frames as needed (up to 15 boats each; every frame also carries the slot count, width and join
+slots, so a boat that finds no entry for itself still learns where the join slots are).
+
+```
+[0]      0xA7
+[1]      version      uint8  - bumps whenever an assignment changes (diagnostic only)
+[2]      slotCount    uint8  - slots in a cycle, including the join slots
+[3]      slotWidthMs  uint8  - width of each slot
+[4]      joinSlots    uint8  - how many of the last slots are never assigned
+[5]      count        uint8  - entries in this frame (0 to 15)
+[6..]    entries      count x (boat id, 5 ASCII bytes + slot, uint8; slot 0 to slotCount - joinSlots - 1)
+[last]   checksum
+```
+
+**Delta batch frame (`0xE7`).** One boat's consecutive fixes, oldest first. Only the first fix is in full; each
+later fix is its change from the one before, so 8 fixes take 83 bytes. A fix whose change does not fit starts a
+new frame (see "Delta-coded frames" above), and a lone fix is sent as the plain `0xAA` frame.
+
+```
+[0]      0xE7
+[1]      count        uint8  - fixes in this frame (2 to 8)
+[2..6]   boat id      5 ASCII bytes
+[7..25]  first fix    19 bytes, as in the 0xAA frame: time s (uint32), time ms (uint16), lat x 1e7 (int32),
+                      lon x 1e7 (int32), speed 0.1 kn (uint16), heading 0.1 deg (uint16), status (uint8)
+then count - 1 later fixes of 8 bytes each:
+  +0  dt        uint8  - time since the previous fix, in 2 ms units (0 to 510 ms)
+  +1  dlat      int16  - change in lat, 1e-7 degrees (about 1.1 cm), so up to 364 m
+  +3  dlon      int16  - change in lon, 1e-7 degrees
+  +5  dspeed    int8   - change in speed, 0.1 knot units
+  +6  dheading  int8   - change in heading, 0.5 degree units, the short way round (63.5 degrees either way)
+  +7  status    uint8  - fix status: bit 0 fix OK, bits 1-2 carrier solution, bits 3-7 satellites
+[last]   checksum
+```
+
+The status byte is `fixOk | carrSoln << 1 | numSV << 3`. The position frame (`0xAA`) lays out the same 19
+fix bytes after its 5-byte boat id, followed by the checksum.
+
 ### Radio sleep mode (base sleeps/wakes rovers to save power)
 
 The base can put rovers' radios to sleep and wake them again over the radio
