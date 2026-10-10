@@ -159,10 +159,15 @@ boatIds.forEach((boatId, i) => {
     // case to model here, unlike the real app.
     pending.push(pvt);
     if (pending.length >= config.txBatchSize) {
-      const frame = protocol.encodeBatch(boatId, pending);
+      // Same frame type boatAgent.js sends: delta-coded unless TX_DELTA=0.
+      const frames = config.txDelta
+        ? protocol.encodeDeltaFrames(boatId, pending).map((f) => f.buf)
+        : [protocol.encodeBatch(boatId, pending)];
       pending.length = 0;
-      if (radio.send(frame)) sent++;
-      else dropped++;
+      for (const frame of frames) {
+        if (radio.send(frame)) sent++;
+        else dropped++;
+      }
     }
   };
 

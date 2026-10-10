@@ -353,7 +353,7 @@ function decodeHello(buf) {
 // data rate, smaller max payload per packet) - MAX_BATCH_COUNT below is
 // chosen to stay comfortably under the SMALLER of those, not the datasheet
 // default, even after encryption's -9 byte reduction).
-// Sent by default (config.js's TX_BATCH_SIZE now defaults to 4, chosen
+// Sent by default (config.js's TX_BATCH_SIZE defaulted to 4 when this frame was the only batch type, chosen
 // from this fleet's own congestion-testing findings - see the README's
 // "Congestion-testing the radio") - TX_BATCH_SIZE=1 is what falls back to
 // the plain single-fix frame above, this app's original one-frame-per-fix

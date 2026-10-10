@@ -221,7 +221,7 @@ const sections = [
         label: 'txBatchSize',
         value: config.txBatchSize,
         envVar: 'TX_BATCH_SIZE',
-        note: '4 (default) = this fleet\'s own radio payload ceiling (MAX_BATCH_COUNT); 1 = one frame per fix, unchanged from before batching existed - see README\'s "Batching multiple fixes per send"',
+        note: '8 (default) = the most one delta frame carries (83 bytes; 4 with TX_DELTA=0); 1 = one frame per fix, unchanged from before batching existed - see README\'s "Batching multiple fixes per send"',
         roles: ['boat'],
       },
       {

@@ -655,19 +655,16 @@ module.exports = {
   // batch frame type and boatAgent.js's queueFixForTx/flushPendingBatch.
   // Trades a little latency (fixes wait to fill a batch, bounded by
   // txIntervalMs below so a slow-moving boat still can't go silent longer
-  // than that) for fewer, larger over-the-air transmissions - the real
-  // congestion-testing findings this default is based on (see
-  // "Congestion-testing the radio" in the README) showed 4 comfortably
-  // improving aggregate fleet throughput at this fleet's actual radio
-  // hardware's own NP=100 payload ceiling, so it's the default rather than
-  // an opt-in. Set TX_BATCH_SIZE=1 to go back to "one frame per fix," this
-  // app's original behavior (boatAgent.js never even touches the batch
-  // frame type at that setting). Clamped to protocol.js's own
-  // MAX_BATCH_COUNT (the largest batch frame stays comfortably under this
-  // fleet's actual, read-only NP=100 max RF payload - see MAX_BATCH_COUNT's
-  // own comment), not just trusted from the environment, since encodeBatch
-  // throws on anything larger.
-  txBatchSize: Math.max(1, Math.min(txDelta ? MAX_DELTA_COUNT : MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '4', 10) || 4)),
+  // than that) for fewer, larger over-the-air transmissions. Delta-coded frames
+  // (TX_DELTA, below) fit 8 fixes in 83 bytes, under this fleet's actual, read-only
+  // NP=100 max RF payload, so 8 is the default (4 before delta frames existed; the
+  // real congestion-testing findings behind batching at all are in the README's
+  // "Congestion-testing the radio"). Set TX_BATCH_SIZE=1 to go back to "one frame
+  // per fix," this app's original behavior (boatAgent.js never even touches the
+  // batch frame type at that setting). Clamped to what one frame can carry - 8 as a
+  // delta frame, 4 as the older batch frame (TX_DELTA=0; protocol.js's
+  // MAX_BATCH_COUNT) - not just trusted from the environment.
+  txBatchSize: Math.max(1, Math.min(txDelta ? MAX_DELTA_COUNT : MAX_BATCH_COUNT, parseInt(process.env.TX_BATCH_SIZE || '8', 10) || 8)),
   // Batches go out as delta frames (protocol.js's delta batch frame): the first fix in full and each later
   // one as a change from the one before, 8 bytes instead of 19, so up to 8 fixes fit in 83 bytes. TX_DELTA=0
   // sends the older batch frame (4 fixes in 84 bytes) instead - needed only if a base that does not know

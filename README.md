@@ -21,7 +21,7 @@ browser).
 | Component | Notes |
 |---|---|
 | GPS | ZED-F9P, `UBX-NAV-PVT` binary messages (position, speed, heading, fix type, RTK carrier solution, satellite count) - no NMEA needed |
-| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 4 at a time by default (delta-coded, up to 8 fixes in 83 bytes), see `TX_BATCH_SIZE` below |
+| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 8 at a time by default (delta-coded, 83 bytes), see `TX_BATCH_SIZE` below |
 | SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
 ## Wiring notes
@@ -572,7 +572,7 @@ sequential ids.
 
 ### Batching multiple fixes per send (TX_BATCH_SIZE)
 
-`TX_BATCH_SIZE` (default **4**) packs that many consecutive fixes from one
+`TX_BATCH_SIZE` (default **8**) packs that many consecutive fixes from one
 boat into a single radio transmission instead of sending each on its own -
 fewer, larger over-the-air transmissions instead of many small ones. Set
 `TX_BATCH_SIZE=1` to go back to one frame per fix, this app's original
@@ -584,12 +584,15 @@ per-byte airtime; see the XBee-PRO 900HP/XSC S3B's own `NP` command (max
 RF payload - 256 bytes on the standard 900HP, but read-only and check it
 yourself: the "900HP 200K" variant's higher RF data rate caps it much
 lower, 100 bytes on this fleet's actual radios) for the ceiling a batch
-frame stays comfortably under - `MAX_BATCH_COUNT` (protocol.js) is capped
-at 4 fixes (84 bytes) to fit that, not the standard 900HP's larger
-default, which is also why 4 is this app's own default rather than a
-higher number: this fleet's own congestion-testing (see "Congestion-
-testing the radio" above) found it comfortably improves aggregate
-throughput at this hardware's real payload ceiling.
+frame stays comfortably under - the older batch frame (`MAX_BATCH_COUNT` in
+protocol.js) is capped at 4 fixes (84 bytes) to fit that, and the delta-coded
+frame described next carries 8 fixes in 83 bytes, which is why 8 is the default
+(it was 4 before delta frames): this fleet's own congestion-testing (see
+"Congestion-testing the radio" above) found batching comfortably improves
+aggregate throughput at this hardware's real payload ceiling. A boat waits to
+fill a batch only when no correction bursts are heard on its radio - in slot
+mode it sends what it has gathered once per cycle instead (see "Sending in the
+slot").
 
 **Delta-coded frames (`TX_DELTA`, on by default).** Batches go out as *delta frames* (sync `0xE7`): the first
 fix in full (19 bytes) and every later fix as its change from the one before (8 bytes), so a frame holds up to
@@ -601,8 +604,8 @@ a gap over 510 ms, a turn of more than 63 degrees between two fixes, a 12 knot s
 frame, which always opens with a full fix, so frames are self-contained and a lost frame never corrupts the
 next. A lone fix is the plain 26-byte frame. **Update the base before the boats**: the base decodes both
 frame types, but a base that does not know `0xE7` ignores delta frames. `TX_DELTA=0` makes boats send the
-older batch frame (4 fixes at most) for use with an old base; `TX_BATCH_SIZE` can then be up to 8 with delta
-frames (default still 4 outside slot mode).
+older batch frame (4 fixes at most) for use with an old base; `TX_BATCH_SIZE` is then limited to 4 (up to 8 with
+delta frames, the default).
 
 Test it with the same tool "Congestion-testing the radio" above uses -
 `radio-congestion` respects `TX_BATCH_SIZE` too, so you can compare real
@@ -617,7 +620,7 @@ The console's own "X frames sent, Y tx/s actual average" line (and the
 base's `[radio] link quality` log) reflect actual transmissions, not
 fixes - with batching on, that number drops roughly in proportion to
 `TX_BATCH_SIZE` for the same fix rate. No env var needs setting on a real
-boat to get this - `TX_BATCH_SIZE=4` is already the default:
+boat to get this - `TX_BATCH_SIZE=8` is already the default:
 
 ```
 npm run boat
@@ -683,11 +686,11 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   every second. While no bursts are heard it holds nothing, so a separate correction radio, or no base,
   behaves exactly as before.
 - **Scheduler** (`txScheduler.js`): wraps the radio's `send()` on the boat, and `send()`/`broadcast()` on the base
-  (gate only there). A held frame waits, in order, and goes out when the gate clears; at most
+  (where the gate holds everything and slot mode holds the base's own frames for its slot - see below). A held frame waits, in order, and goes out when the gate clears; at most
   `TX_GATE_MAX_QUEUE` wait, and one held longer than `TX_GATE_MAX_AGE_MS` is dropped, not sent stale
   (positions are already on the SD card).
-- **Slot mode** (on by default, `TX_SLOT_MODE=0` turns it off; boats and base): position and batch frames are released only in this
-  boat's slot of each cycle. A cycle starts at a burst; slot `i` opens `after + guard + i x TX_SLOT_MS` after
+- **Slot mode** (on by default, `TX_SLOT_MODE=0` turns it off; boats and base): position, batch and delta-batch frames are released
+  only in this boat's slot of each cycle. A cycle starts at a burst; slot `i` opens `after + guard + i x TX_SLOT_MS` after
   it (30 ms + `i` x 35 ms by default), so boats in different slots never overlap. Other frames (hello, ping
   replies, set-mark, ...) are gated but not slotted. The three parts below say how a boat gets its slot, what
   it sends in it, and how big a slot should be.
@@ -735,16 +738,17 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   boat never stopped using it (it only changes slot when it hears a different one), and the base remembers the
   slot for `TX_SLOT_HOLD_S` (1800 s) and hands such slots to other boats last. If it was taken meanwhile and no
   other slot is free, the boat shares the join slots until one opens.
-- **Dashboard.** The boat table has a **Slot** column (hover for the slot count and width; "shared (full)" for
-  a boat that is waiting in the join slots because every slot is taken), shown only when the base runs the
-  table. The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
+- **Dashboard.** The boat table has a **Slot** column (hover for the slot count and width; "parked" for a boat
+  on the start grid; "shared (full)" for a boat that is waiting in the join slots because every slot is taken),
+  shown only when the base runs the table. The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
   as `[slots] <boat> -> slot N`.
-
 - **The base's own slot.** The cycle has one more slot after the boats' (and the join slots): the slot table,
   marks, pings and sleep/wake frames from the base all wait for it, so the base never lands on a boat's frame.
-  A frame goes out in the first ~12 ms of it, two or three fit, and a longer table (more than about 30 boats)
-  carries on in the next cycle's. These frames therefore wait up to a cycle (the table's 10 s rebroadcast and
-  a join-triggered one are not time-critical). With no bursts heard they go out at once.
+  A frame goes out in the first ~12 ms of it and two fit (the table for up to 30 boats is two frames); anything
+  more - a longer table, or the marks frame behind a full one - carries on in the next cycle's. These frames
+  therefore wait up to a cycle or two (the table's 10 s rebroadcast and a join-triggered one are not
+  time-critical, and a frame waits at most `TX_GATE_MAX_AGE_MS` before it is dropped). With no bursts heard they
+  go out at once.
 
 Slot width is fixed; it does not change with the number of boats. Separate fleets that race at the same time
 should have their own base and radio network (`ID`/`HP`); that keeps one base from hearing the other fleet's
@@ -767,8 +771,9 @@ instead of sending a batch whenever it happens to fill. Fixes are also capped at
 per second over the cycle: at 8 Hz and a 1 s cycle a boat sends exactly one delta frame per slot, which is no
 bigger than the 84-byte frame the 35 ms slot was measured with; a faster GPS rate is thinned evenly (the newest
 fix is always kept; all of them stay on the SD card). `0` removes the cap, and a boat above 8 Hz then needs a
-second frame and a bigger slot. A fix can wait up to a cycle, and the cap scales with it: at a 2 s correction interval 8 Hz is 16 fixes, two frames, so use `TX_SLOT_MAX_HZ=4` to keep one frame per cycle. With `TX_DELTA=0` (older batch frames, 4 fixes)
-set `TX_SLOT_MAX_HZ=4`.
+second frame and a bigger slot. A fix can wait up to a cycle, and the cap scales with it: at a 2 s correction
+interval 8 Hz is 16 fixes, two frames, so use `TX_SLOT_MAX_HZ=4` to keep one frame per cycle. With
+`TX_DELTA=0` (older batch frames, 4 fixes) set `TX_SLOT_MAX_HZ=4` too.
 Without bursts heard, batching is the ordinary `TX_BATCH_SIZE` behaviour. Two safeguards in the scheduler: a
 frame is held to the next cycle if it would start so late in the slot that its air time plus the guard would
 not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms),
@@ -782,8 +787,8 @@ virtual boats in neighbouring slots (`radio-latency`, see below): 0 frames in th
 correction bursts, 0 spills, every frame written within 13 ms of its slot opening and heard about 25 ms after
 it, with neighbouring boats' frames at least about 22 ms apart at the listener. That was one sender radio;
 two boats on separate radios in neighbouring slots have not been tested. A slot too small for a boat's traffic
-makes it log a warning and its frames wait for later cycles - raise `TX_SLOT_MS` (a boat at 5 Hz uncapped, or
-sending two frames per cycle, needs about 40 ms). `TX_SLOT_COUNT x TX_SLOT_MS` plus the blocked time must fit
+makes it log a warning and its frames wait for later cycles - raise `TX_SLOT_MS` (a boat above 8 Hz, or at 5 Hz with `TX_DELTA=0`, sends two frames
+per cycle and needs about 40 ms). `TX_SLOT_COUNT x TX_SLOT_MS` plus the blocked time must fit
 inside the correction interval (a boat warns if not). A slotted frame can be up to one cycle old on arrival.
 
 The timing comes from this radio's own view of the burst, so no GPS time or clock sync is involved. What
@@ -792,8 +797,8 @@ with two adapters (`radio-latency`); repeat them on a Pi before trusting a 10 ms
 
 **Trying it without hardware:** a `SIMULATE=1` base broadcasts a synthetic RTCM burst (six valid messages the size of a real epoch), every `SIM_RTCM_INTERVAL_S` seconds (default 1; `0` turns it off); run boats with `SIMULATE=1` (slot mode is on by default).
 The unit tests (`npm test`, in virtual time) check the tracker, the gate, that two boats in different
-slots never transmit in a blocked window or on top of each other, and the slot table (frame, allocation,
-following).
+slots never transmit in a blocked window or on top of each other, the slot table (frame, allocation,
+following, join slots, parking) and the delta-coded frame.
 
 The boat reports what the scheduler is doing under `txGate` in `GET /api/stats` (frames submitted, passed
 through, held, longest hold, dropped, expired, slotted, spilled, and the tracker's state).
@@ -2063,7 +2068,7 @@ actually use. Redis password is redacted.
 | `TX_FINISH_APPROACH_ZONE_M` | 0 (off) | Boat only - within this many meters of the finish line, closing on it while sailing upwind, `TX_DISTANCE_M` is replaced by `TX_FINISH_DISTANCE_M` below for much more frequent reporting right at a close finish. `0` disables this entirely (`TX_DISTANCE_M` applies everywhere) - off by default until the rover's actual achievable fix spacing at real finish speeds is validated in the field |
 | `TX_FINISH_DISTANCE_M` | 0.3 | Boat only - the tightened movement gate itself, only in effect inside `TX_FINISH_APPROACH_ZONE_M` |
 | `TX_INTERVAL_S` | 60 | Heartbeat alongside `TX_DISTANCE_M` - always sends at least this often. `0` disables (distance gate only) |
-| `TX_BATCH_SIZE` | 4 | How many consecutive fixes to pack into one radio transmission - defaults to 4 (`MAX_BATCH_COUNT`, this fleet's actual radio hardware's own payload limit, see "Batching multiple fixes per send" above); `1` sends one frame per fix, this app's original behavior |
+| `TX_BATCH_SIZE` | 8 | How many consecutive fixes to pack into one radio transmission - defaults to 8 as delta-coded frames (`MAX_DELTA_COUNT`), or 4 with `TX_DELTA=0` (`MAX_BATCH_COUNT`), within this fleet's 100-byte radio payload limit, see "Batching multiple fixes per send" above; `1` sends one frame per fix, this app's original behavior |
 | `ROVER_SHUTDOWN_AT` | unset (off) | Boat only - 24h local time (`"HH:MM"`) after which shutdown can trigger |
 | `ROVER_SHUTDOWN_IDLE_MIN` | 10 | Boat only - continuous idle minutes required after `ROVER_SHUTDOWN_AT` |
 | `ROVER_SHUTDOWN_SPEED_KN` | 0.5 | Boat only - speed below which a fix counts as stationary |
