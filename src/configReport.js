@@ -62,11 +62,17 @@ const sections = [
       // course already in Redis keeps whatever it was created with
       // regardless of what these currently resolve to.
       {
-        label: `courseLengthNm (${config.sim.courseMarks})`,
+        label: 'courseMarks',
+        value: config.sim.courseMarks,
+        envVar: 'SIM_COURSE_MARKS',
+        note: 'which mark pair the simulated boats race: 2 letters, windward first, G = green and B = black each (GG, BB, BG, GB)',
+        roles: ['boat'],
+      },
+      {
+        label: 'courseLengthNm',
         value: COURSE_LENGTH_NM,
         envVar: 'SIM_COURSE_LENGTH_NM',
         unit: 'nm',
-        note: 'which pair races is SIM_COURSE_MARKS, shown in the label',
         roles: ['boat'],
       },
       { label: 'startLinePosition', value: START_LINE_POSITION, envVar: 'SIM_START_LINE_POSITION', unit: '%', roles: ['boat'] },

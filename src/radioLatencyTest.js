@@ -24,7 +24,7 @@
 //   LATENCY_GAP_MS                     mean gap between frames (default 250; a random
 //                                      0-40 ms is added so sends sweep every phase of the second)
 //   LATENCY_BATCH                      1 = a 26-byte position frame (default),
-//                                      2-4 = a batch frame of that many fixes (up to 84 bytes)
+//                                      2-8 = a delta-coded frame of that many fixes (35-83 bytes; LATENCY_DELTA=0 = the older batch frame, 2-4 fixes, up to 84 bytes)
 //   LATENCY_SCHEDULE                   off (default) | gate | slots - send the test frames through the
 //                                      real transmit scheduler (txScheduler.js) on the sending radio
 //                                      instead of straight to the radio. `gate` keeps writes clear of
@@ -60,19 +60,57 @@ function summarize(latencies) {
   return { n: s.length, min: s[0], p50: percentile(s, 50), p90: percentile(s, 90), p99: percentile(s, 99), max: s[s.length - 1] };
 }
 
-function buildFrame(seq, batch) {
-  const pvt = (extraMs) => ({
-    timestamp: seq * 1000 + extraMs, // the sequence number, not a real time (same trick as radioTest.js)
-    lat: 40.8898,
-    lon: -118.3821,
-    gSpeedMmS: 5000,
-    headMotDeg: 90,
+// The fixes a test frame carries: moving, so every field changes from one fix to the next (a delta frame
+// is only exercised properly with data that moves). The sequence number rides in the timestamp's seconds,
+// the same trick as radioTest.js.
+function makeFixes(seq, n) {
+  return Array.from({ length: Math.max(1, n) }, (_, j) => ({
+    timestamp: seq * 1000 + j * 100,
+    lat: 40.8898 + seq * 1e-6 + j * 1.1e-5,
+    lon: -118.3821 + j * 8e-6,
+    gSpeedMmS: 5000 + j * 37,
+    headMotDeg: 90 + j * 4.1 + (seq % 7),
     gnssFixOk: true,
     carrSoln: 2,
     numSV: 14,
-  });
-  if (batch <= 1) return protocol.encode(BOAT_ID, pvt(0));
-  return protocol.encodeBatch(BOAT_ID, Array.from({ length: batch }, (_, j) => pvt(j * 100)));
+  }));
+}
+
+// Delta-coded frames for batches of 2+ fixes (what the boats send by default); LATENCY_DELTA=0 uses the
+// older batch frame (up to 4 fixes, 84 bytes).
+function useDelta(batch) {
+  return batch > 1 && process.env.LATENCY_DELTA !== '0' && process.env.LATENCY_DELTA !== 'false';
+}
+
+function buildFrameFor(boatId, seq, batch) {
+  const fixes = makeFixes(seq, batch);
+  if (batch <= 1) return protocol.encode(boatId, fixes[0]);
+  if (useDelta(batch)) {
+    const frames = protocol.encodeDeltaFrames(boatId, fixes);
+    if (frames.length !== 1) throw new Error(`the test fixes did not fit one delta frame (${frames.map((f) => f.count).join('+')})`);
+    return frames[0].buf;
+  }
+  return protocol.encodeBatch(boatId, fixes);
+}
+
+function buildFrame(seq, batch) {
+  return buildFrameFor(BOAT_ID, seq, batch);
+}
+
+// True when a decoded frame's fixes are what makeFixes(seq, n) produced: positions and speed exactly, time
+// within 2 ms and heading within 0.3 degree (what delta coding rounds). A frame that passes its checksum
+// but decodes to something else was corrupted on the way.
+function fixesMatch(decoded, seq) {
+  const list = Array.isArray(decoded) ? decoded : [decoded];
+  const want = makeFixes(seq, list.length);
+  return list.every(
+    (d, i) =>
+      Math.round(d.lat * 1e7) === Math.round(want[i].lat * 1e7) &&
+      Math.round(d.lon * 1e7) === Math.round(want[i].lon * 1e7) &&
+      Math.round(d.speedKnots * 10) === Math.round(((want[i].gSpeedMmS / 1000) * 1.94384) * 10) &&
+      Math.abs(d.timestamp - want[i].timestamp) <= 2 &&
+      Math.abs(d.headingDeg - (want[i].headMotDeg % 360)) <= 0.3
+  );
 }
 
 // tx/rx: anything with send(buf) and on('frame'|'frame-batch'|'rtcm', ...) - a RadioLink,
@@ -95,12 +133,16 @@ function runLatencyTest({ tx, rx, frames = 300, gapMs = 250, batch = 1, focus = 
       lastRtcm = t;
     });
 
-    const onFrame = (seq) => {
+    let integrityBad = 0;
+    const onFrame = (seq, decoded) => {
       const t = now();
-      if (sentAt.has(seq) && !results.has(seq)) results.set(seq, { latency: t - sentAt.get(seq), sentAt: sentAt.get(seq) });
+      if (sentAt.has(seq) && !results.has(seq)) {
+        results.set(seq, { latency: t - sentAt.get(seq), sentAt: sentAt.get(seq) });
+        if (!fixesMatch(decoded, seq)) integrityBad++;
+      }
     };
-    rx.on('frame', (f) => onFrame(Math.floor(f.timestamp / 1000)));
-    rx.on('frame-batch', (fixes) => onFrame(Math.floor(fixes[0].timestamp / 1000)));
+    rx.on('frame', (f) => onFrame(Math.floor(f.timestamp / 1000), f));
+    rx.on('frame-batch', (fixes) => onFrame(Math.floor(fixes[0].timestamp / 1000), fixes));
 
     let seq = 0;
     const FOCUS_OFFSETS = []; // ms relative to a burst's start
@@ -240,6 +282,8 @@ function runLatencyTest({ tx, rx, frames = 300, gapMs = 250, batch = 1, focus = 
         clear: { n: clear.length, lost: lost(clear), stats: summarize(clear.filter((x) => x.latency !== null).map((x) => x.latency)) },
         bursts: { n: bursts.length, period, width, widthStats, maxMsgs, hitBursts, hitIncomplete, cleanBursts, cleanIncomplete, classified },
         phaseTable,
+        integrityBad,
+        frameBytes: buildFrame(0, batch).length,
       });
     }
 
@@ -250,7 +294,8 @@ function runLatencyTest({ tx, rx, frames = 300, gapMs = 250, batch = 1, focus = 
 function report(r, batch) {
   const f = (v) => (v === null || v === undefined ? '  -  ' : v.toFixed(1).padStart(6));
   const row = (label, s) => (s ? `  ${label.padEnd(12)} n=${String(s.n).padStart(4)}  min ${f(s.min)}  p50 ${f(s.p50)}  p90 ${f(s.p90)}  p99 ${f(s.p99)}  max ${f(s.max)}` : `  ${label.padEnd(12)} no frames`);
-  console.log(`\nFrames sent: ${r.sent}${r.notSent ? ` (+${r.notSent} the port refused)` : ''}  received: ${r.received}  lost: ${r.lost} (${r.sent ? ((r.lost / r.sent) * 100).toFixed(1) : '0.0'}%)   frame size: ${batch > 1 ? 8 + 19 * batch : 26} bytes`);
+  console.log(`\nFrames sent: ${r.sent}${r.notSent ? ` (+${r.notSent} the port refused)` : ''}  received: ${r.received}  lost: ${r.lost} (${r.sent ? ((r.lost / r.sent) * 100).toFixed(1) : '0.0'}%)   frame size: ${r.frameBytes} bytes${useDelta(batch) ? ' (delta-coded)' : ''}`);
+  if (batch > 1 || r.integrityBad) console.log(`Frames that decoded to different values than were sent: ${r.integrityBad} of ${r.received} received (the checksum passed - the radio corrupted them)`);
   console.log('\nOne-way latency in ms (send -> decoded at the listener):');
   console.log(row('all', r.all));
   if (r.all) console.log(`  jitter (p99 - p50): ${(r.all.p99 - r.all.p50).toFixed(1)} ms   spread (max - min): ${(r.all.max - r.all.min).toFixed(1)} ms`);
@@ -308,7 +353,7 @@ function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot:
     const rec = new Map(); // `${boat}:${seq}` -> { boat, submittedAt, writtenAt, receivedAt }
     const key = (b, q) => `${b}:${q}`;
     const decodeKey = (buf) => {
-      const d = buf[0] === 0xaa ? protocol.decode(buf) : protocol.decodeBatch(buf);
+      const d = buf[0] === protocol.SYNC ? protocol.decode(buf) : buf[0] === protocol.DELTA_SYNC ? protocol.decodeDeltaBatch(buf) : protocol.decodeBatch(buf);
       const first = Array.isArray(d) ? d[0] : d;
       return key(first.boatId, Math.floor(first.timestamp / 1000));
     };
@@ -324,12 +369,16 @@ function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot:
       b.msgs++;
       lastRtcm = t;
     });
-    const onRx = (boatId, seq) => {
+    let integrityBad = 0;
+    const onRx = (boatId, seq, decoded) => {
       const r = rec.get(key(boatId, seq));
-      if (r && r.receivedAt === undefined) r.receivedAt = now();
+      if (r && r.receivedAt === undefined) {
+        r.receivedAt = now();
+        if (!fixesMatch(decoded, seq)) integrityBad++;
+      }
     };
-    rx.on('frame', (f) => onRx(f.boatId, Math.floor(f.timestamp / 1000)));
-    rx.on('frame-batch', (fx) => onRx(fx[0].boatId, Math.floor(fx[0].timestamp / 1000)));
+    rx.on('frame', (f) => onRx(f.boatId, Math.floor(f.timestamp / 1000), f));
+    rx.on('frame-batch', (fx) => onRx(fx[0].boatId, Math.floor(fx[0].timestamp / 1000), fx));
 
     const schedulers = boats.map(
       (b) =>
@@ -348,10 +397,7 @@ function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot:
         })
     );
 
-    const build = (id, seq) => {
-      const pvt = (extra) => ({ timestamp: seq * 1000 + extra, lat: 40.8898, lon: -118.3821, gSpeedMmS: 5000, headMotDeg: 90, gnssFixOk: true, carrSoln: 2, numSV: 14 });
-      return batch <= 1 ? protocol.encode(id, pvt(0)) : protocol.encodeBatch(id, Array.from({ length: batch }, (_, j) => pvt(j * 100)));
-    };
+    const build = (id, seq) => buildFrameFor(id, seq, batch);
 
     // Don't start until the sender's own tracker has heard a few bursts - before that the scheduler
     // (correctly) holds nothing back, which would put the first seconds of the run outside the test.
@@ -444,7 +490,7 @@ function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot:
       resolve({
         mode, perBoat, inWindow, written: written.length, slotMs,
         bursts: { n: bursts.length, period, width: widths.length ? percentile(widths, 95) : null, hit, hitBad, clean, cleanBad },
-        overlaps, closestGap, stats: schedulers.map((s) => s.stats()),
+        overlaps, closestGap, integrityBad, frameBytes: buildFrameFor('LAT01', 0, batch).length, stats: schedulers.map((s) => s.stats()),
       });
     }
   });
@@ -460,6 +506,7 @@ function reportScheduled(r) {
     if (b.latency) console.log(`  latency after the write (ms):    p50 ${f(b.latency.p50)}  p90 ${f(b.latency.p90)}  p99 ${f(b.latency.p99)}  max ${f(b.latency.max)}`);
   }
   console.log(`\nFrames written inside the conflict window (-45..+25 ms around a burst start): ${r.inWindow} of ${r.written}`);
+  console.log(`Frame size ${r.frameBytes} bytes. Frames that decoded to different values than were sent: ${r.integrityBad}${r.integrityBad ? ' (the checksum passed - the radio corrupted them)' : ''}`);
   if (r.mode === 'slots') {
     console.log(`Frames from different boats arriving within 15 ms of each other: ${r.overlaps}` + (r.closestGap !== null ? `   (closest gap ${r.closestGap.toFixed(0)} ms; a frame needs about 11 ms of air)` : ''));
   }
@@ -475,7 +522,7 @@ function reportScheduled(r) {
   console.log(`\nScheduler (first boat): ${s.passedThrough} sent at once, ${s.held} held (longest ${s.heldMsMax.toFixed(0)} ms), ${s.dropped} dropped, ${s.expired} expired, ${s.spilled} slot spills; bursts tracked: ${s.tracker.bursts}${s.tracker.active ? '' : '  (tracker NOT active - nothing was held)'}`);
 }
 
-module.exports = { runLatencyTest, report, summarize, percentile, buildFrame, runScheduledTest, reportScheduled };
+module.exports = { runLatencyTest, report, summarize, percentile, buildFrame, buildFrameFor, makeFixes, fixesMatch, runScheduledTest, reportScheduled };
 
 if (require.main === module) {
   const { RadioLink } = require('./radioLink');
@@ -485,7 +532,8 @@ if (require.main === module) {
   const focus = process.env.LATENCY_FOCUS === '1' || process.env.LATENCY_FOCUS === 'true';
   const frames = parseInt(process.env.LATENCY_FRAMES || (focus ? '150' : '300'), 10);
   const gapMs = parseInt(process.env.LATENCY_GAP_MS || '250', 10);
-  const batch = Math.max(1, Math.min(protocol.MAX_BATCH_COUNT, parseInt(process.env.LATENCY_BATCH || '1', 10) || 1));
+  const deltaOn = process.env.LATENCY_DELTA !== '0' && process.env.LATENCY_DELTA !== 'false';
+  const batch = Math.max(1, Math.min(deltaOn ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT, parseInt(process.env.LATENCY_BATCH || '1', 10) || 1));
   if (!txPort || !rxPort) {
     console.error('[radioLatency] set LATENCY_TX_PORT and LATENCY_RX_PORT (the two radios, e.g. /dev/cu.usbserial-5 and /dev/cu.usbserial-0001)');
     process.exit(1);

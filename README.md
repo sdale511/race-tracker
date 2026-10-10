@@ -434,13 +434,13 @@ LATENCY_TX_PORT=/dev/cu.usbserial-5 LATENCY_RX_PORT=/dev/cu.usbserial-0001 npm r
    latency and loss for frames sent *near* an RTCM burst versus *clear* of it; whether bursts that
    had a test frame near them came through incomplete more often than the others (that is what a
    telemetry transmission costs the corrections); and a suggested guard.
-6. Repeat for a bigger frame and a longer run: `LATENCY_BATCH=4 LATENCY_FRAMES=600 ...` (an 84-byte
-   batch frame, the largest this app sends).
+6. Repeat for a bigger frame and a longer run: `LATENCY_BATCH=8 LATENCY_FRAMES=600 ...` (an 83-byte delta frame of 8 fixes, the biggest a boat sends; `LATENCY_DELTA=0 LATENCY_BATCH=4` for the older 84-byte
+   batch frame).
 7. Swap which radio sends and which listens (the two ports) and run again, to see that the numbers
    don't depend on the radio.
 
 Settings: `LATENCY_FRAMES` (300), `LATENCY_GAP_MS` (250, plus a random 0-40 ms so sends cover every
-phase of the second), `LATENCY_BATCH` (1 = a 26-byte frame, 2-4 = a batch of that many fixes),
+phase of the second), `LATENCY_BATCH` (1 = a 26-byte frame, 2-8 = a delta-coded frame of that many fixes - 8 is 83 bytes; `LATENCY_DELTA=0` sends the older batch frame instead, 2-4 fixes up to 84 bytes). The test fixes move, so every field of a delta frame is exercised, and the report counts frames that arrived with a good checksum but decoded to different values than were sent (radio corruption the additive checksum missed - it should be 0),
 `LATENCY_FOCUS=1` (send only in a sweep from 80 ms before to 160 ms after each predicted correction burst, one frame per burst, to find exactly where sending hurts; needs the base running; 150 frames, about 150 s), `RADIO_BAUD` (115200). The guard it suggests is a starting point: one machine, two adapters. It does
 not include a Raspberry Pi's own delays, so repeat it on a Pi before setting slot timing.
 
@@ -454,7 +454,7 @@ slots do to the corrections. The sender radio listens for the base's bursts to l
 LATENCY_BATCH=2 LATENCY_FRAMES=300 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
 # B: gate only - telemetry held out of the correction window
 LATENCY_SCHEDULE=gate  LATENCY_BATCH=2 LATENCY_FRAMES=300 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
-# C: gate + slots - two virtual boats in slots 3 and 7, 35 ms apart (add LATENCY_BATCH=4 LATENCY_GAP_MS=1000 for one 84-byte frame per cycle, like a boat at 4 Hz)
+# C: gate + slots - two virtual boats in slots 3 and 7, 35 ms apart (add LATENCY_BATCH=8 LATENCY_GAP_MS=1000 for one 83-byte frame per cycle, like a boat at 8 Hz)
 LATENCY_SCHEDULE=slots LATENCY_SLOTS=3,7 LATENCY_SLOT_MS=35 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
 ```
 
