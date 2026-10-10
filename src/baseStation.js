@@ -253,6 +253,24 @@ function main() {
   // simulated radio exists to wrap.
   const baseBurstTracker = new BurstTracker();
   radio.on('rtcm', (f) => baseBurstTracker.onRtcm(f.type));
+  // Slot layout (see slotTable.js): with slot mode on, the cycle holds boatSlots slots for the boats
+  // (assignable ones plus the shared join slots) and then ONE MORE for the base itself - the slot
+  // table, marks, pings and sleep/wake all go out in it, so the base never lands on a boat's frame.
+  // boatSlots is TX_SLOT_COUNT if set, otherwise what fits in the correction interval the operator
+  // says the GPS is set to (RTCM_INTERVAL_S), less the base's slot - worked out once, here.
+  const slotLayout =
+    config.txGate.enabled && config.txGate.slot.enabled && radioMode !== 'none'
+      ? (() => {
+          const widthMs = config.txGate.slot.widthMs;
+          const boatSlots = config.txGate.slot.countAuto
+            ? Math.max(
+                config.txGate.slot.joinSlots + 1,
+                slotCountForPeriod(config.txGate.slot.rtcmIntervalS * 1000, widthMs, new TxGate({ tracker: baseBurstTracker, ...config.txGate })) - 1
+              )
+            : config.txGate.slot.count;
+          return { widthMs, boatSlots };
+        })()
+      : null;
   let baseTxScheduler = null;
   function installTxGate(rawSend) {
     if (!config.txGate.enabled || baseTxScheduler) return;
@@ -260,6 +278,13 @@ function main() {
       send: rawSend,
       tracker: baseBurstTracker,
       gate: new TxGate({ tracker: baseBurstTracker, ...config.txGate }),
+      ...(slotLayout
+        ? {
+            slot: { enabled: true, index: slotLayout.boatSlots, count: slotLayout.boatSlots + 1, widthMs: slotLayout.widthMs, join: null },
+            slottedSyncs: new Set([protocol.SLOT_TABLE_SYNC, protocol.MARKS_SYNC, protocol.PING_SYNC, protocol.POWER_SYNC]),
+            trafficLabel: "the base's",
+          }
+        : {}),
       maxQueue: config.txGate.maxQueue,
       maxAgeMs: config.txGate.maxAgeMs,
       log: (m) => console.log(m),
@@ -920,12 +945,8 @@ function main() {
   // it on.
   let slotAllocator = null;
   if (config.txGate.enabled && config.txGate.slot.enabled && radioMode !== 'none') {
-    // The slot count: TX_SLOT_COUNT if set, otherwise what fits in the correction interval the
-    // operator says the GPS is set to (RTCM_INTERVAL_S) - worked out once, here.
-    const slotWidthMs = config.txGate.slot.widthMs;
-    const slotCount = config.txGate.slot.countAuto
-      ? slotCountForPeriod(config.txGate.slot.rtcmIntervalS * 1000, slotWidthMs, new TxGate({ tracker: baseBurstTracker, ...config.txGate }))
-      : config.txGate.slot.count;
+    const slotWidthMs = slotLayout.widthMs;
+    const slotCount = slotLayout.boatSlots;
     slotAllocator = new SlotAllocator({
       count: slotCount,
       widthMs: slotWidthMs,
@@ -937,7 +958,7 @@ function main() {
       log: (m) => console.log(m),
     });
     console.log(
-      `[slots] slot table on: ${slotAllocator.assignable} slots of ${slotAllocator.widthMs} ms + ${slotAllocator.joinSlots} shared for boats without one` +
+      `[slots] slot table on: ${slotAllocator.assignable} slots of ${slotAllocator.widthMs} ms + ${slotAllocator.joinSlots} shared for boats without one + 1 for the base's own frames` +
         (config.txGate.slot.countAuto ? ` (fits a ${config.txGate.slot.rtcmIntervalS} s correction interval - RTCM_INTERVAL_S)` : ' (TX_SLOT_COUNT)') +
         `, rebroadcast every ${config.txGate.slot.tableIntervalS} s`
     );

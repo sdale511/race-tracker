@@ -704,7 +704,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   (`TX_INTERVAL_S`) at about zero speed, which never qualifies, so a fleet that is moored or not racing takes no
   slots even though the base can hear it. Hello frames don't count.
 - **Which slot.** The next free slot in a spread-out order: slot 0, then halfway, then the quarters, and so on
-  (three boats in 24 slots get 0, 16 and 8; the first 12 get exactly every other slot), so boats are only in
+  (three boats in 23 slots get 0, 16 and 8; the first 11 get exactly every other slot), so boats are only in
   neighbouring slots once the fleet is bigger than half the slots. A boat keeps its slot, and nobody else's slot
   ever moves.
 - **Join slots.** The last `TX_SLOT_JOIN` (2) of the slots are never assigned. A boat with no slot of its own
@@ -734,20 +734,26 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   table. The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
   as `[slots] <boat> -> slot N`.
 
-Slot width is fixed; it does not change with the number of boats. The base's own frames (marks, pings, the
-table itself) are gated clear of the burst but not slotted, so they can occasionally land on top of a boat's
-slot. Separate fleets that race at the same time should have their own base and radio network (`ID`/`HP`);
-that keeps one base from hearing the other fleet's boats, though both still share the radio band.
+- **The base's own slot.** The cycle has one more slot after the boats' (and the join slots): the slot table,
+  marks, pings and sleep/wake frames from the base all wait for it, so the base never lands on a boat's frame.
+  A frame goes out in the first ~12 ms of it, two or three fit, and a longer table (more than about 30 boats)
+  carries on in the next cycle's. These frames therefore wait up to a cycle (the table's 10 s rebroadcast and
+  a join-triggered one are not time-critical). With no bursts heard they go out at once.
 
-**How many slots.** `TX_SLOT_COUNT` is the total number of slots in a cycle, including the `TX_SLOT_JOIN` join
-slots. Leave it unset on the base and it works the count out once, at startup, from `RTCM_INTERVAL_S` (default
-1) - the correction interval the base's GPS is set to (`ubx_config_set.py --rtcm-interval`): the cycle minus the
-time blocked around each burst, divided by the slot width. With the default 35 ms slots that is 26 slots at a
-1 s interval (24 for boats plus 2 join slots) and 54 at 2 s (40 ms slots: 22 and 47). So when you change the GPS
-to 2 s, set `RTCM_INTERVAL_S=2` on the base and restart it; the table then carries 54 slots from the first
-broadcast. If the corrections it hears arrive at a different interval, the base warns once. Set
-`TX_SLOT_COUNT` to fix the count instead (it is also the count a boat assumes before it has heard a table: 26
-by default).
+Slot width is fixed; it does not change with the number of boats. Separate fleets that race at the same time
+should have their own base and radio network (`ID`/`HP`); that keeps one base from hearing the other fleet's
+boats, though both still share the radio band.
+
+**How many slots.** `TX_SLOT_COUNT` is the number of slots for boats in a cycle, including the `TX_SLOT_JOIN`
+join slots; the base's own slot comes after them. Leave it unset on the base and it works the count out once, at
+startup, from `RTCM_INTERVAL_S` (default 1) - the correction interval the base's GPS is set to
+(`ubx_config_set.py --rtcm-interval`): the cycle minus the time blocked around each burst, divided by the slot
+width, less one for the base. With the default 35 ms slots that is 26 slots in all at a 1 s interval - 23 for
+boats, 2 join slots and the base's - and 54 at 2 s (51 for boats; 40 ms slots: 22 and 47 in all). So when you
+change the GPS to 2 s, set `RTCM_INTERVAL_S=2` on the base and restart it; the table then carries the larger
+count from the first broadcast. If the corrections it hears arrive at a different interval, the base warns
+once. Set `TX_SLOT_COUNT` to fix the count instead (it is also the count a boat assumes before it has heard a
+table: 25 by default).
 
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
 cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
@@ -809,14 +815,14 @@ and the biggest of the rest is 97.
 | `0xA7` | slot table | base to boats | 7 to 97 | which transmit slot each boat has |
 | `0xD3` | RTCM3 | base to boats | variable | the RTK corrections (standard RTCM3, see above) |
 
-**Slot table frame (`0xA7`).** Sent by the base every `TX_SLOT_TABLE_S` seconds and whenever the table changes,
-as many frames as needed (up to 15 boats each; every frame also carries the slot count, width and join
+**Slot table frame (`0xA7`).** Sent by the base, in the base's own slot, every `TX_SLOT_TABLE_S` seconds and
+whenever the table changes, as many frames as needed (up to 15 boats each; every frame also carries the slot count, width and join
 slots, so a boat that finds no entry for itself still learns where the join slots are).
 
 ```
 [0]      0xA7
 [1]      version      uint8  - bumps whenever an assignment changes (diagnostic only)
-[2]      slotCount    uint8  - slots in a cycle, including the join slots
+[2]      slotCount    uint8  - slots for boats in a cycle, including the join slots (the base's own slot follows)
 [3]      slotWidthMs  uint8  - width of each slot
 [4]      joinSlots    uint8  - how many of the last slots are never assigned
 [5]      count        uint8  - entries in this frame (0 to 15)
@@ -2023,7 +2029,7 @@ actually use. Redis password is redacted.
 | `TX_GATE_MAX_QUEUE` / `TX_GATE_MAX_AGE_MS` | 12 / 5000 | Most frames held at once (oldest dropped beyond it); a held frame older than this is dropped |
 | `TX_SLOT_MODE` | on | Boat: send position/batch frames only in this boat's slot of each correction cycle. Base: keep and broadcast the slot table that assigns the boats their slots. `0` turns it off (needs `TX_GATE` on; only acts once correction bursts are heard) |
 | `TX_SLOT` | assigned by the base's slot table | Boat only - pin this boat to a slot number, 0 to `TX_SLOT_COUNT - 1`, ignoring the table (unpinned and not yet assigned, a boat shares the join slots) |
-| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 26 / 35 | Total slots per cycle (including the join slots) and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
+| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 25 / 35 | Slots for boats per cycle (including the join slots; the base has one more of its own) and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = one 83-byte delta frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
 | `TX_DELTA` | on | Boat - send batches as delta-coded frames (up to 8 fixes in 83 bytes); `0` = the older batch frame (4 fixes in 84). Update the base first |

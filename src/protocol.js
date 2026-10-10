@@ -895,7 +895,8 @@ function decodePower(buf) {
 // Layout (all little-endian):
 //   [0]      sync byte      0xA7
 //   [1]      version        uint8 - bumps whenever an assignment changes (diagnostic only)
-//   [2]      slotCount      uint8 - slots in a cycle, including the join slots
+//   [2]      slotCount      uint8 - slots for boats in a cycle, including the join slots (the base's own
+//                           slot, for its table, marks, pings and sleep/wake frames, follows the last)
 //   [3]      slotWidthMs    uint8 - width of each slot
 //   [4]      joinSlots      uint8 - how many of the last slots are never assigned: boats that have no
 //                           slot yet (or no room in the table) send in one of these, so they cannot

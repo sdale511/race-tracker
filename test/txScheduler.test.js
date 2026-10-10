@@ -191,3 +191,31 @@ test('join slots: a boat without a slot of its own only ever sends in the shared
   }
   assert.strictEqual(phases.size, 2, 'both join slots get used over time');
 });
+
+test('base slot: the base\'s own frames (slot table etc.) go out in the slot after the boats\' slots, nowhere else', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 40; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const s = new TxScheduler({
+    send: (b) => { sent.push({ t: sim.t, sync: b[0] }); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 25, count: 26, widthMs: 35, join: null },
+    slottedSyncs: new Set([0xa7]),
+    trafficLabel: "the base's",
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  sim.runUntil(5500);
+  const table = Buffer.concat([Buffer.from([0xa7]), Buffer.alloc(96)]);
+  const other = Buffer.from([0x55, 1, 2, 3]); // not one of the base's slotted frame types
+  for (let t = 6000; t < 30000; t += 1700) sim.setTimer(() => { s.submit(table); s.submit(table); s.submit(other); }, t - sim.t + 123);
+  sim.runUntil(34000);
+  const tables = sent.filter((x) => x.sync === 0xa7);
+  assert.ok(tables.length >= 20);
+  // the base's slot (index 25) opens 30 + 25*35 = 905 ms after the burst; a frame goes in its first ~12 ms
+  for (const x of tables) {
+    const ph = Math.round((x.t - 130) % 1000);
+    assert.ok(ph >= 903 && ph <= 920, `a table frame went out at phase ${ph}, outside the base's slot`);
+  }
+  assert.ok(sent.some((x) => x.sync === 0x55), 'other frames are not held for the slot');
+});

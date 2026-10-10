@@ -39,7 +39,9 @@ class TxScheduler {
     send, // the underlying (already-wrapped) send(buf) -> bool
     tracker,
     gate,
-    slot = { enabled: false, index: 0, count: 26, widthMs: 35, join: null },
+    slot = { enabled: false, index: 0, count: 25, widthMs: 35, join: null },
+    slottedSyncs = SLOTTED_SYNCS, // the frame types (first byte) held for the slot; the base passes its own
+    trafficLabel = "this boat's", // for the warning when the slot is too small
     maxQueue = 12,
     maxAgeMs = 5000, // a frame held longer than this is dropped, not sent stale (positions are on the SD card)
     now = () => performance.now(),
@@ -51,6 +53,8 @@ class TxScheduler {
     this.tracker = tracker;
     this.gate = gate;
     this.slot = slot;
+    this.slottedSyncs = slottedSyncs;
+    this.trafficLabel = trafficLabel;
     this.maxQueue = maxQueue;
     this.maxAgeMs = maxAgeMs;
     this.lastSlotWarnAt = -Infinity;
@@ -180,7 +184,7 @@ class TxScheduler {
       );
       if (active) this._warnIfSlotsOverrun();
     }
-    const slotted = this.slot.enabled && SLOTTED_SYNCS.has(buf[0]);
+    const slotted = this.slot.enabled && this.slottedSyncs.has(buf[0]);
     if (this.queue.length === 0) {
       // nothing waiting ahead of it: if it is clear to go right now, write it with no timer delay
       if (!active || this._waitFor(buf.length, slotted, t) <= 0.5) {
@@ -227,7 +231,7 @@ class TxScheduler {
         this.counters.spilled++;
         if (t - this.lastSlotWarnAt > 30000) {
           this.lastSlotWarnAt = t;
-          this.log(`[txgate] WARNING: slot ${index} (${widthMs} ms) is too small for this boat's traffic - frames are waiting for later cycles. Raise TX_SLOT_MS (a 84-byte batch frame needs about 11 ms of slot plus a ${this.gate.guardMs} ms guard)`);
+          this.log(`[txgate] WARNING: slot ${index} (${widthMs} ms) is too small for ${this.trafficLabel} traffic - frames are waiting for later cycles. Raise TX_SLOT_MS (a 84-byte batch frame needs about 11 ms of slot plus a ${this.gate.guardMs} ms guard)`);
         }
         continue; // this slot is full - wait for the next cycle's
       }

@@ -468,15 +468,15 @@ module.exports = {
     // of the boats it hears (spread-out order, sticky - slotTable.js) and broadcasts it, and each
     // boat follows its entry. index = TX_SLOT pins one boat to a slot by hand and ignores the table
     // (0 to count-1); with neither a table entry nor TX_SLOT, a boat shares the joinSlots (never
-    // assigned) so it can't land on a racing boat's slot. count and widthMs are the base's (boats adopt them from the
-    // table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
+    // assigned) so it can't land on a racing boat's slot. count (slots for boats, including the join slots; the base has one more of its own) and widthMs
+    // are the base's (boats adopt them from the table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
     // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 35 ms
     // holds one 84-byte frame - 8 delta-coded fixes at TX_SLOT_MAX_HZ=8 over a 1 s cycle; size it up for faster
     // rates, and keep count x widthMs inside the gap between bursts.
     slot: {
       enabled: process.env.TX_SLOT_MODE !== '0' && process.env.TX_SLOT_MODE !== 'false',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
-      count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '26', 10) || 26),
+      count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '25', 10) || 25),
       widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '35', 10) || 35),
       // The last joinSlots of the slots are never assigned: a boat with no slot of its own yet (newly
       // active, or no room left in the table) shares them, so it can't land on a racing boat's slot. The
