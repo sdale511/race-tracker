@@ -707,16 +707,19 @@ function decodePower(buf) {
 // Layout (all little-endian):
 //   [0]      sync byte      0xA7
 //   [1]      version        uint8 - bumps whenever an assignment changes (diagnostic only)
-//   [2]      slotCount      uint8 - slots in a cycle
+//   [2]      slotCount      uint8 - slots in a cycle, including the join slots
 //   [3]      slotWidthMs    uint8 - width of each slot
-//   [4]      count          uint8 - entries in this frame
-//   [5..]    entries        count * (BOAT_ID_LEN raw ASCII bytes + slot uint8)
+//   [4]      joinSlots      uint8 - how many of the last slots are never assigned: boats that have no
+//                           slot yet (or no room in the table) send in one of these, so they cannot
+//                           land on a racing boat's slot
+//   [5]      count          uint8 - entries in this frame
+//   [6..]    entries        count * (BOAT_ID_LEN raw ASCII bytes + slot uint8)
 //   [last]   checksum       uint8 (sum of bytes 1..N-2 mod 256)
 
 const SLOT_TABLE_SYNC = 0xa7;
-const SLOT_TABLE_HEADER_LEN = 5; // sync + version + slotCount + slotWidthMs + count
+const SLOT_TABLE_HEADER_LEN = 6; // sync + version + slotCount + slotWidthMs + joinSlots + count
 const SLOT_TABLE_ENTRY_LEN = BOAT_ID_LEN + 1;
-const MAX_SLOT_ENTRIES = 15; // 5 + 15*6 + 1 = 96 bytes
+const MAX_SLOT_ENTRIES = 15; // 6 + 15*6 + 1 = 97 bytes
 
 function slotTableFrameLen(count) {
   return SLOT_TABLE_HEADER_LEN + count * SLOT_TABLE_ENTRY_LEN + 1;
@@ -726,22 +729,25 @@ function slotTableFrameLen(count) {
 // 0xA7 on noise can't make the scanner wait for a frame that will never arrive.
 function slotTableFrameLenFromHeader(buf) {
   if (buf.length < SLOT_TABLE_HEADER_LEN) return null;
-  const count = buf.readUInt8(4);
+  const count = buf.readUInt8(5);
   if (count > MAX_SLOT_ENTRIES) return SLOT_TABLE_HEADER_LEN + 1;
   return slotTableFrameLen(count);
 }
 
-// entries: [{ boatId, slot }] (0..MAX_SLOT_ENTRIES of them; an empty frame is valid).
-function encodeSlotTable({ version = 0, slotCount, slotWidthMs, entries = [] }) {
+// entries: [{ boatId, slot }] (0..MAX_SLOT_ENTRIES of them; an empty frame is valid). Each slot is
+// an assignable one: 0 .. slotCount - joinSlots - 1.
+function encodeSlotTable({ version = 0, slotCount, slotWidthMs, joinSlots = 0, entries = [] }) {
   if (!Number.isInteger(version) || version < 0 || version > 255) throw new Error(`slot table version must be 0-255, got ${version}`);
   if (!Number.isInteger(slotCount) || slotCount < 1 || slotCount > 255) throw new Error(`slotCount must be 1-255, got ${slotCount}`);
   if (!Number.isInteger(slotWidthMs) || slotWidthMs < 1 || slotWidthMs > 255) throw new Error(`slotWidthMs must be 1-255, got ${slotWidthMs}`);
+  if (!Number.isInteger(joinSlots) || joinSlots < 0 || joinSlots >= slotCount) throw new Error(`joinSlots must be 0 to ${slotCount - 1}, got ${joinSlots}`);
   if (!Array.isArray(entries) || entries.length > MAX_SLOT_ENTRIES) {
     throw new Error(`a slot table frame carries at most ${MAX_SLOT_ENTRIES} entries, got ${Array.isArray(entries) ? entries.length : typeof entries}`);
   }
+  const assignable = slotCount - joinSlots;
   for (const { boatId, slot } of entries) {
     if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
-    if (!Number.isInteger(slot) || slot < 0 || slot >= slotCount) throw new Error(`slot for ${boatId} must be 0-${slotCount - 1}, got ${slot}`);
+    if (!Number.isInteger(slot) || slot < 0 || slot >= assignable) throw new Error(`slot for ${boatId} must be 0-${assignable - 1}, got ${slot}`);
   }
   const len = slotTableFrameLen(entries.length);
   const buf = Buffer.alloc(len);
@@ -749,7 +755,8 @@ function encodeSlotTable({ version = 0, slotCount, slotWidthMs, entries = [] }) 
   buf.writeUInt8(version, 1);
   buf.writeUInt8(slotCount, 2);
   buf.writeUInt8(slotWidthMs, 3);
-  buf.writeUInt8(entries.length, 4);
+  buf.writeUInt8(joinSlots, 4);
+  buf.writeUInt8(entries.length, 5);
   entries.forEach(({ boatId, slot }, i) => {
     const at = SLOT_TABLE_HEADER_LEN + i * SLOT_TABLE_ENTRY_LEN;
     buf.write(boatId, at, BOAT_ID_LEN, 'ascii');
@@ -761,11 +768,11 @@ function encodeSlotTable({ version = 0, slotCount, slotWidthMs, entries = [] }) 
   return buf;
 }
 
-// Returns { version, slotCount, slotWidthMs, entries: [{ boatId, slot }] }, or null if the buffer
-// isn't a valid slot-table frame.
+// Returns { version, slotCount, slotWidthMs, joinSlots, entries: [{ boatId, slot }] }, or null if the
+// buffer isn't a valid slot-table frame.
 function decodeSlotTable(buf) {
   if (buf.length < SLOT_TABLE_HEADER_LEN + 1 || buf[0] !== SLOT_TABLE_SYNC) return null;
-  const count = buf.readUInt8(4);
+  const count = buf.readUInt8(5);
   if (count > MAX_SLOT_ENTRIES) return null;
   const len = slotTableFrameLen(count);
   if (buf.length !== len) return null;
@@ -774,15 +781,17 @@ function decodeSlotTable(buf) {
   if (sum !== buf[len - 1]) return null;
   const slotCount = buf.readUInt8(2);
   const slotWidthMs = buf.readUInt8(3);
-  if (slotCount < 1 || slotWidthMs < 1) return null;
+  const joinSlots = buf.readUInt8(4);
+  if (slotCount < 1 || slotWidthMs < 1 || joinSlots >= slotCount) return null;
+  const assignable = slotCount - joinSlots;
   const entries = [];
   for (let i = 0; i < count; i++) {
     const at = SLOT_TABLE_HEADER_LEN + i * SLOT_TABLE_ENTRY_LEN;
     const slot = buf.readUInt8(at + BOAT_ID_LEN);
-    if (slot >= slotCount) return null;
+    if (slot >= assignable) return null;
     entries.push({ boatId: buf.toString('ascii', at, at + BOAT_ID_LEN), slot });
   }
-  return { version: buf.readUInt8(1), slotCount, slotWidthMs, entries };
+  return { version: buf.readUInt8(1), slotCount, slotWidthMs, joinSlots, entries };
 }
 
 // Ninth "frame type": RTCM3 correction messages riding the same shared radio as

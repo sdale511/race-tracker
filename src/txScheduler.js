@@ -17,8 +17,8 @@
 // it is rare and shouldn't wait a whole cycle.
 //
 // A slot only works if every boat uses a different slot number, so boats are given one: by the
-// base's slot table (slotTable.js - the normal way), explicitly (TX_SLOT), or, until a table is
-// heard, derived from the boat id - which can collide. Timing the slots on this machine is limited by its serial/USB delay (see the
+// base's slot table (slotTable.js - the normal way) or explicitly (TX_SLOT). A boat with neither
+// uses one of a few shared "join" slots that are never assigned, so it cannot land on a racing boat. Timing the slots on this machine is limited by its serial/USB delay (see the
 // radio-latency test).
 
 const { performance } = require('perf_hooks');
@@ -34,22 +34,12 @@ function airMs(bytes) {
   return AIR_MS_PER_PACKET + bytes * AIR_MS_PER_BYTE;
 }
 
-// FNV-1a over the boat id, modulo the slot count - a deterministic default slot.
-function hashSlot(boatId, count) {
-  let h = 0x811c9dc5;
-  for (const ch of String(boatId)) {
-    h ^= ch.charCodeAt(0);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h % count;
-}
-
 class TxScheduler {
   constructor({
     send, // the underlying (already-wrapped) send(buf) -> bool
     tracker,
     gate,
-    slot = { enabled: false, index: 0, count: 26, widthMs: 35 },
+    slot = { enabled: false, index: 0, count: 26, widthMs: 35, join: null },
     maxQueue = 12,
     maxAgeMs = 5000, // a frame held longer than this is dropped, not sent stale (positions are on the SD card)
     now = () => performance.now(),
@@ -89,13 +79,30 @@ class TxScheduler {
   // Move this boat to a different slot (or change the slot count/width) while running - used
   // when the base's slot table assigns one (slotTable.js). Frames already queued are re-timed
   // against the new slot.
-  setSlot({ index, count = this.slot.count, widthMs = this.slot.widthMs }) {
-    this.slot = { ...this.slot, enabled: true, index, count, widthMs };
+  setSlot({ index = this.slot.index, count = this.slot.count, widthMs = this.slot.widthMs, join = this.slot.join }) {
+    this.slot = { ...this.slot, enabled: true, index, count, widthMs, join };
     this.window = { start: null, used: 0 };
     this._checkSlotFit();
     this._warnIfSlotsOverrun();
     if (this.queue.length) this._schedule(0);
     if (this.flushFn) this._armFlush();
+  }
+
+  // Which slot to use in the cycle that starts at `cycleStart`. A boat with its own slot always uses
+  // it. A boat without one (join: { first, n }) picks one of the shared join slots at random, once
+  // per cycle - the choice is remembered for that cycle so every timing calculation agrees - so two
+  // joiners that pick the same slot one cycle are unlikely to repeat it the next.
+  _slotIndexFor(cycleStart) {
+    const join = this.slot.join;
+    if (!join) return this.slot.index;
+    this.joinChoices = (this.joinChoices || []).filter((c) => Math.abs(c.start - cycleStart) < 3000 || c.start > cycleStart);
+    let c = this.joinChoices.find((x) => Math.abs(x.start - cycleStart) < 200);
+    if (!c) {
+      c = { start: cycleStart, index: join.first + Math.floor(Math.random() * join.n) };
+      this.joinChoices.push(c);
+      if (this.joinChoices.length > 8) this.joinChoices.shift();
+    }
+    return c.index;
   }
 
   _warnIfSlotsOverrun() {
@@ -127,12 +134,12 @@ class TxScheduler {
     const aligned = this.slotAligned();
     let delay = 500; // not aligned: just keep an eye out for the bursts (or slot mode) starting
     if (aligned) {
-      const { index, widthMs } = this.slot;
+      const { widthMs } = this.slot;
       const p = this.tracker.period;
       const base = this.tracker.startAtOrBefore(t);
       delay = null;
       for (let k = 0; k < 3 && p; k++) {
-        const start = base + k * p + this.gate.afterMs() + index * widthMs;
+        const start = base + k * p + this.gate.afterMs() + this._slotIndexFor(base + k * p) * widthMs;
         if (start > t + 0.5) {
           delay = start - t + 1; // 1 ms after the slot opens, so the frames find it open
           break;
@@ -168,7 +175,7 @@ class TxScheduler {
       const p = this.tracker.period;
       this.log(
         active
-          ? `[txgate] correction bursts heard (every ${p ? Math.round(p) : '?'} ms) - telemetry now keeps clear of them${this.slot.enabled ? `, slot ${this.slot.index} of ${this.slot.count}` : ''}`
+          ? `[txgate] correction bursts heard (every ${p ? Math.round(p) : '?'} ms) - telemetry now keeps clear of them${this.slot.enabled ? (this.slot.join ? `, no slot of its own yet - sharing the last ${this.slot.join.n} of ${this.slot.count}` : `, slot ${this.slot.index} of ${this.slot.count}`) : ''}`
           : '[txgate] no correction bursts heard - telemetry unrestricted'
       );
       if (active) this._warnIfSlotsOverrun();
@@ -199,11 +206,12 @@ class TxScheduler {
 
   // Wait (ms from `t`) until this boat's slot can take a frame of `bytes`, 0 if it can go now.
   _slotWaitMs(bytes, t) {
-    const { index, widthMs } = this.slot;
+    const { widthMs } = this.slot;
     const p = this.tracker.period;
     const base = this.tracker.startAtOrBefore(t);
     const need = airMs(bytes);
     for (let k = 0; k < 3; k++) {
+      const index = this._slotIndexFor(base + k * p);
       const start = base + k * p + this.gate.afterMs() + index * widthMs;
       const end = start + widthMs;
       if (t >= end) continue;
@@ -236,11 +244,11 @@ class TxScheduler {
   }
 
   _markSlotUsed(bytes, t) {
-    const { index, widthMs } = this.slot;
+    const { widthMs } = this.slot;
     const base = this.tracker.startAtOrBefore(t);
     const p = this.tracker.period;
     for (let k = 0; k < 3; k++) {
-      const start = base + k * p + this.gate.afterMs() + index * widthMs;
+      const start = base + k * p + this.gate.afterMs() + this._slotIndexFor(base + k * p) * widthMs;
       if (t < start + widthMs) {
         if (this.window.start === null || Math.abs(this.window.start - start) >= 1) this.window = { start, used: 0 };
         this.window.used += airMs(bytes);
@@ -293,4 +301,4 @@ class TxScheduler {
   }
 }
 
-module.exports = { TxScheduler, hashSlot, airMs };
+module.exports = { TxScheduler, airMs };

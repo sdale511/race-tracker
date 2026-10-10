@@ -929,6 +929,7 @@ function main() {
     slotAllocator = new SlotAllocator({
       count: slotCount,
       widthMs: slotWidthMs,
+      joinSlots: config.txGate.slot.joinSlots,
       staleMs: config.txGate.slot.staleS * 1000,
       activeFrames: config.txGate.slot.activeFrames,
       holdMs: config.txGate.slot.holdS * 1000,
@@ -936,7 +937,7 @@ function main() {
       log: (m) => console.log(m),
     });
     console.log(
-      `[slots] slot table on: ${slotAllocator.count} slots of ${slotAllocator.widthMs} ms` +
+      `[slots] slot table on: ${slotAllocator.assignable} slots of ${slotAllocator.widthMs} ms + ${slotAllocator.joinSlots} shared for boats without one` +
         (config.txGate.slot.countAuto ? ` (fits a ${config.txGate.slot.rtcmIntervalS} s correction interval - RTCM_INTERVAL_S)` : ' (TX_SLOT_COUNT)') +
         `, rebroadcast every ${config.txGate.slot.tableIntervalS} s`
     );
@@ -961,11 +962,32 @@ function main() {
     }, 1000);
     if (slotTimer.unref) slotTimer.unref();
   }
+  // "Prepare race start" (the dashboard's Transmit slots card): clear the slot table down to the boats
+  // that are about to start - those on the start grid (inside the on-grid zone around the line) - and
+  // give each of them a slot now, so a fleet arriving while another is still finishing doesn't have to
+  // compete for slots as its boats are heard. Boats already in the table that are starting keep their
+  // slot. With no course marks (so no grid), it keeps the boats that are actively reporting instead.
+  function prepareSlotStart() {
+    if (!slotAllocator) throw new Error('slot mode is off on this base (TX_SLOT_MODE=0)');
+    const onGrid = [...onGridWatchers.entries()].filter(([, w]) => w && w.onGrid).map(([id]) => id);
+    const t = Date.now();
+    const active = [...slotAllocator.byBoat.entries()].filter(([, e]) => t - e.lastHeard <= slotAllocator.activeWindowMs).map(([id]) => id);
+    const basis = onGrid.length > 0 ? 'on the start grid' : 'actively reporting';
+    const result = slotAllocator.prepareStart(onGrid.length > 0 ? onGrid : active);
+    console.log(
+      `[slots] prepared for a start (${basis}): ${result.kept.length} kept, ${result.assigned.length} assigned, ` +
+        `${result.released.length} released` + (result.overflow.length ? `, ${result.overflow.length} without room (${result.overflow.join(', ')})` : '')
+    );
+    return { basis, ...result };
+  }
   function requireRadioForSleep() {
     if (typeof radio.broadcast !== 'function') throw new Error('this base has no radio to send sleep/wake commands over');
   }
   function sleepFleet(opts) {
     requireRadioForSleep();
+    // A fleet put to sleep has stopped: free its slots now so the next fleet can use them (a boat that
+    // wakes and races again gets the same slot back if it is still free).
+    if (slotAllocator) slotAllocator.release(opts && opts.boatIds && opts.boatIds.length ? opts.boatIds : null);
     return fleetSleep.sleep(opts);
   }
   function wakeFleet(opts) {
@@ -2117,7 +2139,9 @@ function main() {
   // mark-rounding/foul detection.
   function handleDecodedFrame(decoded) {
     fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
-    if (slotAllocator) slotAllocator.noteHeard(decoded.boatId);
+    if (slotAllocator) {
+      slotAllocator.noteHeard(decoded.boatId, { moving: config.txGate.slot.movingKn > 0 && decoded.speedKnots >= config.txGate.slot.movingKn });
+    }
     // No regatta selected - every course/mark/on-grid-zone/track key is
     // namespaced by regatta (see redisStore.js's own module comment), so
     // recording this fix now would silently write it under the "none"
@@ -2639,6 +2663,7 @@ function main() {
     pingFleet,
     sleepFleet,
     wakeFleet,
+    prepareSlotStart,
     selectRegatta,
     getMarkAssignment,
     setMarkAssignment,

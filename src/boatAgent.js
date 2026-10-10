@@ -22,7 +22,7 @@ const { GpsSleep } = require('./gpsSleep');
 const { createRtcmLogger } = require('./rtcmLog');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
-const { TxScheduler, hashSlot } = require('./txScheduler');
+const { TxScheduler } = require('./txScheduler');
 const { SlotTableFollower } = require('./slotTable');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
@@ -235,14 +235,18 @@ radio.send = (buf) => (sleeper.isSleeping() ? false : rawRadioSend(buf));
 const burstTracker = new BurstTracker();
 let txScheduler = null;
 if (config.txGate.enabled && radioExpected) {
+  // Slot mode: pinned (TX_SLOT) to a slot by hand, or - until the base's slot table assigns one - sharing the
+  // last few "join" slots, which are never assigned to anyone, so a boat that has no slot yet cannot land on
+  // a racing boat's.
   const slotCount = config.txGate.slot.count;
-  const slotIndex = config.txGate.slot.index !== null ? config.txGate.slot.index % slotCount : hashSlot(config.boatId, slotCount);
+  const pinnedSlot = config.txGate.slot.index !== null ? config.txGate.slot.index % slotCount : null;
+  const joinSlots = Math.min(config.txGate.slot.joinSlots, slotCount - 1);
+  const slotJoin = pinnedSlot === null && joinSlots > 0 ? { first: slotCount - joinSlots, n: joinSlots } : null;
   if (config.txGate.slot.enabled) {
     console.log(
-      `[txgate] slot mode: slot ${slotIndex} of ${slotCount}, ${config.txGate.slot.widthMs} ms each` +
-        (config.txGate.slot.index === null
-          ? ' (derived from the boat id until the base assigns one - it may be shared with another boat)'
-          : ' (set by TX_SLOT; the base\'s slot table is ignored)')
+      pinnedSlot !== null
+        ? `[txgate] slot mode: slot ${pinnedSlot} of ${slotCount}, ${config.txGate.slot.widthMs} ms each (set by TX_SLOT; the base's slot table is ignored)`
+        : `[txgate] slot mode: waiting for the base's slot table - sharing the last ${joinSlots} of ${slotCount} slots until a slot is assigned`
     );
   }
   const gateRawSend = radio.send; // already includes the radio-sleep wrapper above
@@ -250,7 +254,7 @@ if (config.txGate.enabled && radioExpected) {
     send: gateRawSend,
     tracker: burstTracker,
     gate: new TxGate({ tracker: burstTracker, ...config.txGate }),
-    slot: { ...config.txGate.slot, index: slotIndex },
+    slot: { ...config.txGate.slot, index: pinnedSlot !== null ? pinnedSlot : slotCount - 1, join: slotJoin },
     maxQueue: config.txGate.maxQueue,
     maxAgeMs: config.txGate.maxAgeMs,
     log: (m) => console.log(m),

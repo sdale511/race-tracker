@@ -165,3 +165,29 @@ test('slots: a frame submitted late in the boat\'s slot waits for the next cycle
   assert.strictEqual(sent.length, 2);
   assert.ok(sent[1] >= open + 1000 - 2 && sent[1] <= open + 1000 + 5, `late frame went at ${sent[1] - open} ms after this cycle's slot opening`);
 });
+
+test('join slots: a boat without a slot of its own only ever sends in the shared slots, and varies which', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 60; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const s = new TxScheduler({
+    send: () => { sent.push(sim.t); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 25, count: 26, widthMs: 35, join: { first: 24, n: 2 } },
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  sim.runUntil(5500);
+  const frame = Buffer.concat([Buffer.from([0xee]), Buffer.alloc(83)]);
+  for (let t = 6000; t < 50000; t += 1000) sim.setTimer(() => s.submit(frame), t - sim.t + 300);
+  sim.runUntil(52000);
+  assert.ok(sent.length >= 30);
+  const phases = new Set();
+  for (const t of sent) {
+    const ph = Math.round((t - 130) % 1000);
+    // join slots 24 and 25 open 30 + 24*35 = 870 and 905 ms after the burst; a frame goes within the first ~14 ms
+    assert.ok((ph >= 868 && ph <= 886) || (ph >= 903 && ph <= 921), `sent at phase ${ph}, outside the join slots`);
+    phases.add(ph >= 900 ? 25 : 24);
+  }
+  assert.strictEqual(phases.size, 2, 'both join slots get used over time');
+});

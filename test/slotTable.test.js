@@ -10,14 +10,14 @@ const { TxScheduler } = require('../src/txScheduler');
 const ids = (n) => Array.from({ length: n }, (_, i) => `B${String(i + 1).padStart(4, '0')}`);
 
 test('slot table frame round-trips and rejects a bad checksum or slot', () => {
-  const entries = [{ boatId: 'LAT01', slot: 0 }, { boatId: 'LAT02', slot: 21 }];
-  const buf = protocol.encodeSlotTable({ version: 9, slotCount: 22, slotWidthMs: 40, entries });
+  const entries = [{ boatId: 'LAT01', slot: 0 }, { boatId: 'LAT02', slot: 19 }];
+  const buf = protocol.encodeSlotTable({ version: 9, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries });
   assert.strictEqual(buf.length, protocol.slotTableFrameLen(2));
-  assert.deepStrictEqual(protocol.decodeSlotTable(buf), { version: 9, slotCount: 22, slotWidthMs: 40, entries });
+  assert.deepStrictEqual(protocol.decodeSlotTable(buf), { version: 9, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries });
   const bad = Buffer.from(buf);
-  bad[6] ^= 0xff;
+  bad[7] ^= 0xff;
   assert.strictEqual(protocol.decodeSlotTable(bad), null);
-  assert.throws(() => protocol.encodeSlotTable({ slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT01', slot: 22 }] }));
+  assert.throws(() => protocol.encodeSlotTable({ slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT01', slot: 20 }] }), /0-19/, 'a join slot cannot be assigned');
   assert.ok(protocol.slotTableFrameLen(protocol.MAX_SLOT_ENTRIES) <= protocol.RADIO_MAX_PAYLOAD);
 });
 
@@ -91,13 +91,13 @@ test('follower: adopts its entry, ignores other boats\' entries, and adopts the 
   const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 11, count: 30, widthMs: 30 });
   const logs = [];
   const f = new SlotTableFollower({ boatId: 'LAT02', scheduler: sched, log: (m) => logs.push(m) });
-  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT01', slot: 0 }] }), false);
+  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT01', slot: 0 }] }), false);
   assert.strictEqual(sched.slot.index, 11);
-  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT02', slot: 5 }] }), true);
+  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 5 }] }), true);
   assert.deepStrictEqual([sched.slot.index, sched.slot.count, sched.slot.widthMs], [5, 22, 40]);
-  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT02', slot: 5 }] }), false, 'a repeat changes nothing');
+  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 5 }] }), false, 'a repeat changes nothing');
   assert.strictEqual(logs.length, 1);
-  assert.strictEqual(f.onTable({ version: 2, slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT02', slot: 6 }] }), true, 'a reassignment is followed');
+  assert.strictEqual(f.onTable({ version: 2, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 6 }] }), true, 'a reassignment is followed');
   assert.strictEqual(sched.slot.index, 6);
 });
 
@@ -105,7 +105,7 @@ test('follower: a boat pinned with TX_SLOT ignores the table', () => {
   const sim = { t: 0 };
   const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 11, count: 30, widthMs: 30 });
   const f = new SlotTableFollower({ boatId: 'LAT02', scheduler: sched, pinned: true });
-  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, entries: [{ boatId: 'LAT02', slot: 5 }] }), false);
+  assert.strictEqual(f.onTable({ version: 1, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT02', slot: 5 }] }), false);
   assert.strictEqual(sched.slot.index, 11);
 });
 
@@ -217,4 +217,77 @@ test('allocator: the memory of a released slot expires after the hold time', () 
   now = 5000; a.noteHeard('BBBBB'); a.sweep(); // AAAAA freed at 5000
   now = 20000; a.noteHeard('BBBBB'); a.sweep(); // hold time over (BBBBB kept its slot)
   assert.strictEqual(a.noteHeard('CCCCC'), 0, 'slot 0 is no longer held back for AAAAA, so the spread order gives it out first');
+});
+
+test('allocator: the last joinSlots are never assigned; release() frees named boats (or all) at once', () => {
+  const a = new SlotAllocator({ activeFrames: 1, count: 6, joinSlots: 2, widthMs: 35 });
+  const got = ids(6).map((id) => a.noteHeard(id));
+  assert.deepStrictEqual(got.filter((x) => x !== null).sort(), [0, 1, 2, 3], 'only 4 of the 6 slots can be assigned');
+  assert.deepStrictEqual(got.slice(4), [null, null]);
+  assert.strictEqual(protocol.decodeSlotTable(a.frames()[0]).joinSlots, 2);
+  const [first, second] = ids(2);
+  assert.deepStrictEqual(a.release([first]), [first]);
+  assert.strictEqual(a.status().boats.length, 3);
+  a.takeChanged();
+  assert.strictEqual(a.noteHeard(first), got[0], 'the released boat gets its own slot back');
+  assert.strictEqual(a.release().length, 4, 'no ids = everyone');
+  assert.strictEqual(a.status().boats.length, 0);
+  assert.ok(a.takeChanged());
+});
+
+test('follower: before it has a slot a boat shares the join slots (at the base\'s count), then moves to its own', () => {
+  const sim = { t: 0 };
+  const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 25, count: 26, widthMs: 35, join: { first: 24, n: 2 } });
+  const f = new SlotTableFollower({ boatId: 'LAT02', scheduler: sched });
+  // a table that does not list this boat: it learns the count, width and join slots from it
+  f.onTable({ version: 1, slotCount: 54, slotWidthMs: 40, joinSlots: 3, entries: [{ boatId: 'LAT01', slot: 0 }] });
+  assert.deepStrictEqual([sched.slot.count, sched.slot.widthMs, sched.slot.join], [54, 40, { first: 51, n: 3 }]);
+  // its own entry arrives: a slot of its own, no more joining
+  assert.strictEqual(f.onTable({ version: 2, slotCount: 54, slotWidthMs: 40, joinSlots: 3, entries: [{ boatId: 'LAT02', slot: 8 }] }), true);
+  assert.deepStrictEqual([sched.slot.index, sched.slot.join], [8, null]);
+  // the base later frees it and a table arrives without it: it keeps the slot it had
+  f.onTable({ version: 3, slotCount: 54, slotWidthMs: 40, joinSlots: 3, entries: [{ boatId: 'LAT01', slot: 0 }] });
+  assert.deepStrictEqual([sched.slot.index, sched.slot.join], [8, null]);
+});
+
+test('allocator: one fix showing the boat under way earns a slot at once; a stationary heartbeat does not', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, staleMs: 120000, activeFrames: 2, activeWindowMs: 20000, now: () => now });
+  assert.strictEqual(a.noteHeard('IDLE1', { moving: false }), null);
+  assert.strictEqual(a.noteHeard('MOVER', { moving: true }), 0, 'first moving fix');
+  // moving fixes keep the slot alive; stationary heartbeats do not
+  for (let i = 1; i <= 3; i++) { now = i * 50000; a.noteHeard('MOVER', { moving: true }); a.sweep(); }
+  assert.strictEqual(a.status().boats.length, 1);
+  for (let i = 1; i <= 4; i++) { now = 150000 + i * 60000; a.noteHeard('MOVER', { moving: false }); a.sweep(); }
+  assert.strictEqual(a.status().boats.length, 0, 'heartbeats alone let it go');
+});
+
+test('allocator: prepareStart clears the table down to the starting boats; those already in keep their slot', () => {
+  let now = 0;
+  const a = new SlotAllocator({ activeFrames: 1, count: 10, joinSlots: 2, widthMs: 35, now: () => now });
+  const old = ['OLD01', 'OLD02', 'OLD03', 'OLD04'];
+  old.forEach((id) => a.noteHeard(id)); // a fleet that is finishing: slots 0, 4, 2, 6
+  const slotOf = (id) => a.status().boats.find((b) => b.boatId === id)?.slot;
+  const keepSlot = slotOf('OLD02');
+  const r = a.prepareStart(['OLD02', 'NEW01', 'NEW02', 'NEW03']);
+  assert.deepStrictEqual(r.kept, ['OLD02']);
+  assert.deepStrictEqual(r.assigned.sort(), ['NEW01', 'NEW02', 'NEW03']);
+  assert.deepStrictEqual(r.released.sort(), ['OLD01', 'OLD03', 'OLD04']);
+  assert.deepStrictEqual(r.overflow, []);
+  assert.strictEqual(slotOf('OLD02'), keepSlot, 'a boat that is starting does not move');
+  const slots = a.status().boats.map((b) => b.slot);
+  assert.strictEqual(new Set(slots).size, 4, 'every starting boat has its own slot');
+  assert.ok(a.takeChanged(), 'the new table is broadcast');
+  // more boats starting than there are slots: the rest share the join slots
+  const big = a.prepareStart(ids(10));
+  assert.strictEqual(big.assigned.length + big.kept.length, 8);
+  assert.strictEqual(big.overflow.length, 2);
+});
+
+test('allocator: prepareStart with nobody keeps nobody (and does not release everyone by accident when the list is empty of changes)', () => {
+  const a = new SlotAllocator({ activeFrames: 1, count: 6, joinSlots: 1, widthMs: 35 });
+  ids(3).forEach((id) => a.noteHeard(id));
+  const r = a.prepareStart(ids(3)); // the same boats: nothing to release
+  assert.deepStrictEqual(r.released, []);
+  assert.strictEqual(a.status().boats.length, 3);
 });

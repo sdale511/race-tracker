@@ -466,8 +466,8 @@ module.exports = {
     // bursts are heard. Slots are assigned by the base: with slot mode on, the base keeps a table
     // of the boats it hears (spread-out order, sticky - slotTable.js) and broadcasts it, and each
     // boat follows its entry. index = TX_SLOT pins one boat to a slot by hand and ignores the table
-    // (0 to count-1); with neither a table nor TX_SLOT, a boat derives a slot from its id, which
-    // CAN collide with another boat's. count and widthMs are the base's (boats adopt them from the
+    // (0 to count-1); with neither a table entry nor TX_SLOT, a boat shares the joinSlots (never
+    // assigned) so it can't land on a racing boat's slot. count and widthMs are the base's (boats adopt them from the
     // table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
     // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 35 ms
     // holds one 84-byte frame (4 fixes, TX_SLOT_MAX_HZ=4 at a 1 s cycle); size it up for faster
@@ -477,6 +477,10 @@ module.exports = {
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
       count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '26', 10) || 26),
       widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '35', 10) || 35),
+      // The last joinSlots of the slots are never assigned: a boat with no slot of its own yet (newly
+      // active, or no room left in the table) shares them, so it can't land on a racing boat's slot. The
+      // base's value is broadcast; a boat uses its own until it hears a table.
+      joinSlots: Math.max(0, parseInt(process.env.TX_SLOT_JOIN || '2', 10) || 0),
       // Boat only, slot mode: the most fixes per second a boat sends in its slot (the rest stay on its SD
       // card). 4 fits one full 84-byte batch per 1 s cycle - a 5 Hz boat would need a second frame,
       // and a slot big enough for two. 0 = no cap. Scales with the cycle (4 Hz over 2 s is 8 fixes).
@@ -496,6 +500,9 @@ module.exports = {
       // Base only: how long a slot a boat gave up is held back for it (it gets the same one if it
       // comes back, and the slot is handed to others last).
       holdS: Math.max(0, parseInt(process.env.TX_SLOT_HOLD_S || '1800', 10) || 0),
+      // Base only: a single fix at or above this speed (knots) counts as active on its own, so a boat
+      // that is under way gets a slot on its first fix. 0 turns it off (the 2-fix rule alone applies).
+      movingKn: Math.max(0, parseFloat(process.env.TX_SLOT_MOVING_KN || '1') || 0),
       activeFrames: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_FRAMES || '2', 10) || 2),
       activeWindowS: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_WINDOW_S || '20', 10) || 20),
     },
