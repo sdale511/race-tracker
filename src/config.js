@@ -468,14 +468,14 @@ module.exports = {
     // (0 to count-1); with neither a table nor TX_SLOT, a boat derives a slot from its id, which
     // CAN collide with another boat's. count and widthMs are the base's (boats adopt them from the
     // table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
-    // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 30 ms
-    // fits about 5 fixes (a 1 s cycle at 5 Hz); size it up for faster rates, and keep
-    // count x widthMs inside the gap between bursts.
+    // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 35 ms
+    // holds one 84-byte frame (4 fixes, TX_SLOT_MAX_HZ=4 at a 1 s cycle); size it up for faster
+    // rates, and keep count x widthMs inside the gap between bursts.
     slot: {
       enabled: process.env.TX_SLOT_MODE === '1' || process.env.TX_SLOT_MODE === 'true',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
-      count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '30', 10) || 30),
-      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '30', 10) || 30),
+      count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '26', 10) || 26),
+      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '35', 10) || 35),
       // Boat only, slot mode: the most fixes per second a boat sends in its slot (the rest stay on its SD
       // card). 4 fits one full 84-byte batch per 1 s cycle - a 5 Hz boat would need a second frame,
       // and a slot big enough for two. 0 = no cap. Scales with the cycle (4 Hz over 2 s is 8 fixes).

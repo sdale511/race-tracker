@@ -49,7 +49,7 @@ class TxScheduler {
     send, // the underlying (already-wrapped) send(buf) -> bool
     tracker,
     gate,
-    slot = { enabled: false, index: 0, count: 30, widthMs: 30 },
+    slot = { enabled: false, index: 0, count: 26, widthMs: 35 },
     maxQueue = 12,
     maxAgeMs = 5000, // a frame held longer than this is dropped, not sent stale (positions are on the SD card)
     now = () => performance.now(),

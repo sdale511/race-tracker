@@ -30,7 +30,7 @@
 //                                      instead of straight to the radio. `gate` keeps writes clear of
 //                                      the correction burst; `slots` also gives each of LATENCY_BOATS
 //                                      virtual boats its own slot (LATENCY_SLOTS, e.g. 3,7 and
-//                                      LATENCY_SLOT_MS, default 40). Compare a run with `off` and one
+//                                      LATENCY_SLOT_MS, default 35). Compare a run with `off` and one
 //                                      with `gate`: same load, same radios - the difference is the
 //                                      scheduler's effect on the corrections and on latency
 //   LATENCY_FOCUS                      1 = send only in a sweep AROUND the predicted correction
@@ -296,7 +296,7 @@ function report(r, batch) {
 // boat's frames go through its own scheduler. Measured at the listening radio: when each frame
 // was actually WRITTEN relative to the nearest burst, how long it was held, latency after the
 // write, loss, and whether the bursts came through complete.
-function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot: 3 }], frames = 150, gapMs = 250, batch = 1, slotMs = 40, now = () => performance.now() }) {
+function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot: 3 }], frames = 150, gapMs = 250, batch = 1, slotMs = 35, now = () => performance.now() }) {
   const { BurstTracker } = require('./burstTracker');
   const { TxGate } = require('./txGate');
   const { TxScheduler } = require('./txScheduler');
@@ -431,12 +431,20 @@ function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot:
       }
       // boats' frames arriving on top of each other (different boats within 25 ms at the listener)
       const arrivals = all.filter((r) => r.receivedAt !== undefined).sort((x, y) => x.receivedAt - y.receivedAt);
+      // The slot design gives neighbouring boats' frames at least slotMs minus the late-start allowance
+      // (about 14 ms) between starts, so a gap under about 15 ms would mean frames really did collide.
       let overlaps = 0;
-      for (let k = 1; k < arrivals.length; k++) if (arrivals[k].boat !== arrivals[k - 1].boat && arrivals[k].receivedAt - arrivals[k - 1].receivedAt < 25) overlaps++;
+      let closestGap = null;
+      for (let k = 1; k < arrivals.length; k++) {
+        if (arrivals[k].boat === arrivals[k - 1].boat) continue;
+        const gap = arrivals[k].receivedAt - arrivals[k - 1].receivedAt;
+        if (closestGap === null || gap < closestGap) closestGap = gap;
+        if (gap < 15) overlaps++;
+      }
       resolve({
         mode, perBoat, inWindow, written: written.length, slotMs,
         bursts: { n: bursts.length, period, width: widths.length ? percentile(widths, 95) : null, hit, hitBad, clean, cleanBad },
-        overlaps, stats: schedulers.map((s) => s.stats()),
+        overlaps, closestGap, stats: schedulers.map((s) => s.stats()),
       });
     }
   });
@@ -452,7 +460,9 @@ function reportScheduled(r) {
     if (b.latency) console.log(`  latency after the write (ms):    p50 ${f(b.latency.p50)}  p90 ${f(b.latency.p90)}  p99 ${f(b.latency.p99)}  max ${f(b.latency.max)}`);
   }
   console.log(`\nFrames written inside the conflict window (-45..+25 ms around a burst start): ${r.inWindow} of ${r.written}`);
-  if (r.mode === 'slots') console.log(`Frames from different boats arriving within 25 ms of each other: ${r.overlaps}`);
+  if (r.mode === 'slots') {
+    console.log(`Frames from different boats arriving within 15 ms of each other: ${r.overlaps}` + (r.closestGap !== null ? `   (closest gap ${r.closestGap.toFixed(0)} ms; a frame needs about 11 ms of air)` : ''));
+  }
   const b = r.bursts;
   if (b.n) {
     console.log(`\nRTCM bursts heard by the listener: ${b.n}, every ${b.period ? b.period.toFixed(0) : '?'} ms`);
@@ -497,7 +507,7 @@ if (require.main === module) {
       const slots = (process.env.LATENCY_SLOTS || '3,7').split(',').map((x) => parseInt(x, 10));
       const nBoats = Math.max(1, parseInt(process.env.LATENCY_BOATS || (schedule === 'slots' ? String(slots.length) : '1'), 10));
       const boats = Array.from({ length: nBoats }, (_, i) => ({ id: `LAT${String(i + 1).padStart(2, '0')}`, slot: slots[i % slots.length] }));
-      const slotMs = parseInt(process.env.LATENCY_SLOT_MS || '40', 10);
+      const slotMs = parseInt(process.env.LATENCY_SLOT_MS || '35', 10);
       const defFrames = parseInt(process.env.LATENCY_FRAMES || '150', 10);
       console.log(`[radioLatency] scheduled mode "${schedule}": ${nBoats} virtual boat(s), ${defFrames} frames each, about ${Math.round((defFrames * (gapMs + 20)) / 1000)}s ...`);
       console.log('[radioLatency] the sender radio listens for the correction bursts itself, as a boat would - the base must be running.');
