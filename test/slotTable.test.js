@@ -130,3 +130,10 @@ test('slot order: 0 first, then halfway; the first half of the slots are every o
   assert.deepStrictEqual(first.slice(0, 3), [0, 16, 8]);
   assert.deepStrictEqual([...first].sort((x, y) => x - y), [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
 });
+
+test('config: the slot settings are all real numbers', () => {
+  const { txGate } = require('../src/config');
+  for (const k of ['count', 'widthMs', 'rtcmIntervalS', 'tableIntervalS', 'staleS', 'maxHz']) {
+    assert.ok(Number.isFinite(txGate.slot[k]), `txGate.slot.${k} is ${txGate.slot[k]}`);
+  }
+});

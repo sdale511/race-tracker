@@ -70,6 +70,9 @@ class TxScheduler {
     this.log = log;
     this.queue = [];
     this.timer = null;
+    this.flushFn = null; // see startSlotFlush
+    this.flushTimer = null;
+    this.flushWasAligned = false;
     this.wasActive = false;
     this.window = { start: null, used: 0 }; // the slot window currently being filled
     this.counters = { submitted: 0, passedThrough: 0, held: 0, heldMsTotal: 0, heldMsMax: 0, dropped: 0, expired: 0, slotted: 0, spilled: 0 };
@@ -92,6 +95,7 @@ class TxScheduler {
     this._checkSlotFit();
     this._warnIfSlotsOverrun();
     if (this.queue.length) this._schedule(0);
+    if (this.flushFn) this._armFlush();
   }
 
   _warnIfSlotsOverrun() {
@@ -99,6 +103,60 @@ class TxScheduler {
     if (this.slot.enabled && p && this.tracker.isActive(this.now()) && this.slotFitNeededMs > p) {
       this.log(`[txgate] WARNING: ${this.slot.count} slots of ${this.slot.widthMs} ms need ~${Math.round(this.slotFitNeededMs)} ms but the burst period is ${Math.round(p)} ms - the last slots would overrun`);
     }
+  }
+
+  // True while this boat is sending in slots: slot mode is on and the correction bursts are being
+  // heard (so the slot timing means something).
+  slotAligned() {
+    return this.slot.enabled && this.tracker.isActive(this.now());
+  }
+
+  // Slot-aligned sending: call fn() just after this boat's slot opens, every cycle, so the caller
+  // can send everything it has gathered in one go (fewest, fullest frames) instead of releasing
+  // frames on its own clock and having them queue up for the slot. fn is also called once when the
+  // bursts stop being heard, so nothing it was holding back is left waiting.
+  startSlotFlush(fn) {
+    this.flushFn = fn;
+    this._armFlush();
+  }
+
+  _armFlush() {
+    if (this.flushTimer) this.clearTimer(this.flushTimer);
+    this.flushTimer = null;
+    const t = this.now();
+    const aligned = this.slotAligned();
+    let delay = 500; // not aligned: just keep an eye out for the bursts (or slot mode) starting
+    if (aligned) {
+      const { index, widthMs } = this.slot;
+      const p = this.tracker.period;
+      const base = this.tracker.startAtOrBefore(t);
+      delay = null;
+      for (let k = 0; k < 3 && p; k++) {
+        const start = base + k * p + this.gate.afterMs() + index * widthMs;
+        if (start > t + 0.5) {
+          delay = start - t + 1; // 1 ms after the slot opens, so the frames find it open
+          break;
+        }
+      }
+      if (delay === null) delay = 250;
+    }
+    this.flushTimer = this.setTimer(() => this._flushTick(aligned), delay);
+    if (this.flushTimer && this.flushTimer.unref) this.flushTimer.unref();
+  }
+
+  _flushTick(wasAligned) {
+    this.flushTimer = null;
+    const aligned = this.slotAligned();
+    // Fire when the slot opens, and once when alignment is lost so held-back frames are let go.
+    if (wasAligned || (this.flushWasAligned && !aligned)) {
+      try {
+        this.flushFn();
+      } catch (err) {
+        this.log(`[txgate] slot flush failed: ${err.message}`);
+      }
+    }
+    this.flushWasAligned = aligned;
+    this._armFlush();
   }
 
   submit(buf) {

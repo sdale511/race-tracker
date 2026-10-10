@@ -264,6 +264,7 @@ if (config.txGate.enabled && radioExpected) {
       log: (m) => console.log(m),
     });
     radio.on('slot-table', (table) => slotFollower.onTable(table));
+    txScheduler.startSlotFlush(() => flushPendingBatch({ forSlot: true }));
   }
 }
 
@@ -483,6 +484,7 @@ let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
 // flushPendingBatch below. Always empty when config.txBatchSize is 1 -
 // that path never touches this at all, see handlePvt.
 let pendingBatch = [];
+const SLOT_PENDING_CAP = 20; // slot mode: flush anyway beyond this many waiting fixes
 let lastPvt = null;
 // True once a dwelling/holding fix (pvt.stationary - see simGps.js's
 // _emitStationaryFix) has already been logged to the console once, so
@@ -747,7 +749,12 @@ function queueFixForTx(pvt) {
   sdLogger.logPvt(pvt);
   pendingBatch.push(pvt);
 
-  const batchFull = pendingBatch.length >= config.txBatchSize;
+  // In slot mode (bursts heard) fixes are held for the boat's slot and sent together when it opens - see
+  // txScheduler.startSlotFlush - rather than going out whenever a batch happens to fill, which
+  // queues batches up against the slot (at 5 Hz, 1.25 batches per cycle). A cap stops a long wait
+  // growing without bound.
+  const slotHeld = txScheduler && txScheduler.slotAligned() && pendingBatch.length < SLOT_PENDING_CAP;
+  const batchFull = !slotHeld && pendingBatch.length >= config.txBatchSize;
   // txIntervalMs === 0 means "heartbeat disabled" (same convention as
   // handlePvt's own clearedTxGate above) - without this guard, a fresh
   // batch's very first fix would read as instantly stale (0 >= 0) and flush
@@ -770,12 +777,23 @@ function queueFixForTx(pvt) {
 // success - like a dropped single frame, an undelivered batch's fixes are
 // already durably on SD (logged above as each one was queued); this app
 // doesn't buffer-and-retry radio sends, on principle, for either case.
-function flushPendingBatch() {
-  const fixes = pendingBatch;
+function flushPendingBatch({ forSlot = false } = {}) {
+  let fixes = pendingBatch;
   pendingBatch = [];
   if (fixes.length === 0) return;
   if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
 
+  // The slot's frame budget: at most maxHz fixes a second (thinned evenly, newest kept; the rest are
+  // on the SD card) over the cycle, then as few, full frames as that needs.
+  if (forSlot && config.txGate.slot.maxHz > 0 && txScheduler.tracker.period) {
+    const cap = Math.max(1, Math.round((config.txGate.slot.maxHz * txScheduler.tracker.period) / 1000));
+    if (fixes.length > cap) fixes = Array.from({ length: cap }, (_, i) => fixes[Math.floor(((i + 1) * fixes.length) / cap) - 1]);
+  }
+  const perFrame = forSlot ? protocol.MAX_BATCH_COUNT : Math.max(1, config.txBatchSize);
+  for (let i = 0; i < fixes.length; i += perFrame) sendFixes(fixes.slice(i, i + perFrame));
+}
+
+function sendFixes(fixes) {
   const frame = fixes.length === 1 ? protocol.encode(config.boatId, fixes[0]) : protocol.encodeBatch(config.boatId, fixes);
   const sent = radio.send(frame);
 

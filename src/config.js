@@ -475,6 +475,11 @@ module.exports = {
       enabled: process.env.TX_SLOT_MODE === '1' || process.env.TX_SLOT_MODE === 'true',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
       count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '30', 10) || 30),
+      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '30', 10) || 30),
+      // Boat only, slot mode: the most fixes per second a boat sends in its slot (the rest stay on its SD
+      // card). 4 fits one full 84-byte batch per 1 s cycle - a 5 Hz boat would need a second frame,
+      // and a slot big enough for two. 0 = no cap. Scales with the cycle (4 Hz over 2 s is 8 fixes).
+      maxHz: Math.max(0, parseFloat(process.env.TX_SLOT_MAX_HZ || '4') || 0),
       // Base only: the RTK correction interval the base's GPS is set to (see ubx_config_set.py
       // --rtcm-interval). With TX_SLOT_COUNT unset the base works the slot count out from it once, at
       // startup: a 2 s interval has room for about twice as many slots as a 1 s one.

@@ -122,3 +122,22 @@ test('slots: two boats keep to their own slots and never transmit in a burst win
   }
   assert.ok(!log.filter((a) => a.b === 0).some((a) => log.some((c) => c.b === 1 && Math.abs(c.t - a.t) < 30)));
 });
+
+test('slot flush: fires just after the boat\'s slot opens each cycle, and once when the bursts stop', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 6; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  sim.runUntil(5500); // bursts at 130, 1130, ... 5130; none after
+  const fired = [];
+  const s = new TxScheduler({
+    send: () => true, tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 3, count: 22, widthMs: 40 },
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  s.startSlotFlush(() => fired.push(sim.t));
+  sim.runUntil(8000);
+  // slot 3 opens 20 + 10 + 3*40 = 150 ms after a burst; the first fire is the 5130 burst's slot at 5280 or the next cycle's
+  assert.ok(fired.length >= 1);
+  for (const t of fired.slice(0, -1)) assert.ok(Math.abs(((t - 130) % 1000) - 151) <= 2, `fired at phase ${(t - 130) % 1000}`);
+  assert.ok(fired.length <= 4, 'stops firing every cycle once the bursts are no longer heard');
+});

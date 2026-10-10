@@ -701,6 +701,15 @@ the table had no room for), shown only when the base runs the table. The base al
 in its status (`GET /api/stats`) and logs each assignment as `[slots] <boat> -> slot N`. The base's own frames (marks, pings, the table itself) are gated clear of the
 burst but not slotted, so they can occasionally land on top of a boat's slot.
 
+**Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
+cycle, sends everything gathered as few, full frames as it can (4 fixes = one 84-byte batch), instead of
+sending a batch whenever 4 fixes happen to have arrived - which at 5 Hz is 1.25 batches per cycle, so
+some cycles had two batches in the slot. Fixes are also capped at `TX_SLOT_MAX_HZ` (default 4) per second
+over the cycle: at 4 Hz and a 1 s cycle a boat sends exactly one 84-byte frame per slot; a faster GPS
+rate is thinned evenly (the newest fix is always kept; all of them stay on the SD card). `0` removes the
+cap, and a 5 Hz boat then sends 4 + 1 each cycle and needs a bigger slot (about 40 ms). Without bursts
+heard, batching is the ordinary `TX_BATCH_SIZE` behaviour. A fix can therefore wait up to a cycle.
+
 **Slots need care.** Size `TX_SLOT_MS` for the boat's traffic per cycle: a slot must hold all the
 frames produced in one correction interval. A 84-byte batch frame needs about 11 ms plus the 10 ms guard, so
 the default 30 ms holds one batch per cycle; a boat sending 6 fixes a second (1.5 batches) needs about
@@ -1900,6 +1909,7 @@ actually use. Redis password is redacted.
 | `TX_SLOT` | assigned by the base's slot table | Boat only - pin this boat to a slot number, 0 to `TX_SLOT_COUNT - 1`, ignoring the table (without a table it is derived from the boat id) |
 | `TX_SLOT_COUNT` / `TX_SLOT_MS` | 30 / 30 | Number of slots per cycle and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
+| `TX_SLOT_MAX_HZ` | 4 | Boat, slot mode - most fixes per second sent in the slot (4 = one 84-byte frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 600 | Base only - how often the slot table is rebroadcast, and how long a silent boat keeps its slot |
 | `SIM_RTCM_INTERVAL_S` | 0 (off) | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots can be tried without hardware |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
