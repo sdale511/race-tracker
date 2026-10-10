@@ -931,6 +931,7 @@ function main() {
       widthMs: slotWidthMs,
       staleMs: config.txGate.slot.staleS * 1000,
       activeFrames: config.txGate.slot.activeFrames,
+      holdMs: config.txGate.slot.holdS * 1000,
       activeWindowMs: config.txGate.slot.activeWindowS * 1000,
       log: (m) => console.log(m),
     });

@@ -57,10 +57,12 @@ function pickSlot(taken, count) {
 }
 
 class SlotAllocator {
-  constructor({ count, widthMs, staleMs = 2 * 60 * 1000, activeFrames = 2, activeWindowMs = 20 * 1000, now = () => Date.now(), log = () => {} }) {
+  constructor({ count, widthMs, staleMs = 2 * 60 * 1000, activeFrames = 2, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
     this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     this.staleMs = staleMs;
+    this.holdMs = holdMs;
+    this.released = new Map(); // boatId -> { slot, at } for slots given up, kept for holdMs
     this.activeFrames = Math.max(1, activeFrames);
     this.activeWindowMs = activeWindowMs;
     this.recent = new Map(); // boatId -> times of recent fixes, for boats without a slot yet
@@ -90,7 +92,23 @@ class SlotAllocator {
       return existing.slot;
     }
     if (times.length < this.activeFrames) return null;
-    const slot = pickSlot(new Set([...this.byBoat.values()].map((e) => e.slot)), this.count);
+    const taken = new Set([...this.byBoat.values()].map((e) => e.slot));
+    // A boat that gave its slot up and comes back goes to the same one if it is still free (the boat
+    // never stopped using it). For anyone else, slots other boats gave up recently are the last to be
+    // handed out, so those boats are likelier to find theirs still free.
+    const prev = this.released.get(boatId);
+    let slot = null;
+    let returned = false;
+    if (prev && t - prev.at <= this.holdMs && prev.slot < this.count && !taken.has(prev.slot)) {
+      slot = prev.slot;
+      returned = true;
+    } else {
+      const recentlyReleased = new Set();
+      for (const [id, r] of this.released) if (id !== boatId && t - r.at <= this.holdMs) recentlyReleased.add(r.slot);
+      slot = pickSlot(new Set([...taken, ...recentlyReleased]), this.count);
+      if (slot === null) slot = pickSlot(taken, this.count);
+    }
+    this.released.delete(boatId);
     if (slot === null) {
       if (!this.overflow.has(boatId)) {
         this.overflow.add(boatId);
@@ -101,7 +119,7 @@ class SlotAllocator {
     this.byBoat.set(boatId, { slot, lastHeard: t });
     this.overflow.delete(boatId);
     this._changed();
-    this.log(`[slots] ${boatId} -> slot ${slot} of ${this.count} (${this.byBoat.size} boat${this.byBoat.size === 1 ? '' : 's'})`);
+    this.log(`[slots] ${boatId} -> slot ${slot} of ${this.count} (${this.byBoat.size} boat${this.byBoat.size === 1 ? '' : 's'})${returned ? ' - back in its previous slot' : ''}`);
     return slot;
   }
 
@@ -112,6 +130,7 @@ class SlotAllocator {
     for (const [boatId, e] of this.byBoat) {
       if (t - e.lastHeard > this.staleMs) {
         this.byBoat.delete(boatId);
+        this.released.set(boatId, { slot: e.slot, at: t });
         freed.push(boatId);
         this.log(`[slots] ${boatId} silent for ${Math.round((t - e.lastHeard) / 60000)} min - slot ${e.slot} freed`);
       }
@@ -124,6 +143,7 @@ class SlotAllocator {
       }
     }
     for (const boatId of freed) this.recent.delete(boatId);
+    for (const [boatId, r] of this.released) if (t - r.at > this.holdMs) this.released.delete(boatId);
     if (freed.length) this._changed();
     return freed;
   }

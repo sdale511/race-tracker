@@ -687,8 +687,11 @@ a spread-out order - slot 0, then halfway, then the quarters, and so on (three b
 and 8; the first 13 get exactly every other slot) - so boats are only ever in neighbouring slots once the fleet
 is bigger than half the slot count. A boat keeps its slot, and the slot is given up only after the boat has
 been without active reporting for `TX_SLOT_STALE_S` (120 s - a boat briefly out of range finds it waiting; an
-idle one gives it up, since a lone heartbeat fix does not count as active reporting and does not hold a slot), so nobody else's slot ever moves. A boat that stops and starts again later is simply assigned a slot
-again (briefly it uses its fallback slot until it hears the updated table). The base broadcasts the table
+idle one gives it up, since a lone heartbeat fix does not count as active reporting and does not hold a slot), so nobody else's slot ever moves. A boat that stops and starts again later gets the **same slot back** if nobody has taken
+it: the boat never stopped using it (it only changes slot when it hears a different one), and the base remembers
+which slot it gave up for `TX_SLOT_HOLD_S` (1800 s) and hands those slots to other boats last, so the old slot
+is very likely still free. If it was taken meanwhile and no other slot is free, the boat is left without one
+until a slot opens. The base broadcasts the table
 every `TX_SLOT_TABLE_S` seconds (10), and straight away when a boat joins or leaves, as slot-table frames
 (sync `0xA7`, up to 15 boats per frame; larger tables use several). A boat that hears its own entry moves to
 that slot and adopts the base's slot count and width, so `TX_SLOT_MS` and `TX_SLOT_COUNT` only need setting on
@@ -1927,6 +1930,7 @@ actually use. Redis password is redacted.
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MAX_HZ` | 4 | Boat, slot mode - most fixes per second sent in the slot (4 = one 84-byte frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 120 | Base only - how often the slot table is rebroadcast, and how long a boat that has stopped actively reporting keeps its slot |
+| `TX_SLOT_HOLD_S` | 1800 | Base only - how long a slot a boat gave up is kept for it (and handed to other boats last) |
 | `TX_SLOT_ACTIVE_FRAMES` / `TX_SLOT_ACTIVE_WINDOW_S` | 2 / 20 | Base only - a boat gets a slot only after this many position fixes within this many seconds, so idle boats (one heartbeat fix a minute) take none |
 | `SIM_RTCM_INTERVAL_S` | 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |

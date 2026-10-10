@@ -35,7 +35,7 @@ test('allocator: new boats are spread out, assignments are sticky, a slot is fre
   a.noteHeard('CCCCC');
   now = 70000; // BBBBB silent 70 s, the others 40 s
   assert.deepStrictEqual(a.sweep(), ['BBBBB']);
-  assert.strictEqual(a.noteHeard('DDDDD'), 2, 'the freed slot is reused; nobody else moved');
+  assert.strictEqual(a.noteHeard('DDDDD'), 3, 'a newcomer gets a slot nobody has just given up; nobody else moved');
   assert.strictEqual(a.noteHeard('AAAAA'), 0);
   assert.strictEqual(a.noteHeard('CCCCC'), 1);
 });
@@ -186,4 +186,35 @@ test('allocator: a heartbeat fix once a minute does not keep a slot alive', () =
   // it starts racing again and gets a slot again
   now += 1000; a.noteHeard('BOAT1'); now += 1000;
   assert.notStrictEqual(a.noteHeard('BOAT1'), null);
+});
+
+test('allocator: a boat that gave its slot up gets the same one back if it is free; others get it last', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 4, widthMs: 35, staleMs: 120000, activeFrames: 1, holdMs: 1800000, now: () => now });
+  const first = ['AAAAA', 'BBBBB', 'CCCCC'].map((id) => a.noteHeard(id)); // 0, 2, 1
+  assert.deepStrictEqual(first, [0, 2, 1]);
+  now = 300000; a.noteHeard('AAAAA'); a.noteHeard('CCCCC'); // BBBBB (slot 2) goes quiet
+  now = 500000; a.noteHeard('AAAAA'); a.noteHeard('CCCCC');
+  assert.deepStrictEqual(a.sweep(), ['BBBBB']);
+  // a newcomer arrives while slot 2 is free: it gets slot 3, not the one BBBBB just gave up
+  assert.strictEqual(a.noteHeard('DDDDD'), 3);
+  // BBBBB comes back and gets slot 2 again
+  assert.strictEqual(a.noteHeard('BBBBB'), 2);
+  // when nothing else is free, a recently released slot is handed out after all
+  now = 900000; a.noteHeard('AAAAA'); a.noteHeard('CCCCC'); a.noteHeard('DDDDD');
+  now = 1100000; a.noteHeard('AAAAA'); a.noteHeard('CCCCC'); a.noteHeard('DDDDD');
+  assert.deepStrictEqual(a.sweep(), ['BBBBB']);
+  assert.strictEqual(a.noteHeard('EEEEE'), 2, 'the only free slot, although BBBBB gave it up recently');
+  // BBBBB's slot was taken meanwhile and nothing is free: it overflows rather than stealing it
+  assert.strictEqual(a.noteHeard('BBBBB'), null);
+});
+
+test('allocator: the memory of a released slot expires after the hold time', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 4, widthMs: 35, staleMs: 1000, activeFrames: 1, holdMs: 10000, now: () => now });
+  assert.strictEqual(a.noteHeard('AAAAA'), 0);
+  assert.strictEqual(a.noteHeard('BBBBB'), 2);
+  now = 5000; a.noteHeard('BBBBB'); a.sweep(); // AAAAA freed at 5000
+  now = 20000; a.noteHeard('BBBBB'); a.sweep(); // hold time over (BBBBB kept its slot)
+  assert.strictEqual(a.noteHeard('CCCCC'), 0, 'slot 0 is no longer held back for AAAAA, so the spread order gives it out first');
 });

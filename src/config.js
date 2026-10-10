@@ -493,6 +493,9 @@ module.exports = {
       // Base only: a boat gets a slot only once it has sent activeFrames position fixes within
       // activeWindowS seconds. A boat sitting still sends one heartbeat fix a minute (TX_INTERVAL_S),
       // which never qualifies, so a fleet that isn't racing doesn't use up the slots.
+      // Base only: how long a slot a boat gave up is held back for it (it gets the same one if it
+      // comes back, and the slot is handed to others last).
+      holdS: Math.max(0, parseInt(process.env.TX_SLOT_HOLD_S || '1800', 10) || 0),
       activeFrames: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_FRAMES || '2', 10) || 2),
       activeWindowS: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_WINDOW_S || '20', 10) || 20),
     },
