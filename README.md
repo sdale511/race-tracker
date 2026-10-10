@@ -674,7 +674,9 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
 - **Slot mode** (`TX_SLOT_MODE=1`, boats): position and batch frames are released only in this boat's slot of
   each cycle. A cycle starts at a burst; slot `i` opens `after + guard + i x TX_SLOT_MS` after it (30 ms
   + `i` x 30 ms by default, 30 slots), so boats with different `TX_SLOT` numbers never overlap. Frames queue and
-  go out back to back as far as the slot's air-time budget allows (estimated at 8 ms per packet plus
+  go out back to back as far as the slot's air-time budget allows (a frame that would start so late in the
+  slot that its air time plus the guard would not fit before the next slot opens waits for the next cycle
+  instead - for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms) (estimated at 8 ms per packet plus
   0.04 ms per byte, less the guard); the rest wait for the next cycle. Other frames (hello, ping replies,
   set-mark, ...) are gated but not slotted.
 

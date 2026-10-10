@@ -207,6 +207,10 @@ class TxScheduler {
       const start = base + k * p + this.gate.afterMs() + index * widthMs;
       const end = start + widthMs;
       if (t >= end) continue;
+      // Don't start a frame late in the slot: it would still be on the air when the next boat's slot
+      // opens. A frame needs its air time plus the guard left before the slot ends (a frame bigger
+      // than the slot only goes in the first few ms of it); otherwise it waits for the next cycle's.
+      if (t >= start && end - t < Math.min(need + this.gate.guardMs, widthMs - 3)) continue;
       const sameWindow = this.window.start !== null && Math.abs(this.window.start - start) < 1;
       const used = sameWindow ? this.window.used : 0;
       const fits = used === 0 || used + need <= widthMs - this.gate.guardMs; // a frame bigger than a slot still gets one

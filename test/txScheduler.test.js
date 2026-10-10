@@ -141,3 +141,27 @@ test('slot flush: fires just after the boat\'s slot opens each cycle, and once w
   for (const t of fired.slice(0, -1)) assert.ok(Math.abs(((t - 130) % 1000) - 151) <= 2, `fired at phase ${(t - 130) % 1000}`);
   assert.ok(fired.length <= 4, 'stops firing every cycle once the bursts are no longer heard');
 });
+
+test('slots: a frame submitted late in the boat\'s slot waits for the next cycle instead of running into the next slot', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 12; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const s = new TxScheduler({
+    send: () => { sent.push(sim.t); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 2, count: 22, widthMs: 35 },
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  const frame = Buffer.concat([Buffer.from([0xee]), Buffer.alloc(83)]);
+  sim.runUntil(6000);
+  // slot 2 opens 130 + 20 + 10 + 70 = 230 ms after a burst start (ms) and closes 35 ms later
+  const open = 6130 + 100;
+  sim.setTimer(() => s.submit(frame), open + 2 - sim.t); // just after opening: goes at once
+  sim.setTimer(() => s.submit(frame), open + 30 - sim.t); // 5 ms before it closes: too late
+  sim.runUntil(open + 40);
+  assert.strictEqual(sent.length, 1, 'only the early frame went in this cycle');
+  sim.runUntil(open + 1200);
+  assert.strictEqual(sent.length, 2);
+  assert.ok(sent[1] >= open + 1000 - 2 && sent[1] <= open + 1000 + 5, `late frame went at ${sent[1] - open} ms after this cycle's slot opening`);
+});
