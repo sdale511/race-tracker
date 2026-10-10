@@ -671,13 +671,13 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   (gate only there). A held frame waits, in order, and goes out when the gate clears; at most
   `TX_GATE_MAX_QUEUE` wait, and one held longer than `TX_GATE_MAX_AGE_MS` is dropped, not sent stale
   (positions are already on the SD card).
-- **Slot mode** (`TX_SLOT_MODE=1`, boats and base): position and batch frames are released only in this
+- **Slot mode** (on by default, `TX_SLOT_MODE=0` turns it off; boats and base): position and batch frames are released only in this
   boat's slot of each cycle. A cycle starts at a burst; slot `i` opens `after + guard + i x TX_SLOT_MS` after
   it (30 ms + `i` x 35 ms by default), so boats in different slots never overlap. Other frames (hello, ping
   replies, set-mark, ...) are gated but not slotted. The three parts below say how a boat gets its slot, what
   it sends in it, and how big a slot should be.
 
-**Slot assignment (the slot table).** Run the base with `TX_SLOT_MODE=1` as well as the boats. The base
+**Slot assignment (the slot table).** Slot mode is on by default for the base and the boats (set `TX_SLOT_MODE=0` on a node to turn it off there; like the gate, it does nothing until correction bursts are heard). The base
 keeps a table of the boats it hears (position, batch or hello frames). A new boat gets the next free slot in
 a spread-out order - slot 0, then halfway, then the quarters, and so on (three boats in 26 slots get 0, 16
 and 8; the first 13 get exactly every other slot) - so boats are only ever in neighbouring slots once the fleet
@@ -732,7 +732,7 @@ limits it is the serial/USB delay on the host: the measurements behind the defau
 with two adapters (`radio-latency`); repeat them on a Pi before trusting a 10 ms guard.
 
 **Trying it without hardware:** `SIM_RTCM_INTERVAL_S=1` makes the simulated base broadcast a synthetic RTCM burst
-(six valid messages the size of a real epoch) every second; run boats with `SIMULATE=1` and `TX_SLOT_MODE=1`.
+(six valid messages the size of a real epoch) every second; run boats with `SIMULATE=1` (slot mode is on by default).
 The unit tests (`npm test`, in virtual time) check the tracker, the gate, that two boats in different
 slots never transmit in a blocked window or on top of each other, and the slot table (frame, allocation,
 following).
@@ -1915,7 +1915,7 @@ actually use. Redis password is redacted.
 | `TX_GATE` | on | `0` = never hold telemetry back around a correction burst (see "Shared-radio transmit scheduling") |
 | `TX_GATE_BEFORE_MS` / `TX_GATE_AFTER_MS` / `TX_GATE_GUARD_MS` | 40 / 20 / 10 | The blocked window around a burst start (measured conflict window plus a guard each side) |
 | `TX_GATE_MAX_QUEUE` / `TX_GATE_MAX_AGE_MS` | 12 / 5000 | Most frames held at once (oldest dropped beyond it); a held frame older than this is dropped |
-| `TX_SLOT_MODE` | unset (off) | Boat: `1` = send position/batch frames only in this boat's slot of each correction cycle. Base: `1` = keep and broadcast the slot table that assigns the boats their slots |
+| `TX_SLOT_MODE` | on | Boat: send position/batch frames only in this boat's slot of each correction cycle. Base: keep and broadcast the slot table that assigns the boats their slots. `0` turns it off (needs `TX_GATE` on; only acts once correction bursts are heard) |
 | `TX_SLOT` | assigned by the base's slot table | Boat only - pin this boat to a slot number, 0 to `TX_SLOT_COUNT - 1`, ignoring the table (without a table it is derived from the boat id) |
 | `TX_SLOT_COUNT` / `TX_SLOT_MS` | 26 / 35 | Number of slots per cycle and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |

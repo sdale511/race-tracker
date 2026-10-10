@@ -913,7 +913,7 @@ function main() {
         .filter(([, b]) => b.lastSeen != null)
         .map(([id]) => id),
   });
-  // Transmit-slot table for the shared radio (see slotTable.js): with TX_SLOT_MODE=1 the base hands
+  // Transmit-slot table for the shared radio (see slotTable.js): with slot mode on (the default; TX_SLOT_MODE=0 turns it off) the base hands
   // each boat it hears a slot and rebroadcasts the table every TX_SLOT_TABLE_S seconds, sooner when
   // a boat joins or leaves, so boats don't need a hand-set TX_SLOT. Skipped with no radio to send
   // it on.

@@ -345,7 +345,7 @@ function renderDashboard(s, rtkControlsEnabled) {
   });
   const totalPending = boatIds.reduce((sum, id) => sum + (boats[id].pending || 0), 0);
   const sleepingIds = s.sleep ? Object.keys(s.sleep.sleeping) : [];
-  // Transmit slot each boat was assigned by the base's slot table (TX_SLOT_MODE=1 on the base - see
+  // Transmit slot each boat was assigned by the base's slot table (slot mode on the base - see
   // slotTable.js); null when the table is off, so the column is left out entirely.
   const slotByBoat = s.slots ? new Map(s.slots.boats.map((b) => [b.boatId, b.slot])) : null;
   const slotOverflow = s.slots ? new Set(s.slots.overflow) : null;

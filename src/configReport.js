@@ -120,7 +120,7 @@ const sections = [
       { label: 'guardMs', value: config.txGate.guardMs, envVar: 'TX_GATE_GUARD_MS', unit: 'ms' },
       { label: 'maxQueue', value: config.txGate.maxQueue, envVar: 'TX_GATE_MAX_QUEUE' },
       { label: 'maxAgeMs', value: config.txGate.maxAgeMs, envVar: 'TX_GATE_MAX_AGE_MS', unit: 'ms' },
-      { label: 'slotMode', value: config.txGate.slot.enabled, envVar: 'TX_SLOT_MODE', roles: ['boat'] },
+      { label: 'slotMode', value: config.txGate.slot.enabled, envVar: 'TX_SLOT_MODE', roles: ['boat', 'base'] },
       { label: 'slot', value: config.txGate.slot.index === null ? '(from boat id)' : config.txGate.slot.index, envVar: 'TX_SLOT', roles: ['boat'] },
       { label: 'slotCount', value: config.txGate.slot.count, envVar: 'TX_SLOT_COUNT', roles: ['boat'] },
       { label: 'slotWidthMs', value: config.txGate.slot.widthMs, envVar: 'TX_SLOT_MS', unit: 'ms', roles: ['boat'] },

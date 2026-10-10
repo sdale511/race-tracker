@@ -461,8 +461,9 @@ module.exports = {
     maxQueue: parseInt(process.env.TX_GATE_MAX_QUEUE || '12', 10),
     // A held frame older than this is dropped rather than sent stale.
     maxAgeMs: parseInt(process.env.TX_GATE_MAX_AGE_MS || '5000', 10),
-    // TX_SLOT_MODE=1 (boat and base): release position/batch frames only in this boat's slot of
-    // each cycle. Slots are assigned by the base: with TX_SLOT_MODE=1 on the base it keeps a table
+    // Slot mode (boat and base; on by default, TX_SLOT_MODE=0 turns it off): release position/batch
+    // frames only in this boat's slot of each cycle. Like the gate it does nothing until correction
+    // bursts are heard. Slots are assigned by the base: with slot mode on, the base keeps a table
     // of the boats it hears (spread-out order, sticky - slotTable.js) and broadcasts it, and each
     // boat follows its entry. index = TX_SLOT pins one boat to a slot by hand and ignores the table
     // (0 to count-1); with neither a table nor TX_SLOT, a boat derives a slot from its id, which
@@ -472,7 +473,7 @@ module.exports = {
     // holds one 84-byte frame (4 fixes, TX_SLOT_MAX_HZ=4 at a 1 s cycle); size it up for faster
     // rates, and keep count x widthMs inside the gap between bursts.
     slot: {
-      enabled: process.env.TX_SLOT_MODE === '1' || process.env.TX_SLOT_MODE === 'true',
+      enabled: process.env.TX_SLOT_MODE !== '0' && process.env.TX_SLOT_MODE !== 'false',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
       count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '26', 10) || 26),
       widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '35', 10) || 35),
