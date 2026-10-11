@@ -116,3 +116,42 @@ test('alerter: one warning when a boat turns bad, one when it recovers, no repea
   feed(h, c, 'BOAT1', 60);
   assert.deepStrictEqual(a.check(), ['[health] boat BOAT1 recovered']);
 });
+
+test('boats that report sparsely by design are not flagged for gaps or silence: waiting for a slot is a warn, not a problem', () => {
+  const c = clock(); const h = new LinkHealth({ now: c.now });
+  // racing without a slot: a report every ~15 s, moving at 5 kn
+  for (let i = 0; i < 6; i++) { h.recordFix('WAIT1', fix(c.t), { sparse: 'waiting' }); c.adv(15000); }
+  let b = h.boatStatus('WAIT1');
+  assert.strictEqual(b.gaps, 0);
+  assert.strictEqual(b.level, 'warn');
+  assert.ok(b.why.join(' ').includes('without a slot'));
+  c.adv(30000);
+  assert.strictEqual(h.boatStatus('WAIT1').level, 'warn', 'silence between its sparse reports is not a link problem');
+  // not racing (no slot entitlement): nothing to judge but RTK
+  for (let i = 0; i < 6; i++) { h.recordFix('ROLL1', fix(c.t), { sparse: 'none' }); c.adv(15000); }
+  b = h.boatStatus('ROLL1');
+  assert.strictEqual(b.gaps, 0);
+  assert.strictEqual(b.level, 'ok');
+  // a boat with a slot that skips seconds still is
+  for (let i = 0; i < 5; i++) { h.recordFix('SLOT1', fix(c.t)); c.adv(1000); }
+  c.adv(4000); h.recordFix('SLOT1', fix(c.t));
+  assert.strictEqual(h.boatStatus('SLOT1').gaps, 1);
+});
+
+test('a start-up blip is not a problem: one float fix among a few is fine once the boat is fixed again', () => {
+  const c = clock(); const h = new LinkHealth({ now: c.now });
+  h.recordFix('PARK1', fix(c.t, { carrSoln: 1 }), { parked: true }); c.adv(5000);
+  for (let i = 0; i < 8; i++) { h.recordFix('PARK1', fix(c.t), { parked: true }); c.adv(5000); }
+  const b = h.boatStatus('PARK1');
+  assert.strictEqual(b.rtkPct, 89, '8 of 9 fixed');
+  assert.strictEqual(b.fixedNow, true);
+  assert.strictEqual(b.level, 'ok');
+  // the same 89% with the latest fix not fixed is still worth a look
+  for (let i = 0; i < 8; i++) { h.recordFix('PARK2', fix(c.t), { parked: true }); c.adv(5000); }
+  h.recordFix('PARK2', fix(c.t, { carrSoln: 1 }), { parked: true });
+  assert.strictEqual(h.boatStatus('PARK2').level, 'warn');
+  // a boat that was mostly float this minute but is fixed now is a warning, not a problem
+  for (let i = 0; i < 40; i++) { h.recordFix('FLIP1', fix(c.t, { carrSoln: 1 })); c.adv(1000); }
+  for (let i = 0; i < 5; i++) { h.recordFix('FLIP1', fix(c.t)); c.adv(1000); }
+  assert.strictEqual(h.boatStatus('FLIP1').level, 'warn');
+});

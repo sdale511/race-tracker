@@ -285,7 +285,7 @@ function renderBandwidthCard(bandwidth, mode) {
 // are gated.
 // The dashboard's Link health card (see linkHealth.js): is the radio link working? A fleet summary, then the
 // boats that need a look first (bad, then warn), with why. `h` is baseStation's linkHealth.status().
-function renderLinkHealthCard(h) {
+function renderLinkHealthCard(h, slots) {
   const dot = (level) => (level === 'bad' ? 'dot-red' : level === 'warn' ? 'dot-orange' : level === 'quiet' ? 'dot-gray' : 'dot-green');
   const seen = h.boats.length;
   const worst = h.boats.filter((b) => b.rtkPct !== null).sort((a, b) => a.rtkPct - b.rtkPct)[0];
@@ -299,22 +299,31 @@ function renderLinkHealthCard(h) {
         <td>${b.rtkPct === null ? '—' : b.rtkPct + '%'}</td>
         <td>${b.gaps ? `${b.gaps} (longest ${b.longestGapS} s)` : '0'}</td>
         <td>${b.silentS} s</td>
-        <td>${escapeHtml(b.why.join('; '))}</td>
+        <td class="why">${escapeHtml(b.why.join('; '))}</td>
       </tr>`
     )
     .join('');
+  // One line on the transmit slot table (see slotTable.js), shown with the link health it explains.
+  const slotsLine = slots
+    ? `Slots: <strong>${slots.boats.length}</strong> of ${slots.slotCount - slots.joinSlots} assigned (${slots.slotWidthMs} ms each; ${slots.joinSlots} join + 1 base)${
+        (slots.racing || []).length ? `, ${slots.racing.length} racing` : ''
+      }${(slots.parked || []).length ? `, ${slots.parked.length} parked on the start grid` : ''}${
+        slots.overflow.length ? `, <strong>${slots.overflow.length} waiting for a slot</strong>` : ''
+      }.`
+    : '';
   const syncText =
     h.syncPct === null
       ? '<span class="muted">too few frames to judge</span>'
       : `${h.syncPct}% <span class="muted">(${h.syncErrors} of ${h.syncErrors + h.frames})</span>`;
-  return `<div class="card">
+  return `<div class="card link-card">
       <div class="label">Link health</div>
       <div class="value" style="font-size:20px;"><span class="dot ${dot(h.level)}"></span>${h.level === 'bad' ? 'Problem' : h.level === 'warn' ? 'Needs a look' : seen ? 'OK' : 'No boats yet'}</div>
       <div class="sub">${seen} boat(s) heard in the last 2 min: ${h.counts.ok} ok, ${h.counts.warn} warn, ${h.counts.bad} bad${h.counts.quiet ? `, ${h.counts.quiet} idle` : ''}.
         Radio frames failing their checksum: ${syncText}.${worst ? ` Lowest RTK-fixed share: ${worst.rtkPct}% (${escapeHtml(worst.boatId)}).` : ''}</div>
+      ${slotsLine ? `<div class="sub">${slotsLine}</div>` : ''}
       ${
         shown.length
-          ? `<table style="margin-top:8px;"><thead><tr><th>Boat</th><th title="Fixes received per second over the last 10 s">Fixes/s</th><th title="Share of the last minute's fixes that were RTK fixed">RTK fixed</th><th title="Moving boat skipped more than 2 s of fixes: a lost frame or more">Gaps (1 min)</th><th>Last heard</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>${attention.length > shown.length ? `<div class="sub">+ ${attention.length - shown.length} more</div>` : ''}`
+          ? `<div class="link-scroll"><table><thead><tr><th>Boat</th><th title="Fixes received per second over the last 10 s">Fixes/s</th><th title="Share of the last minute's fixes that were RTK fixed">RTK fixed</th><th title="Moving boat skipped more than 2 s of fixes: a lost frame or more">Gaps (1 min)</th><th>Last heard</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>${attention.length > shown.length ? `<div class="sub">+ ${attention.length - shown.length} more</div>` : ''}`
           : ''
       }
     </div>`;
@@ -520,17 +529,29 @@ function renderDashboard(s, rtkControlsEnabled) {
   }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: #8b94a3; font-size: 13px; margin-bottom: 24px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .card {
     background: #161b22;
     border: 1px solid #262c36;
     border-radius: 10px;
-    padding: 16px 18px;
+    padding: 12px 16px;
   }
   .card .label { color: #8b94a3; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
   .card .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .card .sub { color: #8b94a3; font-size: 12px; margin-top: 4px; }
   .marks-card { grid-column: span 2; }
+  /* The Link health card carries a table, so it spans two (wide screens: three) cards' width - one card's width is too
+     narrow for it and the table ran underneath its neighbour; the table scrolls sideways if it still doesn't fit. */
+  .controls-card { grid-column: span 2; }
+  .controls-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+  .controls-row input[type=text] { flex: 1 1 150px; min-width: 120px; box-sizing: border-box; }
+  .link-card { grid-column: span 2; }
+  @media (min-width: 1100px) { .link-card { grid-column: span 3; } }
+  .link-scroll { overflow-x: auto; margin-top: 8px; }
+  .link-scroll table { margin: 0; min-width: 560px; }
+  .link-scroll th, .link-scroll td { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+  .link-scroll th:nth-child(2), .link-scroll td:nth-child(2) { min-width: 0; }
+  .link-scroll td.why { white-space: normal; min-width: 200px; color: #c3cad5; }
   .marks-mini { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
   .marks-mini .mark-row { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
   .marks-mini .mark-row .name { flex-shrink: 0; }
@@ -613,11 +634,7 @@ function renderDashboard(s, rtkControlsEnabled) {
     <div class="card">
       <div class="label">Boats seen</div>
       <div class="value">${boatIds.length}</div>
-    </div>
-    <div class="card">
-      <div class="label">Total tracks</div>
-      <div class="value">${s.redis ? s.redis.totalTracks.toLocaleString() : '—'}</div>
-      <div class="sub">recorded fixes, all boats</div>
+      <div class="sub">${s.redis ? s.redis.totalTracks.toLocaleString() : '—'} fixes recorded, all boats</div>
     </div>
     <div class="card">
       <div class="label">Uploads</div>
@@ -655,11 +672,6 @@ function renderDashboard(s, rtkControlsEnabled) {
     </div>`
         : ''
     }
-    <div class="card">
-      <div class="label">RegattaUp webhook</div>
-      <div class="value">${s.webhook.enabled ? 'on' : 'off'}</div>
-      <div class="sub">${s.webhook.queueReady ? 'queue ready' : 'queue initializing'}</div>
-    </div>
     <div class="card regatta-card">
       <div class="label">Regatta</div>
       ${
@@ -678,33 +690,23 @@ function renderDashboard(s, rtkControlsEnabled) {
           )
           .join('')}
       </select>
+      <div class="sub">RegattaUp webhook: <strong>${s.webhook.enabled ? 'on' : 'off'}</strong> (${s.webhook.queueReady ? 'queue ready' : 'queue initializing'})</div>
     </div>
-    <div class="card">
-      <div class="label">Ping fleet</div>
-      <div class="sub">Asks every boat to report its current position now, even a stationary one that's already sent its one and only frame (e.g. sitting on the line since before this dashboard was up). Replies trickle in over the next few seconds.</div>
-      <button type="button" class="card-btn" onclick="pingFleet(this)">Ping fleet</button>
-    </div>
-    <div class="card">
-      <div class="label">Radio sleep</div>
-      <div class="sub">Powers rovers' radios down to save battery. A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas.</div>
-      <input type="text" id="sleepIds" placeholder="boat ids (blank = all)" style="width:100%;box-sizing:border-box;margin:6px 0;">
-      <input type="number" id="sleepCycle" min="1" max="255" value="${s.sleep ? s.sleep.cycleS : 10}" style="width:5em;"> <span class="muted">sec between listens</span>
-      <div style="margin-top:6px;">
+    <div class="card controls-card">
+      <div class="label">Fleet controls</div>
+      <div class="controls-row">
+        <button type="button" class="card-btn" onclick="pingFleet(this)">Ping fleet</button>
+        <span class="sub" title="Even a stationary boat that has already sent its one and only frame (e.g. sitting on the line since before this dashboard was up) replies. Replies trickle in over the next few seconds.">Every boat reports its position now.</span>
+      </div>
+      <div class="controls-row">
+        <input type="text" id="sleepIds" placeholder="boat ids (blank = all)">
+        <input type="number" id="sleepCycle" min="1" max="255" value="${s.sleep ? s.sleep.cycleS : 10}" style="width:4.5em;"><span class="muted">s between listens</span>
         <button type="button" class="card-btn" onclick="fleetSleep('sleep', this)">Sleep</button>
         <button type="button" class="card-btn" onclick="fleetSleep('wake', this)">Wake</button>
       </div>
-      ${sleepingIds.length ? `<div class="sub" style="margin-top:6px;">Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}</div>` : ''}
+      <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Radio sleep powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
     </div>
-    ${s.linkHealth ? renderLinkHealthCard(s.linkHealth) : ''}
-    ${
-      s.slots
-        ? `<div class="card">
-      <div class="label">Transmit slots</div>
-      <div class="value" style="font-size:20px;">${s.slots.boats.length} <span class="muted" style="font-size:13px;">of ${s.slots.slotCount - s.slots.joinSlots} slots assigned</span></div>
-      <div class="sub">${s.slots.slotCount} slots of ${s.slots.slotWidthMs} ms per correction cycle, ${s.slots.joinSlots} kept free for boats without one.${s.slots.overflow.length ? ` <strong>${s.slots.overflow.length} boat(s) waiting for a slot.</strong>` : ''}${(s.slots.parked || []).length ? ` ${s.slots.parked.length} parked on the start grid.` : ''}${s.slots.gridOnly ? ` ${(s.slots.racing || []).length} racing.` : ''}</div>
-    </div>`
-        : ''
-    }
+    ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${rtkControlsEnabled ? renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${rtkControlsEnabled ? renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix) : ''}

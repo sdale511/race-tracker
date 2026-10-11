@@ -46,7 +46,9 @@ class LinkHealth {
 
   // One decoded fix from a boat (each fix in a batch frame separately). `parked` = the boat is on the start
   // grid and reports only now and then.
-  recordFix(boatId, fix, { parked = false } = {}) {
+  // `sparse`: false, 'waiting' (racing but without a slot - reports every ~15 s by design) or 'none' (not racing and
+  // not entitled to a slot, so reports sparsely too). Neither is judged on gaps or silence.
+  recordFix(boatId, fix, { parked = false, sparse = false } = {}) {
     const t = this.now();
     let b = this.boats.get(boatId);
     if (!b) {
@@ -57,11 +59,11 @@ class LinkHealth {
     const float = !!fix.gnssFixOk && fix.carrSoln === 1;
     b.samples.push({ t, rtk, float, ok: !!fix.gnssFixOk });
     const prev = b.last;
-    if (prev && !parked && !prev.parked) {
+    if (prev && !parked && !prev.parked && !sparse && !prev.sparse) {
       const gapMs = fix.timestamp - prev.ts;
       if (gapMs > GAP_MS && gapMs <= MAX_GAP_MS && Math.min(prev.speed, fix.speedKnots) >= MOVING_KN) b.gaps.push({ t, ms: gapMs });
     }
-    b.last = { ts: fix.timestamp, speed: fix.speedKnots, t, parked };
+    b.last = { ts: fix.timestamp, speed: fix.speedKnots, t, parked, sparse };
     this._prune(b, t);
   }
 
@@ -90,17 +92,22 @@ class LinkHealth {
     const rtkPct = n >= MIN_RTK_SAMPLES ? Math.round((b.samples.filter((s) => s.rtk).length / n) * 100) : null;
     const floatPct = n >= MIN_RTK_SAMPLES ? Math.round((b.samples.filter((s) => s.float).length / n) * 100) : null;
     const longestGapS = b.gaps.length ? Math.round(Math.max(...b.gaps.map((g) => g.ms)) / 100) / 10 : 0;
-    const wasMoving = b.last.speed >= MOVING_KN && !b.last.parked;
+    const wasMoving = b.last.speed >= MOVING_KN && !b.last.parked && !b.last.sparse;
 
     let level = 'ok';
     const why = [];
     if (!wasMoving && !b.last.parked && b.last.speed < 1 && silentMs > 20 * 1000) {
       level = 'quiet'; // sitting still, sending its heartbeat - not expected to be chatty
     } else {
-      if (rtkPct !== null && rtkPct < THRESHOLDS.rtkBadPct) { level = worse(level, 'bad'); why.push(`RTK fixed only ${rtkPct}%`); }
-      else if (rtkPct !== null && rtkPct < THRESHOLDS.rtkWarnPct) { level = worse(level, 'warn'); why.push(`RTK fixed ${rtkPct}%`); }
+      // RTK share: judged on where the boat is NOW as well as over the minute. A parked or sparse boat has only a few
+      // fixes in a minute, so one float fix while the GPS converged is 89% - not a link problem once it is fixed again.
+      const fixedNow = n > 0 && b.samples[n - 1].rtk;
+      if (rtkPct !== null && !fixedNow && rtkPct < THRESHOLDS.rtkBadPct) { level = worse(level, 'bad'); why.push(`RTK fixed only ${rtkPct}% and not fixed now`); }
+      else if (rtkPct !== null && !fixedNow && rtkPct < THRESHOLDS.rtkWarnPct) { level = worse(level, 'warn'); why.push(`RTK fixed ${rtkPct}%, not fixed now`); }
+      else if (rtkPct !== null && fixedNow && rtkPct < THRESHOLDS.rtkBadPct) { level = worse(level, 'warn'); why.push(`RTK fixed only ${rtkPct}% this minute (fixed now)`); }
       if (b.gaps.length >= THRESHOLDS.gapsBad) { level = worse(level, 'bad'); why.push(`${b.gaps.length} gaps in the last minute (longest ${longestGapS} s)`); }
       else if (b.gaps.length >= THRESHOLDS.gapsWarn) { level = worse(level, 'warn'); why.push(`${b.gaps.length} gap in the last minute`); }
+      if (b.last.sparse === 'waiting') { level = worse(level, 'warn'); why.push('racing without a slot - reporting every ~15 s'); }
       if (wasMoving && silentMs >= THRESHOLDS.silentBadS * 1000) { level = worse(level, 'bad'); why.push(`silent for ${Math.round(silentMs / 1000)} s`); }
       else if (wasMoving && silentMs >= THRESHOLDS.silentWarnS * 1000) { level = worse(level, 'warn'); why.push(`silent for ${Math.round(silentMs / 1000)} s`); }
     }
@@ -110,12 +117,14 @@ class LinkHealth {
       why,
       fixesPerSec: Math.round((recent / (RATE_WINDOW_MS / 1000)) * 10) / 10,
       rtkPct,
+      fixedNow: n > 0 && b.samples[n - 1].rtk,
       floatPct,
       gaps: b.gaps.length,
       longestGapS,
       silentS: Math.round(silentMs / 1000),
       moving: wasMoving,
       parked: !!b.last.parked,
+      sparse: b.last.sparse || false,
     };
   }
 

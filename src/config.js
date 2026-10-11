@@ -261,14 +261,14 @@ module.exports = {
     foulWindwardM: parseFloat(process.env.SIM_FOUL_WINDWARD_M || '150'),
     // Which windward/leeward mark pair the simulated boat actually races -
     // two letters, windward first, each 'G' (green, short course) or 'B'
-    // (black, long course): 'BB' (default, the plain long course), 'GG'
-    // (plain short course), or a mixed 'BG'/'GB' (see course.js's
+    // (black, long course): 'GG' (default, the plain short course), 'BB'
+    // (the plain long course), or a mixed 'BG'/'GB' (see course.js's
     // parseCourseMarks/deriveGeometry for how a mixed pair's beat length
     // comes out). Validated eagerly here, not deep inside boatAgent.js's
     // async marks-received callback, so a typo fails fast at startup with a
     // clear message instead of surfacing later mid-race.
     courseMarks: (() => {
-      const raw = (process.env.SIM_COURSE_MARKS || 'BB').toUpperCase();
+      const raw = (process.env.SIM_COURSE_MARKS || 'GG').toUpperCase();
       if (!/^[GB]{2}$/.test(raw)) {
         throw new Error(
           `SIM_COURSE_MARKS must be 2 letters, each G (green) or B (black) - e.g. GG, BB, BG, GB. Got "${process.env.SIM_COURSE_MARKS}"`
@@ -506,7 +506,8 @@ module.exports = {
       // eligible). TX_SLOT_GRID_ONLY=0 gives slots to any boat that is under way.
       gridOnly: process.env.TX_SLOT_GRID_ONLY !== '0' && process.env.TX_SLOT_GRID_ONLY !== 'false',
       // Base only: a boat stays "racing" until it has been stopped this long (or comes back onto the grid), so a stop
-      // mid-race does not cost it its place. Its slot is still freed after staleS.
+      // mid-race does not cost it its place. Its slot is still freed after staleS. A boat sitting on the grid likewise
+      // stays "parked" this long without a fix (it sends only a heartbeat about once a minute).
       racingS: Math.max(60, parseInt(process.env.TX_SLOT_RACING_S || '600', 10) || 600),
       // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
       // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing

@@ -360,14 +360,14 @@ function getRaceMarks(marks, code) {
 // a boat and the marks it's racing against are guaranteed to agree.
 //
 // courseMarks (see parseCourseMarks above) picks WHICH windward/leeward
-// pair to measure - defaults to 'BB' (the plain long/overall course,
-// matching config.js's own default) so any existing caller that doesn't
-// pass this gets the actual overall course length. Measuring the actual
+// pair to measure - defaults to 'GG' (the plain short course, matching
+// config.js's own default) so any caller that doesn't pass this gets the
+// short course's length. Measuring the actual
 // distance/bearing between whichever pair is chosen, rather than assuming
 // COURSE_LENGTH_M, is what makes a mixed pair like 'BG' just work: the beat
 // comes out shorter on whichever end is actually green, with no separate
 // case needed here.
-function deriveGeometry(marks, courseMarks = 'BB') {
+function deriveGeometry(marks, courseMarks = 'GG') {
   const { windward, leeward } = getRaceMarks(marks, courseMarks);
   const courseLengthM = distanceMeters(leeward, windward);
   // The actual compass direction from leeward to windward - NOT assumed to

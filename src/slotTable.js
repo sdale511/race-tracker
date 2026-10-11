@@ -147,7 +147,7 @@ class JoinBackoff {
 }
 
 class SlotAllocator {
-  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, staleMs = 45 * 1000, activeFrames = 0, gridOnly = false, racingTtlMs = 10 * 60 * 1000, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
+  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, staleMs = 45 * 1000, activeFrames = 0, gridOnly = false, racingTtlMs = 10 * 60 * 1000, zoneTtlMs = 10 * 60 * 1000, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
     this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     // The last joinSlots of the count are never assigned (see protocol.js's slot table frame): boats
@@ -165,6 +165,9 @@ class SlotAllocator {
     // A boat stays "racing" (eligible for a slot) until it has been stopped this long, or it comes back onto the grid - so
     // a stop mid-race (a repair, a pause) does not cost it its place; its slot is still freed after staleMs.
     this.racingTtlMs = racingTtlMs;
+    // A boat stays "parked" this long without a fix: a boat sitting on the grid sends only a heartbeat fix about once a
+    // minute, far less often than slots are freed (staleMs), so parking must outlast that or the display flips.
+    this.zoneTtlMs = zoneTtlMs;
     this.racing = new Map(); // boatId -> { lastActive } for boats that started and have not stopped since
     this.activeWindowMs = activeWindowMs;
     this.recent = new Map(); // boatId -> times of recent fixes, for boats without a slot yet
@@ -311,6 +314,16 @@ class SlotAllocator {
     }
   }
 
+  // What a boat's slot situation is, for the dashboards: 'parked' (on the start grid), 'slot' (has one), 'waiting'
+  // (racing, or heard while every slot was taken, but without one - it shares the join slots and reports sparsely
+  // by design), or 'none' (not racing, so not entitled to one).
+  slotState(boatId) {
+    if (this.isParked(boatId)) return 'parked';
+    if (this.byBoat.has(boatId)) return 'slot';
+    if (this.racing.has(boatId) || this.overflow.has(boatId)) return 'waiting';
+    return 'none';
+  }
+
   // True while the boat is parked on the start grid (see noteHeard).
   isParked(boatId) {
     const z = this.zones.get(boatId);
@@ -362,7 +375,7 @@ class SlotAllocator {
     }
     for (const boatId of freed) this.recent.delete(boatId);
     for (const [boatId, r] of this.racing) if (t - r.lastActive > this.racingTtlMs) this.racing.delete(boatId);
-    for (const [boatId, z] of this.zones) if (t - z.lastHeard > this.staleMs) this.zones.delete(boatId);
+    for (const [boatId, z] of this.zones) if (t - z.lastHeard > this.zoneTtlMs) this.zones.delete(boatId);
     for (const [boatId, r] of this.released) if (t - r.at > this.holdMs) this.released.delete(boatId);
     if (freed.length) this._changed();
     return freed;

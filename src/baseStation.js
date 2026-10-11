@@ -964,6 +964,7 @@ function main() {
       activeFrames: config.txGate.slot.activeFrames,
       gridOnly: config.txGate.slot.gridOnly,
       racingTtlMs: config.txGate.slot.racingS * 1000,
+      zoneTtlMs: config.txGate.slot.racingS * 1000,
       unparkFixes: config.txGate.slot.unparkFixes,
       holdMs: config.txGate.slot.holdS * 1000,
       activeWindowMs: config.txGate.slot.activeWindowS * 1000,
@@ -2204,11 +2205,17 @@ function main() {
   // mark-rounding/foul detection.
   function handleDecodedFrame(decoded) {
     fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
-    linkHealth.recordFix(decoded.boatId, decoded, { parked: slotAllocator ? slotAllocator.isParked(decoded.boatId) : false });
     if (slotAllocator) {
       slotAllocator.noteHeard(decoded.boatId, {
         moving: config.txGate.slot.movingKn > 0 && decoded.speedKnots >= config.txGate.slot.movingKn,
         ...startGridState(decoded.boatId, decoded.lat, decoded.lon),
+      });
+    }
+    {
+      const slotState = slotAllocator ? slotAllocator.slotState(decoded.boatId) : 'slot';
+      linkHealth.recordFix(decoded.boatId, decoded, {
+        parked: slotState === 'parked',
+        sparse: slotState === 'waiting' || slotState === 'none' ? slotState : false,
       });
     }
     // No regatta selected - every course/mark/on-grid-zone/track key is

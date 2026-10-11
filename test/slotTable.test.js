@@ -477,3 +477,21 @@ test('allocator: a boat seen crossing the start line is racing and gets a slot e
   assert.notStrictEqual(a.noteHeard('GRID1', { moving: true, crossedStart: true, pastLine: true }), null);
   assert.deepStrictEqual(a.status().parked, []);
 });
+
+test('a boat parked on the grid stays parked through the quiet between heartbeats, and the stale time for slots does not unpark it', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, gridOnly: true, staleMs: 45000, unparkFixes: 3, zoneTtlMs: 600000, now: () => now });
+  a.noteHeard('GRID1', { inZone: true });
+  assert.deepStrictEqual(a.status().parked, ['GRID1']);
+  // a stationary boat's heartbeat: one fix a minute, and the sweep runs every second in between
+  for (let s = 1; s <= 180; s++) {
+    now = s * 1000;
+    a.sweep();
+    assert.deepStrictEqual(a.status().parked, ['GRID1'], `still parked after ${s} s`);
+    if (s % 60 === 0) a.noteHeard('GRID1', { inZone: true });
+  }
+  // a boat that really has gone (off for ten minutes) is dropped
+  now += 11 * 60 * 1000;
+  a.sweep();
+  assert.deepStrictEqual(a.status().parked, []);
+});

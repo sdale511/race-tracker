@@ -731,7 +731,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   had, if it is still free); if it left backwards or sideways it is not racing and gets none. A boat that crosses the
   line early is outside the zone (it is leeward only) and is tracked at the full rate. Parking needs the course
   marks and slot mode with the bursts heard, and a boat pinned with `TX_SLOT` is not parked. On the dashboard
-  the Slot column shows "parked" and the Transmit slots card counts them.
+  the Slot column shows "parked" and the slots line on the Link health card counts them.
 - **Which slot.** The next free slot in a spread-out order: slot 0, then halfway, then the quarters, and so on
   (three boats in 23 slots get 0, 16 and 8; the first 11 get exactly every other slot), so boats are only in
   neighbouring slots once the fleet is bigger than half the slots. A boat keeps its slot, and nobody else's slot
@@ -745,7 +745,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   of boats with no slot (everyone rolling out, say) cannot swamp the two join slots, and a boat that is never going to
   get one (not racing) just reports occasionally.
 - **Giving a slot up.** When a boat has been stopped for `TX_SLOT_STALE_S` (45 s) its slot is freed. The same
-  happens at once when the boat is put to sleep from the dashboard's **Radio sleep** card (all boats, or the ones you
+  happens at once when the boat is put to sleep from the dashboard's **Fleet controls** card (all boats, or the ones you
   list), so a fleet that has finished can hand its slots to the next one straight away. A racing boat that finds no
   slot free takes one from a boat that is not racing (the longest silent first). A boat the base stops listing in its
   table - it stopped, or lost its slot that way - goes back to the shared join slots itself after about 35 s and three
@@ -825,6 +825,40 @@ The unit tests (`npm test`, in virtual time) check the tracker, the gate, that t
 slots never transmit in a blocked window or on top of each other, the slot table (frame, allocation,
 following, join slots, parking) and the delta-coded frame.
 
+**Walking through the slot table in the simulator** (two terminals; the base dashboard is `http://localhost:8092`):
+
+```
+# terminal 1 - the base: simulated RTK bursts every second, slot table on
+SIMULATE=1 npm run base
+
+# terminal 2 - six boats that sit on the start grid until you press SPACE
+FLEET_SIZE=6 npm run fleet
+```
+
+Watch the base console and the dashboard (the Link health card - its slots line summarises the table - and the Slot column):
+1. The boats arrive on the grid: `[slots] <boat> is on the start grid - parked` and "parked" in the Slot column.
+2. Press **SPACE** in the fleet terminal (the start signal): as each boat crosses the line you see
+   `<boat> crossed the start line - racing` (or `started - racing`), then `-> slot N of 23`, and the boat's own
+   `base assigned slot N`. The boats' slots are spread out (0, 16, 8, 4, ...).
+3. When a boat finishes and stops, its slot is freed 45 s later (`SIM_EXIT_ON_FINISH` ends the process, so it
+   goes silent).
+
+Variations - set these on the command shown:
+
+```
+FLEET_SIZE=30 npm run fleet                                   # more boats than the 23 slots: the rest share the join slots
+SIMULATE=1 SIM_RTCM_INTERVAL_S=2 npm run base                 # 2 s corrections: the table carries 54 slots
+SIM_GPS_HZ=8 FLEET_SIZE=3 npm run fleet                       # 8 fixes per frame, one frame per cycle (delta coding)
+SIM_HOLD_FOR_START=0 FLEET_SIZE=4 npm run fleet               # boats start on their own after a short dwell
+SIMULATE=1 TX_SLOT_GRID_ONLY=0 npm run base                   # slots for any boat under way, not only those that started
+SIMULATE=1 TX_SLOT_MODE=0 npm run base                        # slot mode off everywhere, for comparison
+SIMULATE=1 SIM_RTCM_INTERVAL_S=0 npm run base                 # no bursts: nothing gated or slotted
+```
+
+`npm test` runs the same logic in virtual time (the tracker, gate, slots, slot table, parking, delta frames and
+link health) without starting anything. Note a `SIMULATE=1` base still uses the Redis and RegattaUp settings in
+your `.env` like any other base.
+
 The boat reports what the scheduler is doing under `txGate` in `GET /api/stats` (frames submitted, passed
 through, held, longest hold, dropped, expired, slotted, spilled, and the tracker's state).
 
@@ -837,7 +871,7 @@ worst first, with the reason. It is also in `GET /api/stats` as `linkHealth`. Pe
 
 | Measure | What it means | Warn / bad |
 |---|---|---|
-| RTK fixed % | share of the boat's fixes that were RTK fixed - the outcome that matters; a boat sliding to float has incomplete corrections | under 90% / under 50% |
+| RTK fixed % | share of the boat's fixes that were RTK fixed - the outcome that matters; a boat sliding to float has incomplete corrections. Judged on the boat's latest fix too: under 90% / under 50% **and not fixed now** is warn / bad, while a boat that is fixed again only warns if the minute was under 50% (so one float fix while a parked boat's GPS converged is not flagged) | under 90% / under 50% |
 | Gaps | a boat that is moving (2 kn or faster, not parked on the start grid) skipped more than 2 s of fixes - a lost frame or more; gaps over a minute are out of range or asleep, not counted | 1 / 3 or more |
 | Last heard | for a boat that was moving | 5 s / 10 s |
 | Fixes/s | fixes received over the last 10 s (for reading, not judged) | |
@@ -917,7 +951,7 @@ fix bytes after its 5-byte boat id, followed by the checksum.
 
 The base can put rovers' radios to sleep and wake them again over the radio
 link itself, using one frame type (`protocol.js`'s `encodePower`, sync
-`0x99`, base to boats). From the base dashboard's **Radio sleep** card, or
+`0x99`, base to boats). From the base dashboard's **Fleet controls** card, or
 `POST /api/fleet-sleep` with `{ "action": "sleep" | "wake", "boatIds": [...],
 "cycleS": 10 }` - leave `boatIds` empty for every rover in range.
 
@@ -1270,7 +1304,7 @@ country code: `sudo raspi-config nonint do_wifi_country <CC>` (one-time).
 - `src/simGps.js` fakes a landsailer racing a windward-leeward course
   (beating upwind on alternating tacks, running downwind on alternating
   gybes, randomized leg lengths) in place of the real UBX-NAV-PVT parser.
-  Races whichever mark pair `SIM_COURSE_MARKS` picks (default `BB`).
+  Races whichever mark pair `SIM_COURSE_MARKS` picks (default `GG`, the short course; `BB` is the long one).
 - `src/simRadioLink.js` replaces the serial link with a shared UDP
   broadcast carrying the same frames (`protocol.js`) - real
   encode/decode/checksum path exercised end to end, works the same over a
@@ -1335,7 +1369,7 @@ mode.
 | `SIM_COURSE_LENGTH_NM` | 1 | leewardBlack↔windwardBlack distance (nm). Green marks always sit halfway to center, so short course = half this. Fresh-course-only, like `SIM_CENTER_*` |
 | `SIM_START_LINE_POSITION` | 50 | Where start/finish sits along the beat, 0-100% (0=leewardBlack, 100=windwardBlack). Fresh-course-only |
 | `SIM_COMMITTEE_GAP_M` | 6 | Gap between `committeeStart`/`committeeFinish` (two independent committee boats). `0` = single shared mark, disables the committee-gap foul. Fresh-course-only |
-| `SIM_COURSE_MARKS` | `BB` | Which mark pair to race - 2 letters, windward first, `G`/`B` each |
+| `SIM_COURSE_MARKS` | `GG` | Which mark pair to race - 2 letters, windward first, `G`/`B` each |
 | `SIM_LAP_COUNT` | 2 | Laps before stopping |
 | `SIM_START_ONLY` | unset | `1` = sit forever at start position, emitting a stationary fix stream, instead of racing |
 | `SIM_PRESTART_DWELL_S` | 15 | Seconds sitting at start before departing (non-hold mode). `0` = depart immediately |
@@ -2095,7 +2129,7 @@ actually use. Redis password is redacted.
 | `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = one 83-byte delta frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
 | `TX_DELTA` | on | Boat - send batches as delta-coded frames (up to 8 fixes in 83 bytes); `0` = the older batch frame (4 fixes in 84). Update the base first |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 45 | Base only - how often the slot table is rebroadcast, and how long a stopped boat keeps its slot |
-| `TX_SLOT_RACING_S` | 600 | Base only - how long a stopped boat stays "racing" (eligible for a slot again when it moves) |
+| `TX_SLOT_RACING_S` | 600 | Base only - how long a stopped boat stays "racing" (eligible for a slot again when it moves), and how long a boat sitting on the grid stays "parked" without a fix |
 | `TX_SLOT_GRID_ONLY` | on | Base only - only boats that have started (came off the start grid across the line) get a slot; `0` = any boat under way |
 | `TX_JOIN_REPORT_S` | 15 | Boat, slot mode - a boat with no slot of its own reports quickly at first, then backs off to at most one report every this many seconds; `0` = no back-off |
 | `TX_SLOT_JOIN` | 2 | Base (broadcast to boats) - how many of the last slots are never assigned and are shared by boats that have no slot yet |
