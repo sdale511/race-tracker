@@ -510,6 +510,9 @@ module.exports = {
       // mid-race does not cost it its place. Its slot is still freed after staleS. A boat sitting on the grid likewise
       // stays "parked" this long without a fix (it sends only a heartbeat about once a minute).
       racingS: Math.max(60, parseInt(process.env.TX_SLOT_RACING_S || '600', 10) || 600),
+      // Boat: frames per slot kept free when capping a cycle's fixes to what the slot can carry (see boatAgent.js).
+      // 1 leaves a spare frame for a cycle that needs more than its fix count suggests; 0 uses the whole slot.
+      reserveFrames: Math.max(0, parseInt(process.env.TX_SLOT_RESERVE_FRAMES || '1', 10) || 0),
       // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
       // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing
       // for a start does not use up the slots or swamp the join slots. A boat leaves that state after

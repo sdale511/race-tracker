@@ -868,18 +868,17 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
     fixes = fixes.slice(-1);
   }
 
-  // The slot's frame budget (the rest of the fixes are on the SD card): at most maxHz fixes a second over the cycle,
-  // and at most what the slot can carry with a frame in reserve. A turn (heading change over 63 degrees, or a speed
-  // jump over 12 kn) splits a delta frame, so a cycle can need one or two frames more than its fix count suggests; a
-  // slot passes two 83-byte frames, and if a cycle needs more they queue for the next cycle, the queue never drains,
-  // and the scheduler drops the oldest - whole blocks of fixes missing right after turns (measured: with 16 fixes per
-  // 2 s cycle, 98 of 4,361 frames expired and 2,042 spilled to a later cycle). Thinning only the cycles with a turn
-  // does not help: it widens the change between the fixes left and splits them more. So the cap is fixed, one frame's
-  // worth per frame the slot passes less one in reserve. A wider slot (TX_SLOT_MS) raises it.
+  // The slot's frame budget (the rest of the fixes are on the SD card): at most maxHz fixes a second over the cycle, and
+  // at most what the slot can carry less reserveFrames frames kept free for a cycle that needs more than its fixes
+  // suggest (a GPS jump or a gap over 510 ms splits a delta frame; a turn does not). A slot passes a fixed number of
+  // frames per cycle, so a cycle that needs more queues the rest for the next, the queue never drains, and the
+  // scheduler drops the oldest - whole blocks of fixes missing (measured, before the turn splits were removed: with 16
+  // fixes per 2 s cycle, 98 of 4,361 frames expired and 2,042 spilled to a later cycle). A wider slot (TX_SLOT_MS)
+  // raises the cap.
   if (forSlot && !final && config.txGate.slot.maxHz > 0 && txScheduler.tracker.period) {
     const byRate = Math.max(1, Math.round((config.txGate.slot.maxHz * txScheduler.tracker.period) / 1000));
     const framesInSlot = Math.max(1, Math.floor((txScheduler.slot.widthMs - txScheduler.gate.guardMs) / airMs(protocol.deltaFrameLen(protocol.MAX_DELTA_COUNT))));
-    const bySlot = (config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT) * Math.max(1, framesInSlot - 1);
+    const bySlot = (config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT) * Math.max(1, framesInSlot - config.txGate.slot.reserveFrames);
     const cap = Math.min(byRate, bySlot);
     if (fixes.length > cap) fixes = thinEvenly(fixes, cap);
   }

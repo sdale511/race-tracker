@@ -16,7 +16,7 @@ const pvt = (i, over = {}) => ({
   ...over,
 });
 
-test('delta frame: 8 fixes in 83 bytes, positions and speed exact, time within 1 ms, heading within 0.25 degrees', () => {
+test('delta frame: 8 fixes in 83 bytes, positions exact, time within 1 ms, speed within 0.25 kn, heading within 1 degree', () => {
   const fixes = Array.from({ length: 8 }, (_, i) => pvt(i));
   const frames = protocol.encodeDeltaFrames('ABCDE', fixes);
   assert.deepStrictEqual(frames.map((f) => [f.count, f.buf.length]), [[8, 83]]);
@@ -27,9 +27,9 @@ test('delta frame: 8 fixes in 83 bytes, positions and speed exact, time within 1
     assert.strictEqual(o.boatId, 'ABCDE');
     assert.strictEqual(Math.round(o.lat * 1e7), Math.round(fixes[i].lat * 1e7), `lat ${i}`);
     assert.strictEqual(Math.round(o.lon * 1e7), Math.round(fixes[i].lon * 1e7), `lon ${i}`);
-    assert.strictEqual(Math.round(o.speedKnots * 10), Math.round(((fixes[i].gSpeedMmS / 1000) * 1.94384) * 10), `speed ${i}`);
+    assert.ok(Math.abs(o.speedKnots - (fixes[i].gSpeedMmS / 1000) * 1.94384) <= 0.30, `speed ${i}: ${o.speedKnots} vs ${(fixes[i].gSpeedMmS / 1000) * 1.94384}`);
     assert.ok(Math.abs(o.timestamp - fixes[i].timestamp) <= 1, `time ${i}: ${o.timestamp - fixes[i].timestamp} ms off`);
-    assert.ok(Math.abs(o.headingDeg - fixes[i].headMotDeg) <= 0.3, `heading ${i}: ${o.headingDeg} vs ${fixes[i].headMotDeg}`);
+    assert.ok(Math.abs(o.headingDeg - fixes[i].headMotDeg) <= 1.05, `heading ${i}: ${o.headingDeg} vs ${fixes[i].headMotDeg}`);
     assert.strictEqual(o.gnssFixOk, true);
     assert.strictEqual(o.carrSoln, 2);
     assert.strictEqual(o.numSV, 14);
@@ -55,28 +55,41 @@ test('delta frame: more than 8 fixes split into frames, a lone fix is the plain 
   assert.strictEqual(frames[1].buf[0], protocol.SYNC);
 });
 
-test('delta frame: a change that does not fit starts a new frame (jump, long gap, hard turn, speed spike)', () => {
-  const cases = {
+test('delta frame: a GPS jump or a long gap starts a new frame; a turn or a speed change never does', () => {
+  const splits = {
     'GPS jump of ~1 km': pvt(1, { lat: 40.906 }),
     'a gap over 510 ms': pvt(1, { timestamp: 1760000000000 + 700 }),
-    'a 90 degree turn between fixes': pvt(1, { headMotDeg: 190 }),
-    'a 20 knot speed spike': pvt(1, { gSpeedMmS: 3000 + 10300 }),
+    'a speed change over 63 knots': pvt(1, { gSpeedMmS: 3000 + 33000 }),
   };
-  for (const [what, second] of Object.entries(cases)) {
+  for (const [what, second] of Object.entries(splits)) {
     const frames = protocol.encodeDeltaFrames('ABCDE', [pvt(0), second, pvt(2, { timestamp: second.timestamp + 125, lat: second.lat, lon: second.lon, gSpeedMmS: second.gSpeedMmS, headMotDeg: second.headMotDeg })]);
     assert.deepStrictEqual(frames.map((f) => f.count), [1, 2], what);
-    // and everything still decodes
     const decoded = frames.flatMap((f) => (f.count === 1 ? [protocol.decode(f.buf)] : protocol.decodeDeltaBatch(f.buf)));
     assert.strictEqual(decoded.length, 3, what);
     assert.ok(Math.abs(decoded[1].lat - second.lat) < 1e-7, what);
+  }
+  // the turns and speed changes that used to split a frame (a tack or gybe, 30 knots lost in one fix) now fit
+  const fits = {
+    'a 90 degree turn between fixes': pvt(1, { headMotDeg: 190 }),
+    'a 175 degree turn (a gybe)': pvt(1, { headMotDeg: 275 }),
+    'a 30 knot speed drop': pvt(1, { gSpeedMmS: 3000 - 2900 }),
+    'a 50 knot speed gain': pvt(1, { gSpeedMmS: 3000 + 25000 }),
+  };
+  for (const [what, second] of Object.entries(fits)) {
+    const frames = protocol.encodeDeltaFrames('ABCDE', [pvt(0), second, pvt(2, { timestamp: second.timestamp + 125, lat: second.lat, lon: second.lon, gSpeedMmS: second.gSpeedMmS, headMotDeg: second.headMotDeg })]);
+    assert.deepStrictEqual(frames.map((f) => f.count), [3], `${what} must not split the frame`);
+    const out = protocol.decodeDeltaBatch(frames[0].buf);
+    assert.ok(Math.abs(out[1].headingDeg - (second.headMotDeg % 360)) <= 1.05, `${what}: heading ${out[1].headingDeg}`);
+    assert.ok(Math.abs(out[1].speedKnots - (second.gSpeedMmS / 1000) * 1.94384) <= 0.30, `${what}: speed ${out[1].speedKnots}`);
   }
 });
 
 test('delta frame: heading wraps around north the short way', () => {
   const fixes = [pvt(0, { headMotDeg: 358 }), pvt(1, { headMotDeg: 3 }), pvt(2, { headMotDeg: 357 })];
   const out = protocol.decodeDeltaBatch(protocol.encodeDeltaFrames('ABCDE', fixes)[0].buf);
-  assert.ok(Math.abs(out[1].headingDeg - 3) <= 0.3);
-  assert.ok(Math.abs(out[2].headingDeg - 357) <= 0.3);
+  const angDiff = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
+  assert.ok(angDiff(out[1].headingDeg, 3) <= 1.05, `got ${out[1].headingDeg}`);
+  assert.ok(angDiff(out[2].headingDeg, 357) <= 1.05, `got ${out[2].headingDeg}`);
 });
 
 test('delta frame: bad checksum or count is rejected; the byte-stream scanner knows the type', () => {

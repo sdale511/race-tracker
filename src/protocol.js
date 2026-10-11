@@ -611,12 +611,15 @@ function decodeMarkLog(buf) {
 // Hz - in one frame per correction cycle without a bigger slot (see slotTable.js / txScheduler.js).
 //
 // What is exact and what is rounded, for the fixes after the first in a frame:
-//   lat, lon, speed   exact (changes in the same 1e-7 degree / 0.1 knot units the full fix uses)
+//   lat, lon          exact (changes in the same 1e-7 degree units the full fix uses)
 //   time              rounded to 2 ms (the change is a uint8 in 2 ms units, so up to 510 ms)
-//   heading           rounded to 0.5 degree (the change is an int8 in 0.5 degree units, +-63.5)
+//   speed             rounded to 0.5 knot (an int8 in 0.5 knot units, +-63.5 kn between two fixes)
+//   heading           rounded to 2 degrees (an int8 in 2 degree units, the shorter way round, so any turn fits)
 // The encoder works from the values the decoder will rebuild, not the originals, so nothing drifts
-// along a frame. A fix whose change does not fit (a GPS jump, a gap over 510 ms, a turn of more than
-// 63 degrees between fixes) simply starts a new frame, which always opens with a full fix - see
+// along a frame. A fix whose change does not fit (a GPS jump, a gap over 510 ms, a speed change over 63 kn between
+// two fixes) simply starts a new frame - a turn never does: it is the turns that used to split frames, and a frame
+// that splits needs more of the slot than a slot passes, so ranges wide enough that a hard tack or gybe fits are what
+// keep a cycle's fixes in one or two frames. The first fix of every frame is exact, which always opens with a full fix - see
 // encodeDeltaFrames. Frames are self-contained: losing one never corrupts the next.
 //
 // Layout (all little-endian):
@@ -628,8 +631,8 @@ function decodeMarkLog(buf) {
 //     +0  dt        uint8   time since the previous fix, 2 ms units
 //     +1  dlat      int16   1e-7 degrees
 //     +3  dlon      int16   1e-7 degrees
-//     +5  dspeed    int8    0.1 knot units
-//     +6  dheading  int8    0.5 degree units, shortest way round
+//     +5  dspeed    int8    0.5 knot units
+//     +6  dheading  int8    2 degree units, shortest way round
 //     +7  status    uint8   same bit layout as the full fix
 //   [last]   checksum    uint8 (sum of bytes 1..N-2 mod 256)
 
@@ -669,9 +672,9 @@ function deltaOf(prev, next) {
   const dt = Math.round((next.ts - prev.ts) / 2);
   const dlat = next.lat - prev.lat;
   const dlon = next.lon - prev.lon;
-  const dspeed = next.speed - prev.speed;
+  const dspeed = Math.round((next.speed - prev.speed) / 5); // 0.5 knot units (speed is held in 0.1 knot units)
   const diff = ((((next.heading - prev.heading) % 3600) + 5400) % 3600) - 1800; // shortest signed difference, 0.1 degree units
-  const dheading = Math.round(diff / 5);
+  const dheading = Math.round(diff / 20); // 2 degree units: +-90 covers every turn
   if (dt < 0 || dt > 255) return null;
   if (dlat < -32768 || dlat > 32767 || dlon < -32768 || dlon > 32767) return null;
   if (dspeed < -128 || dspeed > 127) return null;
@@ -684,8 +687,8 @@ function applyDelta(prev, d) {
     ts: prev.ts + d.dt * 2,
     lat: prev.lat + d.dlat,
     lon: prev.lon + d.dlon,
-    speed: prev.speed + d.dspeed,
-    heading: (((prev.heading + d.dheading * 5) % 3600) + 3600) % 3600,
+    speed: Math.max(0, Math.min(65535, prev.speed + d.dspeed * 5)),
+    heading: (((prev.heading + d.dheading * 20) % 3600) + 3600) % 3600,
     status: d.status,
   };
 }
