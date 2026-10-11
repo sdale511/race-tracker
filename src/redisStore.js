@@ -58,9 +58,8 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 // full field names - with a fleet reporting every couple seconds over a
 // multi-hour race, the field names alone (`boatId`, `speedKnots`,
 // `headingDeg`, `gnssFixOk`, `carrSoln`, ...) would otherwise account for
-// close to half of every stored record. `timestamp` isn't stored at all -
-// it's already the sorted-set score, so it's recovered via WITHSCORES on
-// read instead of being duplicated in the payload. Callers still get back
+// close to half of every stored record. `timestamp` is the sorted-set score and is
+// recovered via WITHSCORES on read (the payload's `t` copy only keeps members unique, see packFix). Callers still get back
 // full, friendly field names from getBoatTrack/getAllTrack - the shortening
 // is purely a storage-format detail.
 // No arrival-time field is stored (an `r: receivedAt` key used to be): a fix's
@@ -75,6 +74,11 @@ const FIX_KEYS = { b: 'boatId', la: 'lat', lo: 'lon', s: 'speedKnots', h: 'headi
 function packFix(decoded) {
   return JSON.stringify({
     b: decoded.boatId,
+    // The fix's own time (ms). It is also the sorted-set score, but a sorted set keeps ONE entry per distinct member, so
+    // without it two fixes with identical content (same position, speed, heading and status - a boat holding still, or
+    // the simulator's boats sailing the same path twice) collapse into one entry whose score moves to the later fix, and
+    // the earlier one vanishes from the track. Readers take the time from the score and ignore this field.
+    t: decoded.timestamp,
     la: decoded.lat,
     lo: decoded.lon,
     s: decoded.speedKnots,
@@ -666,4 +670,4 @@ class RedisStore {
   }
 }
 
-module.exports = { RedisStore };
+module.exports = { RedisStore, packFix, unpackFix };
