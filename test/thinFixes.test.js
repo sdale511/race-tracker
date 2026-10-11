@@ -67,3 +67,13 @@ test('protected fixes are thinned last', () => {
   // with a cap smaller than the protected set they still go, rather than the cap being broken
   assert.strictEqual(thinForTurns(l, 3, { protect: (f) => prot.has(f) }).length, 3);
 });
+
+test('thinBackfill keeps one fix per 500 ms at most and the corner of a turn', () => {
+  const { thinBackfill } = require('../src/thinFixes');
+  const l = track(40, 20); // 5 s at 8 Hz, a corner at fix 19
+  const r = thinBackfill(l);
+  assert.ok(r.length <= 13 && r.length >= 9);
+  assert.ok(r.includes(l[19]));
+  for (let i = 1; i < r.length; i++) assert.ok(r[i].timestamp - r[i - 1].timestamp <= 500);
+  assert.strictEqual(thinBackfill(l.slice(0, 2)).length, 2);
+});

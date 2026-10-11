@@ -11,7 +11,7 @@ const GAP_WEIGHT_M_PER_MS = 0.0004; // a 100 ms difference in the gap that remov
 
 // `list` oldest first, fixes with { timestamp (ms), lat, lon (degrees) }. `anchor` is the last fix already sent
 // (or null): it is not part of the result but keeps the first fix in the list from being judged without a neighbour.
-function thinForTurns(list, cap, { anchor = null, maxGapMs = 480, protect = null } = {}) {
+function thinForTurns(list, cap, { anchor = null, maxGapMs = 480, protect = null, strictGap = false } = {}) {
   if (list.length <= cap) return list;
   const kept = anchor ? [anchor, ...list] : list.slice();
   const first = anchor ? 1 : 0; // index below which nothing may be removed
@@ -37,6 +37,7 @@ function thinForTurns(list, cap, { anchor = null, maxGapMs = 480, protect = null
       const c = costOf(i, false);
       if (c < bestCost) { bestCost = c; best = i; }
     }
+    if (best < 0 && strictGap) break; // stop when nothing more can go without opening a gap over maxGapMs
     if (best < 0) {
       for (let i = Math.max(first, 1); i < kept.length - 1; i++) {
         const c = costOf(i, true);
@@ -55,4 +56,11 @@ function thinForTurns(list, cap, { anchor = null, maxGapMs = 480, protect = null
   return anchor ? kept.slice(1) : kept;
 }
 
-module.exports = { thinForTurns };
+// What a boat held back while it waited for a slot (`held`, oldest first), cut down for the first cycle in its slot:
+// no more than one fix per maxGapMs, 500 ms (so a delta frame is not split by a long gap), keeping turns over straight runs.
+function thinBackfill(held, { maxGapMs = 500, protect = null } = {}) {
+  if (held.length < 3) return held;
+  return thinForTurns(held, 2, { maxGapMs, protect, strictGap: true });
+}
+
+module.exports = { thinForTurns, thinBackfill };

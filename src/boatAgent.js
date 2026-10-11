@@ -25,7 +25,7 @@ const { TxGate } = require('./txGate');
 const { TxScheduler, airMs } = require('./txScheduler');
 const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff } = require('./slotTable');
 const { OnGridWatcher } = require('./onGridWatcher');
-const { thinForTurns } = require('./thinFixes');
+const { thinForTurns, thinBackfill } = require('./thinFixes');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -364,9 +364,6 @@ function sendPacer() {
   if (parked && config.txGate.slot.parkedReportS > 0 && txScheduler && txScheduler.slotAligned()) return parkedReporter;
   if (joinThrottleActive()) return joinBackoff;
   return null;
-}
-function parkedThrottleActive() {
-  return sendPacer() !== null;
 }
 function updateParked(pvt) {
   if (!parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
@@ -822,8 +819,12 @@ function transmitFix(pvt) {
 // letting a partial batch sit indefinitely.
 function queueFixForTx(pvt) {
   sdLogger.logPvt(pvt);
-  if (parkedThrottleActive()) {
-    pendingBatch = [pvt]; // parked or without a slot: only the latest fix is kept for the next (occasional) report
+  const pacer = sendPacer();
+  if (pacer) {
+    // parked or without a slot: only the latest fix is kept for the next (occasional) report. Without a slot (not
+    // parked) the fix it replaces is kept for the first cycle in a slot, see waitingFixes
+    if (pacer === joinBackoff) holdWhileWaiting(pendingBatch);
+    pendingBatch = [pvt];
     return;
   }
   pendingBatch.push(pvt);
@@ -853,6 +854,18 @@ function isNearRoundingMark(fix) {
 }
 const ROUNDING_MARKS = ['windwardGreen', 'windwardBlack', 'leewardGreen', 'leewardBlack'];
 
+// Fixes a boat could not send while it had no slot (it was sharing the join slots, one report at a time). When the slot
+// arrives the first cycle carries them, thinned, so the live track has no hole between leaving the grid and the slot.
+const BACKFILL_MAX_AGE_MS = 15000;
+let waitingFixes = [];
+function holdWhileWaiting(list) {
+  if (list.length === 0) return;
+  waitingFixes = waitingFixes.concat(list);
+  const cutoff = waitingFixes[waitingFixes.length - 1].timestamp - BACKFILL_MAX_AGE_MS;
+  const keep = waitingFixes.findIndex((f) => f.timestamp >= cutoff);
+  if (keep > 0) waitingFixes = waitingFixes.slice(keep);
+}
+
 let lastBatchFix = null; // newest fix of the last cycle's batch, the anchor for thinning the next
 
 // Sends whatever's pending as one batch frame (or, for the common case of a
@@ -869,14 +882,30 @@ let lastBatchFix = null; // newest fix of the last cycle's batch, the anchor for
 function flushPendingBatch({ forSlot = false, final = false } = {}) {
   let fixes = pendingBatch;
   pendingBatch = [];
+  let backfilled = false;
   if (fixes.length === 0) return;
   if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
   const pacer = final ? null : sendPacer(); // the last send before exiting skips the pacing
   if (pacer) {
     // parked, or without a slot of its own: one fix, only when the next report is due (the rest are on the SD card)
-    if (!pacer.due()) return;
+    // sharing the join slots (not parked): what is not sent is kept for the first cycle in a slot, see waitingFixes
+    const waiting = pacer === joinBackoff;
+    if (!waiting) waitingFixes = []; // parked: nothing to backfill
+    if (!pacer.due()) {
+      if (waiting) holdWhileWaiting(fixes);
+      return;
+    }
     pacer.sent();
+    if (waiting) holdWhileWaiting(fixes.slice(0, -1));
     fixes = fixes.slice(-1);
+  } else if (waitingFixes.length) {
+    if (forSlot && !final) {
+      const held = waitingFixes.filter((f) => f.timestamp < fixes[0].timestamp && f.timestamp >= fixes[0].timestamp - BACKFILL_MAX_AGE_MS);
+      backfilled = held.length > 0;
+      if (backfilled) console.log(`[slots] sending ${held.length} fixes held while waiting for a slot (thinned) with the first cycle in the slot`);
+      fixes = thinBackfill(held, { protect: isNearRoundingMark }).concat(fixes);
+    }
+    waitingFixes = [];
   }
 
   // The slot's frame budget (the rest of the fixes are on the SD card): at most maxHz fixes a second over the cycle, and
@@ -893,8 +922,9 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
     // Near a mark the base needs every fix of the rounding: use the whole slot for the cycle, the rate cap and the
     // reserve both lifted (a boat is inside the zone for a cycle or two, so a frame that spills is absorbed by the next)
     const nearMark = fixes.some(isNearRoundingMark);
-    const bySlot = perFrameMax * (nearMark ? framesInSlot : Math.max(1, framesInSlot - config.txGate.slot.reserveFrames));
-    const cap = nearMark ? bySlot : Math.min(byRate, bySlot);
+    const wholeSlot = nearMark || backfilled; // a cycle with the fixes held while waiting for the slot also uses all of it
+    const bySlot = perFrameMax * (wholeSlot ? framesInSlot : Math.max(1, framesInSlot - config.txGate.slot.reserveFrames));
+    const cap = wholeSlot ? bySlot : Math.min(byRate, bySlot);
     // thinned to keep the turns (see thinFixes.js), judged against the last fix of the previous cycle
     if (fixes.length > cap) {
       const anchor = lastBatchFix && fixes[0].timestamp - lastBatchFix.timestamp < 5000 ? lastBatchFix : null;

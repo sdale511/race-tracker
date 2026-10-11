@@ -809,7 +809,14 @@ uses the whole slot (no reserve, no `TX_SLOT_MAX_HZ` cap) and the fixes in the z
 the base gets every fix of a mark rounding (the rounding check needs about 100 degrees of accumulated turn inside the
 50 m radius, and sparse fixes there under-measure it). A boat is inside the zone for a cycle or two, so the spare frame
 it uses is absorbed by the next cycle. In a 30-boat test at 35 ms slots and a 2 s interval, 51% of the fixes logged
-within 50 m of a mark reached the base without this and 100% with it, at a cost of about 17% more frames overall. Without the cap, a cycle that needs more frames than the slot
+within 50 m of a mark reached the base without this and 100% with it, at a cost of about 17% more frames overall.
+
+**No hole at the start of a slot.** A boat without a slot of its own - it has just left the start grid, or lost its slot
+and is waiting for the base to assign another - reports one fix at a time in the shared join slots. It now keeps the
+fixes it could not send (the last 15 s) and, in its first cycle in a slot, sends them as well: thinned to at most one fix
+per 500 ms (turns kept, so a delta frame is never split by a long gap), and that cycle uses the whole slot, with no
+reserve and no rate cap. The track then runs through the handover instead of jumping across it. In 30-boat runs at 2 s
+the mid-race gaps over 1.5 s went from 3-8 per run to 0-1; the fixes are still all on the SD card either way. Without the cap, a cycle that needs more frames than the slot
 passes backs up: frames queue for later cycles, the queue never drains, and the scheduler discards the oldest - in a
 30-boat 8 Hz test at 2 s, 98 of 4,361 frames expired and 2,042 spilled to a later cycle, which showed as blocks of
 missing fixes right after turns (straight chords across the marks on the live map); with the cap none expired and
@@ -2155,7 +2162,7 @@ actually use. Redis password is redacted.
 | `RTCM_INTERVAL_S` | 2 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MARK_ZONE_M` | 80 | Boat, slot mode - within this many metres of a windward/leeward mark the slot is used in full and those fixes are thinned last, so no mark rounding is missed (see "Sending in the slot"); `0` = off |
 | `TX_SLOT_RESERVE_FRAMES` | 1 | Boat, slot mode - frames' worth of the slot kept free for frames that a GPS jump or gap splits off; the per-cycle fix cap is 8 x (frames the slot passes - this). `0` uses the whole slot (at 45 ms and 2 s that is 24 fixes per cycle, more than the 8 Hz cap allows, and not tested clean) |
-| `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = one 83-byte delta frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
+| `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = 8 Hz on average: two 83-byte delta frames per 2 s cycle, one per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
 | `TX_DELTA` | on | Boat - send batches as delta-coded frames (up to 8 fixes in 83 bytes); `0` = the older batch frame (4 fixes in 84). Update the base first |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 45 | Base only - how often the slot table is rebroadcast, and how long a stopped boat keeps its slot |
 | `TX_SLOT_RACING_S` | 600 | Base only - how long a stopped boat stays "racing" (eligible for a slot again when it moves), and how long a boat sitting on the grid stays "parked" without a fix |
