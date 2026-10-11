@@ -323,6 +323,42 @@ function renderDashboard(s, power) {
     </div>`
     }
     <div class="card">
+      <div class="label" title="RTCM3 correction messages from the base - what the RTK fix depends on">RTK corrections</div>
+      <div class="value">${
+        s.rtcm.lastReceivedAt == null
+          ? s.radioRtcm.lastReceivedAt == null
+            ? 'none yet'
+            : 'not applied'
+          : Date.now() - s.rtcm.lastReceivedAt < 10000
+          ? 'receiving'
+          : 'stalled'
+      }</div>
+      <div class="stat-rows">${[
+        {
+          label: 'GPS applied',
+          title: 'Correction messages the GPS receiver itself reports receiving (UBX-RXM-RTCM) - the count that matters for RTK',
+          value: s.rtcm.count.toLocaleString(),
+        },
+        {
+          label: 'GPS last',
+          title: 'How long ago the GPS receiver last reported a correction message, and its RTCM message type (1005 = base position, 1074/1084/1094/1124 = observations, 1230 = GLONASS biases)',
+          value: `${formatAgo(s.rtcm.lastReceivedAt)}${s.rtcm.lastMsgType != null ? ` (type ${s.rtcm.lastMsgType})` : ''}`,
+        },
+        {
+          label: 'CRC failures',
+          title: 'Correction messages the GPS rejected as corrupted',
+          value: s.rtcm.crcFailures.toLocaleString(),
+        },
+        {
+          label: 'Radio received',
+          title: 'Correction messages that arrived over this boat\'s telemetry radio (shared-radio setup only - 0 if corrections come in on a separate radio straight into the GPS)',
+          value: `${s.radioRtcm.frames.toLocaleString()} (${formatAgo(s.radioRtcm.lastReceivedAt)})`,
+        },
+      ]
+        .map((r) => `<div class="stat-row"><span class="name" title="${r.title}">${r.label}</span><span class="val">${r.value}</span></div>`)
+        .join('')}</div>
+    </div>
+    <div class="card">
       <div class="label">Frames sent</div>
       <div class="value">${s.radio.framesSent.toLocaleString()}</div>
       <div class="sub">${s.radio.syncErrors} sync errors received</div>
