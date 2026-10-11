@@ -22,7 +22,7 @@ const { GpsSleep } = require('./gpsSleep');
 const { createRtcmLogger } = require('./rtcmLog');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
-const { TxScheduler } = require('./txScheduler');
+const { TxScheduler, airMs } = require('./txScheduler');
 const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff } = require('./slotTable');
 const { OnGridWatcher } = require('./onGridWatcher');
 const roverStats = require('./roverStats');
@@ -855,12 +855,12 @@ function queueFixForTx(pvt) {
 // success - like a dropped single frame, an undelivered batch's fixes are
 // already durably on SD (logged above as each one was queued); this app
 // doesn't buffer-and-retry radio sends, on principle, for either case.
-function flushPendingBatch({ forSlot = false } = {}) {
+function flushPendingBatch({ forSlot = false, final = false } = {}) {
   let fixes = pendingBatch;
   pendingBatch = [];
   if (fixes.length === 0) return;
   if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
-  const pacer = sendPacer();
+  const pacer = final ? null : sendPacer(); // the last send before exiting skips the pacing
   if (pacer) {
     // parked, or without a slot of its own: one fix, only when the next report is due (the rest are on the SD card)
     if (!pacer.due()) return;
@@ -868,14 +868,28 @@ function flushPendingBatch({ forSlot = false } = {}) {
     fixes = fixes.slice(-1);
   }
 
-  // The slot's frame budget: at most maxHz fixes a second (thinned evenly, newest kept; the rest are
-  // on the SD card) over the cycle, then as few, full frames as that needs.
-  if (forSlot && config.txGate.slot.maxHz > 0 && txScheduler.tracker.period) {
-    const cap = Math.max(1, Math.round((config.txGate.slot.maxHz * txScheduler.tracker.period) / 1000));
-    if (fixes.length > cap) fixes = Array.from({ length: cap }, (_, i) => fixes[Math.floor(((i + 1) * fixes.length) / cap) - 1]);
+  // The slot's frame budget (the rest of the fixes are on the SD card): at most maxHz fixes a second over the cycle,
+  // and at most what the slot can carry with a frame in reserve. A turn (heading change over 63 degrees, or a speed
+  // jump over 12 kn) splits a delta frame, so a cycle can need one or two frames more than its fix count suggests; a
+  // slot passes two 83-byte frames, and if a cycle needs more they queue for the next cycle, the queue never drains,
+  // and the scheduler drops the oldest - whole blocks of fixes missing right after turns (measured: with 16 fixes per
+  // 2 s cycle, 98 of 4,361 frames expired and 2,042 spilled to a later cycle). Thinning only the cycles with a turn
+  // does not help: it widens the change between the fixes left and splits them more. So the cap is fixed, one frame's
+  // worth per frame the slot passes less one in reserve. A wider slot (TX_SLOT_MS) raises it.
+  if (forSlot && !final && config.txGate.slot.maxHz > 0 && txScheduler.tracker.period) {
+    const byRate = Math.max(1, Math.round((config.txGate.slot.maxHz * txScheduler.tracker.period) / 1000));
+    const framesInSlot = Math.max(1, Math.floor((txScheduler.slot.widthMs - txScheduler.gate.guardMs) / airMs(protocol.deltaFrameLen(protocol.MAX_DELTA_COUNT))));
+    const bySlot = (config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT) * Math.max(1, framesInSlot - 1);
+    const cap = Math.min(byRate, bySlot);
+    if (fixes.length > cap) fixes = thinEvenly(fixes, cap);
   }
   const perFrame = forSlot ? maxFixesPerFrame : Math.max(1, config.txBatchSize);
   for (let i = 0; i < fixes.length; i += perFrame) sendFixes(fixes.slice(i, i + perFrame));
+}
+
+// `cap` fixes out of `list`, evenly spread, always including the newest.
+function thinEvenly(list, cap) {
+  return Array.from({ length: cap }, (_, i) => list[Math.floor(((i + 1) * list.length) / cap) - 1]);
 }
 
 // Sends up to one frame's worth of fixes (more if delta coding has to split them - see
@@ -883,11 +897,11 @@ function flushPendingBatch({ forSlot = false } = {}) {
 // older batch frame MAX_BATCH_COUNT in 84 (TX_DELTA=0).
 function sendFixes(fixes) {
   const frames =
-    fixes.length === 1
+    (fixes.length === 1
       ? [{ buf: protocol.encode(config.boatId, fixes[0]), count: 1 }]
       : config.txDelta
       ? protocol.encodeDeltaFrames(config.boatId, fixes)
-      : [{ buf: protocol.encodeBatch(config.boatId, fixes), count: fixes.length }];
+      : [{ buf: protocol.encodeBatch(config.boatId, fixes), count: fixes.length }]);
   let consumed = 0;
   for (const { buf, count } of frames) {
     const sent = radio.send(buf);
@@ -1253,7 +1267,7 @@ function startGpsSimIfReady() {
   gps.on('finished', ({ laps }) => {
     if (config.sim.exitOnFinish) {
       console.log(`[boatAgent] finished simulated race after ${laps} lap(s) - exiting (SIM_EXIT_ON_FINISH=1)`);
-      process.exit(0);
+      exitAfterFlush();
       return;
     }
     console.log(`[boatAgent] finished simulated race after ${laps} lap(s) - staying alive for pending uploads`);
@@ -1546,13 +1560,30 @@ setInterval(() => {
 // <pid>` with no signal named, or a process manager's "stop" - which
 // defaults to SIGTERM, not SIGINT. Without a handler for it, Node's default
 // action for SIGTERM is an immediate exit that skips this same cleanup.
+// Send what is still held for the next slot (fixes gathered since the last send, and anything the scheduler is
+// holding) and give the radio a moment to write it before the process exits - otherwise the last second or two of a
+// boat's live track (up to a whole correction cycle) goes down with it. The SD log has it either way.
+let exiting = false;
+function exitAfterFlush(code = 0) {
+  if (exiting) return;
+  exiting = true;
+  try {
+    if (pendingBatch.length && !sleeper.isSleeping()) flushPendingBatch({ forSlot: true, final: true });
+    if (txScheduler) txScheduler.flushNow();
+  } catch (err) {
+    console.warn(`[boatAgent] could not send the last fixes before exiting: ${err.message}`);
+  }
+  if (txScheduler) { const st = txScheduler.stats(); console.log(`[txgate-stats] submitted=${st.submitted} held=${st.held} dropped=${st.dropped} expired=${st.expired} spilled=${st.spilled} queued=${st.queued}`); }
+  setTimeout(() => process.exit(code), 400);
+}
+
 function shutdown() {
   // Only ever set true above (SIM_HOLD_FOR_START's own TTY handler) -
   // restores the terminal to normal input mode before exiting, so the
   // shell isn't left swallowing keystrokes raw after this process is gone.
   if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
   console.log('\n[boatAgent] shutting down');
-  process.exit(0);
+  exitAfterFlush(0);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

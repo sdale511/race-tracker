@@ -5,7 +5,8 @@
 // What it measures, per boat, over the last 60 s:
 //   RTK fixed / float %   from each fix's carrier solution - the outcome that matters: a boat sliding to float
 //                         has incomplete corrections.
-//   gaps                  fixes that skip more than GAP_MS of GPS time while the boat is moving (both fixes
+//   gaps                  fixes that skip more than GAP_MS of GPS time (more at a longer correction interval - one
+//                         frame per cycle) while the boat is moving (both fixes
 //                         at MOVING_KN or faster, not parked on the start grid) - a missed frame or more.
 //                         Not counted past MAX_GAP_MS: that is out of range, asleep or stopped, not a loss.
 //   silence               how long since the last fix, for a boat that was moving.
@@ -20,6 +21,7 @@ const GAP_MS = 2000; // a moving boat sends at least about once a second; more t
 const MAX_GAP_MS = 60 * 1000;
 const MOVING_KN = 2;
 const MIN_RTK_SAMPLES = 5;
+const FINISH_QUIET_MS = 3 * 60 * 1000;
 
 const THRESHOLDS = {
   rtkWarnPct: 90,
@@ -39,6 +41,7 @@ const worse = (a, b) => (LEVEL_RANK[b] > LEVEL_RANK[a] ? b : a);
 class LinkHealth {
   constructor({ now = () => Date.now() } = {}) {
     this.now = now;
+    this.cycleMs = null; // the correction interval the base hears; a slotted boat reports once per cycle
     this.boats = new Map(); // boatId -> { samples: [{ t, rtk, float }], gaps: [{ t, ms }], last: { ts, speed, t, parked } }
     this.frames = []; // times of frames that decoded
     this.syncErrors = []; // times of checksum failures
@@ -61,10 +64,27 @@ class LinkHealth {
     const prev = b.last;
     if (prev && !parked && !prev.parked && !sparse && !prev.sparse) {
       const gapMs = fix.timestamp - prev.ts;
-      if (gapMs > GAP_MS && gapMs <= MAX_GAP_MS && Math.min(prev.speed, fix.speedKnots) >= MOVING_KN) b.gaps.push({ t, ms: gapMs });
+      if (gapMs > this.gapLimitMs() && gapMs <= MAX_GAP_MS && Math.min(prev.speed, fix.speedKnots) >= MOVING_KN) b.gaps.push({ t, ms: gapMs });
     }
     b.last = { ts: fix.timestamp, speed: fix.speedKnots, t, parked, sparse };
     this._prune(b, t);
+  }
+
+  // The correction interval the base is hearing (null when none): a boat in a slot sends one frame per cycle, so its
+  // fixes can be a whole cycle apart without anything being lost. The gap limit follows it.
+  setCycleMs(ms) {
+    this.cycleMs = ms && ms > 0 ? ms : null;
+  }
+
+  gapLimitMs() {
+    return this.cycleMs ? Math.max(GAP_MS, 1.5 * this.cycleMs + 500) : GAP_MS;
+  }
+
+  // The boat crossed the finish line: it may stop or power off at any moment, which is not a link problem. For the next
+  // FINISH_QUIET_MS its silence is not judged (it is shown as idle).
+  noteFinish(boatId) {
+    const b = this.boats.get(boatId);
+    if (b) b.finishedAt = this.now();
   }
 
   recordFrame() {
@@ -92,11 +112,14 @@ class LinkHealth {
     const rtkPct = n >= MIN_RTK_SAMPLES ? Math.round((b.samples.filter((s) => s.rtk).length / n) * 100) : null;
     const floatPct = n >= MIN_RTK_SAMPLES ? Math.round((b.samples.filter((s) => s.float).length / n) * 100) : null;
     const longestGapS = b.gaps.length ? Math.round(Math.max(...b.gaps.map((g) => g.ms)) / 100) / 10 : 0;
-    const wasMoving = b.last.speed >= MOVING_KN && !b.last.parked && !b.last.sparse;
+    const finished = b.finishedAt !== undefined && t - b.finishedAt < FINISH_QUIET_MS && b.finishedAt >= b.last.t - FINISH_QUIET_MS;
+    const wasMoving = b.last.speed >= MOVING_KN && !b.last.parked && !b.last.sparse && !(finished && silentMs > 3000);
 
     let level = 'ok';
     const why = [];
-    if (!wasMoving && !b.last.parked && b.last.speed < 1 && silentMs > 20 * 1000) {
+    if (finished && silentMs > 10 * 1000) {
+      level = 'quiet'; // crossed the finish and went quiet: stopped or switched off, not a link problem
+    } else if (!wasMoving && !b.last.parked && b.last.speed < 1 && silentMs > 20 * 1000) {
       level = 'quiet'; // sitting still, sending its heartbeat - not expected to be chatty
     } else {
       // RTK share: judged on where the boat is NOW as well as over the minute. A parked or sparse boat has only a few
@@ -178,8 +201,23 @@ class LinkHealthAlerter {
     const s = this.health.status();
     const lines = [];
     const nowBad = new Set(s.boats.filter((b) => b.level === 'bad').map((b) => b.boatId));
-    for (const b of s.boats) if (b.level === 'bad' && !this.bad.has(b.boatId)) lines.push(`[health] WARNING: boat ${b.boatId}: ${b.why.join('; ')}`);
-    for (const id of this.bad) if (!nowBad.has(id)) lines.push(`[health] boat ${id} recovered`);
+    const newlyBad = s.boats.filter((b) => b.level === 'bad' && !this.bad.has(b.boatId));
+    if (newlyBad.length > 3) {
+      // a lot at once is one event (the base lost its radio, corrections stopped): say so once, not once per boat
+      lines.push(`[health] WARNING: ${newlyBad.length} boats turned bad together (${newlyBad.slice(0, 5).map((b) => b.boatId).join(', ')}${newlyBad.length > 5 ? ', ...' : ''}): ${newlyBad[0].why.join('; ')}`);
+    } else {
+      for (const b of newlyBad) lines.push(`[health] WARNING: boat ${b.boatId}: ${b.why.join('; ')}`);
+    }
+    // Out of the bad list: recovered only if it is being heard and judged ok or warn; a boat that went quiet or dropped off
+    // the card (it stopped, finished or switched off) is not a recovery.
+    const byId = new Map(s.boats.map((b) => [b.boatId, b]));
+    const left = [...this.bad].filter((id) => !nowBad.has(id));
+    const recovered = left.filter((id) => byId.has(id) && (byId.get(id).level === 'ok' || byId.get(id).level === 'warn'));
+    const gone = left.filter((id) => !recovered.includes(id));
+    if (recovered.length > 3) lines.push(`[health] ${recovered.length} boats recovered`);
+    else for (const id of recovered) lines.push(`[health] boat ${id} recovered`);
+    if (gone.length > 3) lines.push(`[health] ${gone.length} boats stopped reporting (stopped or off)`);
+    else for (const id of gone) lines.push(`[health] boat ${id} stopped reporting (stopped or off)`);
     this.bad = nowBad;
     const syncBad = s.syncLevel === 'bad';
     if (syncBad && !this.syncBad) lines.push(`[health] WARNING: ${s.syncPct}% of radio frames are failing their checksum (${s.syncErrors} of ${s.syncErrors + s.frames} in the last minute)`);

@@ -232,7 +232,8 @@ module.exports = {
     // SIMULATE=1 base only: broadcast a synthetic RTCM correction burst (six messages the size of
     // a real epoch) every N seconds, so the shared-radio gate and slots can be exercised without
     // hardware. Default 1; 0 = off.
-    rtcmIntervalS: parseFloat(process.env.SIM_RTCM_INTERVAL_S || '1'),
+    // (RTCM_INTERVAL_S, which sizes the slot table, is used when this is not set, so the two always agree.)
+    rtcmIntervalS: parseFloat(process.env.SIM_RTCM_INTERVAL_S || process.env.RTCM_INTERVAL_S || '1'),
     // Off by default - set to 1 to skip the simulated race entirely and
     // just sit the boat at its start position (see simGps.js's _tick())
     // forever, emitting a stationary but otherwise normal fix stream.

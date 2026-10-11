@@ -42,6 +42,7 @@ class TxScheduler {
     slot = { enabled: false, index: 0, count: 25, widthMs: 35, join: null },
     slottedSyncs = SLOTTED_SYNCS, // the frame types (first byte) held for the slot; the base passes its own
     trafficLabel = "this boat's", // for the warning when the slot is too small
+    warnSpill = true, // the base's own slot (table + marks) spills into the next cycle by design - it does not warn
     maxQueue = 12,
     maxAgeMs = 5000, // a frame held longer than this is dropped, not sent stale (positions are on the SD card)
     now = () => performance.now(),
@@ -55,6 +56,7 @@ class TxScheduler {
     this.slot = slot;
     this.slottedSyncs = slottedSyncs;
     this.trafficLabel = trafficLabel;
+    this.warnSpill = warnSpill;
     this.maxQueue = maxQueue;
     this.maxAgeMs = maxAgeMs;
     this.lastSlotWarnAt = -Infinity;
@@ -143,7 +145,8 @@ class TxScheduler {
       const base = this.tracker.startAtOrBefore(t);
       delay = null;
       for (let k = 0; k < 3 && p; k++) {
-        const start = base + k * p + this.gate.afterMs() + this._slotIndexFor(base + k * p) * widthMs;
+        const idx = this._slotIndexFor(base + k * p);
+        const start = base + k * p + this.gate.afterMs() + (this._slotFits(idx, 84) ? idx : 0) * widthMs;
         if (start > t + 0.5) {
           delay = start - t + 1; // 1 ms after the slot opens, so the frames find it open
           break;
@@ -209,12 +212,31 @@ class TxScheduler {
   }
 
   // Wait (ms from `t`) until this boat's slot can take a frame of `bytes`, 0 if it can go now.
+  // Does slot `index` fit inside the correction period the bursts actually have - open, carry a frame of `bytes`, and
+  // end before the next burst's conflict window? When it does not (slots sized for a longer interval than the one
+  // being heard - RTCM_INTERVAL_S or TX_SLOT_COUNT set wrong, or a table from a base with different settings) a frame
+  // waiting for that slot would wait forever, so it is sent outside slots (gate only) and the mismatch is logged.
+  _slotFits(index, bytes) {
+    const p = this.tracker.period;
+    if (!p) return true;
+    const fits = this.gate.afterMs() + index * this.slot.widthMs + airMs(bytes) + this.gate.beforeMs(bytes) <= p;
+    if (!fits && this.now() - (this.lastNoFitWarnAt || -Infinity) > 60000) {
+      this.lastNoFitWarnAt = this.now();
+      this.log(
+        `[txgate] WARNING: slot ${index} of ${this.slot.count} (${this.slot.widthMs} ms each) does not fit in the ${Math.round(p)} ms between correction bursts - ` +
+          'sending outside slots (clear of the burst only). The slot count was sized for a longer correction interval than the one heard: set RTCM_INTERVAL_S (and SIM_RTCM_INTERVAL_S) to the real interval, or lower TX_SLOT_COUNT'
+      );
+    }
+    return fits;
+  }
+
   _slotWaitMs(bytes, t) {
     const { widthMs } = this.slot;
     const p = this.tracker.period;
     const base = this.tracker.startAtOrBefore(t);
     const need = airMs(bytes);
     for (let k = 0; k < 3; k++) {
+      if (!this._slotFits(this._slotIndexFor(base + k * p), bytes)) return 0;
       const index = this._slotIndexFor(base + k * p);
       const start = base + k * p + this.gate.afterMs() + index * widthMs;
       const end = start + widthMs;
@@ -229,7 +251,7 @@ class TxScheduler {
       if (t >= start && fits) return 0;
       if (t >= start && !fits) {
         this.counters.spilled++;
-        if (t - this.lastSlotWarnAt > 30000) {
+        if (this.warnSpill && t - this.lastSlotWarnAt > 30000) {
           this.lastSlotWarnAt = t;
           this.log(`[txgate] WARNING: slot ${index} (${widthMs} ms) is too small for ${this.trafficLabel} traffic - frames are waiting for later cycles. Raise TX_SLOT_MS (a 84-byte batch frame needs about 11 ms of slot plus a ${this.gate.guardMs} ms guard)`);
         }
@@ -298,6 +320,17 @@ class TxScheduler {
       if (this.tracker.isActive(t)) this._markSlotUsed(e.bytes, t);
     }
     this.rawSend(e.buf);
+  }
+
+  // Send everything still held, in order, right now - ignoring the gate and the slot. For a boat that is about to exit
+  // (it finished, or is being shut down): fixes held for the next slot would otherwise be thrown away with the process.
+  flushNow() {
+    if (this.timer) this.clearTimer(this.timer);
+    this.timer = null;
+    const held = this.queue;
+    this.queue = [];
+    for (const e of held) this.rawSend(e.buf);
+    return held.length;
   }
 
   stats() {

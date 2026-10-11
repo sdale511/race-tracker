@@ -787,18 +787,26 @@ width, less one for the base. With the default 35 ms slots that is 26 slots in a
 boats, 2 join slots and the base's - and 54 at 2 s (51 for boats; 40 ms slots: 22 and 47 in all). So when you
 change the GPS to 2 s, set `RTCM_INTERVAL_S=2` on the base and restart it; the table then carries the larger
 count from the first broadcast. If the corrections it hears arrive at a different interval, the base warns
-once. Set `TX_SLOT_COUNT` to fix the count instead (it is also the count a boat assumes before it has heard a
+once - and any slot that would not fit inside the interval actually heard (say `RTCM_INTERVAL_S=2` with bursts
+still every 1 s) is skipped: its frames go out clear of the burst but outside slots, with a `[txgate] WARNING: slot ...
+does not fit` line, instead of waiting for a slot that never comes. In the simulator `RTCM_INTERVAL_S` also sets
+the simulated burst interval unless `SIM_RTCM_INTERVAL_S` is set. Set `TX_SLOT_COUNT` to fix the count instead (it is also the count a boat assumes before it has heard a
 table: 25 by default).
 
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
 cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
-instead of sending a batch whenever it happens to fill. Fixes are also capped at `TX_SLOT_MAX_HZ` (default 8)
-per second over the cycle: at 8 Hz and a 1 s cycle a boat sends exactly one delta frame per slot, which is no
-bigger than the 84-byte frame the 35 ms slot was measured with; a faster GPS rate is thinned evenly (the newest
-fix is always kept; all of them stay on the SD card). `0` removes the cap, and a boat above 8 Hz then needs a
-second frame and a bigger slot. A fix can wait up to a cycle, and the cap scales with it: at a 2 s correction
-interval 8 Hz is 16 fixes, two frames, so use `TX_SLOT_MAX_HZ=4` to keep one frame per cycle. With
-`TX_DELTA=0` (older batch frames, 4 fixes) set `TX_SLOT_MAX_HZ=4` too.
+instead of sending a batch whenever it happens to fill. A cycle's fixes are capped at `TX_SLOT_MAX_HZ` (default 8)
+per second over the cycle **and at what the slot can carry**: a 35 ms slot passes two 83-byte frames, and one is
+kept in reserve for the extra frames a turn causes (a heading change over 63 degrees or a speed jump over 12 knots
+splits a delta frame). That is 8 fixes per cycle - 8 Hz at a 1 s correction interval, **4 Hz at 2 s** - or 16 per
+cycle with 50 ms slots (`TX_SLOT_MS=50`, 35 boats at 2 s instead of 51). Fixes beyond the cap are thinned evenly
+(the newest is always kept) and stay on the SD card. Without the cap, a cycle that needs more frames than the slot
+passes backs up: frames queue for later cycles, the queue never drains, and the scheduler discards the oldest - in a
+30-boat 8 Hz test at 2 s, 98 of 4,361 frames expired and 2,042 spilled to a later cycle, which showed as blocks of
+missing fixes right after turns (straight chords across the marks on the live map); with the cap none expired and
+the tracks were continuous at half the fix rate. `0` removes the `TX_SLOT_MAX_HZ` rate cap (the slot cap stays).
+A fix can wait up to a cycle. With `TX_DELTA=0` (older batch frames, 4 fixes) the slot cap is 4 fixes per frame
+the slot passes, less one.
 Without bursts heard, batching is the ordinary `TX_BATCH_SIZE` behaviour. Two safeguards in the scheduler: a
 frame is held to the next cycle if it would start so late in the slot that its air time plus the guard would
 not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms),
@@ -872,15 +880,23 @@ worst first, with the reason. It is also in `GET /api/stats` as `linkHealth`. Pe
 | Measure | What it means | Warn / bad |
 |---|---|---|
 | RTK fixed % | share of the boat's fixes that were RTK fixed - the outcome that matters; a boat sliding to float has incomplete corrections. Judged on the boat's latest fix too: under 90% / under 50% **and not fixed now** is warn / bad, while a boat that is fixed again only warns if the minute was under 50% (so one float fix while a parked boat's GPS converged is not flagged) | under 90% / under 50% |
-| Gaps | a boat that is moving (2 kn or faster, not parked on the start grid) skipped more than 2 s of fixes - a lost frame or more; gaps over a minute are out of range or asleep, not counted | 1 / 3 or more |
+| Gaps | a boat that is moving (2 kn or faster, not parked on the start grid) skipped more than 2 s of fixes (1.5 correction cycles plus half a second when the interval is longer: 3.5 s at 2 s) - a lost frame or more; gaps over a minute are out of range or asleep, not counted | 1 / 3 or more |
 | Last heard | for a boat that was moving | 5 s / 10 s |
 | Fixes/s | fixes received over the last 10 s (for reading, not judged) | |
 
 Fleet-wide, the card shows the share of radio frames that failed their checksum (sync errors) over the last
 minute, once at least 20 frames have been seen: warn at 1%, bad at 3%. A boat sitting still (heartbeat only) is
 shown as idle, not as a problem, and a boat not heard for 2 minutes drops off the card. When a boat or the
-fleet turns bad the base also logs one `[health] WARNING: ...` line with the reasons, and `[health] ... recovered`
-when it clears - never repeated while it stays bad. The thresholds are constants at the top of `src/linkHealth.js`.
+fleet turns bad the base also logs one `[health] WARNING: ...` line with the reasons, and `[health] boat X recovered`
+when it is heard and judged ok or warn again - or `[health] boat X stopped reporting (stopped or off)` when it
+went quiet or dropped off the card instead (not a recovery). Never repeated while it stays bad. A boat that crosses
+the finish line is not judged on silence for 3 minutes (it may stop or switch off), so finishing is not a problem. The thresholds are constants at the top of `src/linkHealth.js`.
+
+To check a finished run for missing live fixes, `analyze_track_gaps.py` compares each boat's own SD log with what the
+base received (`python3 analyze_track_gaps.py --base base-logs/<regatta>/base_station_received_<date>.csv --boats
+boat-logs --from <UTC start> --to <UTC end>`): fixes a boat logged that the base never heard, in blocks of 3 or
+more, with the longest gaps heard and the speed there. A block of exactly one frame (8 fixes) points at the slot
+backing up; fixes thinned by the cap count as missing too, so judge the gaps, not the percentage.
 
 Where to look when it does go wrong: RTK fixed % falling with clean frames points at the corrections (the boat's
 own `[rtcm] n/6 used` line, `radioRtcm` and CRC counts in its `/api/stats`); gaps or silence with rising sync
@@ -2138,7 +2154,7 @@ actually use. Redis password is redacted.
 | `TX_PARKED_REPORT_S` | 15 | Boat, slot mode - while inside the start-grid zone, report at most this often (+-25%) in the join slots, latest fix only; `0` = no throttle |
 | `TX_SLOT_UNPARK_FIXES` | 3 | Base and boat - fixes in a row outside the start-grid zone before a parked boat is treated as racing |
 | `TX_SLOT_MOVING_KN` | 1.5 | Base only - a fix at or above this speed (knots) counts as active, so a racing boat gets a slot on its first moving fix |
-| `SIM_RTCM_INTERVAL_S` | 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
+| `SIM_RTCM_INTERVAL_S` | `RTCM_INTERVAL_S`, else 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |

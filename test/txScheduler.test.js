@@ -219,3 +219,50 @@ test('base slot: the base\'s own frames (slot table etc.) go out in the slot aft
   }
   assert.ok(sent.some((x) => x.sync === 0x55), 'other frames are not held for the slot');
 });
+
+test('a slot that cannot fit the correction period does not starve the frame: it goes out clear of the burst, with a warning', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 40; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = []; const logs = [];
+  const s = new TxScheduler({
+    send: (b) => { sent.push(sim.t); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    // slots sized for a 2 s cycle (the base's slot at index 53) while the bursts really come every 1 s
+    slot: { enabled: true, index: 53, count: 54, widthMs: 35, join: null },
+    slottedSyncs: new Set([0xbb]),
+    trafficLabel: "the base's",
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+    log: (m) => logs.push(m),
+  });
+  sim.runUntil(5500);
+  const marks = Buffer.concat([Buffer.from([0xbb]), Buffer.alloc(90)]);
+  for (let t = 6000; t < 20000; t += 2300) sim.setTimer(() => s.submit(marks), t - sim.t + 300);
+  sim.runUntil(24000);
+  assert.ok(sent.length >= 6, `only ${sent.length} of the marks frames went out - they were starved`);
+  for (const t of sent) {
+    const ph = Math.round((t - 130) % 1000);
+    assert.ok(ph >= 30 && ph <= 945, `went out at phase ${ph}, inside a burst's conflict window`);
+  }
+  assert.strictEqual(logs.filter((m) => m.includes('does not fit')).length, 1, 'the mismatch is logged once');
+});
+
+test('flushNow: everything held for a slot goes out at once, in order (for a boat that is about to exit)', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 40; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const s = new TxScheduler({
+    send: (b) => { sent.push(b[1]); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 10, count: 25, widthMs: 35, join: null },
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  sim.runUntil(5500);
+  for (let i = 1; i <= 3; i++) s.submit(Buffer.from([0xaa, i, 0, 0])); // held: it is not this boat's slot yet
+  assert.deepStrictEqual(sent, []);
+  assert.strictEqual(s.flushNow(), 3);
+  assert.deepStrictEqual(sent, [1, 2, 3]);
+  sim.runUntil(8000);
+  assert.deepStrictEqual(sent, [1, 2, 3], 'nothing is sent twice afterwards');
+});

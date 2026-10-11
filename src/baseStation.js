@@ -292,6 +292,7 @@ function main() {
             slot: { enabled: true, index: slotLayout.boatSlots, count: slotLayout.boatSlots + 1, widthMs: slotLayout.widthMs, join: null },
             slottedSyncs: new Set([protocol.SLOT_TABLE_SYNC, protocol.MARKS_SYNC, protocol.PING_SYNC, protocol.POWER_SYNC]),
             trafficLabel: "the base's",
+            warnSpill: false,
           }
         : {}),
       maxQueue: config.txGate.maxQueue,
@@ -2212,6 +2213,7 @@ function main() {
       });
     }
     {
+      linkHealth.setCycleMs(baseBurstTracker.isActive() ? baseBurstTracker.period : null);
       const slotState = slotAllocator ? slotAllocator.slotState(decoded.boatId) : 'slot';
       linkHealth.recordFix(decoded.boatId, decoded, {
         parked: slotState === 'parked',
@@ -2400,6 +2402,7 @@ function main() {
     const crossing = watcher && watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
     if (crossing) {
       console.log(`[baseStation] boat=${decoded.boatId} crossed the finish line - lap ${crossing.lap}`);
+      linkHealth.noteFinish(decoded.boatId);
       if (config.regattaup.enabled) {
         const lap = {
           boatId: decoded.boatId,

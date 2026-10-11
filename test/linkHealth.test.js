@@ -155,3 +155,56 @@ test('a start-up blip is not a problem: one float fix among a few is fine once t
   for (let i = 0; i < 5; i++) { h.recordFix('FLIP1', fix(c.t)); c.adv(1000); }
   assert.strictEqual(h.boatStatus('FLIP1').level, 'warn');
 });
+
+test('alerter: many boats turning bad together is one line, not one per boat', () => {
+  const c = clock(); const h = new LinkHealth({ now: c.now }); const a = new LinkHealthAlerter(h);
+  for (let i = 0; i < 12; i++) h.recordFix('B000' + String(i).padStart(2, '0'), fix(c.t, { carrSoln: 0 }));
+  for (let s = 0; s < 8; s++) { c.adv(1000); for (let i = 0; i < 12; i++) h.recordFix('B000' + String(i).padStart(2, '0'), fix(c.t, { carrSoln: 0 })); }
+  const lines = a.check();
+  assert.strictEqual(lines.length, 1);
+  assert.ok(lines[0].includes('12 boats turned bad together'));
+});
+
+test('gap limit follows the correction cycle: at 2 s a boat that sends once per cycle is not flagged for fixes 2.4 s apart', () => {
+  const c = clock(); const h = new LinkHealth({ now: c.now });
+  h.setCycleMs(2000);
+  for (let i = 0; i < 10; i++) { h.recordFix('SLOT1', fix(c.t)); c.adv(2400); }
+  assert.strictEqual(h.boatStatus('SLOT1').gaps, 0);
+  assert.strictEqual(h.boatStatus('SLOT1').level, 'ok');
+  c.adv(1600); h.recordFix('SLOT1', fix(c.t)); // 4 s: more than 1.5 cycles + 0.5 s
+  assert.strictEqual(h.boatStatus('SLOT1').gaps, 1);
+  // at a 1 s cycle the same 2.4 s gaps are flagged
+  const h2 = new LinkHealth({ now: c.now });
+  h2.setCycleMs(1000);
+  for (let i = 0; i < 4; i++) { h2.recordFix('SLOT2', fix(c.t)); c.adv(2400); }
+  assert.ok(h2.boatStatus('SLOT2').gaps >= 1);
+});
+
+test('alerter: a boat that goes bad and then just stops is not "recovered"; one that is heard ok again is', () => {
+  const c = clock(); const h = new LinkHealth({ now: c.now }); const a = new LinkHealthAlerter(h);
+  feed(h, c, 'STOP1', 10); feed(h, c, 'BACK1', 10);
+  c.adv(11000); // both silent for 11 s while moving: bad
+  assert.strictEqual(a.check().filter((l) => l.includes('WARNING')).length, 2);
+  // BACK1 comes back and is judged ok again: recovered. STOP1 never does.
+  feed(h, c, 'BACK1', 5);
+  const first = a.check();
+  assert.ok(first.some((l) => l.includes('BACK1 recovered')), first.join(' | '));
+  assert.ok(!first.some((l) => l.includes('STOP1')), 'STOP1 is still on the card, still bad - nothing new to say');
+  // later STOP1 has dropped off the card: it stopped reporting, it did not recover
+  c.adv(150000);
+  const later = a.check();
+  assert.ok(later.some((l) => l.includes('STOP1 stopped reporting')), later.join(' | '));
+  assert.ok(!later.some((l) => l.includes('STOP1 recovered')));
+});
+
+test('a boat that crosses the finish and goes quiet is not flagged as silent', () => {
+  const c = clock(); const h = new LinkHealth({ now: c.now }); const a = new LinkHealthAlerter(h);
+  feed(h, c, 'FIN01', 10);
+  h.noteFinish('FIN01');
+  c.adv(20000);
+  assert.strictEqual(h.boatStatus('FIN01').level, 'quiet');
+  assert.deepStrictEqual(a.check(), []);
+  // without the finish it would have been bad
+  feed(h, c, 'OTH01', 10); c.adv(20000);
+  assert.strictEqual(h.boatStatus('OTH01').level, 'bad');
+});
