@@ -231,9 +231,9 @@ module.exports = {
     packetLossPct: parseFloat(process.env.SIM_PACKET_LOSS || '0'),
     // SIMULATE=1 base only: broadcast a synthetic RTCM correction burst (six messages the size of
     // a real epoch) every N seconds, so the shared-radio gate and slots can be exercised without
-    // hardware. Default 1; 0 = off.
+    // hardware. Default 2; 0 = off.
     // (RTCM_INTERVAL_S, which sizes the slot table, is used when this is not set, so the two always agree.)
-    rtcmIntervalS: parseFloat(process.env.SIM_RTCM_INTERVAL_S || process.env.RTCM_INTERVAL_S || '1'),
+    rtcmIntervalS: parseFloat(process.env.SIM_RTCM_INTERVAL_S || process.env.RTCM_INTERVAL_S || '2'),
     // Off by default - set to 1 to skip the simulated race entirely and
     // just sit the boat at its start position (see simGps.js's _tick())
     // forever, emitting a stationary but otherwise normal fix stream.
@@ -471,14 +471,14 @@ module.exports = {
     // (0 to count-1); with neither a table entry nor TX_SLOT, a boat shares the joinSlots (never
     // assigned) so it can't land on a racing boat's slot. count (slots for boats, including the join slots; the base has one more of its own) and widthMs
     // are the base's (boats adopt them from the table; a pinned boat uses its own). Unless TX_SLOT_COUNT is set, the base derives count
-    // from RTCM_INTERVAL_S. Each slot must hold the boat's frames for a cycle: 35 ms
-    // holds one 84-byte frame - 8 delta-coded fixes at TX_SLOT_MAX_HZ=8 over a 1 s cycle; size it up for faster
+    // from RTCM_INTERVAL_S (default 2 s). Each slot must hold the boat's frames for a cycle: 45 ms
+    // holds two 83-byte frames - 16 delta-coded fixes, 8 Hz over a 2 s cycle; size it up for faster
     // rates, and keep count x widthMs inside the gap between bursts.
     slot: {
       enabled: process.env.TX_SLOT_MODE !== '0' && process.env.TX_SLOT_MODE !== 'false',
       index: process.env.TX_SLOT !== undefined && process.env.TX_SLOT !== '' ? parseInt(process.env.TX_SLOT, 10) : null,
       count: Math.max(1, parseInt(process.env.TX_SLOT_COUNT || '25', 10) || 25),
-      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '35', 10) || 35),
+      widthMs: Math.max(5, parseInt(process.env.TX_SLOT_MS || '45', 10) || 45),
       // The last joinSlots of the slots are never assigned: a boat with no slot of its own yet (newly
       // active, or no room left in the table) shares them, so it can't land on a racing boat's slot. The
       // base's value is broadcast; a boat uses its own until it hears a table.
@@ -491,7 +491,7 @@ module.exports = {
       // Base only: the RTK correction interval the base's GPS is set to (see ubx_config_set.py
       // --rtcm-interval). With TX_SLOT_COUNT unset the base works the slot count out from it once, at
       // startup: a 2 s interval has room for about twice as many slots as a 1 s one.
-      rtcmIntervalS: Math.max(0.1, parseFloat(process.env.RTCM_INTERVAL_S || process.env.SIM_RTCM_INTERVAL_S || '1') || 1),
+      rtcmIntervalS: Math.max(0.1, parseFloat(process.env.RTCM_INTERVAL_S || process.env.SIM_RTCM_INTERVAL_S || '2') || 2),
       countAuto: process.env.TX_SLOT_COUNT === undefined || process.env.TX_SLOT_COUNT === '',
       // Base only: how often the slot table is rebroadcast.
       tableIntervalS: Math.max(1, parseInt(process.env.TX_SLOT_TABLE_S || '10', 10) || 10),
@@ -513,6 +513,9 @@ module.exports = {
       // Boat: frames per slot kept free when capping a cycle's fixes to what the slot can carry (see boatAgent.js).
       // 1 leaves a spare frame for a cycle that needs more than its fix count suggests; 0 uses the whole slot.
       reserveFrames: Math.max(0, parseInt(process.env.TX_SLOT_RESERVE_FRAMES || '1', 10) || 0),
+      // Boat: within this many metres of a windward/leeward mark the whole slot is used (no reserve, no TX_SLOT_MAX_HZ cap)
+      // and fixes there are the last to be thinned, so the base sees every mark rounding. 0 turns it off.
+      markZoneM: Math.max(0, parseFloat(process.env.TX_SLOT_MARK_ZONE_M || '80') || 0),
       // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
       // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing
       // for a start does not use up the slots or swamp the join slots. A boat leaves that state after

@@ -25,6 +25,7 @@ const { TxGate } = require('./txGate');
 const { TxScheduler, airMs } = require('./txScheduler');
 const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff } = require('./slotTable');
 const { OnGridWatcher } = require('./onGridWatcher');
+const { thinForTurns } = require('./thinFixes');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
@@ -844,6 +845,16 @@ function queueFixForTx(pvt) {
   }
 }
 
+// True within config.txGate.slot.markZoneM of a windward/leeward mark, where the base needs every fix to see a rounding.
+function isNearRoundingMark(fix) {
+  const zone = config.txGate.slot.markZoneM;
+  if (!zone || !currentMarks) return false;
+  return ROUNDING_MARKS.some((name) => currentMarks[name] && distanceMeters(currentMarks[name], fix) <= zone);
+}
+const ROUNDING_MARKS = ['windwardGreen', 'windwardBlack', 'leewardGreen', 'leewardBlack'];
+
+let lastBatchFix = null; // newest fix of the last cycle's batch, the anchor for thinning the next
+
 // Sends whatever's pending as one batch frame (or, for the common case of a
 // single straggling fix once txIntervalMs forces an early flush, the exact
 // same plain single-fix frame transmitFix would have sent) - same
@@ -878,17 +889,21 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
   if (forSlot && !final && config.txGate.slot.maxHz > 0 && txScheduler.tracker.period) {
     const byRate = Math.max(1, Math.round((config.txGate.slot.maxHz * txScheduler.tracker.period) / 1000));
     const framesInSlot = Math.max(1, Math.floor((txScheduler.slot.widthMs - txScheduler.gate.guardMs) / airMs(protocol.deltaFrameLen(protocol.MAX_DELTA_COUNT))));
-    const bySlot = (config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT) * Math.max(1, framesInSlot - config.txGate.slot.reserveFrames);
-    const cap = Math.min(byRate, bySlot);
-    if (fixes.length > cap) fixes = thinEvenly(fixes, cap);
+    const perFrameMax = config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT;
+    // Near a mark the base needs every fix of the rounding: use the whole slot for the cycle, the rate cap and the
+    // reserve both lifted (a boat is inside the zone for a cycle or two, so a frame that spills is absorbed by the next)
+    const nearMark = fixes.some(isNearRoundingMark);
+    const bySlot = perFrameMax * (nearMark ? framesInSlot : Math.max(1, framesInSlot - config.txGate.slot.reserveFrames));
+    const cap = nearMark ? bySlot : Math.min(byRate, bySlot);
+    // thinned to keep the turns (see thinFixes.js), judged against the last fix of the previous cycle
+    if (fixes.length > cap) {
+      const anchor = lastBatchFix && fixes[0].timestamp - lastBatchFix.timestamp < 5000 ? lastBatchFix : null;
+      fixes = thinForTurns(fixes, cap, { anchor, protect: isNearRoundingMark });
+    }
   }
+  lastBatchFix = fixes[fixes.length - 1];
   const perFrame = forSlot ? maxFixesPerFrame : Math.max(1, config.txBatchSize);
   for (let i = 0; i < fixes.length; i += perFrame) sendFixes(fixes.slice(i, i + perFrame));
-}
-
-// `cap` fixes out of `list`, evenly spread, always including the newest.
-function thinEvenly(list, cap) {
-  return Array.from({ length: cap }, (_, i) => list[Math.floor(((i + 1) * list.length) / cap) - 1]);
 }
 
 // Sends up to one frame's worth of fixes (more if delta coding has to split them - see
