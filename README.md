@@ -249,7 +249,7 @@ connection), with every other port's RTCM switched off so nothing is sent where
 nothing reads it. Add `uart1` only if something reads the board on the Pi header
 UART. `--constellations` (default all four) leaves constellations out to save
 bytes - a left-out one has its MSM4 message off, and `1230` goes with GLONASS.
-`--rtcm-interval N` (default 1) sends every enabled message every N seconds instead of every
+`--rtcm-interval N` (default 2) sends every enabled message every N seconds instead of every
 second (it sets the messages' output rate; the receiver's own 1 Hz measurement rate is untouched):
 `--rtcm-interval 2` halves the correction airtime, at the cost of rovers working from corrections up
 to 2 s old and a lost message costing 2 s. Check that RTK still holds at speed before relying on it.
@@ -773,20 +773,21 @@ Slot width is fixed; it does not change with the number of boats. Separate fleet
 should have their own base and radio network (`ID`/`HP`); that keeps one base from hearing the other fleet's
 boats, though both still share the radio band.
 
-**1 s against 2 s.** The same schedule at the two correction intervals, drawn to the same time scale - at 2 s
-there are 54 slots instead of 26 (51 for boats instead of 23), and each boat sends once per cycle, so once every
-2 s:
+**1 s against 2 s.** The same schedule at the two correction intervals, drawn to the same time scale (with
+35 ms slots, the width the drawings use) - at 2 s there are 54 slots instead of 26 (51 for boats instead of 23), and
+each boat sends once per cycle, so once every 2 s. The defaults are a 2 s interval and 45 ms slots (42 slots in
+all, 39 for boats):
 
 ![The 1 s and 2 s intervals at the same scale: 26 slots (23 boats, 2 join, 1 base) against 54 (51 boats, 2 join, 1 base)](docs/tdma-1s-vs-2s.svg)
 
 **How many slots.** `TX_SLOT_COUNT` is the number of slots for boats in a cycle, including the `TX_SLOT_JOIN`
 join slots; the base's own slot comes after them. Leave it unset on the base and it works the count out once, at
-startup, from `RTCM_INTERVAL_S` (default 1) - the correction interval the base's GPS is set to
+startup, from `RTCM_INTERVAL_S` (default 2) - the correction interval the base's GPS is set to
 (`ubx_config_set.py --rtcm-interval`): the cycle minus the time blocked around each burst, divided by the slot
-width, less one for the base. With the default 35 ms slots that is 26 slots in all at a 1 s interval - 23 for
-boats, 2 join slots and the base's - and 54 at 2 s (51 for boats; 40 ms slots: 22 and 47 in all). So when you
-change the GPS to 2 s, set `RTCM_INTERVAL_S=2` on the base and restart it; the table then carries the larger
-count from the first broadcast. If the corrections it hears arrive at a different interval, the base warns
+width, less one for the base. With the default 45 ms slots that is 42 slots in all at the default 2 s interval - 39 for
+boats, 2 join slots and the base's - and 20 at 1 s (17 for boats; 35 ms slots: 54 and 26 in all, 51 and 23 for
+boats). `RTCM_INTERVAL_S` has to match the interval the GPS is really set to: if you run the GPS at 1 s, set
+`RTCM_INTERVAL_S=1` on the base and restart it; the table then carries the right count from the first broadcast. If the corrections it hears arrive at a different interval, the base warns
 once - and any slot that would not fit inside the interval actually heard (say `RTCM_INTERVAL_S=2` with bursts
 still every 1 s) is skipped: its frames go out clear of the burst but outside slots, with a `[txgate] WARNING: slot ...
 does not fit` line, instead of waiting for a slot that never comes. In the simulator `RTCM_INTERVAL_S` also sets
@@ -796,9 +797,10 @@ table: 25 by default).
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
 cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
 instead of sending a batch whenever it happens to fill. A cycle's fixes are capped at `TX_SLOT_MAX_HZ` (default 8)
-per second over the cycle **and at what the slot can carry**: a 35 ms slot passes two 83-byte frames, and one is
-kept in reserve (`TX_SLOT_RESERVE_FRAMES`, default 1) for the extra frames a GPS jump or gap causes. That is 8 fixes per cycle - 8 Hz at a 1 s correction interval, **4 Hz at 2 s** - or 16 per
-cycle with 50 ms slots (`TX_SLOT_MS=50`, 35 boats at 2 s instead of 51). Fixes beyond the cap are thinned to keep the
+per second over the cycle **and at what the slot can carry**: a 45 ms slot passes three 83-byte frames, and one is
+kept in reserve (`TX_SLOT_RESERVE_FRAMES`, default 1) for the extra frames a GPS jump or gap causes. That is 16 fixes
+per cycle - **8 Hz at the default 2 s correction interval** (a 35 ms slot passes two frames, so 8 fixes per cycle:
+8 Hz at 1 s, 4 Hz at 2 s). The fixes arrive in one burst per cycle, so the live map moves in 2 s steps. Fixes beyond the cap are thinned to keep the
 shape of the track: the fix that lies closest to the line between its neighbours is dropped first, so straight legs
 lose the most and a turn (a mark rounding, a tack, a gybe) keeps its fixes; among equals the gaps stay even, no
 kept fix is more than 480 ms after the one before it, and the newest is always kept. They stay on the SD card.
@@ -816,26 +818,28 @@ A fix can wait up to a cycle. With `TX_DELTA=0` (older batch frames, 4 fixes) th
 the slot passes, less one.
 Without bursts heard, batching is the ordinary `TX_BATCH_SIZE` behaviour. Two safeguards in the scheduler: a
 frame is held to the next cycle if it would start so late in the slot that its air time plus the guard would
-not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms),
+not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms; a 45 ms slot, ~24 ms),
 and frames beyond the slot's air-time budget (estimated at 8 ms per packet plus 0.04 ms per byte, less the
 guard) wait for the next cycle.
 
-**Slot size.** The 35 ms default holds one 84-byte frame per cycle (about 11 ms of air time plus the 10 ms
-guard) with room to spare, which is what a boat sends at up to 8 Hz with delta frames (83 bytes). The
-measurements below used 84-byte batch frames. Measured on two radios with four
+**Slot size.** The 45 ms default holds three 83-byte frames per cycle (about 11 ms of air time each plus the 10 ms
+guard), so a boat sends 16 fixes (8 Hz over a 2 s cycle) in two frames and keeps one in reserve; a 35 ms slot
+holds two frames (one 84-byte frame, 8 fixes, with one in reserve) and gives 4 Hz at 2 s. The
+measurements below used 35 ms slots and 84-byte batch frames. Measured on two radios with four
 virtual boats in neighbouring slots (`radio-latency`, see below): 0 frames in the conflict window, 0 incomplete
 correction bursts, 0 spills, every frame written within 13 ms of its slot opening and heard about 25 ms after
 it, with neighbouring boats' frames at least about 22 ms apart at the listener. That was one sender radio;
 two boats on separate radios in neighbouring slots have not been tested. A slot too small for a boat's traffic
 makes it log a warning and its frames wait for later cycles - raise `TX_SLOT_MS` (a boat above 8 Hz, or at 5 Hz with `TX_DELTA=0`, sends two frames
 per cycle and needs about 40 ms). `TX_SLOT_COUNT x TX_SLOT_MS` plus the blocked time must fit
-inside the correction interval (a boat warns if not). A slotted frame can be up to one cycle old on arrival.
+inside the correction interval (a boat warns if not). In a 30-boat simulation at 2 s, 45 ms slots at 8 Hz were clean
+(no frame dropped or expired, no gaps) where 35 ms slots at 8 Hz were not. A slotted frame can be up to one cycle old on arrival.
 
 The timing comes from this radio's own view of the burst, so no GPS time or clock sync is involved. What
 limits it is the serial/USB delay on the host: the measurements behind the defaults were taken on one Mac
 with two adapters (`radio-latency`); repeat them on a Pi before trusting a 10 ms guard.
 
-**Trying it without hardware:** a `SIMULATE=1` base broadcasts a synthetic RTCM burst (six valid messages the size of a real epoch), every `SIM_RTCM_INTERVAL_S` seconds (default 1; `0` turns it off); run boats with `SIMULATE=1` (slot mode is on by default).
+**Trying it without hardware:** a `SIMULATE=1` base broadcasts a synthetic RTCM burst (six valid messages the size of a real epoch), every `SIM_RTCM_INTERVAL_S` seconds (default 2; `0` turns it off); run boats with `SIMULATE=1` (slot mode is on by default).
 The unit tests (`npm test`, in virtual time) check the tracker, the gate, that two boats in different
 slots never transmit in a blocked window or on top of each other, the slot table (frame, allocation,
 following, join slots, parking) and the delta-coded frame.
@@ -861,8 +865,8 @@ Watch the base console and the dashboard (the Link health card - its slots line 
 Variations - set these on the command shown:
 
 ```
-FLEET_SIZE=30 npm run fleet                                   # more boats than the 23 slots: the rest share the join slots
-SIMULATE=1 SIM_RTCM_INTERVAL_S=2 npm run base                 # 2 s corrections: the table carries 54 slots
+FLEET_SIZE=50 npm run fleet                                   # more boats than the 39 slots: the rest share the join slots
+SIMULATE=1 SIM_RTCM_INTERVAL_S=1 npm run base                 # 1 s corrections (default 2): the table carries 20 slots
 SIM_GPS_HZ=8 FLEET_SIZE=3 npm run fleet                       # 8 fixes per frame, one frame per cycle (delta coding)
 SIM_HOLD_FOR_START=0 FLEET_SIZE=4 npm run fleet               # boats start on their own after a short dwell
 SIMULATE=1 TX_SLOT_GRID_ONLY=0 npm run base                   # slots for any boat under way, not only those that started
@@ -2147,10 +2151,10 @@ actually use. Redis password is redacted.
 | `TX_GATE_MAX_QUEUE` / `TX_GATE_MAX_AGE_MS` | 12 / 5000 | Most frames held at once (oldest dropped beyond it); a held frame older than this is dropped |
 | `TX_SLOT_MODE` | on | Boat: send position/batch frames only in this boat's slot of each correction cycle. Base: keep and broadcast the slot table that assigns the boats their slots. `0` turns it off (needs `TX_GATE` on; only acts once correction bursts are heard) |
 | `TX_SLOT` | assigned by the base's slot table | Boat only - pin this boat to a slot number, 0 to `TX_SLOT_COUNT - 1`, ignoring the table (unpinned and not yet assigned, a boat shares the join slots) |
-| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 25 / 35 | Slots for boats per cycle (including the join slots; the base has one more of its own) and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
-| `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
+| `TX_SLOT_COUNT` / `TX_SLOT_MS` | 25 / 45 | Slots for boats per cycle (including the join slots; the base has one more of its own) and each slot's width in ms (the base's values are broadcast to the boats). On the base, leaving `TX_SLOT_COUNT` unset works the count out from `RTCM_INTERVAL_S` |
+| `RTCM_INTERVAL_S` | 2 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MARK_ZONE_M` | 80 | Boat, slot mode - within this many metres of a windward/leeward mark the slot is used in full and those fixes are thinned last, so no mark rounding is missed (see "Sending in the slot"); `0` = off |
-| `TX_SLOT_RESERVE_FRAMES` | 1 | Boat, slot mode - frames' worth of the slot kept free for frames that a GPS jump or gap splits off; the per-cycle fix cap is 8 x (frames the slot passes - this). `0` sends more (8 Hz at a 2 s interval needs `TX_SLOT_MS=45` or more to stay clean) |
+| `TX_SLOT_RESERVE_FRAMES` | 1 | Boat, slot mode - frames' worth of the slot kept free for frames that a GPS jump or gap splits off; the per-cycle fix cap is 8 x (frames the slot passes - this). `0` uses the whole slot (at 45 ms and 2 s that is 24 fixes per cycle, more than the 8 Hz cap allows, and not tested clean) |
 | `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = one 83-byte delta frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
 | `TX_DELTA` | on | Boat - send batches as delta-coded frames (up to 8 fixes in 83 bytes); `0` = the older batch frame (4 fixes in 84). Update the base first |
 | `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 45 | Base only - how often the slot table is rebroadcast, and how long a stopped boat keeps its slot |
@@ -2163,7 +2167,7 @@ actually use. Redis password is redacted.
 | `TX_PARKED_REPORT_S` | 15 | Boat, slot mode - while inside the start-grid zone, report at most this often (+-25%) in the join slots, latest fix only; `0` = no throttle |
 | `TX_SLOT_UNPARK_FIXES` | 3 | Base and boat - fixes in a row outside the start-grid zone before a parked boat is treated as racing |
 | `TX_SLOT_MOVING_KN` | 1.5 | Base only - a fix at or above this speed (knots) counts as active, so a racing boat gets a slot on its first moving fix |
-| `SIM_RTCM_INTERVAL_S` | `RTCM_INTERVAL_S`, else 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
+| `SIM_RTCM_INTERVAL_S` | `RTCM_INTERVAL_S`, else 2 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |
 | `RADIO_PORT` / `RADIO_BAUD` | `/dev/ttyUSB0` / 115200 | Telemetry radio UART - 115200 is NOT the factory default, every radio must be reconfigured |

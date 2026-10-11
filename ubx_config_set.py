@@ -433,11 +433,11 @@ def main():
     ap.add_argument(
         "--rtcm-interval",
         type=int,
-        default=1,
+        default=2,
         choices=range(1, 11),
         metavar="SECONDS",
-        help="base role only: send the RTCM messages every N navigation epochs (default 1 = every second at the "
-        "receiver's 1 Hz; 2 = every 2 s). Halves the correction airtime at 2, but a rover then works from "
+        help="base role only: send the RTCM messages every N navigation epochs (default 2 = every 2 s; 1 = every second at the "
+        "receiver's 1 Hz). Halves the correction airtime at 2, but a rover then works from "
         "corrections up to 2 s old (a lost message costs 2 s) - check that RTK still holds at speed. "
         "Applies to every enabled RTCM message; the receiver's own 1 Hz measurement rate is not changed",
     )

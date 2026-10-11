@@ -484,9 +484,9 @@ module.exports = {
       // base's value is broadcast; a boat uses its own until it hears a table.
       joinSlots: Math.max(0, parseInt(process.env.TX_SLOT_JOIN || '2', 10) || 0),
       // Boat only, slot mode: the most fixes per second a boat sends in its slot (the rest stay on its SD
-      // card). 8 fills one delta frame (83 bytes) per 1 s cycle - the biggest the 35 ms slot is
-      // sized for; with TX_DELTA=0 use 4 (one 84-byte batch frame). 0 = no cap. Scales with the cycle
-      // (8 Hz over 1 s is 8 fixes, and so is 4 Hz over 2 s).
+      // card). 8 over the default 2 s cycle is 16 fixes, two delta frames (83 bytes), which the 45 ms slot
+      // passes with one frame in reserve; with TX_DELTA=0 use 4 (one 84-byte batch frame). 0 = no cap. Scales with the
+      // cycle (8 Hz over 2 s is 16 fixes, and so is 16 Hz over 1 s).
       maxHz: Math.max(0, parseFloat(process.env.TX_SLOT_MAX_HZ || '8') || 0),
       // Base only: the RTK correction interval the base's GPS is set to (see ubx_config_set.py
       // --rtcm-interval). With TX_SLOT_COUNT unset the base works the slot count out from it once, at
