@@ -333,3 +333,147 @@ test('follower: a parked boat goes back to the join slots and ignores its old en
   assert.strictEqual(sched.slot.index, 9);
   assert.strictEqual(sched.slot.join, null);
 });
+
+const { JoinBackoff } = require('../src/slotTable');
+
+// helper: a boat comes onto the grid, sits there, and leaves (across the line unless `backwards`)
+function startFromGrid(a, id, { backwards = false } = {}) {
+  for (let i = 0; i < 3; i++) a.noteHeard(id, { moving: true, inZone: true });
+  for (let i = 0; i < 3; i++) a.noteHeard(id, { moving: true, inZone: false, pastLine: !backwards });
+}
+
+test('grid only: boats that never started get no slot; boats that cross the line from the grid do', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 8, joinSlots: 1, widthMs: 35, gridOnly: true, unparkFixes: 3, now: () => now });
+  // rolling out, watching, going to camp: under way but never on the grid
+  for (let i = 0; i < 5; i++) assert.strictEqual(a.noteHeard('ROLL1', { moving: true }), null);
+  // a boat on the grid, then across the line
+  const slot = (() => { startFromGrid(a, 'RACE1'); return a.noteHeard('RACE1', { moving: true }); })();
+  assert.notStrictEqual(slot, null);
+  assert.deepStrictEqual(a.status().racing, ['RACE1']);
+  // a watcher on the grid that leaves backwards has not started
+  startFromGrid(a, 'WATCH', { backwards: true });
+  assert.strictEqual(a.noteHeard('WATCH', { moving: true }), null);
+  assert.strictEqual(a.status().racing.includes('WATCH'), false);
+  // without course marks everyone is alike
+  assert.notStrictEqual(a.noteHeard('NOMAP', { moving: true, zoneKnown: false }), null);
+});
+
+test('a boat that stops frees its slot after the stale time, stays racing for a while, and gets the same slot when it moves again', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, gridOnly: true, staleMs: 45000, racingTtlMs: 600000, unparkFixes: 3, now: () => now });
+  startFromGrid(a, 'RACE1');
+  const slot = a.noteHeard('RACE1', { moving: true });
+  now = 20000; a.noteHeard('RACE1', { moving: false }); a.sweep();
+  assert.strictEqual(a.status().boats.length, 1, 'stopped only 20 s - still has it');
+  now = 60000; a.noteHeard('RACE1', { moving: false }); a.sweep();
+  assert.strictEqual(a.status().boats.length, 0, 'a stopped boat frees the slot');
+  assert.deepStrictEqual(a.status().racing, ['RACE1'], 'but it is still racing - a repair stop must not cost it its place');
+  assert.strictEqual(a.noteHeard('RACE1', { moving: true }), slot, 'moving again: the same slot');
+  // stopped for longer than the racing time: no longer racing
+  now = 100000; a.sweep();
+  now = 800000; a.sweep();
+  assert.deepStrictEqual(a.status().racing, []);
+  assert.strictEqual(a.noteHeard('RACE1', { moving: true }), null);
+  // coming back onto the grid and across the line makes it racing again
+  startFromGrid(a, 'RACE1');
+  assert.strictEqual(a.noteHeard('RACE1', { moving: true }), slot);
+});
+
+test('a racing boat takes a slot from a boat that is not racing when none is free', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 3, joinSlots: 1, widthMs: 35, gridOnly: false, unparkFixes: 3, now: () => now });
+  a.noteHeard('WATC1', { moving: true }); now = 1000; a.noteHeard('WATC2', { moving: true }); // both assignable slots taken
+  assert.strictEqual(a.status().boats.length, 2);
+  now = 2000; startFromGrid(a, 'RACE1');
+  const slot = a.noteHeard('RACE1', { moving: true });
+  assert.notStrictEqual(slot, null, 'the racing boat got a slot');
+  assert.deepStrictEqual(a.status().boats.map((b) => b.boatId).sort(), ['RACE1', 'WATC2'], 'the longest-silent non-racing boat gave its up');
+  // two racing boats are never displaced by each other's arrival
+  now = 3000; startFromGrid(a, 'RACE2'); a.noteHeard('RACE2', { moving: true });
+  assert.strictEqual(a.status().boats.some((b) => b.boatId === 'RACE1'), true);
+});
+
+test('the racing set survives a restart (export and import), but only if recent', () => {
+  let now = 1_000_000;
+  const a = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, gridOnly: true, unparkFixes: 3, now: () => now });
+  startFromGrid(a, 'RACE1'); a.noteHeard('RACE1', { moving: true });
+  const saved = a.exportRacing();
+  const b = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, gridOnly: true, now: () => now + 60000 });
+  b.importRacing(saved);
+  assert.notStrictEqual(b.noteHeard('RACE1', { moving: true }), null);
+  const c = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, gridOnly: true, now: () => now + 3 * 60 * 60 * 1000 });
+  c.importRacing(saved);
+  assert.strictEqual(c.noteHeard('RACE1', { moving: true }), null, 'three hours old: forgotten');
+});
+
+test('join back-off: the first reports come quickly, then spread out to the maximum, and reset when a slot is assigned', () => {
+  let t = 0;
+  const b = new JoinBackoff({ maxMs: 15000, now: () => t, rand: () => 0.5 });
+  assert.ok(b.due());
+  b.sent(); // step 0 -> next at +0
+  assert.ok(b.due());
+  const gaps = [];
+  for (let i = 0; i < 7; i++) { b.sent(); gaps.push(b.nextAt - t); t = b.nextAt; }
+  assert.deepStrictEqual(gaps, [1000, 2000, 4000, 8000, 15000, 15000, 15000]);
+  b.reset();
+  assert.ok(b.due());
+});
+
+test('follower: a boat the base stops listing goes back to the join slots after a few rebroadcasts', () => {
+  const clock = { t: 0 };
+  const sim = { t: 0 };
+  const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 24, count: 25, widthMs: 35, join: { first: 23, n: 2 } });
+  const f = new SlotTableFollower({ boatId: 'LAT02', scheduler: sched, now: () => clock.t });
+  const table = (entries) => ({ version: 1, slotCount: 25, slotWidthMs: 35, joinSlots: 2, entries });
+  let assigned = 0;
+  f.onAssigned = () => assigned++;
+  f.onTable(table([{ boatId: 'LAT02', slot: 8 }]));
+  assert.strictEqual(sched.slot.index, 8);
+  assert.strictEqual(assigned, 1);
+  for (let i = 1; i <= 2; i++) { clock.t = i * 10000; f.onTable(table([{ boatId: 'LAT01', slot: 0 }])); }
+  assert.strictEqual(sched.slot.index, 8, 'not yet - only 20 s');
+  clock.t = 40000; f.onTable(table([{ boatId: 'LAT01', slot: 0 }]));
+  assert.deepStrictEqual(sched.slot.join, { first: 23, n: 2 }, 'back in the join slots');
+  // and it takes a new slot when one is assigned
+  clock.t = 50000; f.onTable(table([{ boatId: 'LAT02', slot: 9 }]));
+  assert.strictEqual(sched.slot.index, 9);
+  assert.strictEqual(sched.slot.join, null);
+});
+
+const course = require('../src/course');
+const { OnGridWatcher } = require('../src/onGridWatcher');
+
+test('start line crossing: leeward to course side anywhere along the line, from fixes far apart; not backwards, not around the end', () => {
+  const marks = course.getMarks(40.897, -118.3821);
+  const w = new OnGridWatcher(marks, 10);
+  const mid = { lat: (marks.pin.lat + marks.committeeStart.lat) / 2, lon: (marks.pin.lon + marks.committeeStart.lon) / 2 };
+  // find which way is behind the line (inside the zone) and which is the course side
+  const north = { lat: mid.lat + 0.00007, lon: mid.lon };
+  const south = { lat: mid.lat - 0.00007, lon: mid.lon };
+  const behind = w.check(north.lat, north.lon) === 'ongrid' ? north : south;
+  const ahead = behind === north ? south : north;
+  assert.strictEqual(w.crossedStartLine(behind.lat, behind.lon, ahead.lat, ahead.lon), true);
+  assert.strictEqual(w.crossedStartLine(ahead.lat, ahead.lon, behind.lat, behind.lon), false, 'backwards is not a start');
+  assert.strictEqual(w.crossedStartLine(behind.lat, behind.lon, behind.lat, behind.lon + 0.0001), false, 'sailing along behind the line');
+  // far behind the line, then across it: still a crossing (a boat that was only heard now and then)
+  const farBehind = { lat: behind.lat + (behind.lat - mid.lat) * 20, lon: behind.lon };
+  assert.strictEqual(w.crossedStartLine(farBehind.lat, farBehind.lon, ahead.lat, ahead.lon), true);
+  // crossing the line's extension beyond the pin or committee boat is not crossing the line itself
+  const east = { lat: mid.lat, lon: mid.lon + 0.01 };
+  assert.strictEqual(w.crossedStartLine(behind.lat, east.lon, ahead.lat, east.lon), false);
+});
+
+test('allocator: a boat seen crossing the start line is racing and gets a slot even if no fix was heard on the grid', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, joinSlots: 1, widthMs: 35, gridOnly: true, unparkFixes: 3, now: () => now });
+  assert.strictEqual(a.noteHeard('LATE1', { moving: true }), null, 'under way, not started');
+  const slot = a.noteHeard('LATE1', { moving: true, crossedStart: true, pastLine: true });
+  assert.notStrictEqual(slot, null);
+  assert.deepStrictEqual(a.status().racing, ['LATE1']);
+  // a parked boat that crosses is unparked at once
+  for (let i = 0; i < 3; i++) a.noteHeard('GRID1', { moving: true, inZone: true });
+  assert.deepStrictEqual(a.status().parked, ['GRID1']);
+  assert.notStrictEqual(a.noteHeard('GRID1', { moving: true, crossedStart: true, pastLine: true }), null);
+  assert.deepStrictEqual(a.status().parked, []);
+});

@@ -962,6 +962,8 @@ function main() {
       joinSlots: config.txGate.slot.joinSlots,
       staleMs: config.txGate.slot.staleS * 1000,
       activeFrames: config.txGate.slot.activeFrames,
+      gridOnly: config.txGate.slot.gridOnly,
+      racingTtlMs: config.txGate.slot.racingS * 1000,
       unparkFixes: config.txGate.slot.unparkFixes,
       holdMs: config.txGate.slot.holdS * 1000,
       activeWindowMs: config.txGate.slot.activeWindowS * 1000,
@@ -976,6 +978,17 @@ function main() {
     // slots were sized for the wrong cycle.
     let warnedInterval = false;
     let lastTableAt = 0;
+    // Who has started (the slot table gives slots only to those boats) is remembered across a base restart, so
+    // restarting in the middle of a race does not leave the racing boats without slots.
+    const racingFile = path.join(config.configDir, 'slot_racing.json');
+    try {
+      slotAllocator.importRacing(JSON.parse(fs.readFileSync(racingFile, 'utf8')));
+      const n = slotAllocator.racing.size;
+      if (n) console.log(`[slots] restored ${n} racing boat(s) from ${path.basename(racingFile)}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.warn(`[slots] could not read ${path.basename(racingFile)}: ${err.message}`);
+    }
+    let lastSavedRacing = JSON.stringify(slotAllocator.exportRacing());
     const slotTimer = setInterval(() => {
       const nowMs = Date.now();
       if (!warnedInterval && baseBurstTracker.isActive() && baseBurstTracker.period) {
@@ -990,6 +1003,13 @@ function main() {
       if (!changed && nowMs - lastTableAt < config.txGate.slot.tableIntervalS * 1000) return;
       lastTableAt = nowMs;
       for (const frame of slotAllocator.frames()) radio.broadcast(frame);
+      const racingNow = JSON.stringify(slotAllocator.exportRacing());
+      if (racingNow !== lastSavedRacing) {
+        lastSavedRacing = racingNow;
+        fs.writeFile(racingFile, racingNow, (err) => {
+          if (err) console.warn(`[slots] could not save ${path.basename(racingFile)}: ${err.message}`);
+        });
+      }
     }, 1000);
     if (slotTimer.unref) slotTimer.unref();
   }
@@ -1870,15 +1890,19 @@ function main() {
     return watcher;
   }
 
-  // Is this fix inside the on-grid zone behind the start line? Used only for the slot table (boats there are
-  // "parked" - see slotTable.js), with its own watchers so it never disturbs the on-grid webhooks' state above.
-  // False when no course marks are known (so no zone exists).
+  // Where is this fix relative to the start grid? { zoneKnown, inZone, pastLine }: inside the on-grid zone behind the
+  // start line, and past the line on the course side (a boat that leaves the zone that way has started). Used only
+  // for the slot table (see slotTable.js), with its own watchers so it never disturbs the on-grid webhooks' state.
+  // zoneKnown is false when no course marks are known (so no zone exists) - the slot table then treats every boat
+  // alike.
   let slotZoneMarks = null;
   const slotZoneWatchers = new Map();
-  function inStartGrid(boatId, lat, lon) {
-    if (!raceMarks) return false;
+  const slotPrevFix = new Map(); // boatId -> last fix, to see a start-line crossing between two heard fixes
+  function startGridState(boatId, lat, lon) {
+    if (!raceMarks) return { zoneKnown: false, inZone: false, pastLine: false };
     if (slotZoneMarks !== raceMarks) {
       slotZoneWatchers.clear();
+      slotPrevFix.clear();
       slotZoneMarks = raceMarks;
     }
     let watcher = slotZoneWatchers.get(boatId);
@@ -1890,7 +1914,12 @@ function main() {
       }
       slotZoneWatchers.set(boatId, watcher);
     }
-    return !!watcher && watcher.check(lat, lon) === 'ongrid';
+    if (!watcher) return { zoneKnown: false, inZone: false, pastLine: false };
+    const prev = slotPrevFix.get(boatId);
+    slotPrevFix.set(boatId, { lat, lon });
+    const crossedStart = !!prev && watcher.crossedStartLine(prev.lat, prev.lon, lat, lon);
+    const inZone = watcher.check(lat, lon) === 'ongrid';
+    return { zoneKnown: true, inZone, pastLine: watcher.pastLine, crossedStart };
   }
 
   // One MarkRoundingWatcher per boat per gate in MARK_ROUNDING_GATES (see
@@ -2179,7 +2208,7 @@ function main() {
     if (slotAllocator) {
       slotAllocator.noteHeard(decoded.boatId, {
         moving: config.txGate.slot.movingKn > 0 && decoded.speedKnots >= config.txGate.slot.movingKn,
-        inZone: inStartGrid(decoded.boatId, decoded.lat, decoded.lon),
+        ...startGridState(decoded.boatId, decoded.lat, decoded.lon),
       });
     }
     // No regatta selected - every course/mark/on-grid-zone/track key is

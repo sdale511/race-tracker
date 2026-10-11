@@ -492,18 +492,22 @@ module.exports = {
       // startup: a 2 s interval has room for about twice as many slots as a 1 s one.
       rtcmIntervalS: Math.max(0.1, parseFloat(process.env.RTCM_INTERVAL_S || process.env.SIM_RTCM_INTERVAL_S || '1') || 1),
       countAuto: process.env.TX_SLOT_COUNT === undefined || process.env.TX_SLOT_COUNT === '',
-      // Base only: how often the slot table is rebroadcast, and how long a boat can go without
-      // actively reporting (a lone heartbeat fix doesn't count) before its slot is given up. A new boat triggers an extra broadcast straight away.
+      // Base only: how often the slot table is rebroadcast.
       tableIntervalS: Math.max(1, parseInt(process.env.TX_SLOT_TABLE_S || '10', 10) || 10),
-      staleS: Math.max(10, parseInt(process.env.TX_SLOT_STALE_S || '120', 10) || 120),
-      // Base only: a boat gets a slot only once it has sent activeFrames position fixes within
-      // activeWindowS seconds. A boat sitting still sends one heartbeat fix a minute (TX_INTERVAL_S),
-      // which never qualifies, so a fleet that isn't racing doesn't use up the slots.
-      // Base only: how long a slot a boat gave up is held back for it (it gets the same one if it
-      // comes back, and the slot is handed to others last).
+      // Base only: how long a boat can go without moving before its slot is freed - a stopped boat gives its slot
+      // up (a heartbeat fix from a boat sitting still does not count as moving), and it gets the same one back
+      // when it moves again.
+      staleS: Math.max(10, parseInt(process.env.TX_SLOT_STALE_S || '45', 10) || 45),
+      // Base only: how long a slot a boat gave up is held back for it (it gets the same one if it comes
+      // back, and the slot is handed to others last).
       holdS: Math.max(0, parseInt(process.env.TX_SLOT_HOLD_S || '1800', 10) || 0),
-      // Base only: a single fix at or above this speed (knots) counts as active on its own, so a boat
-      // that is under way gets a slot on its first fix. 0 turns it off (the 2-fix rule alone applies).
+      // Base only: only boats that have started - come off the start grid across the line - get a slot, so boats
+      // rolling out, watching, or heading to camp never do. Needs the course marks (without them everyone is
+      // eligible). TX_SLOT_GRID_ONLY=0 gives slots to any boat that is under way.
+      gridOnly: process.env.TX_SLOT_GRID_ONLY !== '0' && process.env.TX_SLOT_GRID_ONLY !== 'false',
+      // Base only: a boat stays "racing" until it has been stopped this long (or comes back onto the grid), so a stop
+      // mid-race does not cost it its place. Its slot is still freed after staleS.
+      racingS: Math.max(60, parseInt(process.env.TX_SLOT_RACING_S || '600', 10) || 600),
       // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
       // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing
       // for a start does not use up the slots or swamp the join slots. A boat leaves that state after
@@ -511,8 +515,15 @@ module.exports = {
       // to boats in the zone).
       parkedReportS: Math.max(0, parseFloat(process.env.TX_PARKED_REPORT_S || '15') || 0),
       unparkFixes: Math.max(1, parseInt(process.env.TX_SLOT_UNPARK_FIXES || '3', 10) || 3),
-      movingKn: Math.max(0, parseFloat(process.env.TX_SLOT_MOVING_KN || '1') || 0),
-      activeFrames: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_FRAMES || '2', 10) || 2),
+      // Boat: a boat with no slot of its own (waiting for one, or not racing so never going to get one) reports
+      // quickly at first, then backs off to at most one report every joinReportS seconds, so a crowd of such
+      // boats does not swamp the shared join slots. 0 turns the back-off off.
+      joinReportS: Math.max(0, parseFloat(process.env.TX_JOIN_REPORT_S || '15') || 0),
+      // Base only: a fix at or above this speed (knots) counts as active - a boat gets a slot on its first moving
+      // fix. activeFrames > 0 also counts that many fixes within activeWindowS seconds as active (slow boats;
+      // off by default - on land a boat is either moving or stopped).
+      movingKn: Math.max(0, parseFloat(process.env.TX_SLOT_MOVING_KN || '1.5') || 0),
+      activeFrames: Math.max(0, parseInt(process.env.TX_SLOT_ACTIVE_FRAMES || '0', 10) || 0),
       activeWindowS: Math.max(1, parseInt(process.env.TX_SLOT_ACTIVE_WINDOW_S || '20', 10) || 20),
     },
   },

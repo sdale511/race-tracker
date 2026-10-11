@@ -706,12 +706,19 @@ changes, as slot-table frames (sync `0xA7`, up to 15 boats per frame; larger tab
 hears its own entry moves to that slot, so `TX_SLOT_MS` and `TX_SLOT_COUNT` only need setting on the **base**; a
 boat with `TX_SLOT` set is pinned to that slot and ignores the table.
 
-- **Who gets a slot.** Only boats that are *actively reporting*: either a single fix showing the boat under
-  way (speed at or above `TX_SLOT_MOVING_KN`, 1 kn - the speed is in every fix, so a boat heading for the start
-  line is assigned on its first fix), or `TX_SLOT_ACTIVE_FRAMES` fixes (2) within `TX_SLOT_ACTIVE_WINDOW_S`
-  seconds (20), counting every fix in a batch. A boat sitting still sends one heartbeat fix a minute
-  (`TX_INTERVAL_S`) at about zero speed, which never qualifies, so a fleet that is moored or not racing takes no
-  slots even though the base can hear it. Hello frames don't count.
+- **Who gets a slot.** Only boats that have **started**: a boat that crosses the start line from the grid side - seen
+  as two heard fixes either side of the line between pin and committee mark, however far apart in time, so a late
+  starter who is inside the 10 m grid zone for only a second still counts - is
+  *racing* and gets a slot on its first fix at `TX_SLOT_MOVING_KN` (1.5 kn) or faster - the speed is in every fix. A
+  boat that is rolling out, watching, or heading to camp never gets one, however fast it moves, and one that leaves
+  the grid backwards or sideways, or crosses the line the wrong way, has not started. (`TX_SLOT_GRID_ONLY=0` gives slots to any boat under way; with no
+  course marks - so no grid - every boat is treated alike.) A boat that stops frees its slot after
+  `TX_SLOT_STALE_S` (45 s) without moving (a lone heartbeat fix does not count) but stays *racing* for
+  `TX_SLOT_RACING_S` (10 min), so a stop mid-race costs it nothing and it has its slot back on its first moving fix;
+  coming back onto the grid ends it. Who is racing is saved by
+  the base (`race-config/slot_racing.json`) so restarting it mid-race does not leave the racers without slots.
+  `TX_SLOT_ACTIVE_FRAMES` (0, off) can also count that many fixes within `TX_SLOT_ACTIVE_WINDOW_S` as active, for slow
+  boats. Hello frames never count.
 - **Parked on the start grid.** A boat inside the on-grid zone - the area behind the start line, between the
   pin and the committee mark, within `REGATTAUP_ONGRID_ZONE_M` of it (the zone the on-grid webhooks use) - is
   *parked*: the base gives it no slot however active it is, and frees one it had. The boat works out the same
@@ -720,7 +727,8 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   together), sending just its latest fix (everything stays on its SD card). So a fleet queueing for a start
   neither uses up the slots nor swamps the join slots while another fleet is still racing. A boat is unparked
   after `TX_SLOT_UNPARK_FIXES` (3) fixes in a row outside the zone, so one jostling at the edge doesn't flip in
-  and out; then its first moving fix earns a slot (the one it had, if it is still free). A boat that crosses the
+  and out. If it left across the start line it is now racing and its first moving fix earns a slot (the one it
+  had, if it is still free); if it left backwards or sideways it is not racing and gets none. A boat that crosses the
   line early is outside the zone (it is leeward only) and is tracked at the full rate. Parking needs the course
   marks and slot mode with the bursts heard, and a boat pinned with `TX_SLOT` is not parked. On the dashboard
   the Slot column shows "parked" and the Transmit slots card counts them.
@@ -732,18 +740,25 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   yet - newly active and waiting for the table, or left out because every slot is taken - sends in one of them,
   picking one at random each cycle, so it cannot land on a racing boat's slot (it can still collide with other
   joiners). A boat adopts the base's slot count, width and join slots from any table it hears, even one that
-  doesn't list it. A fleet arriving while another races (for example boats moving to the start line) takes
-  free slots as they fill and shares the join slots for the rest, instead of colliding with racing boats.
-- **Giving a slot up.** When a boat has not been reporting actively for `TX_SLOT_STALE_S` (120 s), its slot is
-  freed. A lone heartbeat fix does not count and does not hold a slot. The same happens at once when the
-  boat is put to sleep from the dashboard's **Radio sleep** card (all boats, or the ones you list), so a fleet
-  that has finished can hand its slots to the next one straight away.
-- **Coming back.** A boat that stops and starts again gets the **same slot back** if nobody has taken it: the
-  boat never stopped using it (it only changes slot when it hears a different one), and the base remembers the
-  slot for `TX_SLOT_HOLD_S` (1800 s) and hands such slots to other boats last. If it was taken meanwhile and no
-  other slot is free, the boat shares the join slots until one opens.
+  doesn't list it. A boat in the join slots backs off: its first reports come at once (the base can assign it a slot on its
+  first moving fix), then further apart, up to one every `TX_JOIN_REPORT_S` (15) seconds, latest fix only - so a crowd
+  of boats with no slot (everyone rolling out, say) cannot swamp the two join slots, and a boat that is never going to
+  get one (not racing) just reports occasionally.
+- **Giving a slot up.** When a boat has been stopped for `TX_SLOT_STALE_S` (45 s) its slot is freed. The same
+  happens at once when the boat is put to sleep from the dashboard's **Radio sleep** card (all boats, or the ones you
+  list), so a fleet that has finished can hand its slots to the next one straight away. A racing boat that finds no
+  slot free takes one from a boat that is not racing (the longest silent first). A boat the base stops listing in its
+  table - it stopped, or lost its slot that way - goes back to the shared join slots itself after about 35 s and three
+  table rebroadcasts without its entry, so it can't collide with whoever has the slot now.
+- **Coming back.** A boat that stops and then moves again gets the **same slot back** if nobody has taken it: the
+  base remembers the slot for `TX_SLOT_HOLD_S` (1800 s) and hands such slots to other boats last. A boat that was
+  stopped for under about 35 s never stopped using it; one that was stopped longer has dropped back to the join
+  slots and is told its slot again on its first moving fix, usually within a second or two. If the slot was taken
+  meanwhile and no other is free, the boat shares the join slots until one opens. (A boat stopped for longer than `TX_SLOT_RACING_S` is no longer racing and must come off the grid across the line
+  again to get a slot.)
 - **Dashboard.** The boat table has a **Slot** column (hover for the slot count and width; "parked" for a boat
-  on the start grid; "shared (full)" for a boat that is waiting in the join slots because every slot is taken),
+  on the start grid; "not racing" for a boat that has not started from the grid; "shared (full)" for a boat that is
+  waiting in the join slots because every slot is taken),
   shown only when the base runs the table. The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
   as `[slots] <boat> -> slot N`.
 - **The base's own slot.** The cycle has one more slot after the boats' (and the join slots): the slot table,
@@ -2079,13 +2094,16 @@ actually use. Redis password is redacted.
 | `RTCM_INTERVAL_S` | 1 | Base only, slot table - the correction interval the base GPS is set to, used to size the slot count |
 | `TX_SLOT_MAX_HZ` | 8 | Boat, slot mode - most fixes per second sent in the slot (8 = one 83-byte delta frame per 1 s cycle; faster GPS rates are thinned, all still on SD); `0` = no cap. Use 4 with `TX_DELTA=0` |
 | `TX_DELTA` | on | Boat - send batches as delta-coded frames (up to 8 fixes in 83 bytes); `0` = the older batch frame (4 fixes in 84). Update the base first |
-| `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 120 | Base only - how often the slot table is rebroadcast, and how long a boat that has stopped actively reporting keeps its slot |
+| `TX_SLOT_TABLE_S` / `TX_SLOT_STALE_S` | 10 / 45 | Base only - how often the slot table is rebroadcast, and how long a stopped boat keeps its slot |
+| `TX_SLOT_RACING_S` | 600 | Base only - how long a stopped boat stays "racing" (eligible for a slot again when it moves) |
+| `TX_SLOT_GRID_ONLY` | on | Base only - only boats that have started (came off the start grid across the line) get a slot; `0` = any boat under way |
+| `TX_JOIN_REPORT_S` | 15 | Boat, slot mode - a boat with no slot of its own reports quickly at first, then backs off to at most one report every this many seconds; `0` = no back-off |
 | `TX_SLOT_JOIN` | 2 | Base (broadcast to boats) - how many of the last slots are never assigned and are shared by boats that have no slot yet |
 | `TX_SLOT_HOLD_S` | 1800 | Base only - how long a slot a boat gave up is kept for it (and handed to other boats last) |
-| `TX_SLOT_ACTIVE_FRAMES` / `TX_SLOT_ACTIVE_WINDOW_S` | 2 / 20 | Base only - a boat gets a slot only after this many position fixes within this many seconds, so idle boats (one heartbeat fix a minute) take none |
+| `TX_SLOT_ACTIVE_FRAMES` / `TX_SLOT_ACTIVE_WINDOW_S` | 0 (off) / 20 | Base only - if above 0, this many position fixes within this many seconds also count as active (for slow boats) |
 | `TX_PARKED_REPORT_S` | 15 | Boat, slot mode - while inside the start-grid zone, report at most this often (+-25%) in the join slots, latest fix only; `0` = no throttle |
 | `TX_SLOT_UNPARK_FIXES` | 3 | Base and boat - fixes in a row outside the start-grid zone before a parked boat is treated as racing |
-| `TX_SLOT_MOVING_KN` | 1 | Base only - a single fix at or above this speed (knots) counts as active on its own, so a boat under way gets a slot on its first fix; `0` turns it off |
+| `TX_SLOT_MOVING_KN` | 1.5 | Base only - a fix at or above this speed (knots) counts as active, so a racing boat gets a slot on its first moving fix |
 | `SIM_RTCM_INTERVAL_S` | 1 | `SIMULATE=1` base only - broadcast a synthetic RTCM burst every N seconds so the gate/slots work in simulation (`0` = no bursts, so nothing is gated or slotted) |
 | `GPS_SVIN_MIN_DUR_S` | 60 | `rtk`/`basertk` only - minimum survey-in duration (s) |
 | `GPS_SVIN_ACC_LIMIT_MM` | 2000 | `rtk`/`basertk` only - required survey-in accuracy (mm) |

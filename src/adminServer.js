@@ -387,13 +387,15 @@ function renderDashboard(s, rtkControlsEnabled) {
   const slotByBoat = s.slots ? new Map(s.slots.boats.map((b) => [b.boatId, b.slot])) : null;
   const slotOverflow = s.slots ? new Set(s.slots.overflow) : null;
   const slotParked = s.slots ? new Set(s.slots.parked || []) : null;
+  const slotRacing = s.slots ? new Set(s.slots.racing || []) : null;
   const slotCell = (id) => {
     if (!slotByBoat) return '';
     const of = s.slots.slotCount - s.slots.joinSlots;
     if (slotParked.has(id)) return '<td title="On the start grid: parked. A boat there takes no slot and reports only now and then, until it leaves the grid"><span class="muted">parked</span></td>';
     if (slotByBoat.has(id)) return `<td title="Slot ${slotByBoat.get(id)} of ${of}, ${s.slots.slotWidthMs} ms each, assigned by the base's slot table">${slotByBoat.get(id)}</td>`;
     if (slotOverflow.has(id)) return `<td title="All ${of} slots are taken - this boat shares the ${s.slots.joinSlots} join slots with other boats that have none, and may collide with them"><span class="muted">shared (full)</span></td>`;
-    return '<td title="No slot: only boats that are actively reporting get one (a boat sitting still sends one heartbeat fix a minute)"><span class="muted">—</span></td>';
+    if (s.slots.gridOnly && !slotRacing.has(id)) return '<td title="No slot: slots go only to boats that have started from the start grid, so a boat rolling out, watching or heading to camp does not use one"><span class="muted">not racing</span></td>';
+    return '<td title="No slot: a boat gets one on its first fix under way, and gives it up when it stops"><span class="muted">—</span></td>';
   };
 
   const redisStatus = redisStatusFor(s);
@@ -699,7 +701,7 @@ function renderDashboard(s, rtkControlsEnabled) {
         ? `<div class="card">
       <div class="label">Transmit slots</div>
       <div class="value" style="font-size:20px;">${s.slots.boats.length} <span class="muted" style="font-size:13px;">of ${s.slots.slotCount - s.slots.joinSlots} slots assigned</span></div>
-      <div class="sub">${s.slots.slotCount} slots of ${s.slots.slotWidthMs} ms per correction cycle, ${s.slots.joinSlots} kept free for boats without one.${s.slots.overflow.length ? ` <strong>${s.slots.overflow.length} boat(s) waiting for a slot.</strong>` : ''}${(s.slots.parked || []).length ? ` ${s.slots.parked.length} parked on the start grid.` : ''}</div>
+      <div class="sub">${s.slots.slotCount} slots of ${s.slots.slotWidthMs} ms per correction cycle, ${s.slots.joinSlots} kept free for boats without one.${s.slots.overflow.length ? ` <strong>${s.slots.overflow.length} boat(s) waiting for a slot.</strong>` : ''}${(s.slots.parked || []).length ? ` ${s.slots.parked.length} parked on the start grid.` : ''}${s.slots.gridOnly ? ` ${(s.slots.racing || []).length} racing.` : ''}</div>
     </div>`
         : ''
     }

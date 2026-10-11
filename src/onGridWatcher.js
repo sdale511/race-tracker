@@ -285,6 +285,7 @@ class OnGridWatcher {
     this.pin = geo.pin;
     this.zoneMeters = zoneMeters;
     this.onGrid = false;
+    this.pastLine = false;
     // check() reuses this - the line's own perpendicular, not the wind
     // axis (see computeGeometry's own comment) - to reject anything past
     // the line on the windward/course side outright, see check() itself.
@@ -329,10 +330,33 @@ class OnGridWatcher {
       this._isInZone(p, this.committeeStart, this.pin, this.zoneMeters) &&
       (!this.excludeTriangle || !this._inCommitteeTriangle(p)) &&
       !this._inPinTriangle(p);
+    // Set on every fix: past the start line on the course side. A boat that leaves the zone this way has started
+    // (leaving backwards or sideways has not) - used by the slot table to tell racers from watchers.
+    this.pastLine = windwardOfLine > ONGRID_EDGE_MARGIN_M;
     const wasInside = this.onGrid;
     this.onGrid = inside;
     if (inside) return 'ongrid';
     return wasInside ? 'offgrid' : null;
+  }
+
+  // Did the boat cross the START line going from the leeward (pre-start) side to the course side between these two
+  // fixes - anywhere along the line between pin and committeeStart? Independent of the on-grid zone and of how far
+  // apart the fixes are in time, so a boat that is only heard now and then still registers as having started. Does
+  // not touch check()'s state.
+  crossedStartLine(prevLat, prevLon, lat, lon) {
+    const a = this._toXY(prevLat, prevLon);
+    const b = this._toXY(lat, lon);
+    const side = (p) => (p.x - this.committeeStart.x) * this.crossLineUx + (p.y - this.committeeStart.y) * this.crossLineUy;
+    const da = side(a);
+    const db = side(b);
+    if (!(da <= 0 && db > 0)) return false; // not from the leeward side to the course side
+    const t = da / (da - db);
+    const px = a.x + t * (b.x - a.x);
+    const py = a.y + t * (b.y - a.y);
+    const lx = this.pin.x - this.committeeStart.x;
+    const ly = this.pin.y - this.committeeStart.y;
+    const u = ((px - this.committeeStart.x) * lx + (py - this.committeeStart.y) * ly) / (lx * lx + ly * ly || 1);
+    return u >= -0.02 && u <= 1.02; // on the line itself, with a little slack at either mark
   }
 
   // Standard point-to-segment distance, but deliberately NOT clamped to

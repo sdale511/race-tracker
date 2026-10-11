@@ -23,7 +23,7 @@ const { createRtcmLogger } = require('./rtcmLog');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler } = require('./txScheduler');
-const { SlotTableFollower, ZoneState, ParkedReporter } = require('./slotTable');
+const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff } = require('./slotTable');
 const { OnGridWatcher } = require('./onGridWatcher');
 const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
@@ -343,9 +343,29 @@ const zoneState = new ZoneState(config.txGate.slot.unparkFixes);
 const parkedReporter = new ParkedReporter({ intervalMs: config.txGate.slot.parkedReportS * 1000 });
 let parked = false;
 const parkingEnabled = config.txGate.enabled && config.txGate.slot.enabled && config.txGate.slot.index === null;
-// True while the parked throttle applies to this boat's radio sends.
+// A boat with no slot of its own (waiting for the base to assign one, or not racing so never going to get one)
+// shares the join slots and backs off its reports (see JoinBackoff). Reset whenever it is given a slot.
+const joinBackoff = new JoinBackoff({ maxMs: config.txGate.slot.joinReportS * 1000 });
+if (slotFollower) slotFollower.onAssigned = () => joinBackoff.reset();
+function joinThrottleActive() {
+  return (
+    !parked &&
+    config.txGate.slot.joinReportS > 0 &&
+    parkingEnabled &&
+    !!txScheduler &&
+    !!txScheduler.slot.join &&
+    txScheduler.slotAligned()
+  );
+}
+// The pacing that applies to this boat's radio sends right now, or null for none: parked on the start grid, or sharing
+// the join slots without a slot of its own.
+function sendPacer() {
+  if (parked && config.txGate.slot.parkedReportS > 0 && txScheduler && txScheduler.slotAligned()) return parkedReporter;
+  if (joinThrottleActive()) return joinBackoff;
+  return null;
+}
 function parkedThrottleActive() {
-  return parked && config.txGate.slot.parkedReportS > 0 && !!txScheduler && txScheduler.slotAligned();
+  return sendPacer() !== null;
 }
 function updateParked(pvt) {
   if (!parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
@@ -772,9 +792,10 @@ function handlePvt(pvt) {
 function transmitFix(pvt) {
   sdLogger.logPvt(pvt);
   if (sleeper.isSleeping()) return; // radio sleep mode - SD-logged above, nothing to transmit
-  if (parkedThrottleActive()) {
-    if (!parkedReporter.due()) return; // parked on the start grid: SD-logged above, reported only now and then
-    parkedReporter.sent();
+  const pacer = sendPacer();
+  if (pacer) {
+    if (!pacer.due()) return; // parked, or without a slot: SD-logged above, reported only now and then
+    pacer.sent();
   }
   const frame = protocol.encode(config.boatId, pvt);
   const sent = radio.send(frame);
@@ -801,7 +822,7 @@ function transmitFix(pvt) {
 function queueFixForTx(pvt) {
   sdLogger.logPvt(pvt);
   if (parkedThrottleActive()) {
-    pendingBatch = [pvt]; // parked: only the latest fix is kept for the next (occasional) report
+    pendingBatch = [pvt]; // parked or without a slot: only the latest fix is kept for the next (occasional) report
     return;
   }
   pendingBatch.push(pvt);
@@ -839,10 +860,11 @@ function flushPendingBatch({ forSlot = false } = {}) {
   pendingBatch = [];
   if (fixes.length === 0) return;
   if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
-  if (parkedThrottleActive()) {
-    // parked: one fix, only when the next report is due (the rest are on the SD card)
-    if (!parkedReporter.due()) return;
-    parkedReporter.sent();
+  const pacer = sendPacer();
+  if (pacer) {
+    // parked, or without a slot of its own: one fix, only when the next report is due (the rest are on the SD card)
+    if (!pacer.due()) return;
+    pacer.sent();
     fixes = fixes.slice(-1);
   }
 
