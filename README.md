@@ -691,11 +691,11 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   (positions are already on the SD card).
 - **Slot mode** (on by default, `TX_SLOT_MODE=0` turns it off; boats and base): position, batch and delta-batch frames are released
   only in this boat's slot of each cycle. A cycle starts at a burst; slot `i` opens `after + guard + i x TX_SLOT_MS` after
-  it (30 ms + `i` x 35 ms by default), so boats in different slots never overlap. Other frames (hello, ping
+  it (30 ms + `i` x 45 ms by default), so boats in different slots never overlap. Other frames (hello, ping
   replies, set-mark, ...) are gated but not slotted. The three parts below say how a boat gets its slot, what
   it sends in it, and how big a slot should be.
 
-What one cycle looks like (a 1 s correction interval, 35 ms slots; the *B* is the base's own slot):
+What one cycle looks like (drawn for a 1 s correction interval and 35 ms slots - the defaults are 2 s and 45 ms; the *B* is the base's own slot):
 
 ![One 1 s cycle: RTCM burst and guard, 23 boat slots, 2 join slots, the base slot, then a blocked stretch before the next burst](docs/tdma-cycle-1s.svg)
 
@@ -1717,10 +1717,29 @@ is `none` for anything recorded with no regatta selected.
 | `regattas:<id>:boats:known` | Set of boat IDs that reported in. `knownBoatIds()` |
 | `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
 
-Each stored fix: decoded frame (`boatId, timestamp, lat, lon, speedKnots,
-headingDeg, gnssFixOk, carrSoln, numSV`) + `receivedAt`. If Redis is
+Each stored fix: the decoded frame (`boatId, lat, lon, speedKnots, headingDeg,
+gnssFixOk, carrSoln, numSV`) as a compact JSON member, with the fix's own GPS
+time as the sorted-set score (no arrival time is stored). If Redis is
 unreachable, `baseStation.js` logs and keeps running - console/CSV/UDP
 unaffected.
+
+**Reading tracks live.** Fixes reach Redis late and in bursts: a boat's slot
+delivers its last cycle of fixes at once (about 1 s old on average at a 2 s
+interval, up to 2 s), and boats arrive in different orders. A reader that polls
+"fixes newer than the newest I have seen from any boat" therefore skips every
+fix that lands after a poll with a time older than another boat's newest - holes
+in the live track that a reloaded race does not have (in a 30-boat run that was
+about 17% of fixes). Poll from a few seconds before the newest fix (5 s covers a
+cycle plus the poll gap) and merge de-duplicated by boat + fix time; RegattaUp's
+3D map does this. Reading a bounded range after the race has finished gets everything either way.
+
+**Known:** in a simulated run nearly every boat is missing about a 1.5 s block
+(4 fixes at 2 Hz, 12 at 8 Hz) from Redis where it crosses the start/finish line,
+although the base's received-fixes CSV has them and the base's own Redis code
+(replayed against a local Redis) does not drop them. Nothing in this repo
+removes track points, so the cause is probably outside it (RegattaUp processing
+line-crossing events?) or a failed write - check the dashboard's Redis card and
+the console for `[redis] track write failed`.
 
 ### If Redis runs out of space
 
@@ -2257,6 +2276,11 @@ actually use. Redis password is redacted.
 - UBX checksum/frame-sync robustness over a long noisy USB-serial run (the
   parser resyncs on bad frames, but untested against real RF noise)
 - The actual ingestion format for whichever race software you land on
+- Slots on real radios: the 45 ms default and the air-time figures behind it are estimates and were only
+  measured with one sender radio - two boats on separate radios in neighbouring slots, and the
+  `[txgate-stats]` expired/dropped counts at a full 30-boat fleet, have not been tested
+- RTK holding at speed with 2 s corrections (`RTCM_INTERVAL_S=2`, the default): rovers work from corrections up to 2 s
+  old; watch `carr_soln` and the Link health RTK share
 - The "Base GPS survey-in" dashboard card (`UBX-NAV-SVIN`/`UBX-CFG-TMODE3`
   parsing, ECEF-to-lat/lon conversion, TMODE3 poll) - verified against
   synthetic UBX frames only, never a real ZED-F9P running survey-in
