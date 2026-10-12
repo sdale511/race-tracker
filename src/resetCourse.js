@@ -1,6 +1,7 @@
 const config = require('./config');
 const { RedisStore } = require('./redisStore');
 const { zonePolygon } = require('./onGridWatcher');
+const { persistRegattaId } = require('./regattaIdFile');
 const {
   COURSE_LENGTH_NM,
   START_LINE_POSITION,
@@ -27,6 +28,36 @@ const {
 (async () => {
   const target = config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`;
   console.log(`[resetCourse] connecting to Redis at ${target}`);
+  // The regatta's venue coordinates are only a copy, saved in regatta-id.txt when the regatta was last selected - so a
+  // correction made in RegattaUp since then (a longitude saved without its minus sign put a course in China) would not
+  // be seen. Ask RegattaUp for the current value first, update the saved copy, and fall back to the saved one if it
+  // can't be reached.
+  const saved = config.regattaup.defaultRegatta;
+  const explicit = process.env.SIM_CENTER_LAT !== undefined || process.env.SIM_CENTER_LON !== undefined;
+  if (saved && saved.id && !explicit) {
+    try {
+      const res = await fetch(config.regattaup.activeRegattasUrl, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      const fresh = (Array.isArray(body.regattas) ? body.regattas : []).find((r) => r.id === saved.id);
+      if (!fresh) {
+        console.log(`[resetCourse] regatta "${saved.name || saved.id}" is not in RegattaUp's active/future list - using the coordinates saved in regatta-id.txt (${saved.defaultLat} / ${saved.defaultLon})`);
+      } else {
+        if (fresh.default_lat !== saved.defaultLat || fresh.default_lon !== saved.defaultLon) {
+          console.log(
+            `[resetCourse] RegattaUp now has ${fresh.default_lat} / ${fresh.default_lon} for "${fresh.name}" (saved copy had ${saved.defaultLat} / ${saved.defaultLon}) - using and saving the new value`
+          );
+          persistRegattaId(fresh.id, fresh.name, fresh.default_lat, fresh.default_lon, fresh.venue, fresh.start_date, fresh.end_date);
+        } else {
+          console.log(`[resetCourse] regatta coordinates from RegattaUp match the saved copy (${saved.defaultLat} / ${saved.defaultLon})`);
+        }
+        saved.defaultLat = fresh.default_lat ?? null;
+        saved.defaultLon = fresh.default_lon ?? null;
+      }
+    } catch (err) {
+      console.log(`[resetCourse] could not ask RegattaUp for the regatta's coordinates (${err.message}) - using the saved copy in regatta-id.txt (${saved.defaultLat} / ${saved.defaultLon})`);
+    }
+  }
   // An operator's explicit SIM_CENTER_LAT/SIM_CENTER_LON always wins,
   // otherwise defaults to the persisted regatta's own venue coordinates
   // (RegattaUp's default_lat/default_lon, persisted alongside the id/name

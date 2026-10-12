@@ -260,24 +260,20 @@ to 2 s old and a lost message costing 2 s. Check that RTK still holds at speed b
 is what a rover needs before it can start an RTK fix, so a boat that powers up waits up to N seconds for its first one.
 Sending it less often also removes a small message that would otherwise arrive a second away from the observations.
 
-**Bursts every second at a 2 s interval.** A ZED-F9P base can send its 25-byte station message (1005) alone, a second away
-from the five observation messages (1074/1084/1094/1124/1230), which arrive together; each type still repeats every 2 s
-(`python3 rtcm_listen.py --port <radio port> --timeline` lists every message with its arrival time). A scheduler that
-counts every quiet gap over 400 ms as a new burst then hears 1 s bursts and logs `slot N of M does not fit in the 1000 ms
-between correction bursts`. The burst tracker therefore ignores a lone message under 40 bytes that arrives after a quiet gap:
-the observations define the burst, and the station message's few milliseconds of air time are not worth keeping clear.
-`ubx_config_set.py --role base` also writes all the RTCM rates in one command (off, then on) whenever any of them changes,
-so their output counters start together; `--realign-rtcm` does the same for a receiver whose rates already read correctly
-(it may not change which second the station message uses - the tracker no longer depends on it):
-```
-python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --realign-rtcm
-```
 Run it with `--dry-run` first to see exactly what would change, and
 `ubx_config_report.py` afterwards to confirm; it writes RAM+BBR+flash, so it
 survives a power cycle.
 ```
 python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --dry-run
 python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --constellations gps,galileo,beidou
+```
+
+The RTCM message rates are written together, in one command (off, then on), whenever any of them changes: each message's output
+counter starts when its rate is written, so rates written one by one can end up on different seconds. `--realign-rtcm` does the
+same off-and-on for a receiver whose rates already read correctly. To see what the base is really sending, with every message's
+arrival time and the gaps between them (stop the base first so the radio port is free):
+```
+python3 rtcm_listen.py --port /dev/cu.usbserial-0001 --seconds 20 --timeline
 ```
 
 The base role also prints the receiver's current TMODE3 mode as its first line
@@ -705,19 +701,34 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   GPS before), and `ubx_config_set.py --role rover` now also accepts RTCM3 as an input on UART1
   and USB. Nothing is forwarded while the rover is in radio sleep: a byte written to a sleeping
   receiver wakes it.
+- **Is the GPS getting the corrections? (boat dashboard, "RTK corrections" card.)** "Radio received" counts the
+  correction messages the Pi heard on its radio; "GPS applied" counts what the receiver itself reports using; "Sent to
+  GPS" counts what the Pi forwarded (only with `RTCM_FORWARD=1`). The headline reads "receiving" when the receiver
+  applied one in the last 10 s, "stalled" after that, "none yet" before the first, and "not applied" if the radio is
+  hearing corrections the receiver isn't using. On an ArduSimple board whose XBee sits in the board's socket, the radio
+  feeds the receiver's UART2 directly, so no forwarding is needed - **provided UART2's baud equals the XBee's `BD`
+  (115200)**. A receiver left at ArduSimple's 38400 hears the radio but decodes nothing: "Radio received" counts up while
+  "GPS applied" stays 0 and the fix stays plain GPS. `ubx_config_set.py --role rover` sets UART2 to 115200 (check the
+  dry-run's `UART2 baud` line, and that TMODE3 reads 0 - a non-zero TMODE3 means that receiver is a base). With
+  `RTCM_FORWARD=1` the Pi's TX/RX wires to the receiver's UART1 do the same job when the board does not route the radio
+  to UART2.
 
 ### Shared-radio transmit scheduling (keep clear of the correction burst; optional time slots)
 
-With one radio for telemetry and corrections, a frame written into the base's once-a-second RTCM burst is
+With one radio for telemetry and corrections, a frame written into the base's RTCM burst (one per correction interval) is
 delayed and leaves the corrections incomplete (measured: 46% of bursts incomplete with a frame sent in the
 conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`). This keeps writes clear of it.
 
 - **Burst tracker** (`burstTracker.js`): times the first RTCM message of each burst as this radio decodes it,
   learns the period, predicts the next burst, and back-dates the start if the first messages of a burst were
-  lost. It goes inactive after a few missed cycles.
+  lost. It goes inactive after a few missed cycles. A quiet gap over 400 ms starts a new burst, **except** for a lone
+  message under 40 bytes: a base can send its 25-byte station message (1005) alone, a second away from the five observation
+  messages (which arrive together), and counting that as a burst made the heard period 1 s at a 2 s interval - so slots
+  past the first second "did not fit in the 1000 ms between correction bursts" and went out outside their slots. The
+  observations define the burst; the station message's few milliseconds of air time are not kept clear.
 - **Gate** (`txGate.js`): holds a write from 40 ms before a predicted burst start to 20 ms after it, plus a
   10 ms guard each side (a bigger frame starts blocking earlier: 0.087 ms per byte more) - about 80 ms of
-  every second. While no bursts are heard it holds nothing, so a separate correction radio, or no base,
+  every burst. While no bursts are heard it holds nothing, so a separate correction radio, or no base,
   behaves exactly as before.
 - **Scheduler** (`txScheduler.js`): wraps the radio's `send()` on the boat, and `send()`/`broadcast()` on the base
   (where the gate holds everything and slot mode holds the base's own frames for its slot - see below). A held frame waits, in order, and goes out when the gate clears; at most
@@ -1775,6 +1786,23 @@ earlier runs still in Redis for 48 h, whole blocks of it) were replaced by a lat
 the start/finish line even though the base's received-fixes CSV had every fix. Members now carry the fix's own time (`t`),
 which readers ignore (they take the time from the score); a replay of a 30-boat run lost 0 fixes afterwards, against 25
 before. Fixes already stored without `t` are unchanged.
+
+### Corrupted fixes (`fixSanity.js`, `npm run clean-bad-fixes`)
+
+A corrupted radio frame can still pass the frame's checksum (an 8-bit sum lets about 1 in 256 through, more likely when the
+radio is flooded or mis-framing) and then carries garbage in every field: a boat id of control characters, a latitude past 90,
+a time in 1994 or 2049. Stored, one of these sets the race map's "latest time" to 2049 and breaks its track drawing. The base
+now drops such a fix before anything records it (boat id must be letters, digits, `-` or `_`; latitude within +-90, longitude
+within +-180; speed 0-200 kn; time within 48 hours of now) and counts it with the radio's sync errors, logging one line
+(`dropped an implausible fix (...)`) at most every 30 s. `RedisStore.recordFix` repeats the check.
+
+Fixes stored before this check can be listed and removed. It only lists unless `--apply` is given, and it removes just what
+it listed, from the regatta's all-boats track, the boat's own track and, if that boat is left with nothing, the known-boats set:
+```
+npm run clean-bad-fixes                      # the regatta in regatta-id.txt - lists what it finds
+npm run clean-bad-fixes -- --apply           # removes it
+npm run clean-bad-fixes -- --regatta <id>    # another regatta
+```
 
 ## What still needs real-hardware testing
 

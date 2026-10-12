@@ -3,6 +3,7 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
+const { implausibleReason } = require('./fixSanity');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
 const { getPersistedMarkName, persistMarkName, clearPersistedMarkName, markNameFilePath } = require('./markNameFile');
 const {
@@ -2204,7 +2205,21 @@ function main() {
   // gets: regatta gating, null-island check, stats, CSV/Redis, the local
   // re-broadcast, reconnect/marks-rebroadcast detection, and lap/on-grid/
   // mark-rounding/foul detection.
+  // A corrupted frame can pass the radio checksum and arrive with garbage in every field - see fixSanity.js. Dropped before
+  // anything records or acts on it, and counted with the radio's sync errors since it is the same kind of damage.
+  let lastImplausibleLogAt = 0;
   function handleDecodedFrame(decoded) {
+    const implausible = implausibleReason(decoded);
+    if (implausible) {
+      stats.recordSyncError();
+      linkHealth.recordSyncError();
+      const nowMs = Date.now();
+      if (nowMs - lastImplausibleLogAt > 30000) {
+        lastImplausibleLogAt = nowMs;
+        console.warn(`[baseStation] dropped an implausible fix (${implausible}) - a corrupted radio frame that passed its checksum`);
+      }
+      return;
+    }
     fleetSleep.noteHeard(decoded.boatId); // a rover we put to sleep is evidently awake again
     if (slotAllocator) {
       slotAllocator.noteHeard(decoded.boatId, {

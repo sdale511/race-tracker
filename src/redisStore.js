@@ -1,4 +1,5 @@
 const Redis = require('ioredis');
+const { implausibleReason } = require('./fixSanity');
 const { getMarks: computeMarks, METERS_PER_DEG_LAT, MARK_NAMES, PIN_BOUNDARY_MARK } = require('./course');
 
 // Flat-earth approximation (same style as course.js's offsetToLatLon) - fine
@@ -264,6 +265,7 @@ class RedisStore {
 
   async recordFix(decoded) {
     await this.ready;
+    if (implausibleReason(decoded)) return; // never store a corrupted fix - see fixSanity.js (the base also drops them earlier)
     if (this.wouldSkipRecordFix(decoded)) return;
 
     const member = packFix(decoded);
