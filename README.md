@@ -657,8 +657,8 @@ npm run boat
 ```
 
 **Timestamps inside a batch.** A fix's time is always its own GPS
-`timestamp` (the Redis sorted-set score), so a 2Hz simulator produces fixes
-500ms apart even when 4 arrive in one batch frame. The base stores no
+`timestamp` (the Redis sorted-set score), so a 10 Hz simulator produces fixes
+100ms apart even when 8 arrive in one frame. The base stores no
 arrival time in a fix: it used to stamp each unpacked fix with `new Date()`
 (a `receivedAt`), which gave every fix in a batch the identical value. Track
 points returned from Redis still carry a `receivedAt` field for existing
@@ -919,7 +919,7 @@ Variations - set these on the command shown:
 ```
 FLEET_SIZE=50 npm run fleet                                   # more boats than the 39 slots: the rest share the join slots
 SIMULATE=1 SIM_RTCM_INTERVAL_S=1 npm run base                 # 1 s corrections (default 2): the table carries 20 slots
-SIM_GPS_HZ=8 FLEET_SIZE=3 npm run fleet                       # 8 fixes per frame, one frame per cycle (delta coding)
+SIM_GPS_HZ=2 FLEET_SIZE=3 npm run fleet                       # a slower, lighter fake GPS (the default is 10 Hz, like a real rover)
 SIM_HOLD_FOR_START=0 FLEET_SIZE=4 npm run fleet               # boats start on their own after a short dwell
 SIMULATE=1 TX_SLOT_GRID_ONLY=0 npm run base                   # slots for any boat under way, not only those that started
 SIMULATE=1 TX_SLOT_MODE=0 npm run base                        # slot mode off everywhere, for comparison
@@ -1441,7 +1441,7 @@ mode.
 | Var | Default | Purpose |
 |---|---|---|
 | `SIM_PORT` | 41234 | Shared UDP port every simulated boat/base uses |
-| `SIM_GPS_HZ` | 2 | Fake GPS fix rate |
+| `SIM_GPS_HZ` | 10 | Fake GPS fix rate - the real rover profile's 10 Hz, so the radio path matches a real boat (the boat sends at most 8 Hz of it over the air; use 2 for a light, quiet test) |
 | `SIM_UPWIND_SPEED_KN` / `SIM_DOWNWIND_SPEED_KN` | 30 / 55 | Landsailer speed beating vs. running |
 | `SIM_CENTER_LAT` / `SIM_CENTER_LON` | 40.8970 / -118.3821 | Course center - only takes effect on a fresh course (nothing published in Redis) |
 | `SIM_PACKET_LOSS` | 0 | % chance (0-100) each frame is dropped |

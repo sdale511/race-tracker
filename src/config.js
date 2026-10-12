@@ -216,7 +216,10 @@ module.exports = {
     // it (see simRadioLink.js) the same way a real radio broadcasts on its
     // shared RF channel - no per-boat host/address to configure.
     port: parseInt(process.env.SIM_PORT || '41234', 10),
-    gpsHz: parseFloat(process.env.SIM_GPS_HZ || '2'),
+    // Matches the rover profile's 10 Hz (ubx_config_set.py sets the real receiver's measurement rate to 100 ms), so a simulated boat
+    // exercises the same radio path as a real one: the boat sends at most TX_SLOT_MAX_HZ (8) of those over the air, thinning
+    // around turns, and logs all of them. A lower rate (2 Hz, the old default) never fills a frame or reaches the thinning.
+    gpsHz: parseFloat(process.env.SIM_GPS_HZ || '10'),
     // Landsailers, unlike water boats, go much faster downwind than up -
     // low rolling resistance lets apparent wind build well past true wind
     // speed on a reach/run.
