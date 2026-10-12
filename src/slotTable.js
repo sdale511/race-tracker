@@ -398,6 +398,11 @@ class SlotAllocator {
   frames() {
     const entries = [...this.byBoat.entries()].map(([boatId, e]) => ({ boatId, slot: e.slot })).sort((a, b) => a.slot - b.slot);
     const out = [];
+    // With nobody assigned the table is still sent, with no entries: it is also how every boat learns the slot count, the width
+    // and which slots are the shared join slots. Without it a boat on a quiet base (nobody racing yet) never hears a table.
+    if (entries.length === 0) {
+      return [protocol.encodeSlotTable({ version: this.version, slotCount: this.count, slotWidthMs: this.widthMs, joinSlots: this.joinSlots, entries: [] })];
+    }
     for (let i = 0; i < entries.length; i += protocol.MAX_SLOT_ENTRIES) {
       out.push(
         protocol.encodeSlotTable({

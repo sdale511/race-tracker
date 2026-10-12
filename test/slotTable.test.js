@@ -509,3 +509,17 @@ test('a boat before its first table assumes the slot count the base works out, s
   // a 1 s interval gives a smaller table
   assert.ok(autoSlotCount({ ...config.txGate.slot, rtcmIntervalS: 1, widthMs: 45, joinSlots: 2 }, gate) < count);
 });
+
+test('a table with nobody assigned is still broadcast (empty), so boats learn the slot count and join slots', () => {
+  const protocol = require('../src/protocol');
+  const { SlotAllocator } = require('../src/slotTable');
+  const alloc = new SlotAllocator({ count: 41, widthMs: 45, joinSlots: 2 });
+  const frames = alloc.frames();
+  assert.strictEqual(frames.length, 1);
+  const table = protocol.decodeSlotTable(frames[0]);
+  assert.ok(table, 'the empty table decodes');
+  assert.strictEqual(table.slotCount, 41);
+  assert.strictEqual(table.slotWidthMs, 45);
+  assert.strictEqual(table.joinSlots, 2);
+  assert.strictEqual(table.entries.length, 0);
+});
