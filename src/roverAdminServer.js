@@ -379,8 +379,8 @@ function renderDashboard(s, power) {
           : s.txSlot && s.txSlot.enabled && !s.txSlot.sharing && s.txSlot.index != null
           ? `slot ${s.txSlot.index}`
           : s.txSlot && s.txSlot.joinFirst != null
-          ? `shared slots ${joinSlotNumbers(s.txSlot)}`
-          : 'shared slots'
+          ? `shared ${joinSlotNumbers(s.txSlot)}`
+          : 'shared'
       }</div>
       <div class="stat-rows">${[
         {
@@ -390,12 +390,16 @@ function renderDashboard(s, power) {
         },
         s.txSlot && s.txSlot.enabled
           ? {
-              label: 'Slot',
-              title: 'This boat\'s slot in the cycle, how many slots there are, and how wide each is. "Shared" means it has no slot of its own yet and sends in the last few slots, which nobody owns. Until it has heard the base\'s slot table the count is a default assumption.',
-              value:
-                s.txSlot.sharing || s.txSlot.index == null
-                  ? `shared: ${joinSlotNumbers(s.txSlot)} (of ${s.txSlot.count} slots, ${s.txSlot.widthMs} ms)${s.txSlot.tableHeard ? '' : ' - no table from the base yet'}`
-                  : `own: ${s.txSlot.index} (of ${s.txSlot.count} slots, ${s.txSlot.widthMs} ms)`,
+              label: 'Slots',
+              title: 'How many slots there are in one correction cycle (including the shared join slots) and how wide each is. Until this boat has heard the base\'s table the count is what it works out from RTCM_INTERVAL_S and TX_SLOT_MS.',
+              value: `${s.txSlot.count} x ${s.txSlot.widthMs} ms`,
+            }
+          : null,
+        s.txSlot && s.txSlot.enabled
+          ? {
+              label: 'Table',
+              title: 'Whether this boat has heard the base\'s slot table. "Shared" slots (the headline) belong to nobody: a boat with no slot of its own yet sends there.',
+              value: s.txSlot.tableHeard ? 'from the base' : 'not heard yet',
             }
           : null,
         { label: 'Sent in slot', title: 'Frames released in this boat\'s own slot', value: s.txGate.slotted.toLocaleString() },

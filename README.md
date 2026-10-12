@@ -714,9 +714,10 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   to UART2.
 
 - **Is the boat keeping to its slot? (boat dashboard, "Transmit slot" card.)** The headline is the boat's slot ("slot 0"),
-  "shared slots 39, 40" (the numbers of the shared join slots) while it has none of its own yet (parked on the grid, or waiting for the base to assign one), or "no
-  bursts heard" when its radio hears no corrections, in which case nothing is slotted. The rows: how often the correction
-  bursts arrive, the boat's slot and the table's slot count and width ("shared: 39, 40 (of 41 slots, 45 ms) - no table from the base yet" means no slot of its own and no table heard, so the count is what the boat works out from `RTCM_INTERVAL_S` and `TX_SLOT_MS`; with a table it reads e.g. "shared: 39, 40 (of 41 slots, 45 ms)", and a boat with its own slot "own: 0 (of 41 slots, 45 ms)"), frames sent in the slot, **Spilled** (frames that did
+  "shared 39, 40" (the numbers of the shared join slots) while it has none of its own yet (parked on the grid, or waiting for
+  the base to assign one), or "no bursts heard" when its radio hears no corrections, in which case nothing is slotted. The
+  rows: how often the correction bursts arrive, the slot count and width ("41 x 45 ms"), whether the boat has heard the base's
+  slot table ("not heard yet" means the count is what the boat works out from `RTCM_INTERVAL_S` and `TX_SLOT_MS`), frames sent in the slot, **Spilled** (frames that did
   not fit and went out a cycle later - nothing is lost; a few near marks is normal, one every cycle means the slot is too
   small: raise `TX_SLOT_MS` or lower `TX_SLOT_MAX_HZ`), **Expired / dropped** (frames discarded after waiting too long -
   those positions never went out, though they are on the SD card; a warning mark appears if either is above 0) and how many
