@@ -1385,6 +1385,9 @@ function getRoverStats() {
     currentRegattaName,
     sleep: { ...sleeper.status(), gps: gpsSleep.status() },
     txGate: txScheduler ? txScheduler.stats() : null,
+    txSlot: txScheduler
+      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join }
+      : null,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,
     pendingCount: countPending(config.boatLogDir, config.boatId, config.logChunkMinutes),

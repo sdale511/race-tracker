@@ -713,6 +713,17 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   `RTCM_FORWARD=1` the Pi's TX/RX wires to the receiver's UART1 do the same job when the board does not route the radio
   to UART2.
 
+- **Is the boat keeping to its slot? (boat dashboard, "Transmit slot" card.)** The headline is the boat's slot ("slot 0"),
+  "sharing join slots" while it has none of its own yet (parked on the grid, or waiting for the base to assign one), or "no
+  bursts heard" when its radio hears no corrections, in which case nothing is slotted. The rows: how often the correction
+  bursts arrive, the boat's slot and the table's slot count and width, frames sent in the slot, **Spilled** (frames that did
+  not fit and went out a cycle later - nothing is lost; a few near marks is normal, one every cycle means the slot is too
+  small: raise `TX_SLOT_MS` or lower `TX_SLOT_MAX_HZ`), **Expired / dropped** (frames discarded after waiting too long -
+  those positions never went out, though they are on the SD card; a warning mark appears if either is above 0) and how many
+  frames are waiting for the next slot. These are the counts the boat also prints as `[txgate-stats]` when it shuts down. The
+  scheduler plans from an estimate of air time, so an actual overrun into a neighbour's slot shows up on the base instead
+  (Link health's checksum failures and gaps for that boat).
+
 ### Shared-radio transmit scheduling (keep clear of the correction burst; optional time slots)
 
 With one radio for telemetry and corrections, a frame written into the base's RTCM burst (one per correction interval) is

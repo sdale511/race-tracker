@@ -363,6 +363,45 @@ function renderDashboard(s, power) {
         .map((r) => `<div class="stat-row"><span class="name" title="${r.title}">${r.label}</span><span class="val">${r.value}</span></div>`)
         .join('')}</div>
     </div>
+    ${
+      s.txGate
+        ? `<div class="card">
+      <div class="label" title="Where this boat sends its position in the shared-radio schedule, and whether frames are keeping to it">Transmit slot</div>
+      <div class="value">${
+        !s.txGate.tracker.active
+          ? 'no bursts heard'
+          : s.txSlot && s.txSlot.enabled && !s.txSlot.sharing && s.txSlot.index != null
+          ? `slot ${s.txSlot.index}`
+          : 'sharing join slots'
+      }</div>
+      <div class="stat-rows">${[
+        {
+          label: 'Corrections',
+          title: 'How often the correction bursts this radio hears arrive - the transmit slots are timed from them',
+          value: s.txGate.tracker.active && s.txGate.tracker.periodMs ? `every ${Math.round(s.txGate.tracker.periodMs)} ms` : 'not heard',
+        },
+        s.txSlot && s.txSlot.enabled
+          ? { label: 'Slot', title: 'This boat\'s slot in the cycle, how many slots the base made, and how wide each is', value: `${s.txSlot.sharing || s.txSlot.index == null ? 'join' : s.txSlot.index} of ${s.txSlot.count} (${s.txSlot.widthMs} ms)` }
+          : null,
+        { label: 'Sent in slot', title: 'Frames released in this boat\'s own slot', value: s.txGate.slotted.toLocaleString() },
+        {
+          label: 'Spilled',
+          title: 'Frames that did not fit the slot and went out a cycle later - nothing is lost. A few near marks is normal; one every cycle means the slot is too small (raise TX_SLOT_MS or lower TX_SLOT_MAX_HZ)',
+          value: s.txGate.spilled.toLocaleString(),
+        },
+        {
+          label: 'Expired / dropped',
+          title: 'Frames discarded because they waited too long or the queue was full - these positions never went out (they are still on the SD card)',
+          value: `${s.txGate.expired.toLocaleString()} / ${s.txGate.dropped.toLocaleString()}${s.txGate.expired + s.txGate.dropped > 0 ? ' &#9888;' : ''}`,
+        },
+        { label: 'Waiting now', title: 'Frames queued for the next slot', value: s.txGate.queued },
+      ]
+        .filter(Boolean)
+        .map((r) => `<div class="stat-row"><span class="name" title="${r.title}">${r.label}</span><span class="val">${r.value}</span></div>`)
+        .join('')}</div>
+    </div>`
+        : ''
+    }
     <div class="card">
       <div class="label">Frames sent</div>
       <div class="value">${s.radio.framesSent.toLocaleString()}</div>
