@@ -486,8 +486,8 @@ slots do to the corrections. The sender radio listens for the base's bursts to l
 LATENCY_BATCH=2 LATENCY_FRAMES=300 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
 # B: gate only - telemetry held out of the correction window
 LATENCY_SCHEDULE=gate  LATENCY_BATCH=2 LATENCY_FRAMES=300 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
-# C: gate + slots - two virtual boats in slots 3 and 7, 35 ms apart (add LATENCY_BATCH=8 LATENCY_GAP_MS=1000 for one 83-byte frame per cycle, like a boat at 8 Hz)
-LATENCY_SCHEDULE=slots LATENCY_SLOTS=3,7 LATENCY_SLOT_MS=35 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
+# C: gate + slots - two virtual boats in slots 3 and 7, 45 ms wide (the default; the measurements below used 35). Add LATENCY_BATCH=8 LATENCY_GAP_MS=2000 for one 83-byte frame per 2 s cycle (a boat at 8 Hz sends two per cycle)
+LATENCY_SCHEDULE=slots LATENCY_SLOTS=3,7 LATENCY_SLOT_MS=45 LATENCY_TX_PORT=<sender> LATENCY_RX_PORT=<listener> npm run radio-latency
 ```
 
 The report shows, per boat, when each frame was actually written relative to the burst start
@@ -752,9 +752,9 @@ conflict window, 1.8% otherwise - `docs/radio-latency-findings-2026-10-09.pdf`).
   replies, set-mark, ...) are gated but not slotted. The three parts below say how a boat gets its slot, what
   it sends in it, and how big a slot should be.
 
-What one cycle looks like (drawn for a 1 s correction interval and 35 ms slots - the defaults are 2 s and 45 ms; the *B* is the base's own slot):
+What one cycle looks like at the defaults (a 2 s correction interval, 45 ms slots; the *B* is the base's own slot):
 
-![One 1 s cycle: RTCM burst and guard, 23 boat slots, 2 join slots, the base slot, then a blocked stretch before the next burst](docs/tdma-cycle-1s.svg)
+![One 2 s cycle: RTCM burst and guard, 39 boat slots, 2 join slots, the base slot, then a blocked stretch before the next burst](docs/tdma-cycle-2s.svg)
 
 **Slot assignment (the slot table).** Slot mode is on by default for the base and the boats (set `TX_SLOT_MODE=0`
 on a node to turn it off there; like the gate, it does nothing until correction bursts are heard). The base keeps
@@ -839,12 +839,11 @@ Slot width is fixed; it does not change with the number of boats. Separate fleet
 should have their own base and radio network (`ID`/`HP`); that keeps one base from hearing the other fleet's
 boats, though both still share the radio band.
 
-**1 s against 2 s.** The same schedule at the two correction intervals, drawn to the same time scale (with
-35 ms slots, the width the drawings use) - at 2 s there are 54 slots instead of 26 (51 for boats instead of 23), and
-each boat sends once per cycle, so once every 2 s. The defaults are a 2 s interval and 45 ms slots (42 slots in
-all, 39 for boats):
+**1 s against 2 s.** The same schedule at the two correction intervals, drawn to the same time scale with the default 45 ms
+slots: at 2 s (the default) there are 42 slots in all, 39 for boats, and at 1 s 20, 17 for boats. Each boat sends once per
+cycle, so once a second at 1 s and once every 2 s at 2 s. (The pictures come from the real slot-count code: `node docs/make-tdma-svgs.js`.)
 
-![The 1 s and 2 s intervals at the same scale: 26 slots (23 boats, 2 join, 1 base) against 54 (51 boats, 2 join, 1 base)](docs/tdma-1s-vs-2s.svg)
+![The 1 s and 2 s intervals at the same scale: 20 slots (17 boats, 2 join, 1 base) against 42 (39 boats, 2 join, 1 base)](docs/tdma-1s-vs-2s.svg)
 
 **How many slots.** `TX_SLOT_COUNT` is the number of slots for boats in a cycle, including the `TX_SLOT_JOIN`
 join slots; the base's own slot comes after them. Leave it unset on the base and it works the count out once, at

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="230" viewBox="0 0 680 230" role="img"><title>One 2 second cycle of the transmit slot schedule</title><desc>A timeline from one RTCM correction burst to the next: a burst and guard, 39 boat slots, 2 shared join slots, the base slot, then a blocked period before the next burst.</desc><rect width="680" height="230" fill="#ffffff"/>
+<text x="40" y="62" text-anchor="start" font-size="12" font-weight="400" fill="#2c2c2a" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">RTCM burst + guard (0–30 ms)</text>
+<line x1="44.5" y1="68" x2="44.5" y2="100" stroke="#888780" stroke-width="0.8"/>
+<rect x="40" y="100" width="9" height="36" fill="#FAECE7" stroke="#993C1D" stroke-width="0.8"/>
+<rect x="49" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="55.75" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">0</text>
+<rect x="62.5" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="69.25" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">1</text>
+<rect x="76" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="82.75" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">2</text>
+<rect x="89.5" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="96.25" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">3</text>
+<rect x="103" y="100" width="432" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="319" y="118" text-anchor="middle" font-size="12" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">32 more boat slots</text>
+<rect x="535" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="541.75" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">36</text>
+<rect x="548.5" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="555.25" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">37</text>
+<rect x="562" y="100" width="13.5" height="36" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+<text x="568.75" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#085041" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">38</text>
+<rect x="575.5" y="100" width="13.5" height="36" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.8"/>
+<text x="582.25" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#633806" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">39</text>
+<rect x="589" y="100" width="13.5" height="36" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.8"/>
+<text x="595.75" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#633806" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">40</text>
+<rect x="602.5" y="100" width="13.5" height="36" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.8"/>
+<text x="609.25" y="118" text-anchor="middle" font-size="9" font-weight="400" fill="#3C3489" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" dominant-baseline="central">B</text>
+<rect x="616" y="100" width="24" height="36" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/>
+<text x="569.5" y="62" text-anchor="end" font-size="12" font-weight="400" fill="#2c2c2a" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">2 shared join slots: boats with no slot yet</text>
+<line x1="589" y1="68" x2="589" y2="100" stroke="#888780" stroke-width="0.8"/>
+<text x="640" y="156" text-anchor="end" font-size="12" font-weight="400" fill="#2c2c2a" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">next burst at 2000 ms</text>
+<text x="640" y="174" text-anchor="end" font-size="11" font-weight="400" fill="#5F5E5A" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">B = the base's own slot (table, marks, pings)</text>
+<text x="40" y="200" text-anchor="start" font-size="12" font-weight="400" fill="#2c2c2a" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">39 boat slots + 2 shared + 1 base = 42 slots of 45 ms; the slots take 1920 ms of the 2000 ms cycle,</text>
+<text x="40" y="218" text-anchor="start" font-size="12" font-weight="400" fill="#2c2c2a" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">the rest is blocked time before the next burst. Each boat sends once per cycle, in its own slot.</text>
+</svg>
