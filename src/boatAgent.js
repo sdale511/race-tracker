@@ -1039,7 +1039,7 @@ radio.on('ping', () => {
 const rtcmLogger = config.rtcm.log ? createRtcmLogger({ level: config.rtcm.log }) : null;
 
 radio.on('rtcm', (frame) => {
-  burstTracker.onRtcm(frame.type);
+  burstTracker.onRtcm(frame.type, undefined, frame.length);
   const forward = config.rtcm.forward && !sleeper.isSleeping() && !gpsSleep.isAsleep() && !!gpsSerial && gpsSerial.isOpen;
   if (forward) gpsSerial.write(frame.raw);
   roverStats.recordRadioRtcm(frame, forward);

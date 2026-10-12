@@ -347,7 +347,7 @@ function runScheduledTest({ tx, rx, mode = 'gate', boats = [{ id: 'LAT01', slot:
   const { TxScheduler } = require('./txScheduler');
   return new Promise((resolve) => {
     const tracker = new BurstTracker({ now });
-    tx.on('rtcm', (f) => tracker.onRtcm(f.type));
+    tx.on('rtcm', (f) => tracker.onRtcm(f.type, undefined, f.length));
     const gate = new TxGate({ tracker, now });
 
     const rec = new Map(); // `${boat}:${seq}` -> { boat, submittedAt, writtenAt, receivedAt }

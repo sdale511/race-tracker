@@ -255,6 +255,23 @@ measurement rate to 1 Hz so an epoch is a second - at the rover profile's 10 Hz,
 times the intended correction airtime, which is what happens if the rover profile is ever applied to a base receiver):
 `--rtcm-interval 2` halves the correction airtime, at the cost of rovers working from corrections up
 to 2 s old and a lost message costing 2 s. Check that RTK still holds at speed before relying on it.
+`--station-interval N` (default 10) sends the 1005 station-position message every N seconds instead of with every burst
+(never more often than `--rtcm-interval`). The base's position is fixed, so a rover only needs to hear it now and then; it
+is what a rover needs before it can start an RTK fix, so a boat that powers up waits up to N seconds for its first one.
+Sending it less often also removes a small message that would otherwise arrive a second away from the observations.
+
+**Bursts every second at a 2 s interval.** A ZED-F9P base can send its 25-byte station message (1005) alone, a second away
+from the five observation messages (1074/1084/1094/1124/1230), which arrive together; each type still repeats every 2 s
+(`python3 rtcm_listen.py --port <radio port> --timeline` lists every message with its arrival time). A scheduler that
+counts every quiet gap over 400 ms as a new burst then hears 1 s bursts and logs `slot N of M does not fit in the 1000 ms
+between correction bursts`. The burst tracker therefore ignores a lone message under 40 bytes that arrives after a quiet gap:
+the observations define the burst, and the station message's few milliseconds of air time are not worth keeping clear.
+`ubx_config_set.py --role base` also writes all the RTCM rates in one command (off, then on) whenever any of them changes,
+so their output counters start together; `--realign-rtcm` does the same for a receiver whose rates already read correctly
+(it may not change which second the station message uses - the tracker no longer depends on it):
+```
+python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --realign-rtcm
+```
 Run it with `--dry-run` first to see exactly what would change, and
 `ubx_config_report.py` afterwards to confirm; it writes RAM+BBR+flash, so it
 survives a power cycle.

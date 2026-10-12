@@ -14,6 +14,7 @@ USAGE
     pip install pyserial
     python3 rtcm_listen.py --port /dev/cu.usbserial-0001                  # 15 s
     python3 rtcm_listen.py --port /dev/cu.usbserial-0001 --seconds 30 --baud 115200
+    python3 rtcm_listen.py --port /dev/cu.usbserial-0001 --timeline      # + every message's arrival time and the gaps
     python3 rtcm_listen.py --file capture.bin                             # a saved raw capture
 
 Stop any other program (miniterm, cat) using the port first.
@@ -112,6 +113,37 @@ class StreamScanner:
         del buf[:i]
 
 
+def print_timeline(scanner, gap_ms=400):
+    """Every RTCM message with its arrival time (ms after the first), and the gaps between them. A "burst" here is what the
+    transmit scheduler (burstTracker.js) calls one: messages with no quiet gap longer than gap_ms between them. Shows
+    whether the base's messages arrive as one group per interval, as two groups a second apart, or spread out so that a
+    quiet gap inside a burst makes one burst look like two."""
+    rtcm = [f for f in scanner.frames if f[1] == "RTCM"]
+    if len(rtcm) < 2:
+        print("Timeline: fewer than two RTCM messages - nothing to show.")
+        return
+    t0 = rtcm[0][0]
+    print("\nTimeline (ms after the first message, type, gap since the previous message):")
+    prev = None
+    starts = []
+    for f in rtcm:
+        t = (f[0] - t0) * 1000
+        gap = None if prev is None else t - prev
+        if gap is None or gap > gap_ms:
+            starts.append(t)
+            mark = "  <-- new burst" if gap is not None else "  <-- burst"
+        else:
+            mark = ""
+        print(f"  {t:8.0f}  {f[2]:>5}  {'' if gap is None else f'+{gap:.0f}'}{mark}")
+        prev = t
+    iv = [b - a for a, b in zip(starts, starts[1:])]
+    if iv:
+        print(f"\n{len(starts)} bursts at a {gap_ms} ms quiet-gap threshold; spacing between starts (ms): " + ", ".join(f"{x:.0f}" for x in iv))
+        print(f"median spacing {st.median(iv):.0f} ms")
+    gaps = sorted(((b[0] - a[0]) * 1000 for a, b in zip(rtcm, rtcm[1:])), reverse=True)
+    print("largest gaps between consecutive messages (ms): " + ", ".join(f"{g:.0f}" for g in gaps[:8]))
+
+
 def report(raw, scanner, seconds):
     n = len(raw)
     print(f"\nBytes received: {n} in {seconds:.1f}s ({n / seconds:.0f} B/s)")
@@ -156,6 +188,7 @@ def main():
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--file", help="Analyse a saved raw byte capture instead of a live port")
+    ap.add_argument("--timeline", action="store_true", help="Also list every RTCM message with its arrival time and the gaps between them, grouped into bursts the way the transmit scheduler does")
     args = ap.parse_args()
 
     scanner = StreamScanner()
@@ -165,6 +198,8 @@ def main():
         raw.extend(data)
         scanner.feed(data, 0.0)
         report(bytes(raw), scanner, max(args.seconds, 1.0))
+        if args.timeline:
+            print_timeline(scanner)
         return
     if not args.port:
         ap.error("give --port or --file")
@@ -189,6 +224,8 @@ def main():
     finally:
         ser.close()
     report(bytes(raw), scanner, time.time() - start)
+    if args.timeline:
+        print_timeline(scanner)
 
 
 if __name__ == "__main__":

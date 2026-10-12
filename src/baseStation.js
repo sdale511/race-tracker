@@ -261,7 +261,7 @@ function main() {
   }, 10000);
   if (linkHealthTimer.unref) linkHealthTimer.unref();
   const baseBurstTracker = new BurstTracker();
-  radio.on('rtcm', (f) => baseBurstTracker.onRtcm(f.type));
+  radio.on('rtcm', (f) => baseBurstTracker.onRtcm(f.type, undefined, f.length));
   // Slot layout (see slotTable.js): with slot mode on, the cycle holds boatSlots slots for the boats
   // (assignable ones plus the shared join slots) and then ONE MORE for the base itself - the slot
   // table, marks, pings and sleep/wake all go out in it, so the base never lands on a boat's frame.

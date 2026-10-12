@@ -172,7 +172,7 @@ for _p in RTCM_PORTS:
 ALL_CONSTELLATIONS = ("gps", "glonass", "galileo", "beidou")
 
 
-def build_base_settings(rtcm_ports, constellations, interval=1):
+def build_base_settings(rtcm_ports, constellations, interval=1, station_interval=10):
     """The base profile as an ordered {key name: target value}.
 
     On every port in `rtcm_ports`: 1005 on, the MSM4 observation message for
@@ -185,6 +185,10 @@ def build_base_settings(rtcm_ports, constellations, interval=1):
     `interval` is each enabled message's output rate in navigation epochs: 1 =
     every epoch, 2 = every second epoch, and so on. The measurement rate is set to
     1 Hz (CFG-RATE-MEAS 1000 ms) below, so that is every `interval` seconds.
+
+    `station_interval` is the same for 1005 alone (the base's position - fixed, so a rover only needs to hear it now and
+    then: every 10 s by default, though never more often than `interval`). Sent with every burst it was a 25-byte
+    message arriving a second away from the observations at a 2 s interval, which the burst tracker had to learn to ignore.
     """
     settings = {}
     for port in RTCM_PORTS:
@@ -196,7 +200,7 @@ def build_base_settings(rtcm_ports, constellations, interval=1):
             elif t in MSM7_TYPES:
                 want = 0
             elif t == "1005":
-                want = interval
+                want = max(interval, station_interval)
             else:  # MSM4 or 1230 - per-constellation
                 want = interval if constellation in constellations else 0
             settings[f"CFG-MSGOUT-RTCM_3X_TYPE{t}_{name}"] = want
@@ -275,6 +279,14 @@ def build_valset_request(key_id, kind, value):
     value_bytes = encode_value(kind, value)
     # version(1)=0, layers(1)=RAM+BBR+Flash, transaction(2)=0, keyID(4), value(N)
     payload = struct.pack("<BBH", 0, LAYERS_RAM_BBR_FLASH, 0) + struct.pack("<I", key_id) + value_bytes
+    return build_frame(CLASS_CFG, ID_VALSET, payload)
+
+
+def build_valset_multi(items):
+    """One VALSET carrying several keys, so the receiver applies them in the same navigation epoch."""
+    payload = struct.pack("<BBH", 0, LAYERS_RAM_BBR_FLASH, 0)
+    for key_id, kind, value in items:
+        payload += struct.pack("<I", key_id) + encode_value(kind, value)
     return build_frame(CLASS_CFG, ID_VALSET, payload)
 
 
@@ -368,6 +380,22 @@ def poll_key(ser, key_id, kind):
     return None
 
 
+def set_keys(ser, items):
+    ser.reset_input_buffer()
+    ser.write(build_valset_multi(items))
+    deadline = time.time() + RESPONSE_TIMEOUT_S
+    while time.time() < deadline:
+        frame = read_next_frame(ser, deadline)
+        if frame is None:
+            break
+        msg_class, msg_id, _payload = frame
+        if msg_class == CLASS_ACK and msg_id == ID_ACK_ACK:
+            return True
+        if msg_class == CLASS_ACK and msg_id == ID_ACK_NAK:
+            return False
+    return False
+
+
 def set_key(ser, key_id, kind, value):
     ser.reset_input_buffer()
     ser.write(build_valset_request(key_id, kind, value))
@@ -423,6 +451,46 @@ def apply_setting(ser, name, target_value, dry_run):
         return True
     print(f"{prefix} {current_display} -> {target_value} [wrote, read back {show(name, verified)} - did not stick]")
     return False
+
+
+def apply_rtcm_rates(ser, rates, dry_run, force):
+    """The base's RTCM message rates, written TOGETHER. Each message's output counter starts when its rate is set, so keys
+    written one after another can land in different navigation epochs: with "every 2 epochs" some message types then go out
+    on even seconds and the rest on odd ones, and the receivers (and the transmit scheduler, which looks for one burst per
+    interval) see a burst every second instead of every 2 s. So when any rate needs changing, or force (--realign-rtcm)
+    is given, every rate is first switched off in one VALSET and then set in one VALSET - all counters start together."""
+    current = {}
+    for name in rates:
+        key_id, kind, _label = KEY_INFO[name]
+        current[name] = poll_key(ser, key_id, kind)
+    differs = [n for n in rates if current[n] != rates[n]]
+    ok = True
+    for name, target in rates.items():
+        _key_id, _kind, label = KEY_INFO[name]
+        prefix = f"  {label:<{LABEL_WIDTH}}"
+        cur_display = show(name, current[name]) if current[name] is not None else "?"
+        if current[name] == target:
+            print(f"{prefix} = {show(name, target)} (unchanged)" + (" [re-applied together]" if force and not dry_run else ""))
+        else:
+            print(f"{prefix} {cur_display} -> {show(name, target)}" + (" [dry run]" if dry_run else ""))
+    if dry_run:
+        if force:
+            print("  (--realign-rtcm: all RTCM rates would be switched off, then set again together)")
+        return True
+    if not differs and not force:
+        return True
+    items = [(KEY_INFO[n][0], KEY_INFO[n][1]) for n in rates]
+    if not set_keys(ser, [(k, kind, 0) for k, kind in items]) or not set_keys(ser, [(k, kind, rates[n]) for (k, kind), n in zip(items, rates)]):
+        print("  RTCM rates [FAILED to write]")
+        return False
+    for name, target in rates.items():
+        key_id, kind, label = KEY_INFO[name]
+        got = poll_key(ser, key_id, kind)
+        if got != target:
+            print(f"  {label:<{LABEL_WIDTH}} wrote {show(name, target)}, read back {show(name, got)} - did not stick")
+            ok = False
+    print(f"  RTCM rates written together{' and verified' if ok else ' - see above'}")
+    return ok
 
 
 TMODE_NAMES = {0: "disabled", 1: "survey-in", 2: "fixed position"}
@@ -490,6 +558,23 @@ def main():
         "its own position, then becomes a base). Without this the base role sets survey-in only when TMODE3 is 0/disabled, and "
         "leaves a fixed position or a running survey alone",
     )
+    ap.add_argument(
+        "--station-interval",
+        type=int,
+        default=10,
+        choices=range(1, 61),
+        metavar="SECONDS",
+        help="base role only: send the 1005 station-position message every N seconds (default 10; never more often than "
+        "--rtcm-interval). The base position is fixed, so a rover only needs it now and then - it is what a rover needs to start "
+        "an RTK fix, so a boat that powers up waits up to this long for its first one",
+    )
+    ap.add_argument(
+        "--realign-rtcm",
+        action="store_true",
+        help="base role only: switch every RTCM message rate off and set them all again in one command, even if they already read "
+        "correctly - fixes corrections arriving in two groups a second apart (see rtcm_listen.py) at a 2 s interval, which "
+        "happens when the rates were written one by one across a navigation epoch",
+    )
     ap.add_argument("--svin-min-dur", type=int, default=300, help="with --survey-in: minimum survey time in seconds (default 300)")
     ap.add_argument("--svin-acc-limit-m", type=float, default=2.0, help="with --survey-in: position accuracy to reach, metres (default 2.0)")
     ap.add_argument(
@@ -517,8 +602,8 @@ def main():
         settings = {}
         if args.survey_in:
             settings.update(survey_in_settings(args.svin_min_dur, args.svin_acc_limit_m))
-        settings.update(build_base_settings(rtcm_ports, constellations, args.rtcm_interval))
-        print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}; every {args.rtcm_interval} epoch(s)")
+        settings.update(build_base_settings(rtcm_ports, constellations, args.rtcm_interval, args.station_interval))
+        print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}; every {args.rtcm_interval} epoch(s); station 1005 every {max(args.rtcm_interval, args.station_interval)} epoch(s)")
     else:
         if args.survey_in:
             ap.error("--survey-in is for the base role only (a rover's TMODE3 is switched off)")
@@ -545,9 +630,14 @@ def main():
                 settings = {**survey_in_settings(args.svin_min_dur, args.svin_acc_limit_m), **settings}
             else:
                 report_tmode(mode)
+        rtcm_rates = {n: v for n, v in settings.items() if n.startswith("CFG-MSGOUT-RTCM_3X_TYPE")} if args.role == "base" else {}
         for name, target_value in settings.items():
+            if name in rtcm_rates:
+                continue
             if not apply_setting(ser, name, target_value, args.dry_run):
                 ok = False
+        if rtcm_rates and not apply_rtcm_rates(ser, rtcm_rates, args.dry_run, args.realign_rtcm):
+            ok = False
     finally:
         ser.close()
 

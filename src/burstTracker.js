@@ -19,6 +19,11 @@ const KEEP_STARTS = 16;
 const KEEP_OFFSETS = 24;
 const MIN_PERIOD_MS = 400;
 const MAX_PERIOD_MS = 15000;
+// A message this small (bytes, the whole frame) arriving after a quiet gap does not start a burst. A base's station message
+// (1005, 25 bytes) can come a second apart from its observation messages (each message's output counter starts when its
+// rate was set); counted as a burst of its own it halved the heard period (1 s instead of 2 s) although its few
+// milliseconds of air time matter to nobody. Whole bursts of such messages are not expected: the observations are 80+.
+const MIN_BURST_MSG_BYTES = 40;
 
 function median(xs) {
   if (!xs.length) return null;
@@ -40,9 +45,12 @@ class BurstTracker {
     this.anchorCorrections = 0;
   }
 
-  // Call for every RTCM message the radio decodes.
-  onRtcm(type, t = this.now()) {
-    if (t - this.lastMsgAt > this.gapMs || !this.cur) {
+  // Call for every RTCM message the radio decodes. `size` (bytes of the whole frame) is optional; without it every
+  // message counts.
+  onRtcm(type, t = this.now(), size) {
+    const startsBurst = t - this.lastMsgAt > this.gapMs || !this.cur;
+    if (startsBurst && typeof size === 'number' && size < MIN_BURST_MSG_BYTES) return; // a lone small message - see above
+    if (startsBurst) {
       this._closeBurst();
       let start = t;
       const usual = this._usualFirstType();
