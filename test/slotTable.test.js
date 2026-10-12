@@ -495,3 +495,17 @@ test('a boat parked on the grid stays parked through the quiet between heartbeat
   a.sweep();
   assert.deepStrictEqual(a.status().parked, []);
 });
+
+test('a boat before its first table assumes the slot count the base works out, so its shared slots are the real join slots', () => {
+  const { autoSlotCount } = require('../src/slotTable');
+  const { TxGate } = require('../src/txGate');
+  const { BurstTracker } = require('../src/burstTracker');
+  const config = require('../src/config');
+  const gate = new TxGate({ tracker: new BurstTracker(), ...config.txGate });
+  const count = autoSlotCount({ ...config.txGate.slot, rtcmIntervalS: 2, widthMs: 45, joinSlots: 2 }, gate);
+  assert.strictEqual(count, 41); // 42 in a 2 s cycle at 45 ms, less the base's own slot
+  const join = { first: count - 2, n: 2 };
+  assert.deepStrictEqual(join, { first: 39, n: 2 }); // not slots 23 and 24, which the table gives to boats
+  // a 1 s interval gives a smaller table
+  assert.ok(autoSlotCount({ ...config.txGate.slot, rtcmIntervalS: 1, widthMs: 45, joinSlots: 2 }, gate) < count);
+});

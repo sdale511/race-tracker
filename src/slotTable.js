@@ -506,4 +506,12 @@ class SlotTableFollower {
   }
 }
 
-module.exports = { SlotAllocator, ZoneState, ParkedReporter, JoinBackoff, pickSlot, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };
+// The slots for boats (assignable plus join) in a cycle, when the base works the count out from the correction interval rather than
+// being told one (TX_SLOT_COUNT): what fits in the interval, less the base's own slot. Used by the base to size the table AND by a
+// boat for the count it assumes before it has heard a table - the two must agree, or a new boat's "last few slots" are not the
+// join slots but somebody's assigned ones.
+function autoSlotCount(slotConfig, gate) {
+  return Math.max(slotConfig.joinSlots + 1, slotCountForPeriod(slotConfig.rtcmIntervalS * 1000, slotConfig.widthMs, gate) - 1);
+}
+
+module.exports = { autoSlotCount, SlotAllocator, ZoneState, ParkedReporter, JoinBackoff, pickSlot, SlotTableFollower, slotCountForPeriod, MAX_SLOTS };

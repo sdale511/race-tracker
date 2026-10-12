@@ -23,7 +23,7 @@ const { createRtcmLogger } = require('./rtcmLog');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler, airMs } = require('./txScheduler');
-const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff } = require('./slotTable');
+const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff, autoSlotCount } = require('./slotTable');
 const { OnGridWatcher } = require('./onGridWatcher');
 const { thinForTurns, thinBackfill } = require('./thinFixes');
 const roverStats = require('./roverStats');
@@ -241,7 +241,10 @@ if (config.txGate.enabled && radioExpected) {
   // Slot mode: pinned (TX_SLOT) to a slot by hand, or - until the base's slot table assigns one - sharing the
   // last few "join" slots, which are never assigned to anyone, so a boat that has no slot yet cannot land on
   // a racing boat's.
-  const slotCount = config.txGate.slot.count;
+  // Until a table arrives the boat assumes the layout the base will work out from the same settings (the correction interval and
+  // slot width) - not a fixed 25, whose last two slots would be assigned slots in a real 41-slot table.
+  const txGateForCount = new TxGate({ tracker: burstTracker, ...config.txGate });
+  const slotCount = config.txGate.slot.countAuto ? autoSlotCount(config.txGate.slot, txGateForCount) : config.txGate.slot.count;
   const pinnedSlot = config.txGate.slot.index !== null ? config.txGate.slot.index % slotCount : null;
   const joinSlots = Math.min(config.txGate.slot.joinSlots, slotCount - 1);
   const slotJoin = pinnedSlot === null && joinSlots > 0 ? { first: slotCount - joinSlots, n: joinSlots } : null;
@@ -256,8 +259,8 @@ if (config.txGate.enabled && radioExpected) {
   txScheduler = new TxScheduler({
     send: gateRawSend,
     tracker: burstTracker,
-    gate: new TxGate({ tracker: burstTracker, ...config.txGate }),
-    slot: { ...config.txGate.slot, index: pinnedSlot !== null ? pinnedSlot : slotCount - 1, join: slotJoin },
+    gate: txGateForCount,
+    slot: { ...config.txGate.slot, count: slotCount, index: pinnedSlot !== null ? pinnedSlot : slotCount - 1, join: slotJoin },
     maxQueue: config.txGate.maxQueue,
     maxAgeMs: config.txGate.maxAgeMs,
     log: (m) => console.log(m),
@@ -1386,7 +1389,7 @@ function getRoverStats() {
     sleep: { ...sleeper.status(), gps: gpsSleep.status() },
     txGate: txScheduler ? txScheduler.stats() : null,
     txSlot: txScheduler
-      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join }
+      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join, joinSlots: txScheduler.slot.join ? txScheduler.slot.join.n : 0, joinFirst: txScheduler.slot.join ? txScheduler.slot.join.first : null, tableHeard: !!(slotFollower && slotFollower.tablesHeard > 0) }
       : null,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,

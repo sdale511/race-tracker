@@ -136,6 +136,12 @@ function renderMarkLogCard() {
 // boatAgent.js's getRoverStats) - the boat-side counterpart to
 // adminServer.js's renderDashboard, but there's only ever one boat here, so
 // this is a single detail view rather than a fleet table.
+// The numbers of the shared "join" slots, e.g. "39, 40" (slots are numbered from 0)
+function joinSlotNumbers(txSlot) {
+  if (txSlot.joinFirst == null || !txSlot.joinSlots) return '?';
+  return Array.from({ length: txSlot.joinSlots }, (_, i) => txSlot.joinFirst + i).join(', ');
+}
+
 function renderDashboard(s, power) {
   const fix = s.lastFix;
   // receivedAt (this Pi's own local-clock receipt time), not timestamp
@@ -372,7 +378,9 @@ function renderDashboard(s, power) {
           ? 'no bursts heard'
           : s.txSlot && s.txSlot.enabled && !s.txSlot.sharing && s.txSlot.index != null
           ? `slot ${s.txSlot.index}`
-          : 'sharing join slots'
+          : s.txSlot && s.txSlot.joinFirst != null
+          ? `shared slots ${joinSlotNumbers(s.txSlot)}`
+          : 'shared slots'
       }</div>
       <div class="stat-rows">${[
         {
@@ -381,7 +389,14 @@ function renderDashboard(s, power) {
           value: s.txGate.tracker.active && s.txGate.tracker.periodMs ? `every ${Math.round(s.txGate.tracker.periodMs)} ms` : 'not heard',
         },
         s.txSlot && s.txSlot.enabled
-          ? { label: 'Slot', title: 'This boat\'s slot in the cycle, how many slots the base made, and how wide each is', value: `${s.txSlot.sharing || s.txSlot.index == null ? 'join' : s.txSlot.index} of ${s.txSlot.count} (${s.txSlot.widthMs} ms)` }
+          ? {
+              label: 'Slot',
+              title: 'This boat\'s slot in the cycle, how many slots there are, and how wide each is. "Shared" means it has no slot of its own yet and sends in the last few slots, which nobody owns. Until it has heard the base\'s slot table the count is a default assumption.',
+              value:
+                s.txSlot.sharing || s.txSlot.index == null
+                  ? `shared: ${joinSlotNumbers(s.txSlot)} (of ${s.txSlot.count} slots, ${s.txSlot.widthMs} ms)${s.txSlot.tableHeard ? '' : ' - no table from the base yet'}`
+                  : `own: ${s.txSlot.index} (of ${s.txSlot.count} slots, ${s.txSlot.widthMs} ms)`,
+            }
           : null,
         { label: 'Sent in slot', title: 'Frames released in this boat\'s own slot', value: s.txGate.slotted.toLocaleString() },
         {

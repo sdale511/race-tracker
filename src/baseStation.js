@@ -42,7 +42,7 @@ const { FleetSleep } = require('./fleetSleep');
 const { BurstTracker } = require('./burstTracker');
 const { TxGate } = require('./txGate');
 const { TxScheduler } = require('./txScheduler');
-const { SlotAllocator, slotCountForPeriod } = require('./slotTable');
+const { SlotAllocator, autoSlotCount } = require('./slotTable');
 const { LinkHealth, LinkHealthAlerter } = require('./linkHealth');
 const { startSimRtcm } = require('./simRtcm');
 
@@ -273,10 +273,7 @@ function main() {
       ? (() => {
           const widthMs = config.txGate.slot.widthMs;
           const boatSlots = config.txGate.slot.countAuto
-            ? Math.max(
-                config.txGate.slot.joinSlots + 1,
-                slotCountForPeriod(config.txGate.slot.rtcmIntervalS * 1000, widthMs, new TxGate({ tracker: baseBurstTracker, ...config.txGate })) - 1
-              )
+            ? autoSlotCount(config.txGate.slot, new TxGate({ tracker: baseBurstTracker, ...config.txGate }))
             : config.txGate.slot.count;
           return { widthMs, boatSlots };
         })()
