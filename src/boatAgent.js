@@ -273,6 +273,14 @@ if (config.txGate.enabled && radioExpected) {
       pinned: config.txGate.slot.index !== null,
       log: (m) => console.log(m),
     });
+    slotFollower.onPractice = (on) => {
+      practiceMode = on;
+      if (on && parked) {
+        parked = false;
+        slotFollower.setParked(false);
+      }
+      console.log(on ? '[slots] the base is in practice mode - no start-grid parking, any moving boat gets a slot' : '[slots] the base left practice mode - start-grid parking is back');
+    };
     radio.on('slot-table', (table) => slotFollower.onTable(table));
     txScheduler.startSlotFlush(() => flushPendingBatch({ forSlot: true }));
   }
@@ -368,8 +376,10 @@ function sendPacer() {
   if (joinThrottleActive()) return joinBackoff;
   return null;
 }
+// The base's practice mode (from its slot table): no parking on the start grid, any moving boat has a slot
+let practiceMode = false;
 function updateParked(pvt) {
-  if (!parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
+  if (practiceMode || !parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
   const inZone = zoneWatcher.check(pvt.lat, pvt.lon) === 'ongrid';
   const now = zoneState.update(inZone);
   if (now === parked) return;
@@ -1389,7 +1399,7 @@ function getRoverStats() {
     sleep: { ...sleeper.status(), gps: gpsSleep.status() },
     txGate: txScheduler ? txScheduler.stats() : null,
     txSlot: txScheduler
-      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join, joinSlots: txScheduler.slot.join ? txScheduler.slot.join.n : 0, joinFirst: txScheduler.slot.join ? txScheduler.slot.join.first : null, tableHeard: !!(slotFollower && slotFollower.tablesHeard > 0) }
+      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join, joinSlots: txScheduler.slot.join ? txScheduler.slot.join.n : 0, joinFirst: txScheduler.slot.join ? txScheduler.slot.join.first : null, tableHeard: !!(slotFollower && slotFollower.tablesHeard > 0), practice: practiceMode }
       : null,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,

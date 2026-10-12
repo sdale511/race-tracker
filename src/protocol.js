@@ -932,8 +932,10 @@ function slotTableFrameLenFromHeader(buf) {
 
 // entries: [{ boatId, slot }] (0..MAX_SLOT_ENTRIES of them; an empty frame is valid). Each slot is
 // an assignable one: 0 .. slotCount - joinSlots - 1.
-function encodeSlotTable({ version = 0, slotCount, slotWidthMs, joinSlots = 0, entries = [] }) {
-  if (!Number.isInteger(version) || version < 0 || version > 255) throw new Error(`slot table version must be 0-255, got ${version}`);
+// The version byte carries a 7-bit table version and, in its top bit, the base's practice-mode flag (any moving boat gets a slot, no
+// start-grid parking - see slotTable.js). An older boat reads that byte only as a number to log, so the flag does it no harm.
+function encodeSlotTable({ version = 0, slotCount, slotWidthMs, joinSlots = 0, practice = false, entries = [] }) {
+  if (!Number.isInteger(version) || version < 0 || version > 127) throw new Error(`slot table version must be 0-127, got ${version}`);
   if (!Number.isInteger(slotCount) || slotCount < 1 || slotCount > 255) throw new Error(`slotCount must be 1-255, got ${slotCount}`);
   if (!Number.isInteger(slotWidthMs) || slotWidthMs < 1 || slotWidthMs > 255) throw new Error(`slotWidthMs must be 1-255, got ${slotWidthMs}`);
   if (!Number.isInteger(joinSlots) || joinSlots < 0 || joinSlots >= slotCount) throw new Error(`joinSlots must be 0 to ${slotCount - 1}, got ${joinSlots}`);
@@ -948,7 +950,7 @@ function encodeSlotTable({ version = 0, slotCount, slotWidthMs, joinSlots = 0, e
   const len = slotTableFrameLen(entries.length);
   const buf = Buffer.alloc(len);
   buf.writeUInt8(SLOT_TABLE_SYNC, 0);
-  buf.writeUInt8(version, 1);
+  buf.writeUInt8(version | (practice ? 0x80 : 0), 1);
   buf.writeUInt8(slotCount, 2);
   buf.writeUInt8(slotWidthMs, 3);
   buf.writeUInt8(joinSlots, 4);
@@ -987,7 +989,8 @@ function decodeSlotTable(buf) {
     if (slot >= assignable) return null;
     entries.push({ boatId: buf.toString('ascii', at, at + BOAT_ID_LEN), slot });
   }
-  return { version: buf.readUInt8(1), slotCount, slotWidthMs, joinSlots, entries };
+  const versionByte = buf.readUInt8(1);
+  return { version: versionByte & 0x7f, practice: (versionByte & 0x80) !== 0, slotCount, slotWidthMs, joinSlots, entries };
 }
 
 // Ninth "frame type": RTCM3 correction messages riding the same shared radio as

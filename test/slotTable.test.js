@@ -13,7 +13,10 @@ test('slot table frame round-trips and rejects a bad checksum or slot', () => {
   const entries = [{ boatId: 'LAT01', slot: 0 }, { boatId: 'LAT02', slot: 19 }];
   const buf = protocol.encodeSlotTable({ version: 9, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries });
   assert.strictEqual(buf.length, protocol.slotTableFrameLen(2));
-  assert.deepStrictEqual(protocol.decodeSlotTable(buf), { version: 9, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries });
+  assert.deepStrictEqual(protocol.decodeSlotTable(buf), { version: 9, practice: false, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries });
+  // the practice flag rides in the version byte's top bit and does not disturb the version
+  const practiceBuf = protocol.encodeSlotTable({ version: 9, slotCount: 22, slotWidthMs: 40, joinSlots: 2, practice: true, entries });
+  assert.deepStrictEqual(protocol.decodeSlotTable(practiceBuf), { version: 9, practice: true, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries });
   const bad = Buffer.from(buf);
   bad[7] ^= 0xff;
   assert.strictEqual(protocol.decodeSlotTable(bad), null);
@@ -522,4 +525,68 @@ test('a table with nobody assigned is still broadcast (empty), so boats learn th
   assert.strictEqual(table.slotWidthMs, 45);
   assert.strictEqual(table.joinSlots, 2);
   assert.strictEqual(table.entries.length, 0);
+});
+
+test('practice mode: any moving boat gets a slot - no parking, no having to start - and a stopped boat does not', () => {
+  const { SlotTableFollower } = require('../src/slotTable');
+  let now = 0;
+  const a = new SlotAllocator({ count: 10, widthMs: 45, joinSlots: 2, gridOnly: true, practice: true, now: () => now });
+  assert.strictEqual(a.gridOnly, false, 'practice turns the "must have started" rule off');
+  // sitting inside the start zone, never seen to cross the line - normally parked with no slot
+  assert.ok(a.noteHeard('AAAAA', { moving: true, inZone: true, zoneKnown: true, pastLine: false }) !== null, 'a moving boat in the zone still gets a slot');
+  assert.ok(a.noteHeard('BBBBB', { moving: true, inZone: false, zoneKnown: true }) !== null, 'and one that never started');
+  assert.strictEqual(a.noteHeard('CCCCC', { moving: false, inZone: false }), null, 'a stopped boat gets none');
+  assert.deepStrictEqual(a.status().parked, [], 'nobody is parked');
+  assert.strictEqual(a.status().practice, true);
+  // the same boats in a normal race table: parked and not racing, so no slots
+  const normal = new SlotAllocator({ count: 10, widthMs: 45, joinSlots: 2, gridOnly: true, now: () => now });
+  assert.strictEqual(normal.noteHeard('AAAAA', { moving: true, inZone: true, zoneKnown: true }), null);
+  assert.strictEqual(normal.noteHeard('BBBBB', { moving: true, inZone: false, zoneKnown: true }), null);
+  // every table frame carries the flag, and a boat following it hears about the change once
+  const protocol = require('../src/protocol');
+  const table = protocol.decodeSlotTable(a.frames()[0]);
+  assert.strictEqual(table.practice, true);
+  const sch = { slot: { enabled: true, index: 9, count: 10, widthMs: 45, join: { first: 8, n: 2 } }, setSlot(x) { this.slot = { ...this.slot, ...x }; } };
+  const follower = new SlotTableFollower({ boatId: 'ZZZZZ', scheduler: sch });
+  const seen = [];
+  follower.onPractice = (on) => seen.push(on);
+  follower.onTable(table);
+  follower.onTable(table);
+  assert.deepStrictEqual(seen, [true], 'told once');
+  follower.onTable(protocol.decodeSlotTable(normal.frames()[0]));
+  assert.deepStrictEqual(seen, [true, false]);
+});
+
+test('practice mode switched at run time: slots are released, state is dropped, the table goes out at once with the flag', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 10, widthMs: 45, joinSlots: 2, gridOnly: true, now: () => now });
+  assert.strictEqual(a.noteHeard('AAAAA', { moving: true, inZone: false, zoneKnown: true, crossedStart: true }) !== null, true, 'a boat that started has a slot');
+  assert.strictEqual(a.noteHeard('BBBBB', { moving: true, inZone: false, zoneKnown: true }), null, 'one that never started has none');
+  a.takeChanged();
+  assert.strictEqual(a.setPractice(true), true);
+  assert.strictEqual(a.gridOnly, false);
+  assert.ok(a.takeChanged(), 'the table is rebroadcast at once');
+  assert.strictEqual(a.status().boats.length, 0, 'every slot was released');
+  assert.strictEqual(a.status().racing.length, 0);
+  assert.ok(a.noteHeard('BBBBB', { moving: true, zoneKnown: true }) !== null, 'and the boat that never started now gets one');
+  assert.strictEqual(a.setPractice(true), false, 'no change, no churn');
+  assert.strictEqual(a.setPractice(false), true);
+  assert.strictEqual(a.gridOnly, true, 'race mode restores the "must have started" rule');
+  assert.strictEqual(a.status().boats.length, 0);
+  assert.strictEqual(a.noteHeard('BBBBB', { moving: true, zoneKnown: true }), null);
+});
+
+test('the practice switch is remembered in a file, and a missing file means "never set"', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { getPersistedPractice, persistPractice } = require('../src/slotModeFile');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'slotmode-')), 'race-config', 'slot_mode.json');
+  assert.strictEqual(getPersistedPractice(file), null);
+  assert.ok(persistPractice(true, file));
+  assert.strictEqual(getPersistedPractice(file), true);
+  persistPractice(false, file);
+  assert.strictEqual(getPersistedPractice(file), false, 'false is a real saved value, not "never"');
+  fs.writeFileSync(file, 'not json');
+  assert.strictEqual(getPersistedPractice(file), null);
 });

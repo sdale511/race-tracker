@@ -147,7 +147,7 @@ class JoinBackoff {
 }
 
 class SlotAllocator {
-  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, staleMs = 45 * 1000, activeFrames = 0, gridOnly = false, racingTtlMs = 10 * 60 * 1000, zoneTtlMs = 10 * 60 * 1000, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
+  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, staleMs = 45 * 1000, activeFrames = 0, gridOnly = false, practice = false, racingTtlMs = 10 * 60 * 1000, zoneTtlMs = 10 * 60 * 1000, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
     this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     // The last joinSlots of the count are never assigned (see protocol.js's slot table frame): boats
@@ -161,7 +161,12 @@ class SlotAllocator {
     this.activeFrames = Math.max(0, activeFrames); // 0 = a boat is active only by its speed (see noteHeard)
     // gridOnly: only boats that have come off the start grid across the line ("racing") get a slot - boats rolling
     // out, watching or heading to camp never do. Needs the course marks; without them (zoneKnown false) everyone is eligible.
-    this.gridOnly = !!gridOnly;
+    this.gridOnlyConfigured = !!gridOnly;
+    this.gridOnly = this.gridOnlyConfigured && !practice;
+    // Practice mode: no start-grid management at all. Nobody is parked, nobody has to have started, there is no "racing" - any boat
+    // that is moving gets a slot and keeps it while it keeps moving (the stale time frees it once it stops). The flag also goes out in
+    // every table, so boats stop parking themselves in the start zone.
+    this.practice = !!practice;
     // A boat stays "racing" (eligible for a slot) until it has been stopped this long, or it comes back onto the grid - so
     // a stop mid-race (a repair, a pause) does not cost it its place; its slot is still freed after staleMs.
     this.racingTtlMs = racingTtlMs;
@@ -189,6 +194,12 @@ class SlotAllocator {
   // slot, or null when it has none (not active yet, or every slot is taken).
   noteHeard(boatId, { moving = false, inZone = false, pastLine = false, crossedStart = false, zoneKnown = true } = {}) {
     if (typeof boatId !== 'string' || boatId.length !== protocol.BOAT_ID_LEN) return null;
+    if (this.practice) {
+      inZone = false;
+      pastLine = false;
+      crossedStart = false;
+      zoneKnown = false;
+    }
     const t = this.now();
     // Seen to cross the start line between two heard fixes: it has started, whether or not a fix was ever heard on the
     // grid (a late starter crosses the 10 m zone in about a second, and a parked boat reports only now and then).
@@ -330,6 +341,24 @@ class SlotAllocator {
     return !!z && z.state.parked;
   }
 
+  // Practice mode on or off at run time (the dashboard's switch). Everything the old mode knew about boats is dropped - who is parked,
+  // who started, who holds a slot - so the new mode starts clean and every boat is judged afresh by its next fix; the table goes
+  // out at once with the new flag, and boats follow it. Returns true when the mode changed.
+  setPractice(on) {
+    on = !!on;
+    if (on === this.practice) return false;
+    this.practice = on;
+    this.gridOnly = this.gridOnlyConfigured && !on;
+    this.zones.clear();
+    this.racing.clear();
+    this.recent.clear();
+    this.overflow.clear();
+    this.release();
+    this._changed();
+    this.log(`[slots] practice mode ${on ? 'ON - any moving boat gets a slot, no start-grid parking' : 'OFF - slots go to boats that start from the grid'}`);
+    return true;
+  }
+
   // Frees the slots of the named boats (all of them when boatIds is empty/null) right away, without
   // waiting for the stale time - used when the base puts a fleet to sleep, so the next fleet can take
   // the slots. A boat that wakes and starts racing again gets the same slot back if it is still free.
@@ -382,7 +411,7 @@ class SlotAllocator {
   }
 
   _changed() {
-    this.version = (this.version + 1) & 0xff;
+    this.version = (this.version + 1) & 0x7f;
     this.changed = true;
   }
 
@@ -401,7 +430,7 @@ class SlotAllocator {
     // With nobody assigned the table is still sent, with no entries: it is also how every boat learns the slot count, the width
     // and which slots are the shared join slots. Without it a boat on a quiet base (nobody racing yet) never hears a table.
     if (entries.length === 0) {
-      return [protocol.encodeSlotTable({ version: this.version, slotCount: this.count, slotWidthMs: this.widthMs, joinSlots: this.joinSlots, entries: [] })];
+      return [protocol.encodeSlotTable({ version: this.version, slotCount: this.count, slotWidthMs: this.widthMs, joinSlots: this.joinSlots, practice: this.practice, entries: [] })];
     }
     for (let i = 0; i < entries.length; i += protocol.MAX_SLOT_ENTRIES) {
       out.push(
@@ -410,6 +439,7 @@ class SlotAllocator {
           slotCount: this.count,
           slotWidthMs: this.widthMs,
           joinSlots: this.joinSlots,
+          practice: this.practice,
           entries: entries.slice(i, i + protocol.MAX_SLOT_ENTRIES),
         })
       );
@@ -427,6 +457,7 @@ class SlotAllocator {
       parked: [...this.zones.entries()].filter(([, z]) => z.state.parked).map(([id]) => id),
       racing: [...this.racing.keys()],
       gridOnly: this.gridOnly,
+      practice: this.practice,
       boats: [...this.byBoat.entries()]
         .map(([boatId, e]) => ({ boatId, slot: e.slot, silentS: Math.round((t - e.lastHeard) / 1000) }))
         .sort((a, b) => a.slot - b.slot),
@@ -448,6 +479,8 @@ class SlotTableFollower {
     this.lastEntryAt = null; // when a table last listed this boat
     this.tablesSince = 0; // table frames heard since then, none listing it
     this.onAssigned = null; // called when the base gives this boat a slot
+    this.practice = false; // the base's practice mode (set by its tables) - the boat then does not park itself on the grid
+    this.onPractice = null; // called when that changes
     this.scheduler = scheduler;
     this.pinned = pinned;
     this.log = log;
@@ -475,6 +508,10 @@ class SlotTableFollower {
     if (this.pinned) return false;
     this.tablesHeard++;
     this.lastVersion = table.version;
+    if (!!table.practice !== this.practice) {
+      this.practice = !!table.practice;
+      if (this.onPractice) this.onPractice(this.practice);
+    }
     this.layout = { slotCount: table.slotCount, widthMs: table.slotWidthMs, joinSlots: table.joinSlots };
     const cur = this.scheduler.slot;
     const mine = this.parked ? undefined : table.entries.find((e) => e.boatId === this.boatId);

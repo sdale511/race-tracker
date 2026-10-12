@@ -305,7 +305,7 @@ function renderLinkHealthCard(h, slots) {
     .join('');
   // One line on the transmit slot table (see slotTable.js), shown with the link health it explains.
   const slotsLine = slots
-    ? `Slots: <strong>${slots.boats.length}</strong> of ${slots.slotCount - slots.joinSlots} assigned (${slots.slotWidthMs} ms each; ${slots.joinSlots} join + 1 base)${
+    ? `${slots.practice ? '<strong>Practice mode</strong> - any moving boat gets a slot, no start-grid parking. ' : ''}Slots: <strong>${slots.boats.length}</strong> of ${slots.slotCount - slots.joinSlots} assigned (${slots.slotWidthMs} ms each; ${slots.joinSlots} join + 1 base)${
         (slots.racing || []).length ? `, ${slots.racing.length} racing` : ''
       }${(slots.parked || []).length ? `, ${slots.parked.length} parked on the start grid` : ''}${
         slots.overflow.length ? `, <strong>${slots.overflow.length} waiting for a slot</strong>` : ''
@@ -704,6 +704,16 @@ function renderDashboard(s, rtkControlsEnabled) {
         <button type="button" class="card-btn" onclick="fleetSleep('sleep', this)">Sleep</button>
         <button type="button" class="card-btn" onclick="fleetSleep('wake', this)">Wake</button>
       </div>
+      ${
+        s.slots
+          ? `<div class="controls-row">
+        <button type="button" class="card-btn" onclick="setPracticeMode(this, ${s.slots.practice ? 'false' : 'true'})">Practice mode: ${s.slots.practice ? 'ON - turn off' : 'off - turn on'}</button>
+        <span class="sub" title="Practice mode gives a transmit slot to any boat that is moving, with no start-grid parking and no need to have started a race. Switching it releases every slot and boats re-join within a cycle or two. Remembered over a restart.">${
+          s.slots.practice ? 'Any moving boat gets a slot; no start-grid parking.' : 'Race mode: slots go to boats that start from the grid.'
+        }</span>
+      </div>`
+          : ''
+      }
       <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Radio sleep powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
     </div>
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
@@ -782,6 +792,24 @@ function renderDashboard(s, rtkControlsEnabled) {
         if (!result.ok) throw new Error(result.error || 'request failed');
         btn.textContent = action === 'sleep' ? 'Sent' : 'Waking...';
         setTimeout(() => location.reload(), 1500);
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    async function setPracticeMode(btn, on) {
+      if (!confirm(on ? 'Turn practice mode ON? Every slot is released; any boat that is moving gets one again within a cycle or two.' : 'Turn practice mode OFF (race mode)? Every slot is released; slots then go only to boats that start from the grid.')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/practice-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ practice: on }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
       } catch (err) {
         alert('Failed: ' + err.message);
         btn.disabled = false;
@@ -1931,6 +1959,7 @@ function startAdminServer({
   pingFleet,
   sleepFleet,
   wakeFleet,
+  setPracticeMode,
   selectRegatta,
   getMarkAssignment,
   setMarkAssignment,
@@ -1982,6 +2011,21 @@ function startAdminServer({
         pingFleet();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Practice mode on or off (see slotTable.js), remembered across restarts. Body: { practice: boolean }.
+    if (req.url === '/api/practice-mode' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        if (typeof body.practice !== 'boolean') throw new Error('practice must be true or false');
+        const practice = setPracticeMode(body.practice);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, practice }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));

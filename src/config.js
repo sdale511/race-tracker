@@ -509,6 +509,9 @@ module.exports = {
       // rolling out, watching, or heading to camp never do. Needs the course marks (without them everyone is
       // eligible). TX_SLOT_GRID_ONLY=0 gives slots to any boat that is under way.
       gridOnly: process.env.TX_SLOT_GRID_ONLY !== '0' && process.env.TX_SLOT_GRID_ONLY !== 'false',
+      // Base: practice mode (PRACTICE_MODE=1) - no start-grid parking or "has to have started" rule, any moving boat gets a slot; boats follow
+      // it from the table the base sends. For practice sessions and testing, where boats are not starting races from the grid.
+      practice: process.env.PRACTICE_MODE === '1' || process.env.PRACTICE_MODE === 'true',
       // Base only: a boat stays "racing" until it has been stopped this long (or comes back onto the grid), so a stop
       // mid-race does not cost it its place. Its slot is still freed after staleS. A boat sitting on the grid likewise
       // stays "parked" this long without a fix (it sends only a heartbeat about once a minute).

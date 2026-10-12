@@ -852,6 +852,19 @@ the simulated burst interval unless `SIM_RTCM_INTERVAL_S` is set. Set `TX_SLOT_C
 table; with it unset a boat works the count out from the same `RTCM_INTERVAL_S` and `TX_SLOT_MS`, so until its first table its
 shared slots are the real join slots - 39 and 40 of 41 at the defaults - not somebody's assigned ones).
 
+**Practice mode.** Practice mode turns off all the start-grid management: nobody is parked, a boat does not have to have crossed the
+start line, and there is no "racing" state - any boat that is moving (`TX_SLOT_MOVING_KN`, 1.5 knots) gets a slot and keeps it while
+it keeps moving; a boat that stops frees it after `TX_SLOT_STALE_S` (45 s), as in a race. It is for practice sessions and testing,
+where boats are not starting from the grid; with more moving boats than slots the extras wait in the shared join slots, as always.
+
+Switch it on the base's dashboard, in the **Fleet controls** card ("Practice mode: off - turn on"), with no restart. Switching releases
+every slot and forgets who was parked or racing, so the new mode starts clean and boats get theirs again within a cycle or two; the
+choice is saved in `race-config/slot_mode.json` and remembered over a restart. `PRACTICE_MODE=1` on the base only supplies the first
+default - once the switch has been used, the saved choice wins (delete the file to go back to the variable). The base puts the flag in
+every slot table it sends (the top bit of the table's version byte), so boats follow it by themselves: they stop parking in the start
+zone and report like any other boat, and each logs `the base is in practice mode`. The base's slots line starts with "Practice mode",
+and a boat's Transmit slot card has a Mode row.
+
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
 cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
 instead of sending a batch whenever it happens to fill. A cycle's fixes are capped at `TX_SLOT_MAX_HZ` (default 8)

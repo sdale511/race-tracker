@@ -4,6 +4,7 @@ const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { implausibleReason } = require('./fixSanity');
+const { getPersistedPractice, persistPractice } = require('./slotModeFile');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
 const { getPersistedMarkName, persistMarkName, clearPersistedMarkName, markNameFilePath } = require('./markNameFile');
 const {
@@ -962,6 +963,8 @@ function main() {
       staleMs: config.txGate.slot.staleS * 1000,
       activeFrames: config.txGate.slot.activeFrames,
       gridOnly: config.txGate.slot.gridOnly,
+      // The dashboard's switch is remembered (race-config/slot_mode.json); until it has been used, PRACTICE_MODE supplies the default
+      practice: getPersistedPractice() ?? config.txGate.slot.practice,
       racingTtlMs: config.txGate.slot.racingS * 1000,
       zoneTtlMs: config.txGate.slot.racingS * 1000,
       unparkFixes: config.txGate.slot.unparkFixes,
@@ -972,7 +975,8 @@ function main() {
     console.log(
       `[slots] slot table on: ${slotAllocator.assignable} slots of ${slotAllocator.widthMs} ms + ${slotAllocator.joinSlots} shared for boats without one + 1 for the base's own frames` +
         (config.txGate.slot.countAuto ? ` (fits a ${config.txGate.slot.rtcmIntervalS} s correction interval - RTCM_INTERVAL_S)` : ' (TX_SLOT_COUNT)') +
-        `, rebroadcast every ${config.txGate.slot.tableIntervalS} s`
+        `, rebroadcast every ${config.txGate.slot.tableIntervalS} s` +
+        (slotAllocator.practice ? ' - PRACTICE MODE: any moving boat gets a slot, no start-grid parking' : '')
     );
     // If the corrections actually heard don't arrive at the interval it was told, say so once: the
     // slots were sized for the wrong cycle.
@@ -1022,6 +1026,13 @@ function main() {
     // wakes and races again gets the same slot back if it is still free).
     if (slotAllocator) slotAllocator.release(opts && opts.boatIds && opts.boatIds.length ? opts.boatIds : null);
     return fleetSleep.sleep(opts);
+  }
+  // Practice mode (see slotTable.js), switched from the dashboard and remembered across restarts.
+  function setPracticeMode(on) {
+    if (!slotAllocator) throw new Error('slot mode is off on this base - there is no slot table to switch');
+    slotAllocator.setPractice(on);
+    persistPractice(slotAllocator.practice);
+    return slotAllocator.practice;
   }
   function wakeFleet(opts) {
     requireRadioForSleep();
@@ -2756,6 +2767,7 @@ function main() {
     pingFleet,
     sleepFleet,
     wakeFleet,
+    setPracticeMode,
     selectRegatta,
     getMarkAssignment,
     setMarkAssignment,

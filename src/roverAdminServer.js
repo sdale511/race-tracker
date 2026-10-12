@@ -395,6 +395,9 @@ function renderDashboard(s, power) {
               value: `${s.txSlot.count} x ${s.txSlot.widthMs} ms`,
             }
           : null,
+        s.txSlot && s.txSlot.practice
+          ? { label: 'Mode', title: 'The base is in practice mode: any moving boat gets a slot, and this boat does not park itself in the start zone', value: 'practice' }
+          : null,
         s.txSlot && s.txSlot.enabled
           ? {
               label: 'Table',
