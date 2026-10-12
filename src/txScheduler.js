@@ -60,6 +60,7 @@ class TxScheduler {
     this.maxQueue = maxQueue;
     this.maxAgeMs = maxAgeMs;
     this.lastSlotWarnAt = -Infinity;
+    this.recentSpills = []; // times of recent frames that did not fit the slot - see the warning below
     this.now = now;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
@@ -251,9 +252,19 @@ class TxScheduler {
       if (t >= start && fits) return 0;
       if (t >= start && !fits) {
         this.counters.spilled++;
-        if (this.warnSpill && t - this.lastSlotWarnAt > 30000) {
+        // An occasional spill is expected - a cycle that uses the whole slot (a mark rounding, the first cycle after waiting for
+        // a slot) can need one frame more than fits, and it simply goes out in the next cycle's slot. Only a slot that keeps
+        // overflowing is "too small", so warn after several spills in a minute, not for one.
+        this.recentSpills.push(t);
+        while (this.recentSpills.length && t - this.recentSpills[0] > 60000) this.recentSpills.shift();
+        if (this.warnSpill && this.recentSpills.length >= 4 && t - this.lastSlotWarnAt > 60000) {
           this.lastSlotWarnAt = t;
-          this.log(`[txgate] WARNING: slot ${index} (${widthMs} ms) is too small for ${this.trafficLabel} traffic - frames are waiting for later cycles. Raise TX_SLOT_MS (a 84-byte batch frame needs about 11 ms of slot plus a ${this.gate.guardMs} ms guard)`);
+          const room = Math.max(1, Math.floor((widthMs - this.gate.guardMs) / need));
+          this.log(
+            `[txgate] WARNING: ${this.recentSpills.length} frames in the last minute did not fit slot ${index} (${widthMs} ms: room for about ${room} ` +
+              `frame(s) of ${bytes} bytes, after a ${this.gate.guardMs} ms guard) and went out a cycle later - nothing was lost. If this keeps happening ` +
+              `every cycle, raise TX_SLOT_MS or lower TX_SLOT_MAX_HZ`
+          );
         }
         continue; // this slot is full - wait for the next cycle's
       }

@@ -266,3 +266,28 @@ test('flushNow: everything held for a slot goes out at once, in order (for a boa
   sim.runUntil(8000);
   assert.deepStrictEqual(sent, [1, 2, 3], 'nothing is sent twice afterwards');
 });
+
+test('slot too small warning: one spilled frame is quiet, a slot that keeps overflowing warns once with real numbers', () => {
+  const run = (cycles) => {
+    const sim = new Sim();
+    const logs = [];
+    const tr = new BurstTracker({ now: sim.now });
+    for (let k = 0; k < 60; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+    const gate = new TxGate({ tracker: tr, now: sim.now });
+    const sch = new TxScheduler({ send: () => true, tracker: tr, gate, slot: { enabled: true, index: 3, count: 30, widthMs: 45 }, log: (m) => logs.push(m), now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer });
+    sim.runUntil(4000);
+    // four 83-byte frames a cycle: three fit the slot (about 11 ms each plus a guard), the fourth spills to the next cycle
+    for (let c = 0; c < cycles; c++) {
+      for (let f = 0; f < 4; f++) sim.setTimer(() => sch.submit(Buffer.concat([Buffer.from([0xee]), Buffer.alloc(82)])), c * 1000 + f);
+    }
+    sim.runUntil(4000 + cycles * 1000 + 3000);
+    return { logs, spilled: sch.stats().spilled };
+  };
+  const one = run(1);
+  assert.ok(one.spilled >= 1, 'a frame spilled');
+  assert.strictEqual(one.logs.filter((m) => /did not fit slot/.test(m)).length, 0, `no warning for a single spill: ${one.logs}`);
+  const many = run(12);
+  const warns = many.logs.filter((m) => /did not fit slot/.test(m));
+  assert.strictEqual(warns.length, 1, `exactly one warning for a slot that keeps overflowing: ${many.logs}`);
+  assert.match(warns[0], /room for about \d+ frame\(s\) of 83 bytes/);
+});

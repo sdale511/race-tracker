@@ -550,7 +550,10 @@ let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
 let pendingBatch = [];
 // Most fixes one frame can carry: a delta frame's 8, or the older batch frame's 4 (TX_DELTA=0).
 const maxFixesPerFrame = config.txDelta ? protocol.MAX_DELTA_COUNT : protocol.MAX_BATCH_COUNT;
-const SLOT_PENDING_CAP = 20; // slot mode: flush anyway beyond this many waiting fixes
+// Slot mode: flush anyway beyond this many waiting fixes. Only a fail-safe for a slot that never comes - the flush at the slot
+// is what caps the cycle's fixes to what the slot can carry (flushPendingBatch's forSlot). It was 20, which a 10 Hz GPS fills in
+// a 2 s cycle, so the early flush ran first, skipped that cap, and sent every fix (about 9.6 Hz arrived instead of 8).
+const SLOT_PENDING_CAP = 200;
 let lastPvt = null;
 // True once a dwelling/holding fix (pvt.stationary - see simGps.js's
 // _emitStationaryFix) has already been logged to the console once, so
@@ -883,6 +886,7 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
   let fixes = pendingBatch;
   pendingBatch = [];
   let backfilled = false;
+  let backfillLog = null; // what the first cycle in a slot did with the fixes held while waiting - logged once below
   if (fixes.length === 0) return;
   if (sleeper.isSleeping()) return; // radio sleep mode - already SD-logged as each fix was queued
   const pacer = final ? null : sendPacer(); // the last send before exiting skips the pacing
@@ -902,8 +906,9 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
     if (forSlot && !final) {
       const held = waitingFixes.filter((f) => f.timestamp < fixes[0].timestamp && f.timestamp >= fixes[0].timestamp - BACKFILL_MAX_AGE_MS);
       backfilled = held.length > 0;
-      if (backfilled) console.log(`[slots] sending ${held.length} fixes held while waiting for a slot (thinned) with the first cycle in the slot`);
-      fixes = thinBackfill(held, { protect: isNearRoundingMark }).concat(fixes);
+      const kept = thinBackfill(held, { protect: isNearRoundingMark });
+      if (backfilled) backfillLog = { held: held.length, kept: kept.length, spanS: (held[held.length - 1].timestamp - held[0].timestamp) / 1000, cycle: fixes.length };
+      fixes = kept.concat(fixes);
     }
     waitingFixes = [];
   }
@@ -930,6 +935,13 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
       const anchor = lastBatchFix && fixes[0].timestamp - lastBatchFix.timestamp < 5000 ? lastBatchFix : null;
       fixes = thinForTurns(fixes, cap, { anchor, protect: isNearRoundingMark });
     }
+  }
+  if (backfillLog) {
+    const b = backfillLog;
+    console.log(
+      `[slots] first cycle in the slot: ${b.held} fixes held over ${b.spanS.toFixed(1)} s while waiting, thinned to ${b.kept}; ` +
+        `with this cycle's ${b.cycle} that is ${b.kept + b.cycle}, sending ${fixes.length} (about ${Math.ceil(fixes.length / maxFixesPerFrame)} frame(s))`
+    );
   }
   lastBatchFix = fixes[fixes.length - 1];
   const perFrame = forSlot ? maxFixesPerFrame : Math.max(1, config.txBatchSize);
