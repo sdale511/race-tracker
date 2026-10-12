@@ -116,9 +116,9 @@ def find_working_baud(port, candidates):
     for b in candidates:
         try:
             ser = open_serial(port, b)
-        except serial.SerialException as e:
-            print(f"Failed to open {port}: {e}")
-            return None, None
+        except Exception as e:  # SerialException, or termios.error ("Invalid argument") when the OS driver refuses this baud
+            print(f"  {b:>7} baud: could not open {port} ({type(e).__name__}: {e}) - trying the next")
+            continue
         try:
             enter_command_mode(ser)
             return b, ser

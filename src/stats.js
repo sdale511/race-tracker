@@ -24,8 +24,9 @@ const boatLastPosition = new Map(); // boatId -> {lat, lon} of last position fra
 // dead-reckoning) - that field isn't in the wire protocol at all (see
 // protocol.js's decode), only what's actually transmitted.
 const boatLastFix = new Map();
-// boatId -> recent frame-receipt timestamps, trimmed to the last
-// FIX_RATE_WINDOW_MS on every recordFrame call - see fixHz() below.
+// boatId -> the fixes' own GPS times, trimmed to the last FIX_RATE_WINDOW_MS (of fix time) on every recordFrame call - see
+// fixHz() below. Arrival time cannot be used: a boat's slot delivers a whole cycle of fixes in one burst, so they all
+// arrive in the same millisecond (a rate from arrival gaps read 1,750 Hz).
 const boatFrameTimes = new Map();
 // How far back to look when computing each boat's live fix rate (fixHz) -
 // long enough to smooth over ordinary per-fix jitter (network/OS
@@ -37,7 +38,8 @@ const FIX_RATE_WINDOW_MS = 10000;
 // Only sampled once the window spans at least FIX_RATE_MIN_SPAN_MS: a
 // batched frame delivers several fixes in one burst, so a rate computed over
 // the first few frames after a boat appears (span of milliseconds) reads
-// absurdly high and would pin the max there forever.
+// absurdly high and would pin the max there forever. (Measured over fix time
+// now, so a burst reads right, but the minimum span still keeps one lone fix out.)
 const boatMaxFixHz = new Map();
 const FIX_RATE_MIN_SPAN_MS = 5000;
 const boatPending = new Map(); // boatId -> { pending, reportedAt } - self-reported by the rover, see uploadClient.js
@@ -74,7 +76,7 @@ function normalizeBoatId(boatId) {
 // history (see baseStation.js's uploadDirBaseline, which is deliberately
 // kept separate from this). fix is likewise optional ({carrSoln,
 // gnssFixOk, numSV} off the decoded frame) - see boatLastFix's own comment.
-function recordFrame(boatId, position, fix) {
+function recordFrame(boatId, position, fix, fixTimeMs) {
   framesReceived++;
   const id = normalizeBoatId(boatId);
   const now = Date.now();
@@ -87,12 +89,17 @@ function recordFrame(boatId, position, fix) {
     times = [];
     boatFrameTimes.set(id, times);
   }
-  times.push(now);
-  const cutoff = now - FIX_RATE_WINDOW_MS;
-  while (times.length && times[0] < cutoff) times.shift();
+  // The fix's own time when given, else (a frame with no fix of its own) the arrival time
+  times.push(Number.isFinite(fixTimeMs) ? fixTimeMs : now);
+  // Fixes of one frame can be handed over in any order, so keep the newest and drop what is older than the window
+  const newest = Math.max(...times);
+  const kept = times.filter((t) => t >= newest - FIX_RATE_WINDOW_MS);
+  times.length = 0;
+  times.push(...kept);
 
-  if (times.length >= 2 && now - times[0] >= FIX_RATE_MIN_SPAN_MS) {
-    const hz = (times.length - 1) / ((now - times[0]) / 1000);
+  const span = newest - Math.min(...times);
+  if (times.length >= 2 && span >= FIX_RATE_MIN_SPAN_MS) {
+    const hz = (times.length - 1) / (span / 1000);
     if (hz > (boatMaxFixHz.get(id) || 0)) boatMaxFixHz.set(id, hz);
   }
 }
@@ -107,9 +114,14 @@ function recordFrame(boatId, position, fix) {
 // least two frames have landed inside the window (one alone has no
 // interval to measure a rate from).
 function fixHz(boatId) {
-  const times = boatFrameTimes.get(normalizeBoatId(boatId));
+  const id = normalizeBoatId(boatId);
+  const times = boatFrameTimes.get(id);
   if (!times || times.length < 2) return null;
-  const spanS = (times[times.length - 1] - times[0]) / 1000;
+  // The window is anchored on the newest fix, so a boat that has gone quiet would keep its last rate for ever - once
+  // nothing has arrived for a whole window, there is no current rate
+  const lastSeen = boatLastSeen.get(id);
+  if (lastSeen == null || Date.now() - lastSeen > FIX_RATE_WINDOW_MS) return null;
+  const spanS = (Math.max(...times) - Math.min(...times)) / 1000;
   return spanS > 0 ? (times.length - 1) / spanS : null;
 }
 

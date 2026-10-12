@@ -250,7 +250,9 @@ nothing reads it. Add `uart1` only if something reads the board on the Pi header
 UART. `--constellations` (default all four) leaves constellations out to save
 bytes - a left-out one has its MSM4 message off, and `1230` goes with GLONASS.
 `--rtcm-interval N` (default 2) sends every enabled message every N seconds instead of every
-second (it sets the messages' output rate; the receiver's own 1 Hz measurement rate is untouched):
+second (it sets the messages' output rate in measurement epochs, and the base profile also sets the receiver's
+measurement rate to 1 Hz so an epoch is a second - at the rover profile's 10 Hz, "2 epochs" would be 0.2 s, about eight
+times the intended correction airtime, which is what happens if the rover profile is ever applied to a base receiver):
 `--rtcm-interval 2` halves the correction airtime, at the cost of rovers working from corrections up
 to 2 s old and a lost message costing 2 s. Check that RTK still holds at speed before relying on it.
 Run it with `--dry-run` first to see exactly what would change, and
@@ -260,6 +262,21 @@ survives a power cycle.
 python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --dry-run
 python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --constellations gps,galileo,beidou
 ```
+
+The base role also prints the receiver's current TMODE3 mode as its first line
+(`TMODE3 mode = 1 (survey-in)`, `2 (fixed position)` or `0 (disabled)`). A receiver is only a base while TMODE3 is
+survey-in or fixed; at 0 it sends no usable corrections and the admin dashboard's survey-in card says "disabled".
+That happens when the rover profile, which sets TMODE3 to 0, is applied to the same receiver. So **if it reads 0 the
+base role turns survey-in on** (the receiver averages its own position for at least `--svin-min-dur` seconds, default
+300, until it is within `--svin-acc-limit-m` metres, default 2.0, then starts sending corrections; the dashboard's
+survey-in card shows the progress). A fixed position or a survey already running is left alone. `--survey-in` forces
+survey-in even over a fixed position, replacing it:
+```
+python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --dry-run               # shows what it would do
+python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role base --survey-in             # replace a fixed position
+```
+Survey-in gives a new averaged position, which can differ by a metre or two from an earlier surveyed or fixed one - if
+the course marks were planted against the old reference, restore the old fixed coordinates or plant them again.
 
 This replaces an earlier profile that added MSM7 on top of the board's factory
 MSM4 (a live audit then found both sets going out the radio). The original gap

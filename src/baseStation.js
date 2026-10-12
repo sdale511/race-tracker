@@ -2254,7 +2254,8 @@ function main() {
     stats.recordFrame(
       decoded.boatId,
       { lat: decoded.lat, lon: decoded.lon },
-      { carrSoln: decoded.carrSoln, gnssFixOk: decoded.gnssFixOk, numSV: decoded.numSV }
+      { carrSoln: decoded.carrSoln, gnssFixOk: decoded.gnssFixOk, numSV: decoded.numSV },
+      decoded.timestamp
     );
     // logToCsv, redisStore.recordFix, and detectRaceEvents below all still
     // run regardless of LOG_RECEIVED_FIXES - this only silences the routine

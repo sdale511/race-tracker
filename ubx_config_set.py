@@ -25,7 +25,14 @@ fleet's own pair of boards actually found wrong:
     operates in the US, where all four have real satellites in view and more
     satellites mean better RTK fix reliability under real-world sky
     obstruction; leave one out to save bytes). Also enables UBX-NAV-SVIN so the
-    admin dashboard's own survey-in card has something to show.
+    admin dashboard's own survey-in card has something to show. It also sets the
+    measurement rate to 1 Hz: the RTCM interval is counted in measurement epochs, so a
+    base left at the rover profile's 10 Hz would send bursts 10x too often. A receiver is only a
+    base while TMODE3 is survey-in or a fixed position, so if TMODE3 is 0 (disabled -
+    e.g. left that way by an earlier rover run on the same board) it is set to
+    survey-in (--svin-min-dur seconds, --svin-acc-limit-m metres); a fixed position
+    or a survey already running is left alone and shown. --survey-in forces survey-in
+    even over a fixed position.
   - rover: UBX-NAV-PVT on (or this app sees nothing from it at all), TMODE3
     disabled (a rover is not a stationary reference station), UBX-RXM-RTCM on
     (RTCM_LOG visibility into corrections actually arriving), and fix
@@ -91,6 +98,8 @@ KEY_INFO = {
     "CFG-MSGOUT-UBX_NAV_SVIN_UART1": (0x20910089, "u1", "NAV-SVIN rate"),
     "CFG-MSGOUT-UBX_NAV_PVT_UART1": (0x20910007, "u1", "NAV-PVT rate"),
     "CFG-TMODE-MODE": (0x20030001, "tmode", "TMODE3 mode"),
+    "CFG-TMODE-SVIN_MIN_DUR": (0x40030010, "u4", "survey-in min (s)"),  # seconds
+    "CFG-TMODE-SVIN_ACC_LIMIT": (0x40030011, "u4", "survey-in acc 0.1mm"),  # 0.1 mm units
     "CFG-MSGOUT-UBX_RXM_RTCM_UART1": (0x20910269, "u1", "RXM-RTCM rate"),
     "CFG-RATE-MEAS": (0x30210001, "u2", "fix rate (ms)"),
     "CFG-UART2INPROT-RTCM3X": (0x10750004, "bool", "RTCM3 input UART2"),
@@ -174,8 +183,8 @@ def build_base_settings(rtcm_ports, constellations, interval=1):
     for the dashboard's survey-in card.
 
     `interval` is each enabled message's output rate in navigation epochs: 1 =
-    every epoch, 2 = every second epoch, and so on (the receiver's measurement
-    rate is left alone, so at its 1 Hz that is every `interval` seconds).
+    every epoch, 2 = every second epoch, and so on. The measurement rate is set to
+    1 Hz (CFG-RATE-MEAS 1000 ms) below, so that is every `interval` seconds.
     """
     settings = {}
     for port in RTCM_PORTS:
@@ -194,6 +203,10 @@ def build_base_settings(rtcm_ports, constellations, interval=1):
         if on:
             settings[f"CFG-{name}OUTPROT-RTCM3X"] = True
     settings["CFG-MSGOUT-UBX_NAV_SVIN_UART1"] = 1  # so the admin dashboard's survey-in card has something to show
+    # The RTCM interval above is counted in measurement epochs, so the epoch has to be a second: at the rover profile's 10 Hz
+    # (100 ms) "every 2 epochs" is 0.2 s - five bursts a second, about 8x the intended airtime. Setting this here also puts
+    # right a receiver that had the rover profile applied to it.
+    settings["CFG-RATE-MEAS"] = 1000
     return settings
 
 
@@ -412,6 +425,35 @@ def apply_setting(ser, name, target_value, dry_run):
     return False
 
 
+TMODE_NAMES = {0: "disabled", 1: "survey-in", 2: "fixed position"}
+
+
+def read_tmode(ser):
+    key_id, kind, _label = KEY_INFO["CFG-TMODE-MODE"]
+    return poll_key(ser, key_id, kind)
+
+
+def survey_in_settings(min_dur_s, acc_limit_m):
+    """TMODE3 survey-in: the receiver averages its own position for at least min_dur_s seconds, until it is within
+    acc_limit_m metres, then becomes a base and sends corrections."""
+    return {
+        "CFG-TMODE-MODE": 1,
+        "CFG-TMODE-SVIN_MIN_DUR": min_dur_s,
+        "CFG-TMODE-SVIN_ACC_LIMIT": int(round(acc_limit_m * 10000)),  # metres -> 0.1 mm
+    }
+
+
+def report_tmode(mode):
+    """Base role: show a TMODE3 mode that is being left alone (survey-in or a fixed position). Shown in a dry run too."""
+    key_id, kind, label = KEY_INFO["CFG-TMODE-MODE"]
+    prefix = f"  {label:<{LABEL_WIDTH}}"
+    if mode is None:
+        print(f"{prefix} ? (could not read) [left alone]")
+        print(f"  {'':<{LABEL_WIDTH}}   WARNING: could not read TMODE3 - if it is 0 (disabled) this receiver is not a base; check with ubx_config_report.py")
+        return
+    print(f"{prefix} = {mode} ({TMODE_NAMES.get(mode, 'unknown')}) [left alone]")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyAMA0 or COM5")
@@ -439,8 +481,17 @@ def main():
         help="base role only: send the RTCM messages every N navigation epochs (default 2 = every 2 s; 1 = every second at the "
         "receiver's 1 Hz). Halves the correction airtime at 2, but a rover then works from "
         "corrections up to 2 s old (a lost message costs 2 s) - check that RTK still holds at speed. "
-        "Applies to every enabled RTCM message; the receiver's own 1 Hz measurement rate is not changed",
+        "Applies to every enabled RTCM message; the base profile also sets the receiver's measurement rate to 1 Hz so an epoch is a second",
     )
+    ap.add_argument(
+        "--survey-in",
+        action="store_true",
+        help="base role only: set TMODE3 to survey-in even if it already holds a fixed position, replacing it (the receiver averages "
+        "its own position, then becomes a base). Without this the base role sets survey-in only when TMODE3 is 0/disabled, and "
+        "leaves a fixed position or a running survey alone",
+    )
+    ap.add_argument("--svin-min-dur", type=int, default=300, help="with --survey-in: minimum survey time in seconds (default 300)")
+    ap.add_argument("--svin-acc-limit-m", type=float, default=2.0, help="with --survey-in: position accuracy to reach, metres (default 2.0)")
     ap.add_argument(
         "--uart2-baud",
         type=int,
@@ -463,9 +514,14 @@ def main():
             ap.error("--rtcm-ports and --constellations must each name at least one")
         if "uart2" not in rtcm_ports:
             print("[ubx_config_set] note: uart2 is not selected - the onboard correction radio will receive no RTCM")
-        settings = build_base_settings(rtcm_ports, constellations, args.rtcm_interval)
+        settings = {}
+        if args.survey_in:
+            settings.update(survey_in_settings(args.svin_min_dur, args.svin_acc_limit_m))
+        settings.update(build_base_settings(rtcm_ports, constellations, args.rtcm_interval))
         print(f"[ubx_config_set] RTCM on: {', '.join(rtcm_ports)}; constellations: {', '.join(constellations)}; every {args.rtcm_interval} epoch(s)")
     else:
+        if args.survey_in:
+            ap.error("--survey-in is for the base role only (a rover's TMODE3 is switched off)")
         settings = dict(ROVER_SETTINGS)
     settings["CFG-UART2-BAUDRATE"] = args.uart2_baud
     print(f"[ubx_config_set] UART2 baud {args.uart2_baud} - must equal the correction radio's own baud")
@@ -479,6 +535,16 @@ def main():
 
     ok = True
     try:
+        if args.role == "base" and not args.survey_in:
+            # A receiver is only a base while TMODE3 is survey-in or fixed. 0 (disabled) - e.g. after the rover profile,
+            # which sets it to 0, was applied to this receiver - means it sends no usable corrections, so the base profile
+            # puts it into survey-in. Survey-in or a fixed position already set up is left alone (--survey-in forces it).
+            mode = read_tmode(ser)
+            if mode == 0:
+                print("  TMODE3 mode          = 0 (disabled): a base needs survey-in or a fixed position - setting survey-in (a fixed position or running survey is never replaced without --survey-in)")
+                settings = {**survey_in_settings(args.svin_min_dur, args.svin_acc_limit_m), **settings}
+            else:
+                report_tmode(mode)
         for name, target_value in settings.items():
             if not apply_setting(ser, name, target_value, args.dry_run):
                 ok = False

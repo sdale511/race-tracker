@@ -354,6 +354,11 @@ function renderDashboard(s, power) {
           title: 'Correction messages that arrived over this boat\'s telemetry radio (shared-radio setup only - 0 if corrections come in on a separate radio straight into the GPS)',
           value: `${s.radioRtcm.frames.toLocaleString()} (${formatAgo(s.radioRtcm.lastReceivedAt)})`,
         },
+        {
+          label: 'Sent to GPS',
+          title: 'Of those, how many this boat wrote to its GPS receiver. 0 while corrections arrive means forwarding is off - set RTCM_FORWARD=1 (shared radio on the Pi, with the Pi TX line wired to the receiver RX)',
+          value: s.radioRtcm.forwarded.toLocaleString(),
+        },
       ]
         .map((r) => `<div class="stat-row"><span class="name" title="${r.title}">${r.label}</span><span class="val">${r.value}</span></div>`)
         .join('')}</div>
