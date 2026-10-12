@@ -280,6 +280,7 @@ function main() {
         })()
       : null;
   let baseTxScheduler = null;
+  const slotUse = { lastTableAt: null, tablesSent: 0 }; // for the dashboard's Transmit slots card
   function installTxGate(rawSend) {
     if (!config.txGate.enabled || baseTxScheduler) return;
     baseTxScheduler = new TxScheduler({
@@ -1006,6 +1007,8 @@ function main() {
       const changed = slotAllocator.takeChanged() || freed;
       if (!changed && nowMs - lastTableAt < config.txGate.slot.tableIntervalS * 1000) return;
       lastTableAt = nowMs;
+      slotUse.lastTableAt = nowMs;
+      slotUse.tablesSent++;
       for (const frame of slotAllocator.frames()) radio.broadcast(frame);
       const racingNow = JSON.stringify(slotAllocator.exportRacing());
       if (racingNow !== lastSavedRacing) {
@@ -2653,6 +2656,20 @@ function main() {
       lapCounts,
       sleep: fleetSleep.status(),
       slots: slotAllocator ? slotAllocator.status() : null,
+      slotInfo: slotAllocator
+        ? {
+            configuredPeriodMs: config.txGate.slot.rtcmIntervalS * 1000,
+            heardPeriodMs: baseBurstTracker.isActive() ? baseBurstTracker.period : null,
+            countAuto: config.txGate.slot.countAuto,
+            afterMs: baseTxScheduler ? baseTxScheduler.gate.afterMs() : 30,
+            staleS: config.txGate.slot.staleS,
+            movingKn: config.txGate.slot.movingKn,
+            tableIntervalS: config.txGate.slot.tableIntervalS,
+            lastTableAt: slotUse.lastTableAt,
+            tablesSent: slotUse.tablesSent,
+            baseTx: baseTxScheduler ? (({ spilled, expired, dropped, queued }) => ({ spilled, expired, dropped, queued }))(baseTxScheduler.stats()) : null,
+          }
+        : null,
       linkHealth: linkHealth.status(),
       redis: redisStats,
       // maxmemoryBytes falls back to the operator-configured

@@ -134,8 +134,8 @@ Then confirm this app itself decodes it (the check that actually matters):
 ```
 GPS_PORT=/dev/ttyAMA0 GPS_BAUD=115200 npm run boat
 ```
-Watch for `[gps]` lines with real `fixType`/`numSV` (see `GPS_LOG` in
-"Tuning knobs"). Silence means `UBX-NAV-PVT` went to the wrong UART number
+Watch for `[gps]` lines with real `fixType`/`numSV` (see `GPS_LOG`; `npm run print-config` lists every
+setting). Silence means `UBX-NAV-PVT` went to the wrong UART number
 - undo (`CFG-MSGOUT-UBX_NAV_PVT_UARTx,0,7`) and try the other.
 
 The simpleRTK2B LR's onboard radio (in the board's XBee socket) is a
@@ -759,11 +759,14 @@ What one cycle looks like (drawn for a 1 s correction interval and 35 ms slots -
 **Slot assignment (the slot table).** Slot mode is on by default for the base and the boats (set `TX_SLOT_MODE=0`
 on a node to turn it off there; like the gate, it does nothing until correction bursts are heard). The base keeps
 a table of the boats it hears and broadcasts it every `TX_SLOT_TABLE_S` seconds (10), and straight away when it
-changes, as slot-table frames (sync `0xA7`, up to 15 boats per frame; larger tables use several). A boat that
+changes, as slot-table frames (sync `0xA7`, up to 15 boats per frame; larger tables use several). The table is
+sent even when nobody holds a slot (an empty one), because it is also how every boat learns the slot count, the width and
+which slots are the shared join slots, and whether the base is in practice mode. A boat that
 hears its own entry moves to that slot, so `TX_SLOT_MS` and `TX_SLOT_COUNT` only need setting on the **base**; a
 boat with `TX_SLOT` set is pinned to that slot and ignores the table.
 
-- **Who gets a slot.** Only boats that have **started**: a boat that crosses the start line from the grid side - seen
+- **Who gets a slot.** (In **practice mode**, below, this rule and the parking that follows are switched off: any moving boat gets
+  one.) In a race, only boats that have **started**: a boat that crosses the start line from the grid side - seen
   as two heard fixes either side of the line between pin and committee mark, however far apart in time, so a late
   starter who is inside the 10 m grid zone for only a second still counts - is
   *racing* and gets a slot on its first fix at `TX_SLOT_MOVING_KN` (1.5 kn) or faster - the speed is in every fix. A
@@ -787,17 +790,21 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   and out. If it left across the start line it is now racing and its first moving fix earns a slot (the one it
   had, if it is still free); if it left backwards or sideways it is not racing and gets none. A boat that crosses the
   line early is outside the zone (it is leeward only) and is tracked at the full rate. Parking needs the course
-  marks and slot mode with the bursts heard, and a boat pinned with `TX_SLOT` is not parked. On the dashboard
-  the Slot column shows "parked" and the slots line on the Link health card counts them.
+  marks and slot mode with the bursts heard, and a boat pinned with `TX_SLOT` is not parked. A boat that is already
+  racing is parked all the same if it passes through the zone (touching the start area mid-race is rare and not
+  allowed in racing, so it is not special-cased): it drops to the join slots, and is given its slot again when it leaves. There is
+  no parking in practice mode. On the dashboard the Slot column shows "parked", and the Transmit slots card and the slots
+  line on the Link health card count them.
 - **Which slot.** The next free slot in a spread-out order: slot 0, then halfway, then the quarters, and so on
-  (three boats in 23 slots get 0, 16 and 8; the first 11 get exactly every other slot), so boats are only in
-  neighbouring slots once the fleet is bigger than half the slots. A boat keeps its slot, and nobody else's slot
+  (the first four boats in the default 39 slots get 0, 32, 16 and 8; the first half of the slots handed out are
+  exactly every other slot), so boats are only in neighbouring slots once the fleet is bigger than half the slots. A boat keeps its slot, and nobody else's slot
   ever moves.
 - **Join slots.** The last `TX_SLOT_JOIN` (2) of the slots are never assigned. A boat with no slot of its own
   yet - newly active and waiting for the table, or left out because every slot is taken - sends in one of them,
   picking one at random each cycle, so it cannot land on a racing boat's slot (it can still collide with other
   joiners). A boat adopts the base's slot count, width and join slots from any table it hears, even one that
-  doesn't list it. A boat in the join slots backs off: its first reports come at once (the base can assign it a slot on its
+  doesn't list it (until the first one it assumes the layout the base works out from the same `RTCM_INTERVAL_S` and `TX_SLOT_MS`,
+  so its shared slots are the real join slots, not somebody's assigned ones). A boat in the join slots backs off: its first reports come at once (the base can assign it a slot on its
   first moving fix), then further apart, up to one every `TX_JOIN_REPORT_S` (15) seconds, latest fix only - so a crowd
   of boats with no slot (everyone rolling out, say) cannot swamp the two join slots, and a boat that is never going to
   get one (not racing) just reports occasionally.
@@ -813,10 +820,12 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   slots and is told its slot again on its first moving fix, usually within a second or two. If the slot was taken
   meanwhile and no other is free, the boat shares the join slots until one opens. (A boat stopped for longer than `TX_SLOT_RACING_S` is no longer racing and must come off the grid across the line
   again to get a slot.)
-- **Dashboard.** The boat table has a **Slot** column (hover for the slot count and width; "parked" for a boat
-  on the start grid; "not racing" for a boat that has not started from the grid; "shared (full)" for a boat that is
-  waiting in the join slots because every slot is taken),
-  shown only when the base runs the table. The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
+- **Dashboard.** The base's admin page shows the mode in a banner across the top (**RACE MODE** or **PRACTICE MODE**, with
+  radio buttons to change it), a **Transmit slots** card (below), and the boat table has a **Slot** column (hover for the
+  slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;
+  "shared (full)" for a boat that is waiting in the join slots because every slot is taken),
+  shown only when the base runs the table. Each boat's own dashboard has a **Transmit slot** card (its slot or the shared
+  slots, whether it has heard a table, and its spilled, expired and dropped frame counts). The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
   as `[slots] <boat> -> slot N`.
 - **The base's own slot.** The cycle has one more slot after the boats' (and the join slots): the slot table,
   marks, pings and sleep/wake frames from the base all wait for it, so the base never lands on a boat's frame.
@@ -857,13 +866,19 @@ start line, and there is no "racing" state - any boat that is moving (`TX_SLOT_M
 it keeps moving; a boat that stops frees it after `TX_SLOT_STALE_S` (45 s), as in a race. It is for practice sessions and testing,
 where boats are not starting from the grid; with more moving boats than slots the extras wait in the shared join slots, as always.
 
-Switch it on the base's dashboard, in the **Fleet controls** card ("Practice mode: off - turn on"), with no restart. Switching releases
+Switch it with the **Race / Practice** radio buttons in the banner at the top of the base's admin page, with no restart. Switching releases
 every slot and forgets who was parked or racing, so the new mode starts clean and boats get theirs again within a cycle or two; the
 choice is saved in `race-config/slot_mode.json` and remembered over a restart. `PRACTICE_MODE=1` on the base only supplies the first
 default - once the switch has been used, the saved choice wins (delete the file to go back to the variable). The base puts the flag in
 every slot table it sends (the top bit of the table's version byte), so boats follow it by themselves: they stop parking in the start
-zone and report like any other boat, and each logs `the base is in practice mode`. The base's slots line starts with "Practice mode",
-and a boat's Transmit slot card has a Mode row.
+zone and report like any other boat, and each logs `the base is in practice mode`. The base's banner turns amber and says PRACTICE MODE,
+the slots line starts with "Practice mode", and a boat's Transmit slot card has a Mode row.
+
+**The base's "Transmit slots" card** summarises the table on one card: how many slots are in use out of how many can be assigned, a map of
+every slot (blue = in use, grey = free, amber = the shared join slots, purple = the base's own; hover a cell for the boat), the mode
+(race or practice), the layout (assignable + shared + 1 base, and the slot width), how much of the correction cycle the slots occupy
+(with a warning if the bursts are heard at a different interval from `RTCM_INTERVAL_S`), who is assigned, free, racing, parked and waiting,
+the table's version and when it was last sent, and how the base's own frames are doing (spilled or lost).
 
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
 cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
@@ -908,8 +923,8 @@ virtual boats in neighbouring slots (`radio-latency`, see below): 0 frames in th
 correction bursts, 0 spills, every frame written within 13 ms of its slot opening and heard about 25 ms after
 it, with neighbouring boats' frames at least about 22 ms apart at the listener. That was one sender radio;
 two boats on separate radios in neighbouring slots have not been tested. A slot too small for a boat's traffic
-makes it log a warning and its frames wait for later cycles - raise `TX_SLOT_MS` (a boat above 8 Hz, or at 5 Hz with `TX_DELTA=0`, sends two frames
-per cycle and needs about 40 ms). `TX_SLOT_COUNT x TX_SLOT_MS` plus the blocked time must fit
+makes its frames wait for later cycles (the boat's Transmit slot card counts them as Spilled, and it logs one warning after four
+spills in a minute - an occasional one near a mark is normal) - raise `TX_SLOT_MS` or lower `TX_SLOT_MAX_HZ` (a boat at 5 Hz with `TX_DELTA=0` sends two frames per cycle and needs about 40 ms). `TX_SLOT_COUNT x TX_SLOT_MS` plus the blocked time must fit
 inside the correction interval (a boat warns if not). In a 30-boat simulation at 2 s, 45 ms slots at 8 Hz were clean
 (no frame dropped or expired, no gaps) where 35 ms slots at 8 Hz were not. A slotted frame can be up to one cycle old on arrival.
 
@@ -920,12 +935,12 @@ with two adapters (`radio-latency`); repeat them on a Pi before trusting a 10 ms
 **Trying it without hardware:** a `SIMULATE=1` base broadcasts a synthetic RTCM burst (six valid messages the size of a real epoch), every `SIM_RTCM_INTERVAL_S` seconds (default 2; `0` turns it off); run boats with `SIMULATE=1` (slot mode is on by default).
 The unit tests (`npm test`, in virtual time) check the tracker, the gate, that two boats in different
 slots never transmit in a blocked window or on top of each other, the slot table (frame, allocation,
-following, join slots, parking) and the delta-coded frame.
+following, join slots, parking, practice mode) and the delta-coded frame.
 
 **Walking through the slot table in the simulator** (two terminals; the base dashboard is `http://localhost:8092`):
 
 ```
-# terminal 1 - the base: simulated RTK bursts every second, slot table on
+# terminal 1 - the base: simulated RTK bursts every 2 s, slot table on
 SIMULATE=1 npm run base
 
 # terminal 2 - six boats that sit on the start grid until you press SPACE
@@ -935,8 +950,8 @@ FLEET_SIZE=6 npm run fleet
 Watch the base console and the dashboard (the Link health card - its slots line summarises the table - and the Slot column):
 1. The boats arrive on the grid: `[slots] <boat> is on the start grid - parked` and "parked" in the Slot column.
 2. Press **SPACE** in the fleet terminal (the start signal): as each boat crosses the line you see
-   `<boat> crossed the start line - racing` (or `started - racing`), then `-> slot N of 23`, and the boat's own
-   `base assigned slot N`. The boats' slots are spread out (0, 16, 8, 4, ...).
+   `<boat> crossed the start line - racing` (or `started - racing`), then `-> slot N of 39`, and the boat's own
+   `base assigned slot N`. The boats' slots are spread out (0, 32, 16, 8, ...).
 3. When a boat finishes and stops, its slot is freed 45 s later (`SIM_EXIT_ON_FINISH` ends the process, so it
    goes silent).
 
@@ -947,7 +962,8 @@ FLEET_SIZE=50 npm run fleet                                   # more boats than 
 SIMULATE=1 SIM_RTCM_INTERVAL_S=1 npm run base                 # 1 s corrections (default 2): the table carries 20 slots
 SIM_GPS_HZ=2 FLEET_SIZE=3 npm run fleet                       # a slower, lighter fake GPS (the default is 10 Hz, like a real rover)
 SIM_HOLD_FOR_START=0 FLEET_SIZE=4 npm run fleet               # boats start on their own after a short dwell
-SIMULATE=1 TX_SLOT_GRID_ONLY=0 npm run base                   # slots for any boat under way, not only those that started
+SIMULATE=1 PRACTICE_MODE=1 npm run base                      # practice mode: any moving boat gets a slot, no parking (or use the banner switch)
+SIMULATE=1 TX_SLOT_GRID_ONLY=0 npm run base                   # slots for any boat under way, not only those that started (parking stays)
 SIMULATE=1 TX_SLOT_MODE=0 npm run base                        # slot mode off everywhere, for comparison
 SIMULATE=1 SIM_RTCM_INTERVAL_S=0 npm run base                 # no bursts: nothing gated or slotted
 ```
@@ -1016,11 +1032,12 @@ the radio's 9-byte encryption overhead), the slot table can reach 97 and the pow
 
 **Slot table frame (`0xA7`).** Sent by the base, in the base's own slot, every `TX_SLOT_TABLE_S` seconds and
 whenever the table changes, as many frames as needed (up to 15 boats each; every frame also carries the slot count, width and join
-slots, so a boat that finds no entry for itself still learns where the join slots are).
+slots, so a boat that finds no entry for itself still learns where the join slots are). With nobody assigned, one frame
+with no entries is still sent.
 
 ```
 [0]      0xA7
-[1]      version      uint8  - bumps whenever an assignment changes (diagnostic only)
+[1]      version      uint8  - bits 0-6: bumps whenever an assignment changes (diagnostic only); bit 7: the base is in practice mode
 [2]      slotCount    uint8  - slots for boats in a cycle, including the join slots (the base's own slot follows)
 [3]      slotWidthMs  uint8  - width of each slot
 [4]      joinSlots    uint8  - how many of the last slots are never assigned

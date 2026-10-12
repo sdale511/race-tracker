@@ -285,6 +285,51 @@ function renderBandwidthCard(bandwidth, mode) {
 // are gated.
 // The dashboard's Link health card (see linkHealth.js): is the radio link working? A fleet summary, then the
 // boats that need a look first (bad, then warn), with why. `h` is baseStation's linkHealth.status().
+// The transmit slot table at a glance: how the cycle is laid out, who holds which slot, and what the base is doing with it.
+function renderSlotsCard(slots, info) {
+  if (!slots) return '';
+  const assignable = slots.slotCount - slots.joinSlots;
+  const bySlot = new Map(slots.boats.map((b) => [b.slot, b.boatId]));
+  const cells = [];
+  for (let i = 0; i < slots.slotCount + 1; i++) {
+    if (i === slots.slotCount) cells.push('<span class="slot-cell base" title="Slot ' + i + ': the base\'s own frames (slot table, marks, pings)"></span>');
+    else if (i >= assignable) cells.push('<span class="slot-cell join" title="Slot ' + i + ': shared by boats that have no slot of their own yet"></span>');
+    else if (bySlot.has(i)) cells.push('<span class="slot-cell used" title="Slot ' + i + ': ' + escapeHtml(bySlot.get(i)) + '"></span>');
+    else cells.push('<span class="slot-cell" title="Slot ' + i + ': free"></span>');
+  }
+  const heard = info && info.heardPeriodMs ? Math.round(info.heardPeriodMs) : null;
+  const cycleMs = heard || (info ? info.configuredPeriodMs : null);
+  const usedMs = (slots.slotCount + 1) * slots.slotWidthMs + (info ? info.afterMs : 30);
+  const mismatch = heard && info && Math.abs(heard - info.configuredPeriodMs) > info.configuredPeriodMs * 0.15;
+  const ago = info && info.lastTableAt ? Math.round((Date.now() - info.lastTableAt) / 1000) + ' s ago' : 'not yet';
+  const rows = [
+    ['Mode', slots.practice ? 'practice - any moving boat' : 'race - boats that start from the grid', slots.practice ? 'Any boat that is moving gets a slot; nobody is parked.' : 'Slots go to boats that have started from the start grid; boats parked on the grid have none.'],
+    ['Layout', `${assignable} + ${slots.joinSlots} shared + 1 base, ${slots.slotWidthMs} ms`, 'Slots for boats, the shared join slots for boats without one, and the base\'s own slot, each this wide' + (info && info.countAuto ? ' (the count is worked out from the correction interval)' : ' (TX_SLOT_COUNT)')],
+    [
+      'Cycle',
+      cycleMs ? `${usedMs} of ${cycleMs} ms used${heard ? ' (heard)' : ' (set)'}${mismatch ? ' &#9888; set ' + info.configuredPeriodMs + ' ms' : ''}` : '—',
+      'How much of one correction cycle the slots occupy. The rest is the blocked time around each correction burst. A warning mark means the bursts arrive at a different interval from RTCM_INTERVAL_S.',
+    ],
+    ['Assigned', `${slots.boats.length} of ${assignable}`, 'Boats holding a slot'],
+    ['Free', assignable - slots.boats.length, 'Slots nobody holds'],
+    ['Racing / parked', `${(slots.racing || []).length} / ${(slots.parked || []).length}`, slots.practice ? 'Not used in practice mode' : 'Boats that have started from the grid / boats parked on the start grid'],
+    ['Waiting', slots.overflow.length, 'Boats that are moving but found every slot taken - they share the join slots'],
+    ['Table', `v${slots.version} - ${ago}${info && info.tablesSent ? ' (' + info.tablesSent + ' sent)' : ''}`, 'The slot table the base broadcasts, every ' + (info ? info.tableIntervalS : '10') + ' s and at once when it changes'],
+  ];
+  if (info && info.baseTx) {
+    rows.push(['Base frames', `${info.baseTx.spilled} spilled, ${info.baseTx.expired + info.baseTx.dropped} lost`, 'The base\'s own frames (table, marks, pings): spilled ones went out a cycle later; lost ones expired or were dropped']);
+  }
+  return `<div class="card slots-card">
+      <div class="label">Transmit slots</div>
+      <div class="value">${slots.boats.length} of ${assignable}</div>
+      <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use</div>
+      <div class="slot-map">${cells.join('')}</div>
+      <div class="slot-legend"><span><span class="slot-cell used"></span>in use</span><span><span class="slot-cell"></span>free</span><span><span class="slot-cell join"></span>shared</span><span><span class="slot-cell base"></span>base</span></div>
+      <div class="stat-rows">${rows.map(([name, value, title]) => `<div class="stat-row"><span class="name" title="${title}">${name}</span><span class="val">${value}</span></div>`).join('')}</div>
+      <div class="sub" title="Boats that stop moving give their slot back after a while, and a boat that comes back gets the same one if it is free">A slot is freed ${info ? info.staleS : 45} s after a boat stops (below ${info ? info.movingKn : 1.5} kn).</div>
+    </div>`;
+}
+
 function renderLinkHealthCard(h, slots) {
   const dot = (level) => (level === 'bad' ? 'dot-red' : level === 'warn' ? 'dot-orange' : level === 'quiet' ? 'dot-gray' : 'dot-green');
   const seen = h.boats.length;
@@ -545,6 +590,29 @@ function renderDashboard(s, rtkControlsEnabled) {
   .controls-card { grid-column: span 2; }
   .controls-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
   .controls-row input[type=text] { flex: 1 1 150px; min-width: 120px; box-sizing: border-box; }
+  .controls-card .card-btn { flex: 0 0 auto; min-width: 96px; padding: 8px 18px; font-size: 12px; }
+  .fc-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid #262c36; }
+  .fc-section:first-of-type { margin-top: 8px; padding-top: 0; border-top: none; }
+  .fc-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8b94a3; }
+  .fc-field { display: flex; align-items: center; gap: 8px; color: #8b94a3; font-size: 12px; }
+  .fc-field input[type=number] { width: 4.5em; }
+  /* The mode banner across the top of the page: practice mode must be impossible to miss. */
+  .mode-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 28px; padding: 18px 24px; border-radius: 12px; border: 2px solid; margin-bottom: 20px; }
+  .mode-banner.practice { background: #3a2a0f; border-color: #f2b84b; color: #f2b84b; }
+  .mode-banner.race { background: #0f2a1a; border-color: #2ea043; color: #56d364; }
+  .mode-title { font-size: 36px; font-weight: 800; letter-spacing: 0.05em; line-height: 1.1; }
+  .mode-sub { font-size: 14px; margin-top: 4px; opacity: 0.9; }
+  .mode-radios { display: flex; gap: 26px; font-size: 17px; font-weight: 600; color: #e6e9ef; }
+  .mode-radios label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .mode-radios input { width: 20px; height: 20px; accent-color: #f2b84b; cursor: pointer; }
+  .slots-card { grid-column: span 2; }
+  .slot-map { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 4px; }
+  .slot-cell { width: 15px; height: 15px; border-radius: 3px; background: #1c222b; border: 1px solid #2d3542; box-sizing: border-box; }
+  .slot-cell.used { background: #1f6feb; border-color: #388bfd; }
+  .slot-cell.join { background: #4a3510; border-color: #f2b84b; }
+  .slot-cell.base { background: #6e40c9; border-color: #a371f7; }
+  .slot-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: #8b94a3; margin-bottom: 6px; }
+  .slot-legend .slot-cell { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-right: 4px; }
   .link-card { grid-column: span 2; }
   @media (min-width: 1100px) { .link-card { grid-column: span 3; } }
   .link-scroll { overflow-x: auto; margin-top: 8px; }
@@ -629,6 +697,24 @@ function renderDashboard(s, rtkControlsEnabled) {
     &nbsp;·&nbsp; <a href="/console">console</a>
     ${s.course ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
   </div>
+  ${
+    s.slots
+      ? `<div class="mode-banner ${s.slots.practice ? 'practice' : 'race'}">
+    <div>
+      <div class="mode-title">${s.slots.practice ? 'PRACTICE MODE' : 'RACE MODE'}</div>
+      <div class="mode-sub">${
+        s.slots.practice
+          ? 'Any moving boat gets a transmit slot - no start-grid parking, no need to start a race.'
+          : 'Transmit slots go to boats that start from the grid; boats parked on the grid have none.'
+      }</div>
+    </div>
+    <div class="mode-radios" title="Switching releases every transmit slot; boats get theirs again within a cycle or two. The choice is remembered over a restart.">
+      <label><input type="radio" name="slotMode" value="race" ${s.slots.practice ? '' : 'checked'} onchange="setPracticeMode(false, this)"> Race</label>
+      <label><input type="radio" name="slotMode" value="practice" ${s.slots.practice ? 'checked' : ''} onchange="setPracticeMode(true, this)"> Practice</label>
+    </div>
+  </div>`
+      : ''
+  }
 
   <div class="grid">
     <div class="card">
@@ -694,28 +780,27 @@ function renderDashboard(s, rtkControlsEnabled) {
     </div>
     <div class="card controls-card">
       <div class="label">Fleet controls</div>
-      <div class="controls-row">
-        <button type="button" class="card-btn" onclick="pingFleet(this)">Ping fleet</button>
-        <span class="sub" title="Even a stationary boat that has already sent its one and only frame (e.g. sitting on the line since before this dashboard was up) replies. Replies trickle in over the next few seconds.">Every boat reports its position now.</span>
+      <div class="fc-section">
+        <div class="fc-title">Position</div>
+        <div class="controls-row">
+          <button type="button" class="card-btn" onclick="pingFleet(this)">Ping fleet</button>
+          <span class="sub" style="margin:0" title="Even a stationary boat that has already sent its one and only frame (e.g. sitting on the line since before this dashboard was up) replies. Replies trickle in over the next few seconds.">Every boat reports its position now.</span>
+        </div>
       </div>
-      <div class="controls-row">
-        <input type="text" id="sleepIds" placeholder="boat ids (blank = all)">
-        <input type="number" id="sleepCycle" min="1" max="255" value="${s.sleep ? s.sleep.cycleS : 10}" style="width:4.5em;"><span class="muted">s between listens</span>
-        <button type="button" class="card-btn" onclick="fleetSleep('sleep', this)">Sleep</button>
-        <button type="button" class="card-btn" onclick="fleetSleep('wake', this)">Wake</button>
+      <div class="fc-section">
+        <div class="fc-title">Radio sleep</div>
+        <div class="controls-row">
+          <input type="text" id="sleepIds" placeholder="boat ids (blank = all)">
+          <span class="fc-field">listen every <input type="number" id="sleepCycle" min="1" max="255" value="${s.sleep ? s.sleep.cycleS : 10}"> s</span>
+        </div>
+        <div class="controls-row">
+          <button type="button" class="card-btn" onclick="fleetSleep('sleep', this)">Sleep</button>
+          <button type="button" class="card-btn" onclick="fleetSleep('wake', this)">Wake</button>
+        </div>
+        <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
       </div>
-      ${
-        s.slots
-          ? `<div class="controls-row">
-        <button type="button" class="card-btn" onclick="setPracticeMode(this, ${s.slots.practice ? 'false' : 'true'})">Practice mode: ${s.slots.practice ? 'ON - turn off' : 'off - turn on'}</button>
-        <span class="sub" title="Practice mode gives a transmit slot to any boat that is moving, with no start-grid parking and no need to have started a race. Switching it releases every slot and boats re-join within a cycle or two. Remembered over a restart.">${
-          s.slots.practice ? 'Any moving boat gets a slot; no start-grid parking.' : 'Race mode: slots go to boats that start from the grid.'
-        }</span>
-      </div>`
-          : ''
-      }
-      <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Radio sleep powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
     </div>
+    ${renderSlotsCard(s.slots, s.slotInfo)}
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${rtkControlsEnabled ? renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
@@ -798,9 +883,16 @@ function renderDashboard(s, rtkControlsEnabled) {
       }
     }
 
-    async function setPracticeMode(btn, on) {
-      if (!confirm(on ? 'Turn practice mode ON? Every slot is released; any boat that is moving gets one again within a cycle or two.' : 'Turn practice mode OFF (race mode)? Every slot is released; slots then go only to boats that start from the grid.')) return;
-      btn.disabled = true;
+    async function setPracticeMode(on, radio) {
+      const revert = () => {
+        const back = document.querySelector('input[name=slotMode][value=' + (on ? 'race' : 'practice') + ']');
+        if (back) back.checked = true;
+      };
+      if (!confirm(on ? 'Switch to PRACTICE mode? Every slot is released; any boat that is moving gets one again within a cycle or two.' : 'Switch to RACE mode? Every slot is released; slots then go only to boats that start from the grid.')) {
+        revert();
+        return;
+      }
+      document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = true));
       try {
         const res = await fetch('/api/practice-mode', {
           method: 'POST',
@@ -812,7 +904,8 @@ function renderDashboard(s, rtkControlsEnabled) {
         location.reload();
       } catch (err) {
         alert('Failed: ' + err.message);
-        btn.disabled = false;
+        document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = false));
+        revert();
       }
     }
 
