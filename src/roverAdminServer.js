@@ -3,6 +3,7 @@ const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require(
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
+const { TABS_CSS, renderTabs, roverTabs } = require('./adminNav');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
@@ -223,10 +224,12 @@ function renderDashboard(s, power) {
     background: #0f1216; color: #e6e9ef; font-size: 13px; font-variant-numeric: tabular-nums;
   }
   .manual-input::placeholder { color: #5a6270; }
+  ${TABS_CSS}
 </style>
 </head>
 <body>
   <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}${s.sleep && s.sleep.state !== 'awake' ? ` &middot; <span style="color:#58a6ff;">${s.sleep.gps && s.sleep.gps.asleep ? 'RADIO + GPS ASLEEP' : 'RADIO ASLEEP'}</span>` : ''}</h1>
+  ${renderTabs(roverTabs(!!(s.currentMarks || fix)), 'home')}
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
     &nbsp;·&nbsp; Regatta: ${s.currentRegattaName || 'not set'}
@@ -234,9 +237,6 @@ function renderDashboard(s, power) {
     &nbsp;·&nbsp; radio ${s.radioMode}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; refreshes every 5s
-    &nbsp;·&nbsp; <a href="/config">config</a>
-    &nbsp;·&nbsp; <a href="/console">console</a>
-    ${s.currentMarks || fix ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
     ${s.baseIp ? `&nbsp;·&nbsp; <a href="http://${s.baseIp}:${s.adminPort}/" target="_blank" rel="noopener">base dashboard ↗</a>` : ''}
   </div>
 
@@ -637,15 +637,17 @@ function renderMap(s) {
 <style>
   :root { color-scheme: dark; }
   body {
-    margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+    margin: 0; height: 100vh; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center;
     background: #0f1216; color: #8b94a3;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
   a { color: #58a6ff; text-decoration: none; margin-left: 8px; }
   a:hover { text-decoration: underline; }
+  .tabs a { margin-left: 0; }
+  ${TABS_CSS}
 </style>
 </head>
-<body>No course marks or GPS fix yet.<a href="/">&larr; back to dashboard</a></body>
+<body><div>No course marks or GPS fix yet.</div>${renderTabs(roverTabs(false), 'map')}</body>
 </html>`;
   }
 
@@ -810,6 +812,10 @@ function renderMap(s) {
   .topbar a { color: #58a6ff; text-decoration: none; }
   .topbar a:hover { text-decoration: underline; }
   .topbar .spacer { flex: 1; }
+  ${TABS_CSS}
+  .topbar .tabs { margin: 0; flex-wrap: nowrap; }
+  .topbar .tabs a { padding: 4px 12px; font-size: 12px; white-space: nowrap; }
+  .topbar h1 { white-space: nowrap; }
   .refresh-toggle { display: flex; align-items: center; gap: 6px; color: #8b94a3; cursor: pointer; user-select: none; }
   .refresh-toggle input { accent-color: #3fb950; cursor: pointer; }
   #editToggle { accent-color: #e3b341; }
@@ -902,7 +908,7 @@ function renderMap(s) {
     <h1>Boat ${s.boatId} map${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ` &middot; <span style="color:#e3b341;">MARK MODE${s.currentMarkName ? ' (' + s.currentMarkName + ')' : ''}</span>` : ''}</h1>
     <span class="muted">Regatta: ${s.currentRegattaName || 'not set'}</span>
     <span class="muted" id="fixStatus">${fix ? `last fix ${fixStale ? 'stale, ' : ''}${formatAgo(fix.timestamp)}` : 'no GPS fix yet'}</span>
-    <a href="/">&larr; back to dashboard</a>
+    ${renderTabs(roverTabs(true), 'map')}
     <div class="spacer"></div>
     ${
       canEditMarks
@@ -1411,7 +1417,8 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
 
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConfigPage({ role: 'boat' }));
+      const st = getStats();
+      res.end(renderConfigPage({ role: 'boat', navHtml: renderTabs(roverTabs(!!(st.currentMarks || st.lastFix)), 'config'), navCss: TABS_CSS }));
       return;
     }
 
@@ -1422,7 +1429,8 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
     // see logBuffer's own comment).
     if (req.url === '/console') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConsoleLogPage(`boat ${getStats().boatId} console`));
+      const st = getStats();
+      res.end(renderConsoleLogPage(`boat ${st.boatId} console`, { navHtml: renderTabs(roverTabs(!!(st.currentMarks || st.lastFix)), 'console'), navCss: TABS_CSS }));
       return;
     }
 

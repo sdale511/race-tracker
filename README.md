@@ -24,6 +24,9 @@ browser).
 | Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 8 at a time by default (delta-coded, 83 bytes), see `TX_BATCH_SIZE` below |
 | SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
+
+**How the gate measures.** A fix clears the gate when the boat has moved `TX_DISTANCE_M` (default 1 m) from the last fix that *cleared* it, or `TX_INTERVAL_S` (default 60 s) has passed since then - the last fix that cleared the gate, not the last one actually sent (`distanceGate.js`). In slot mode a fix waits up to a cycle for its slot; measured from the last fix *sent*, the gate stayed open for that whole wait, so a boat creeping at 1.3 kn sent clusters of eight fixes a millimetre apart, then nothing for two seconds, and a heartbeat that fell due sent eight copies of one position. Now consecutive fixes are at least `TX_DISTANCE_M` apart and a heartbeat adds one fix. A boat faster than about 19 kn at 10 Hz moves more than a metre per fix, so it still sends every fix. A send that fails (radio not connected yet) hands the reference back to the last fix that really went out, so the boat keeps retrying.
+
 ## Wiring notes
 
 Default config uses the Pi's own dedicated hardware UART (`/dev/ttyAMA0`,
@@ -822,7 +825,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   at `/`: a compact Transmit slots card with the count and slot map, the course marks, and the boat table),
   **Radio, GPS & system** (`/radio`: radio frames and bandwidth, the full transmit slots card,
   link health, base GPS and its survey-in controls, disk and Redis memory), **Data** (`/data`: fleet controls and
-  uploads), a **Map** tab (the course map, once a course exists) and a **Console** tab (the base's recent console output). The header on every page holds the regatta
+  uploads), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config; markset and mark mode have Map, Console and Config, because the map is their home page. The header on every page holds the regatta
   select and webhook status, and a small mode card (**RACE MODE** or **PRACTICE MODE**, with
   radio buttons to change it). The full **Transmit slots** card (below) is on the radio page, and the boat table has a **Slot** column (hover for the
   slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;

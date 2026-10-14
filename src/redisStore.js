@@ -252,22 +252,35 @@ class RedisStore {
   // affect any other output" philosophy elsewhere (console/CSV/UDP logging
   // in baseStation.js's radio.on('frame', ...) handler all keep working
   // regardless of what happens here).
-  // Synchronous mirror of recordFix's own movement gate below - lets a
-  // caller (baseStation.js's per-fix log line) know right away whether this
-  // fix is about to be skipped, without waiting on the async Redis write
-  // itself to resolve. Reads the exact same lastRecordedPosition state
-  // recordFix's own check reads, so the two can never disagree about a
-  // given fix - this just exposes that same decision, not a second one.
+  // Decides, synchronously, what happens to this fix: 'post' (it will be written), 'skip' (it has not moved minMovementM
+  // from the last posted fix) or 'invalid' (an implausible fix, never stored - see fixSanity.js). A 'post' fix is
+  // remembered as the last posted position straight away, not when its write finishes, because a frame carries up to
+  // 16 fixes that arrive in one tick: judged against a position that was only recorded after the (async) write,
+  // every fix of a batch of identical positions would pass. The base's per-fix log line uses this verdict too, so the
+  // label can never disagree with what is written.
+  decideRecord(decoded) {
+    if (implausibleReason(decoded)) return 'invalid';
+    if (this.wouldSkipRecordFix(decoded)) return 'skip';
+    this.lastRecordedPosition.set(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
+    return 'post';
+  }
+
+  // The movement test alone, without reserving the position.
   wouldSkipRecordFix(decoded) {
     const last = this.lastRecordedPosition.get(decoded.boatId);
     return !!(last && distanceMeters(last.lat, last.lon, decoded.lat, decoded.lon) < this.minMovementM);
   }
 
+  // Decide and write; resolves to the verdict ('post' | 'skip' | 'invalid').
   async recordFix(decoded) {
-    await this.ready;
-    if (implausibleReason(decoded)) return; // never store a corrupted fix - see fixSanity.js (the base also drops them earlier)
-    if (this.wouldSkipRecordFix(decoded)) return;
+    const verdict = this.decideRecord(decoded);
+    if (verdict === 'post') await this.writeFix(decoded);
+    return verdict;
+  }
 
+  // Writes a fix that decideRecord approved. Never rejects on a Redis failure (see recordFix's history above).
+  async writeFix(decoded) {
+    await this.ready;
     const member = packFix(decoded);
     const score = decoded.timestamp;
     const prefix = this._prefix();
@@ -280,10 +293,10 @@ class RedisStore {
         this.client.sadd(`${prefix}boats:known`, String(decoded.boatId)),
       ]);
     } catch (err) {
+      this.lastRecordedPosition.delete(decoded.boatId); // so the next fix is posted again whatever its distance
       this._recordTrackWriteFailure(err);
       return;
     }
-    this.lastRecordedPosition.set(decoded.boatId, { lat: decoded.lat, lon: decoded.lon });
     this._recordTrackWriteSuccess();
 
     // Best-effort - EXPIRE NX only actually sets a TTL the first time a

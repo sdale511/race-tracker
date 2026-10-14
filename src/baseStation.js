@@ -2288,13 +2288,14 @@ function main() {
     // per-fix console echo, not the durable record or lap/on-grid/mark-
     // rounding/foul detection those actually drive (see config.js's own
     // comment on logReceivedFrames).
-    if (config.logReceivedFrames) logToConsole(decoded, redisStore.wouldSkipRecordFix(decoded));
+    const verdict = redisStore.decideRecord(decoded);
+    if (config.logReceivedFrames) logToConsole(decoded, verdict);
     logToCsv(decoded);
     // recordFix never rejects - a write failure (Redis full, network blip,
     // ...) is caught, tracked, and rate-limit logged inside redisStore.js
     // itself now (see its own comment), surfaced on the admin dashboard's
     // Redis card rather than needing a .catch() here.
-    redisStore.recordFix(decoded);
+    if (verdict === 'post') redisStore.writeFix(decoded);
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
     const now = Date.now();
@@ -2556,18 +2557,16 @@ function main() {
     foulWebhookQueue.enqueue(event);
   }
 
-  // skippedRedis: redisStore.wouldSkipRecordFix's own answer for this exact
-  // fix (see its comment) - appended as "no-post" so this console line says
-  // right away whether the fix that just arrived actually landed in Redis
-  // (and therefore in RegattaUp's/the map's own track history) or was
-  // filtered out by REDIS_MIN_MOVEMENT_M, without needing to separately
-  // cross-reference the Redis write itself.
-  function logToConsole(d, skippedRedis) {
+  // verdict: redisStore.decideRecord's answer for this exact fix - 'post', 'skip' (not moved REDIS_MIN_MOVEMENT_M from the
+  // last posted fix) or 'invalid'. Appended as "posted" or "no-post (...)" so this console line says right away whether
+  // the fix that just arrived landed in Redis (and therefore on RegattaUp's and the map's track history) or was filtered
+  // out, without cross-referencing the Redis write itself.
+  function logToConsole(d, verdict) {
     console.log(
       `[base] boat=${d.boatId} ${new Date(d.timestamp).toISOString()} ` +
         `${d.lat.toFixed(6)},${d.lon.toFixed(6)} ${d.speedKnots.toFixed(1)}kn ` +
         `hdg=${d.headingDeg.toFixed(0)} fixOk=${d.gnssFixOk} carrSoln=${d.carrSoln} sv=${d.numSV}` +
-        (skippedRedis ? ' no-post' : '')
+        (verdict === 'post' ? ' posted' : verdict === 'skip' ? ` no-post (moved <${redisStore.minMovementM} m)` : ' no-post (implausible)')
     );
   }
 

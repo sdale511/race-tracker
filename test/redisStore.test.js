@@ -16,3 +16,29 @@ test('a stored fix reads back with the time from the score and no extra fields',
   assert.strictEqual(got.boatId, '00001');
   assert.strictEqual(got.t, undefined);
 });
+
+const { RedisStore } = require('../src/redisStore');
+const T = Date.now(); // the sanity check rejects fixes that are not recent
+// A store with only what decideRecord reads, so no Redis connection is needed
+const bareStore = () => Object.assign(Object.create(RedisStore.prototype), { lastRecordedPosition: new Map(), minMovementM: 1 });
+
+test('a batch of identical positions is posted once, not once per fix', () => {
+  const store = bareStore();
+  const verdicts = [];
+  for (let i = 0; i < 8; i++) verdicts.push(store.decideRecord(fix(T + i * 100)));
+  assert.deepStrictEqual(verdicts, ['post', 'skip', 'skip', 'skip', 'skip', 'skip', 'skip', 'skip']);
+});
+
+test('a fix that has moved far enough is posted and becomes the new reference', () => {
+  const store = bareStore();
+  assert.strictEqual(store.decideRecord(fix(T)), 'post');
+  const moved = { ...fix(T + 1000), lat: 40.897 + 0.00003 }; // about 3.3 m north
+  assert.strictEqual(store.decideRecord(moved), 'post');
+  assert.strictEqual(store.decideRecord({ ...moved, timestamp: T + 1100 }), 'skip');
+});
+
+test('an implausible fix is never posted and does not become the reference', () => {
+  const store = bareStore();
+  assert.strictEqual(store.decideRecord({ ...fix(T), lat: 95 }), 'invalid');
+  assert.strictEqual(store.decideRecord(fix(T + 1000)), 'post');
+});

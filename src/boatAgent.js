@@ -14,6 +14,7 @@ const { SdLogger } = require('./sdLogger');
 const { pruneForDiskSpace } = require('./logRotation');
 const protocol = require('./protocol');
 const { distanceMeters, MARK_NAMES } = require('./course');
+const { DistanceGate } = require('./distanceGate');
 const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
@@ -557,6 +558,8 @@ startUploadClient({
 
 let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
+// What handlePvt's distance/heartbeat gate measures from: the last fix that cleared it (sent or queued for its slot), see distanceGate.js
+const distanceGate = new DistanceGate({ intervalMs: config.txIntervalMs });
 // Fixes accumulated for the next batch send - see queueFixForTx/
 // flushPendingBatch below. Always empty when config.txBatchSize is 1 -
 // that path never touches this at all, see handlePvt.
@@ -653,10 +656,7 @@ function handlePvt(pvt) {
     finishApproachWatcher.isApproachingUpwind(pvt.lat, pvt.lon, config.txFinishApproachZoneM)
       ? config.txFinishDistanceM
       : config.txDistanceM;
-  const movedM = lastTxPosition ? distanceMeters(lastTxPosition, pvt) : Infinity;
-  const elapsedSinceTxMs = lastTxTime !== null ? pvt.timestamp - lastTxTime : Infinity;
-  const clearedTxGate =
-    movedM >= effectiveTxDistanceM || (config.txIntervalMs > 0 && elapsedSinceTxMs >= config.txIntervalMs);
+  const clearedTxGate = distanceGate.cleared(pvt, effectiveTxDistanceM);
 
   // Every fix gets a console line, same as the base's own GPS logging
   // (openBaseGps in baseStation.js) - the console is a live "is this thing
@@ -723,6 +723,7 @@ function handlePvt(pvt) {
 
   if (clearedTxGate) {
     if (hasValidFix(pvt)) {
+      distanceGate.advance(pvt); // the next fix is measured from this one, not from whatever last went out
       if (config.txBatchSize > 1) {
         queueFixForTx(pvt);
       } else {
@@ -816,10 +817,12 @@ function transmitFix(pvt) {
   if (sent || !radioExpected) {
     lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
     lastTxTime = pvt.timestamp;
+    distanceGate.sent(pvt);
   }
   if (sent) {
     roverStats.recordFrameSent();
   } else if (radioExpected) {
+    distanceGate.failed();
     console.warn(`[radio] ${radioDropReason()}, dropped a frame (still logged to SD)`);
   }
 }
@@ -979,10 +982,12 @@ function sendFixes(fixes) {
     if (sent || !radioExpected) {
       lastTxPosition = { lat: last.lat, lon: last.lon };
       lastTxTime = last.timestamp;
+      distanceGate.sent(last);
     }
     if (sent) {
       roverStats.recordFrameSent();
     } else if (radioExpected) {
+      distanceGate.failed();
       const what = count === 1 ? 'a frame' : `a batch of ${count} frames`;
       console.warn(`[radio] ${radioDropReason()}, dropped ${what} (still logged to SD)`);
     }

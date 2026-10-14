@@ -3,6 +3,7 @@ const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require(
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
+const { TABS_CSS, renderTabs, baseTabs, markTabs } = require('./adminNav');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
@@ -272,22 +273,10 @@ function renderBandwidthCard(bandwidth, mode) {
   </div>`;
 }
 
-// The tab bar shared by the dashboard, map and console pages (the dashboard's own three pages, then the map and console).
-// hasCourse: the Map tab only appears once there is a course to show.
-const TABS_CSS = `
-  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
-  .tabs a { padding: 8px 18px; border-radius: 8px; border: 1px solid #262c36; background: #161b22; color: #8b94a3; font-size: 14px; font-weight: 600; text-decoration: none; }
-  .tabs a:hover { text-decoration: none; background: #1c222b; color: #e6e9ef; }
-  .tabs a.on { background: #1f6feb; border-color: #388bfd; color: #fff; }`;
-function renderTabs(active, hasCourse) {
-  const tabs = [
-    ['home', '/', 'Regatta &amp; boats'],
-    ['radio', '/radio', 'Radio, GPS &amp; system'],
-    ['data', '/data', 'Data'],
-    ...(hasCourse ? [['map', '/map', 'Map']] : []),
-    ['console', '/console', 'Console'],
-  ];
-  return `<nav class="tabs">${tabs.map(([id, href, label]) => `<a href="${href}"${id === active ? ' class="on"' : ''}>${label}</a>`).join('')}</nav>`;
+// The tab bar (adminNav.js): base mode has the dashboard pages plus map, console and config; markset/mark mode has only
+// the map, console and config because the map is its home page.
+function adminTabs(active, hasCourse, mapOnly) {
+  return renderTabs(mapOnly ? markTabs() : baseTabs(hasCourse), active);
 }
 
 // Renders the whole dashboard server-side from one stats snapshot (see
@@ -761,13 +750,12 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
           s.radio.mode === 'real' ? ' The radio connection is paused until then.' : ''
         }</div>`
   }
-  ${renderTabs(page, !!s.course)}
+  ${adminTabs(page, !!s.course, false)}
   <div class="subtitle">
     <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
     &nbsp;·&nbsp; refreshes every 5s
-    &nbsp;·&nbsp; <a href="/config">config</a>
   </div>
 
   ${
@@ -1419,7 +1407,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   <div class="topbar">
     <h1>Course map</h1>
     <span class="map-regatta" style="margin-left:16px; font-size:12px; color:#8b94a3;">Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}</span>
-    ${mapOnly ? '' : renderTabs('map', true)}
+    ${adminTabs('map', true, mapOnly)}
     ${regattaControlsHtml}
     <div class="spacer"></div>
     <label class="refresh-toggle">
@@ -2443,7 +2431,13 @@ function startAdminServer({
       // its own role so markName/markDistanceM only ever show there, not on
       // a plain base/basertk that will never represent a mark - see
       // configReport.js's own comment on the 'markset' role.
-      res.end(renderConfigPage({ role: mapOnly ? 'markset' : rtkControlsEnabled ? 'basertk' : 'base' }));
+      res.end(
+        renderConfigPage({
+          role: mapOnly ? 'markset' : rtkControlsEnabled ? 'basertk' : 'base',
+          navHtml: adminTabs('config', !!getCourseMarks(), mapOnly),
+          navCss: TABS_CSS,
+        })
+      );
       return;
     }
 
@@ -2454,10 +2448,7 @@ function startAdminServer({
     // see logBuffer's own comment).
     if (req.url === '/console') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      // Under mapOnly (markset/mark) there is no dashboard to tab to, so the page keeps its plain back link.
-      res.end(
-        renderConsoleLogPage('base station console', mapOnly ? {} : { navHtml: renderTabs('console', !!getCourseMarks()), navCss: TABS_CSS })
-      );
+      res.end(renderConsoleLogPage('base station console', { navHtml: adminTabs('console', !!getCourseMarks(), mapOnly), navCss: TABS_CSS }));
       return;
     }
 

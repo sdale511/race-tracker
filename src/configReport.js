@@ -431,7 +431,8 @@ function overrideTag(envVar, inverted) {
 // directly instead of this function, so nothing currently relies on that
 // default, but it's the safe fallback for any future caller that isn't a
 // specific role.
-function renderConfigPage({ role } = {}) {
+// navHtml/navCss (optional): the admin's tab bar, shown instead of the plain back link.
+function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
   const visibleTo = (item) => {
     if (!item.roles) return true;
     if (item.roles.includes(role)) return true;
@@ -520,6 +521,7 @@ function renderConfigPage({ role } = {}) {
   }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: #8b94a3; font-size: 13px; margin-bottom: 24px; }
+  ${navCss}
   section { margin-bottom: 24px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #8b94a3; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #262c36; border-radius: 10px; overflow: hidden; }
@@ -535,9 +537,9 @@ function renderConfigPage({ role } = {}) {
 </head>
 <body>
   <h1>Resolved configuration</h1>
+  ${navHtml}
   <div class="subtitle">
-    <a href="/">&larr; back to dashboard</a>
-    &nbsp;·&nbsp; every default plus whatever's actually been overridden via environment variables or .env - same data as <code>npm run print-config</code>
+    ${navHtml ? '' : '<a href="/">&larr; back to dashboard</a> &nbsp;·&nbsp; '}every default plus whatever's actually been overridden via environment variables or .env - same data as <code>npm run print-config</code>
     &nbsp;·&nbsp; "Env Var" is the command-line/.env variable that sets each value; yellow "Status" means it's been overridden from its default
   </div>
   ${sectionsHtml}

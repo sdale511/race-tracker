@@ -20,6 +20,7 @@ const {
 // configReport.js's own comment on why it's role-filtered (each dashboard
 // only shows the settings it actually reads).
 const { renderConfigPage } = require('./configReport');
+const { TABS_CSS, renderTabs, rtkTabs } = require('./adminNav');
 // Same "Disk space" card base/boat's dashboards already show - see its own
 // module comment on why a full SD card matters here too, even though this
 // mode itself writes nothing to disk.
@@ -55,11 +56,13 @@ function renderPage({ fix, survey, gpsPort, connected, disk }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>race-tracker RTK</title>
 <meta http-equiv="refresh" content="5">
-<style>${RTK_CARD_CSS}</style>
+<style>${RTK_CARD_CSS}
+${TABS_CSS}</style>
 </head>
 <body>
   <h1>RTK base GPS</h1>
-  <div class="subtitle">RTK-only mode - monitors/configures the base GPS receiver only, no telemetry radio, course, or regatta &nbsp;&middot;&nbsp; refreshes every 5s &nbsp;&middot;&nbsp; <a href="/map">map</a> &nbsp;&middot;&nbsp; <a href="/config">config</a></div>
+  ${renderTabs(rtkTabs(), 'home')}
+  <div class="subtitle">RTK-only mode - monitors/configures the base GPS receiver only, no telemetry radio, course, or regatta &nbsp;&middot;&nbsp; refreshes every 5s</div>
   <div class="grid">
     ${renderBaseGpsCard(fix, gpsPort, connected)}
     ${renderBaseGpsSurveyCard(survey, fix)}
@@ -101,17 +104,22 @@ function renderMapPage() {
   #panel .name { color: #8b94a3; }
   #panel a, #panel button { color: #58a6ff; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }
   #msg { color: #e3b341; margin-top: 6px; }
+  ${TABS_CSS}
+  #panel .tabs { margin: 0 0 8px; flex-wrap: nowrap; }
+  #panel .tabs a { padding: 4px 10px; font-size: 12px; text-decoration: none; white-space: nowrap; background: #161b22; color: #8b94a3; border: 1px solid #262c36; border-radius: 8px; }
+  #panel .tabs a.on { background: #1f6feb; border-color: #388bfd; color: #fff; }
   .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
 </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="panel">
+    ${renderTabs(rtkTabs(), 'map')}
     <h1>Where the RTK base thinks it is</h1>
     <div><span class="legend-dot" style="background:#3b82f6"></span>Live GPS fix &nbsp; <span class="legend-dot" style="background:#ef4444"></span>Reference position</div>
     <div id="rows"></div>
     <div id="msg"></div>
-    <div style="margin-top:8px;"><button type="button" id="recenter">Recenter</button> &nbsp;&middot;&nbsp; <a href="/">Back to dashboard</a></div>
+    <div style="margin-top:8px;"><button type="button" id="recenter">Recenter</button></div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
@@ -315,7 +323,7 @@ function startRtkAdminServer({ port, getFix, getSurveyStatus, setSurveyIn, setFi
       // Only the settings this mode actually reads - see configReport.js's
       // own `roles` tags and renderConfigPage's `role` param.
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConfigPage({ role: 'rtk' }));
+      res.end(renderConfigPage({ role: 'rtk', navHtml: renderTabs(rtkTabs(), 'config'), navCss: TABS_CSS }));
       return;
     }
 
