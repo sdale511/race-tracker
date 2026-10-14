@@ -93,36 +93,34 @@ satellite data alive so the rover restarts hot instead of cold. Whether your boa
 needs it is something to check, not assume: see "Checking and fitting the GPS
 backup battery" under "Radio sleep mode".
 
-## GPS configuration (one-time, via u-center or ubxtool)
+## GPS configuration (one-time, from a computer)
 
-Each UART is configured independently - a GPIO-wired UART may still be at
-factory defaults (NMEA on, UBX off) even after USB's been configured.
-Verify first:
+The rovers never configure the GPS module or the radio - the Pi only reads fixes. Set the ZED-F9P up from a computer
+over the board's own USB port, with `ubx_config_set.py` (or u-center):
+
+```
+pip install pyserial
+python3 ubx_config_set.py --port <the board's USB port> --role rover --dry-run   # shows what it would change
+python3 ubx_config_set.py --port <the board's USB port> --role rover
+```
+
+The rover profile turns `UBX-NAV-PVT` on (without it this app sees nothing), sets 10 Hz, disables TMODE3, turns
+`UBX-RXM-RTCM` on, and sets UART2's baud to match the XBee in the board's socket. It writes to RAM, BBR and flash, so it
+survives a power cycle, and reads every value back. Each UART is configured independently - the UART the Pi's wires reach
+may still be at factory defaults (NMEA on, UBX off) even after another port was configured. The profile sets
+`UBX-NAV-PVT` on UART1; if the Pi's wires reach UART2, check with the verification step below. The XBee is configured
+separately with `xbee_configure_at.py`. Don't install `gpsd` on a rover - it grabs the serial port.
+
+To see what a port is outputting before you configure anything, try the common bauds (9600, 19200, 38400, 57600,
+115200) until you see clean `$GNGGA`/`$GNRMC`/... text:
 
 ```
 stty -F /dev/ttyAMA0 <baud> raw -echo
 cat /dev/ttyAMA0        # Ctrl-C to stop
 ```
-Try common bauds (9600, 19200, 38400, 57600, 115200) until you see clean
-`$GNGGA`/`$GNRMC`/... text.
 
-```
-sudo apt update
-sudo apt install -y gpsd gpsd-clients python3-gps
-sudo systemctl disable --now gpsd.socket gpsd   # stop it grabbing the port
-```
-
-At the confirmed baud, enable `UBX-NAV-PVT` and disable NMEA (try `UART1`
-first, `UART2` if nothing changes):
-```
-ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-MSGOUT-UBX_NAV_PVT_UART1,1,7
-ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-UART1OUTPROT-NMEA,0,7
-ubxtool -f /dev/ttyAMA0 -s 115200 -P 27.11 -z CFG-RATE-MEAS,1000,7   # 1Hz
-```
-`,7` is a layer bitmask (`RAM=1, BBR=2, Flash=4`) - `7` writes to all
-three, so the change is immediate and survives a power cycle. NMEA doesn't
-need to be disabled - the app's UBX parser scans for UBX sync bytes and
-skips interleaved NMEA text - disabling it just saves bandwidth.
+`setup-gps-uart.sh` on the Pi only frees the UART (serial console off, Bluetooth off, `dialout` group); it does not touch
+the GPS module.
 
 ### Verifying the connection
 
@@ -141,7 +139,7 @@ setting). Silence means `UBX-NAV-PVT` went to the wrong UART number
 The simpleRTK2B LR's onboard radio (in the board's XBee socket) is a
 **separate concern** - it carries RTCM3 correction data between RTK base
 and this rover, not position telemetry. "LR" is ArduSimple's own kit name
-("Long Range," ~10km), not a Digi product name - confirmed off the
+("Long Range," about 10 km), not a Digi product name - confirmed off the
 module's label, the chip is a **Digi XBee SX** (Model XBSX, FCC ID
 `MCQ-XBSX`); the step-up "XLR" kit uses a Digi XBee PRO SX for longer
 range.
@@ -346,15 +344,15 @@ Network ID (XBee `ID`).
 
 **Don't raise this past 115200 without re-testing.** It's tempting to - a
 100-boat `radio-congestion` run at 115200 measured the SERIAL link
-saturating at ~11.2 KB/s, almost exactly 115200's own 8N1 ceiling (115200 ÷
+saturating at about 11.2 KB/s, almost exactly 115200's own 8N1 ceiling (115200 ÷
 10 bits/byte = 11,520 B/s), apparently well under an XBee-PRO 900HP 200K's
 nominal RF capacity. Bumping to 230400 does relieve that serial ceiling
-(the same test then pushed 15.4 KB/s, using only ~67% of 230400's own
-~23 KB/s ceiling) but sync errors jumped from 0.2% to 10.4% - real
+(the same test then pushed 15.4 KB/s, using only about 67% of 230400's own
+about 23 KB/s ceiling) but sync errors jumped from 0.2% to 10.4% - real
 RF-level bit corruption (see `radioLink.js`'s own `sync-error` event), not
 local serial buffering, since bandwidth used stayed well under the new
 ceiling. This fleet's actual radios' real sustainable RF throughput tops
-out around ~11-12 KB/s regardless of serial baud - 115200 was accidentally
+out around 11-12 KB/s regardless of serial baud - 115200 was accidentally
 already throttling right at that ceiling, not artificially limiting it.
 `TX_BATCH_SIZE` (reduces actual RF bytes-per-fix, not just how fast the
 serial link can be fed - see "Batching multiple fixes per send" below) is
@@ -820,8 +818,13 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   slots and is told its slot again on its first moving fix, usually within a second or two. If the slot was taken
   meanwhile and no other is free, the boat shares the join slots until one opens. (A boat stopped for longer than `TX_SLOT_RACING_S` is no longer racing and must come off the grid across the line
   again to get a slot.)
-- **Dashboard.** The base's admin page shows the mode in a banner across the top (**RACE MODE** or **PRACTICE MODE**, with
-  radio buttons to change it), a **Transmit slots** card (below), and the boat table has a **Slot** column (hover for the
+- **Dashboard.** The base's admin has three pages and a map link, switched by the tabs under the title: **Regatta & boats** (the home page
+  at `/`: a compact Transmit slots card with the count and slot map, the course marks, and the boat table),
+  **Radio, GPS & system** (`/radio`: radio frames and bandwidth, the full transmit slots card,
+  link health, base GPS and its survey-in controls, disk and Redis memory), **Data** (`/data`: fleet controls and
+  uploads), a **Map** tab (the course map, once a course exists) and a **Console** tab (the base's recent console output). The header on every page holds the regatta
+  select and webhook status, and a small mode card (**RACE MODE** or **PRACTICE MODE**, with
+  radio buttons to change it). The full **Transmit slots** card (below) is on the radio page, and the boat table has a **Slot** column (hover for the
   slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;
   "shared (full)" for a boat that is waiting in the join slots because every slot is taken),
   shown only when the base runs the table. Each boat's own dashboard has a **Transmit slot** card (its slot or the shared
@@ -829,7 +832,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   as `[slots] <boat> -> slot N`.
 - **The base's own slot.** The cycle has one more slot after the boats' (and the join slots): the slot table,
   marks, pings and sleep/wake frames from the base all wait for it, so the base never lands on a boat's frame.
-  A frame goes out in the first ~12 ms of it and two fit (the table for up to 30 boats is two frames); anything
+  A frame goes out in the first 12 ms or so of it and two fit (the table for up to 30 boats is two frames); anything
   more - a longer table, or the marks frame behind a full one - carries on in the next cycle's. These frames
   therefore wait up to a cycle or two (the table's 10 s rebroadcast and a join-triggered one are not
   time-critical, and a frame waits at most `TX_GATE_MAX_AGE_MS` before it is dropped). With no bursts heard they
@@ -910,7 +913,7 @@ A fix can wait up to a cycle. With `TX_DELTA=0` (older batch frames, 4 fixes) th
 the slot passes, less one.
 Without bursts heard, batching is the ordinary `TX_BATCH_SIZE` behaviour. Two safeguards in the scheduler: a
 frame is held to the next cycle if it would start so late in the slot that its air time plus the guard would
-not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first ~14 ms; a 45 ms slot, ~24 ms),
+not fit before the next slot opens (for an 84-byte frame in a 35 ms slot, anything after the first 14 ms or so; a 45 ms slot, about 24 ms),
 and frames beyond the slot's air-time budget (estimated at 8 ms per packet plus 0.04 ms per byte, less the
 guard) wait for the next cycle.
 
@@ -1095,9 +1098,9 @@ link itself, using one frame type (`protocol.js`'s `encodePower`, sync
 - A list frame carries up to 18 ids (95 bytes, under the fleet's NP=100
   limit); longer lists are split across several frames.
 - **Power:** the radio draws about 29 mA receiving and about 2.5 uA asleep
-  (Digi datasheet). Sleeping 10 s with a ~1 s listen window saves roughly
-  90 mW of the radio's ~96 mW, which is small next to the Pi Zero 2 W
-  (~0.5 W) - so measure whole-rover current before relying on it. The GPS
+  (Digi datasheet). Sleeping 10 s with a 1 s listen window saves roughly
+  90 mW of the radio's 96 mW, which is small next to the Pi Zero 2 W
+  (about 0.5 W) - so measure whole-rover current before relying on it. The GPS
   board sleeps too, see "GPS sleep and cold starts" below.
 - **Try it in simulation:** `SIMULATE=1` boats and base use a UDP "radio"
   that really goes deaf while asleep - start `npm run base` and a boat or
@@ -1640,10 +1643,10 @@ independently (`REGATTAUP_WEBHOOK_ENABLED=0` still gates everything).
 have no second mark to form a gate). Detects a rounding by cumulative
 turning angle (sign-agnostic) while within
 `REGATTAUP_MARK_ROUNDING_EXTENSION_M` (default 50m) of the mark, not by a
-synthesized crossing line - a real rounding sweeps ~125° almost entirely
+synthesized crossing line - a real rounding sweeps about 125° almost entirely
 on one side of the course axis (which side depends on approach tack), so
 no fixed line catches both directions. A boat merely transiting past
-turns at most ~80° (one ordinary tack); `ROUNDING_MIN_SWEEP_DEG` (100)
+turns at most about 80° (one ordinary tack); `ROUNDING_MIN_SWEEP_DEG` (100)
 sits between the two with margin. Watched at all four
 windward/leeward marks regardless of which course is sailed.
 

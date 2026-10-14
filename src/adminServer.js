@@ -272,6 +272,24 @@ function renderBandwidthCard(bandwidth, mode) {
   </div>`;
 }
 
+// The tab bar shared by the dashboard, map and console pages (the dashboard's own three pages, then the map and console).
+// hasCourse: the Map tab only appears once there is a course to show.
+const TABS_CSS = `
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
+  .tabs a { padding: 8px 18px; border-radius: 8px; border: 1px solid #262c36; background: #161b22; color: #8b94a3; font-size: 14px; font-weight: 600; text-decoration: none; }
+  .tabs a:hover { text-decoration: none; background: #1c222b; color: #e6e9ef; }
+  .tabs a.on { background: #1f6feb; border-color: #388bfd; color: #fff; }`;
+function renderTabs(active, hasCourse) {
+  const tabs = [
+    ['home', '/', 'Regatta &amp; boats'],
+    ['radio', '/radio', 'Radio, GPS &amp; system'],
+    ['data', '/data', 'Data'],
+    ...(hasCourse ? [['map', '/map', 'Map']] : []),
+    ['console', '/console', 'Console'],
+  ];
+  return `<nav class="tabs">${tabs.map(([id, href, label]) => `<a href="${href}"${id === active ? ' class="on"' : ''}>${label}</a>`).join('')}</nav>`;
+}
+
 // Renders the whole dashboard server-side from one stats snapshot (see
 // baseStation.js's getFullStats) - simpler than shipping a client-side
 // templating setup for what's fundamentally a page that reloads its data
@@ -286,7 +304,8 @@ function renderBandwidthCard(bandwidth, mode) {
 // The dashboard's Link health card (see linkHealth.js): is the radio link working? A fleet summary, then the
 // boats that need a look first (bad, then warn), with why. `h` is baseStation's linkHealth.status().
 // The transmit slot table at a glance: how the cycle is laid out, who holds which slot, and what the base is doing with it.
-function renderSlotsCard(slots, info) {
+// compact: just the top of the card (the count and the slot map), for the home page; the full card is on the radio page.
+function renderSlotsCard(slots, info, compact = false) {
   if (!slots) return '';
   const assignable = slots.slotCount - slots.joinSlots;
   const bySlot = new Map(slots.boats.map((b) => [b.slot, b.boatId]));
@@ -318,6 +337,15 @@ function renderSlotsCard(slots, info) {
   ];
   if (info && info.baseTx) {
     rows.push(['Base frames', `${info.baseTx.spilled} spilled, ${info.baseTx.expired + info.baseTx.dropped} lost`, 'The base\'s own frames (table, marks, pings): spilled ones went out a cycle later; lost ones expired or were dropped']);
+  }
+  if (compact) {
+    return `<div class="card slots-card">
+      <div class="label">Transmit slots</div>
+      <div class="value">${slots.boats.length} of ${assignable}</div>
+      <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use &middot; <a href="/radio">details</a></div>
+      <div class="slot-map">${cells.join('')}</div>
+      <div class="slot-legend"><span><span class="slot-cell used"></span>in use</span><span><span class="slot-cell"></span>free</span><span><span class="slot-cell join"></span>shared</span><span><span class="slot-cell base"></span>base</span></div>
+    </div>`;
   }
   return `<div class="card slots-card">
       <div class="label">Transmit slots</div>
@@ -374,7 +402,9 @@ function renderLinkHealthCard(h, slots) {
     </div>`;
 }
 
-function renderDashboard(s, rtkControlsEnabled) {
+// page is 'home' (the default: slots at a glance, course marks, the boat table), 'data' (fleet controls and uploads) or
+// 'radio' (the radio, GPS and system cards) - three views of the same stats, switched by the tabs under the title.
+function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   // Active fleet at the top, so it naturally floats above however boat IDs
   // happen to be numbered. "Active" is the more recent of lastSeen (an
   // actual radio position frame) and pendingReportedAt (the boat's own
@@ -574,6 +604,11 @@ function renderDashboard(s, rtkControlsEnabled) {
   }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: #8b94a3; font-size: 13px; margin-bottom: 24px; }
+  ${TABS_CSS}
+  .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; }
+  .regatta-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; color: #8b94a3; }
+  .regatta-bar label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .regatta-bar .regatta-select { width: auto; min-width: 280px; max-width: 100%; margin-top: 0; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .card {
     background: #161b22;
@@ -596,15 +631,15 @@ function renderDashboard(s, rtkControlsEnabled) {
   .fc-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8b94a3; }
   .fc-field { display: flex; align-items: center; gap: 8px; color: #8b94a3; font-size: 12px; }
   .fc-field input[type=number] { width: 4.5em; }
-  /* The mode banner across the top of the page: practice mode must be impossible to miss. */
-  .mode-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 28px; padding: 18px 24px; border-radius: 12px; border: 2px solid; margin-bottom: 20px; }
-  .mode-banner.practice { background: #3a2a0f; border-color: #f2b84b; color: #f2b84b; }
-  .mode-banner.race { background: #0f2a1a; border-color: #2ea043; color: #56d364; }
-  .mode-title { font-size: 36px; font-weight: 800; letter-spacing: 0.05em; line-height: 1.1; }
-  .mode-sub { font-size: 14px; margin-top: 4px; opacity: 0.9; }
-  .mode-radios { display: flex; gap: 26px; font-size: 17px; font-weight: 600; color: #e6e9ef; }
-  .mode-radios label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-  .mode-radios input { width: 20px; height: 20px; accent-color: #f2b84b; cursor: pointer; }
+  /* The mode card in the header: practice mode must still be hard to miss, but it no longer spans the page. */
+  .hdr-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
+  .mode-card { display: flex; align-items: center; gap: 8px 16px; padding: 6px 14px; border-radius: 10px; border: 2px solid; }
+  .mode-card.practice { background: #3a2a0f; border-color: #f2b84b; color: #f2b84b; }
+  .mode-card.race { background: #0f2a1a; border-color: #2ea043; color: #56d364; }
+  .mode-title { font-size: 16px; font-weight: 800; letter-spacing: 0.05em; line-height: 1.1; white-space: nowrap; }
+  .mode-radios { display: flex; gap: 14px; font-size: 13px; font-weight: 600; color: #e6e9ef; }
+  .mode-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .mode-radios input { width: 15px; height: 15px; accent-color: #f2b84b; cursor: pointer; }
   .slots-card { grid-column: span 2; }
   .slot-map { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 4px; }
   .slot-cell { width: 15px; height: 15px; border-radius: 3px; background: #1c222b; border: 1px solid #2d3542; box-sizing: border-box; }
@@ -686,64 +721,59 @@ function renderDashboard(s, rtkControlsEnabled) {
 </style>
 </head>
 <body>
-  <h1>race-tracker admin</h1>
+  <div class="topbar">
+    <h1>race-tracker admin</h1>
+    <div class="hdr-right">
+    ${
+      s.slots
+        ? `<div class="mode-card ${s.slots.practice ? 'practice' : 'race'}" title="${
+            s.slots.practice
+              ? 'Any moving boat gets a transmit slot - no start-grid parking, no need to start a race.'
+              : 'Transmit slots go to boats that start from the grid; boats parked on the grid have none.'
+          } Switching releases every transmit slot; boats get theirs again within a cycle or two. The choice is remembered over a restart.">
+      <div class="mode-title">${s.slots.practice ? 'PRACTICE MODE' : 'RACE MODE'}</div>
+      <div class="mode-radios">
+        <label><input type="radio" name="slotMode" value="race" ${s.slots.practice ? '' : 'checked'} onchange="setPracticeMode(false, this)"> Race</label>
+        <label><input type="radio" name="slotMode" value="practice" ${s.slots.practice ? 'checked' : ''} onchange="setPracticeMode(true, this)"> Practice</label>
+      </div>
+    </div>`
+        : ''
+    }
+    <div class="regatta-bar">
+      <label for="regatta-select">Regatta</label>
+      <select class="regatta-select" id="regatta-select" onchange="selectRegatta(this)" title="${s.regatta.selected ? escapeHtml(s.regatta.selected.venue) + ' (through ' + escapeHtml(s.regatta.selected.end_date) + ')' : 'Pick the event this base reports for'}">
+        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
+        ${s.regatta.regattas
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)} (${escapeHtml(r.start_date)} to ${escapeHtml(r.end_date)})</option>`
+          )
+          .join('')}
+      </select>
+      <span class="muted" title="Whether results are being sent to RegattaUp">webhook <strong>${s.webhook.enabled ? 'on' : 'off'}</strong> (${s.webhook.queueReady ? 'queue ready' : 'queue initializing'})</span>
+    </div>
+    </div>
+  </div>
+  ${
+    s.regatta.selected
+      ? ''
+      : `<div class="regatta-warning">No regatta selected - pick one above before racing, so laps/on-grid/mark events report against the right event.${
+          s.radio.mode === 'real' ? ' The radio connection is paused until then.' : ''
+        }</div>`
+  }
+  ${renderTabs(page, !!s.course)}
   <div class="subtitle">
     <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
-    &nbsp;·&nbsp; Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
     &nbsp;·&nbsp; refreshes every 5s
     &nbsp;·&nbsp; <a href="/config">config</a>
-    &nbsp;·&nbsp; <a href="/console">console</a>
-    ${s.course ? '&nbsp;·&nbsp; <a href="/map">map ↗</a>' : ''}
   </div>
-  ${
-    s.slots
-      ? `<div class="mode-banner ${s.slots.practice ? 'practice' : 'race'}">
-    <div>
-      <div class="mode-title">${s.slots.practice ? 'PRACTICE MODE' : 'RACE MODE'}</div>
-      <div class="mode-sub">${
-        s.slots.practice
-          ? 'Any moving boat gets a transmit slot - no start-grid parking, no need to start a race.'
-          : 'Transmit slots go to boats that start from the grid; boats parked on the grid have none.'
-      }</div>
-    </div>
-    <div class="mode-radios" title="Switching releases every transmit slot; boats get theirs again within a cycle or two. The choice is remembered over a restart.">
-      <label><input type="radio" name="slotMode" value="race" ${s.slots.practice ? '' : 'checked'} onchange="setPracticeMode(false, this)"> Race</label>
-      <label><input type="radio" name="slotMode" value="practice" ${s.slots.practice ? 'checked' : ''} onchange="setPracticeMode(true, this)"> Practice</label>
-    </div>
-  </div>`
-      : ''
-  }
 
-  <div class="grid">
-    <div class="card">
-      <div class="label">Boats seen</div>
-      <div class="value">${boatIds.length}</div>
-      <div class="sub">${s.redis ? s.redis.totalTracks.toLocaleString() : '—'} fixes recorded, all boats</div>
-    </div>
-    <div class="card">
-      <div class="label">Uploads</div>
-      <div class="value">${s.upload.successes.toLocaleString()}</div>
-      <div class="stat-rows">
-        <div class="stat-row"><span class="name">Files</span><span class="val">${s.upload.successes.toLocaleString()} (${formatBytes(s.upload.bytesTotal)})</span></div>
-        <div class="stat-row"><span class="name">Attempts</span><span class="val">${s.upload.attempts.toLocaleString()} (${pct(s.upload.successes, s.upload.attempts)})</span></div>
-        <div class="stat-row"><span class="name">Pending</span><span class="val">${totalPending} <span class="muted">(self-reported)</span></span></div>
-        <div class="stat-row"><span class="name">Failures</span><span class="val">${s.upload.failures.toLocaleString()}</span></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="label">Radio frames</div>
-      <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
-      <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
-      <div class="stat-rows">
-        ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
-        <div class="stat-row"><span class="name">Total frames</span><span class="val">${s.radio.framesReceived.toLocaleString()}</span></div>
-        <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
-        <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (RADIO_ENABLED=0)'}</span></div>
-      </div>
-    </div>
-    ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
+  ${
+    page === 'home'
+      ? `<div class="grid">
+    ${renderSlotsCard(s.slots, s.slotInfo, true)}
     ${
       s.course
         ? `<div class="card marks-card">
@@ -758,26 +788,12 @@ function renderDashboard(s, rtkControlsEnabled) {
     </div>`
         : ''
     }
-    <div class="card regatta-card">
-      <div class="label">Regatta</div>
-      ${
-        s.regatta.selected
-          ? `<div class="sub">Reporting for <strong>${escapeHtml(s.regatta.selected.name)}</strong> - ${escapeHtml(s.regatta.selected.venue)} (through ${escapeHtml(s.regatta.selected.end_date)})</div>`
-          : `<div class="regatta-warning">No regatta selected - pick one below before racing, so laps/on-grid/mark events report against the right event.${
-              s.radio.mode === 'real' ? ' The radio connection is paused until then.' : ''
-            }</div>`
-      }
-      <select class="regatta-select" id="regatta-select" onchange="selectRegatta(this)">
-        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
-        ${s.regatta.regattas
-          .map(
-            (r) =>
-              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)} (${escapeHtml(r.start_date)} to ${escapeHtml(r.end_date)})</option>`
-          )
-          .join('')}
-      </select>
-      <div class="sub">RegattaUp webhook: <strong>${s.webhook.enabled ? 'on' : 'off'}</strong> (${s.webhook.queueReady ? 'queue ready' : 'queue initializing'})</div>
-    </div>
+  </div>`
+      : ''
+  }
+  ${
+    page === 'data'
+      ? `<div class="grid">
     <div class="card controls-card">
       <div class="label">Fleet controls</div>
       <div class="fc-section">
@@ -800,6 +816,34 @@ function renderDashboard(s, rtkControlsEnabled) {
         <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
       </div>
     </div>
+    <div class="card">
+      <div class="label">Uploads</div>
+      <div class="value">${s.upload.successes.toLocaleString()}</div>
+      <div class="stat-rows">
+        <div class="stat-row"><span class="name">Files</span><span class="val">${s.upload.successes.toLocaleString()} (${formatBytes(s.upload.bytesTotal)})</span></div>
+        <div class="stat-row"><span class="name">Attempts</span><span class="val">${s.upload.attempts.toLocaleString()} (${pct(s.upload.successes, s.upload.attempts)})</span></div>
+        <div class="stat-row"><span class="name">Pending</span><span class="val">${totalPending} <span class="muted">(self-reported)</span></span></div>
+        <div class="stat-row"><span class="name">Failures</span><span class="val">${s.upload.failures.toLocaleString()}</span></div>
+      </div>
+    </div>
+  </div>`
+      : ''
+  }
+  ${
+    page === 'radio'
+      ? `<div class="grid">
+    <div class="card">
+      <div class="label">Radio frames</div>
+      <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
+      <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
+      <div class="stat-rows">
+        ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
+        <div class="stat-row"><span class="name">Total frames</span><span class="val">${s.radio.framesReceived.toLocaleString()}</span></div>
+        <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
+        <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (RADIO_ENABLED=0)'}</span></div>
+      </div>
+    </div>
+    ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
     ${renderSlotsCard(s.slots, s.slotInfo)}
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
@@ -807,9 +851,13 @@ function renderDashboard(s, rtkControlsEnabled) {
     ${rtkControlsEnabled ? renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${renderDiskCard(s.disk, `New log file daily, kept ${config.logRetentionDays} days`)}
     ${renderRedisMemoryCard(s.redisMemory, s.redis && s.redis.writeHealth, config.redis.trackRetentionHours)}
-  </div>
+  </div>`
+      : ''
+  }
 
-  <section>
+  ${
+    page === 'home'
+      ? `<section>
     <h2>Fleet</h2>
     ${
       boatIds.length === 0
@@ -835,7 +883,9 @@ function renderDashboard(s, rtkControlsEnabled) {
       <tbody>${boatRows}</tbody>
     </table>`
     }
-  </section>
+  </section>`
+      : ''
+  }
   <script>
     // saveGpsConfigOrThrow/setTmode3Mode/setManualFixedPosition (talking to
     // baseStation.js's baseGps.setSurveyIn/setFixed/saveConfig via the
@@ -1249,6 +1299,12 @@ function renderMap(s, { mapOnly, markMode } = {}) {
     font-size: 13px;
   }
   .topbar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  ${TABS_CSS}
+  .topbar .tabs { margin: 0; flex-wrap: nowrap; }
+  .topbar .tabs a { padding: 4px 12px; font-size: 12px; white-space: nowrap; }
+  .topbar h1 { white-space: nowrap; }
+  @media (max-width: 1150px) { .topbar .map-regatta { display: none; } }
+  .topbar .tabs a:hover { text-decoration: none; }
   .topbar a { color: #58a6ff; text-decoration: none; }
   .topbar a:hover { text-decoration: underline; }
   .topbar .spacer { flex: 1; }
@@ -1362,8 +1418,8 @@ function renderMap(s, { mapOnly, markMode } = {}) {
 <body>
   <div class="topbar">
     <h1>Course map</h1>
-    <span style="margin-left:16px; font-size:12px; color:#8b94a3;">Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}</span>
-    ${backToDashboardLink}
+    <span class="map-regatta" style="margin-left:16px; font-size:12px; color:#8b94a3;">Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}</span>
+    ${mapOnly ? '' : renderTabs('map', true)}
     ${regattaControlsHtml}
     <div class="spacer"></div>
     <label class="refresh-toggle">
@@ -2343,6 +2399,32 @@ function startAdminServer({
       return;
     }
 
+    // Fleet controls and uploads (see renderDashboard's page argument).
+    if (req.url === '/data') {
+      try {
+        const s = await getStats();
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(renderDashboard(s, rtkControlsEnabled, 'data'));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(`<pre>${err.message}</pre>`);
+      }
+      return;
+    }
+
+    // The radio, GPS and system cards, split off the home page (see renderDashboard's page argument).
+    if (req.url === '/radio') {
+      try {
+        const s = await getStats();
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(renderDashboard(s, rtkControlsEnabled, 'radio'));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(`<pre>${err.message}</pre>`);
+      }
+      return;
+    }
+
     if (req.url === '/map') {
       try {
         const s = await getStats();
@@ -2372,7 +2454,10 @@ function startAdminServer({
     // see logBuffer's own comment).
     if (req.url === '/console') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConsoleLogPage('base station console'));
+      // Under mapOnly (markset/mark) there is no dashboard to tab to, so the page keeps its plain back link.
+      res.end(
+        renderConsoleLogPage('base station console', mapOnly ? {} : { navHtml: renderTabs('console', !!getCourseMarks()), navCss: TABS_CSS })
+      );
       return;
     }
 

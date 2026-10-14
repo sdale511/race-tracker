@@ -14,7 +14,8 @@ function escapeHtml(s) {
 // title: e.g. "boat 3 console" / "base station console" - shown in the
 // page's own <title>/<h1> so it's obvious which process this is if you've
 // got more than one of these tabs open at once.
-function renderConsoleLogPage(title) {
+// navHtml/navCss (optional): a tab bar to show instead of the plain back link - the base's admin passes its own tabs.
+function renderConsoleLogPage(title, { navHtml = '', navCss = '' } = {}) {
   const lines = logBuffer.getLines();
   const rows = lines
     .map((l) => {
@@ -58,12 +59,14 @@ function renderConsoleLogPage(title) {
   .line + .line { border-top: 1px solid #1c222b; padding-top: 2px; margin-top: 2px; }
   .time { color: #5a6270; margin-right: 10px; font-variant-numeric: tabular-nums; }
   .empty { color: #8b94a3; }
+  ${navCss}
 </style>
 </head>
 <body>
   <h1>${escapeHtml(title)}</h1>
+  ${navHtml}
   <div class="subtitle">
-    last ${lines.length} of up to ${logBuffer.MAX_LINES} lines &middot; refreshes every 5s &middot; <a href="/">&larr; back to dashboard</a>
+    last ${lines.length} of up to ${logBuffer.MAX_LINES} lines &middot; refreshes every 5s${navHtml ? '' : ' &middot; <a href="/">&larr; back to dashboard</a>'}
   </div>
   <div class="log">${rows || '<span class="empty">nothing logged yet</span>'}</div>
   <script>
