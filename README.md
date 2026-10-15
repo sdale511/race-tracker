@@ -1601,12 +1601,20 @@ burst (a whole fleet going on-grid at once) doesn't fire concurrent
 requests. Failed sends retry with capped exponential backoff (2s, 4s, 8s,
 ... up to `REGATTAUP_MAX_BACKOFF_MS`), indefinitely.
 
+At most `REGATTAUP_MAX_IN_FLIGHT` (3) requests are outstanding at once, across all queues, and one still unanswered after
+`REGATTAUP_REQUEST_TIMEOUT_MS` (30 s) is abandoned and retried later - so a slow RegattaUp (its database timing out) is not sent
+a new request every tick on top of those still waiting. The base counts a webhook as delivered only on an HTTP 2xx, so the
+RegattaUp function has to answer with an error status when it could not store a lap (the lap-creation database failure in
+`mylapsWebhook` now does) or the lap is dropped from the queue.
+
 | Var | Default | Purpose |
 |---|---|---|
 | `REGATTAUP_WEBHOOK_URL` | `https://regattaup.com/api/functions/mylapsWebhook` | Override for a mock endpoint |
 | `REGATTAUP_WEBHOOK_ENABLED` | unset (on) | `0` = skip sending, still detected/logged |
 | `REGATTAUP_QUEUE_DB` | `race-config/lap_webhook_queue.sqlite` | Retry queue file |
 | `REGATTAUP_POST_INTERVAL_MS` | 500 | Drain-loop interval, all queues combined |
+| `REGATTAUP_MAX_IN_FLIGHT` | 3 | Most webhook requests outstanding at once, all queues combined |
+| `REGATTAUP_REQUEST_TIMEOUT_MS` | 30000 | A request unanswered this long is abandoned and retried later |
 | `REGATTAUP_MAX_BACKOFF_MS` | 300000 (5 min) | Backoff cap per event |
 
 ### Testing the lap -> webhook path

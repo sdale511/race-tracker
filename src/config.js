@@ -986,6 +986,11 @@ module.exports = {
     // re-attempts of already-failed sends - this paces EVERY send,
     // including each event's very first attempt.
     postIntervalMs: parseInt(process.env.REGATTAUP_POST_INTERVAL_MS || '500', 10),
+    // At most this many webhook requests outstanding at once, across all four queues (REGATTAUP_MAX_IN_FLIGHT), and a request still
+    // unanswered after requestTimeoutMs is abandoned and retried later (REGATTAUP_REQUEST_TIMEOUT_MS). Without a cap, a slow RegattaUp
+    // (its database timing out) was sent a new request every postIntervalMs on top of those still waiting.
+    maxInFlight: Math.max(1, parseInt(process.env.REGATTAUP_MAX_IN_FLIGHT || '3', 10) || 3),
+    requestTimeoutMs: Math.max(1000, parseInt(process.env.REGATTAUP_REQUEST_TIMEOUT_MS || '30000', 10) || 30000),
     maxBackoffMs: parseInt(process.env.REGATTAUP_MAX_BACKOFF_MS || '300000', 10), // 5 minutes
     // On-grid detection (see onGridWatcher.js): how close a boat has to be
     // to the pin<->committeeStart (start) line, while still between the two

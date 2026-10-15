@@ -334,6 +334,8 @@ const sections = [
       },
       { label: 'queueDbPath', value: config.regattaup.queueDbPath, envVar: 'REGATTAUP_QUEUE_DB' },
       { label: 'postIntervalMs', value: config.regattaup.postIntervalMs, envVar: 'REGATTAUP_POST_INTERVAL_MS', unit: 'ms' },
+      { label: 'maxInFlight', value: config.regattaup.maxInFlight, envVar: 'REGATTAUP_MAX_IN_FLIGHT' },
+      { label: 'requestTimeoutMs', value: config.regattaup.requestTimeoutMs, envVar: 'REGATTAUP_REQUEST_TIMEOUT_MS', unit: 'ms' },
       { label: 'maxBackoffMs', value: config.regattaup.maxBackoffMs, envVar: 'REGATTAUP_MAX_BACKOFF_MS', unit: 'ms' },
       { label: 'onGridZoneM', value: config.regattaup.onGridZoneM, envVar: 'REGATTAUP_ONGRID_ZONE_M', unit: 'm' },
       { label: 'onGridQueueDbPath', value: config.regattaup.onGridQueueDbPath, envVar: 'REGATTAUP_ONGRID_QUEUE_DB' },

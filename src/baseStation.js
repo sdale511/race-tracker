@@ -2104,6 +2104,10 @@ function main() {
   let webhookQueueCursor = 0;
 
   function drainOneWebhook() {
+    // However slow RegattaUp is (its database timing out for 20 s a write), do not keep adding requests every tick on top of
+    // the ones still waiting: that piled a finish burst of 30 laps onto a backend that was already struggling. Rows not sent
+    // now stay queued and go out as the earlier requests finish.
+    if (webhookQueues.reduce((n, e) => n + e.inFlight.size, 0) >= config.regattaup.maxInFlight) return;
     for (let i = 0; i < webhookQueues.length; i++) {
       const entry = webhookQueues[webhookQueueCursor];
       webhookQueueCursor = (webhookQueueCursor + 1) % webhookQueues.length;
@@ -2918,6 +2922,7 @@ async function sendQueuedLap(queue, row) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.regattaup.requestTimeoutMs), // a hung request must not hold an in-flight slot for ever
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     queue.remove(row.id);
@@ -2950,6 +2955,7 @@ async function sendQueuedOnGrid(queue, row) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.regattaup.requestTimeoutMs), // a hung request must not hold an in-flight slot for ever
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     queue.remove(row.id);
@@ -2982,6 +2988,7 @@ async function sendQueuedMarkRounding(queue, row) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.regattaup.requestTimeoutMs), // a hung request must not hold an in-flight slot for ever
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     queue.remove(row.id);
@@ -3014,6 +3021,7 @@ async function sendQueuedFoul(queue, row) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.regattaup.requestTimeoutMs), // a hung request must not hold an in-flight slot for ever
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     queue.remove(row.id);
