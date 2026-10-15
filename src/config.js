@@ -541,7 +541,8 @@ module.exports = {
       parkedFirstS: Math.max(0, parseFloat(process.env.TX_PARKED_FIRST_S || '2') || 0),
       // Boat: that first report is sent once more about this many seconds later (+-25%), so one lost in the shared join slots is not
       // lost for a whole heartbeat (TX_INTERVAL_S, 60 s). 0 = no repeat.
-      parkedRepeatS: Math.max(0, parseFloat(process.env.TX_PARKED_REPEAT_S || '6') || 0),
+      // 10 s, not shorter: a fleet's first reports straggle in over about 8 s, and a repeat inside that window adds a second round of frames to the busiest moment.
+      parkedRepeatS: Math.max(0, parseFloat(process.env.TX_PARKED_REPEAT_S || '10') || 0),
       unparkFixes: Math.max(1, parseInt(process.env.TX_SLOT_UNPARK_FIXES || '3', 10) || 3),
       // Boat: a boat with no slot of its own (waiting for one, or not racing so never going to get one) reports
       // quickly at first, then backs off to at most one report every joinReportS seconds, so a crowd of such
