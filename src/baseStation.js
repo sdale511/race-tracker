@@ -291,6 +291,8 @@ function main() {
         ? {
             slot: { enabled: true, index: slotLayout.boatSlots, count: slotLayout.boatSlots + 1, widthMs: slotLayout.widthMs, join: null },
             slottedSyncs: new Set([protocol.SLOT_TABLE_SYNC, protocol.MARKS_SYNC, protocol.PING_SYNC, protocol.POWER_SYNC]),
+            // a flood of new boats queues one marks frame and one slot table (the newest), not one per boat - the base's slot passes only a couple of frames a cycle
+            supersede: new Map([[protocol.SLOT_TABLE_SYNC, 'version'], [protocol.MARKS_SYNC, 'latest'], [protocol.PING_SYNC, 'latest']]),
             trafficLabel: "the base's",
             warnSpill: false,
           }

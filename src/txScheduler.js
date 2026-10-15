@@ -41,6 +41,11 @@ class TxScheduler {
     gate,
     slot = { enabled: false, index: 0, count: 25, widthMs: 35, join: null },
     slottedSyncs = SLOTTED_SYNCS, // the frame types (first byte) held for the slot; the base passes its own
+    // Frame types where a newer frame replaces one still waiting, instead of queueing behind it: sync byte -> 'latest' (a single
+    // frame, e.g. the marks: the waiting one takes the new contents and keeps its place) or 'version' (a frame of a multi-frame
+    // table, whose second byte is its version: frames of an older version are dropped, and an identical copy already waiting is
+    // not queued again). The base uses it so a flood of new boats queues one marks frame and one table, not one per boat.
+    supersede = new Map(),
     trafficLabel = "this boat's", // for the warning when the slot is too small
     warnSpill = true, // the base's own slot (table + marks) spills into the next cycle by design - it does not warn
     maxQueue = 12,
@@ -55,6 +60,7 @@ class TxScheduler {
     this.gate = gate;
     this.slot = slot;
     this.slottedSyncs = slottedSyncs;
+    this.supersede = supersede;
     this.trafficLabel = trafficLabel;
     this.warnSpill = warnSpill;
     this.maxQueue = maxQueue;
@@ -72,7 +78,7 @@ class TxScheduler {
     this.flushWasAligned = false;
     this.wasActive = false;
     this.window = { start: null, used: 0 }; // the slot window currently being filled
-    this.counters = { submitted: 0, passedThrough: 0, held: 0, heldMsTotal: 0, heldMsMax: 0, dropped: 0, expired: 0, slotted: 0, spilled: 0 };
+    this.counters = { submitted: 0, passedThrough: 0, held: 0, heldMsTotal: 0, heldMsMax: 0, dropped: 0, expired: 0, slotted: 0, spilled: 0, superseded: 0 };
     this._checkSlotFit();
   }
 
@@ -197,6 +203,7 @@ class TxScheduler {
         return this.rawSend(buf);
       }
     }
+    if (this._coalesce(buf, t)) return true;
     if (this.queue.length >= this.maxQueue) {
       this.queue.shift(); // oldest first: positions are logged to SD and stale ones help nobody
       this.counters.dropped++;
@@ -204,6 +211,29 @@ class TxScheduler {
     this.queue.push({ buf, bytes: buf.length, at: t, slotted });
     this._schedule(0);
     return true;
+  }
+
+  // A frame of a type the base re-sends in full (see `supersede` above) while an older one is still waiting for its slot: fold it
+  // into the queue instead of adding to it. True when the new frame needs no place of its own.
+  _coalesce(buf, t) {
+    const mode = this.supersede.get(buf[0]);
+    if (!mode) return false;
+    if (mode === 'latest') {
+      const i = this.queue.findIndex((q) => q.buf[0] === buf[0]);
+      if (i === -1) return false;
+      this.queue[i] = { ...this.queue[i], buf, bytes: buf.length, at: t };
+      this.counters.superseded++;
+      return true;
+    }
+    const version = buf[1];
+    const before = this.queue.length;
+    this.queue = this.queue.filter((q) => q.buf[0] !== buf[0] || q.buf[1] === version);
+    this.counters.superseded += before - this.queue.length;
+    if (this.queue.some((q) => q.buf.equals(buf))) {
+      this.counters.superseded++;
+      return true;
+    }
+    return false;
   }
 
   _schedule(delayMs) {

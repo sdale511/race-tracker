@@ -291,3 +291,56 @@ test('slot too small warning: one spilled frame is quiet, a slot that keeps over
   assert.strictEqual(warns.length, 1, `exactly one warning for a slot that keeps overflowing: ${many.logs}`);
   assert.match(warns[0], /room for about \d+ frame\(s\) of 83 bytes/);
 });
+
+test('base slot: a newer marks frame or slot table replaces the one still waiting, so a flood of new boats queues one of each', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 40; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const s = new TxScheduler({
+    send: (b) => { sent.push({ t: sim.t, buf: Buffer.from(b) }); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 25, count: 26, widthMs: 35, join: null },
+    slottedSyncs: new Set([0xa7, 0xb1]),
+    supersede: new Map([[0xa7, 'version'], [0xb1, 'latest']]),
+    trafficLabel: "the base's",
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  sim.runUntil(5500);
+  const table = (version, tag) => Buffer.from([0xa7, version, tag, 0, 0, 0]); // [1] is the table's version
+  const marks = (tag) => Buffer.from([0xb1, tag, 0, 0]);
+  // twenty boats arrive in one second: marks rebroadcast four times, the table grows each time (two frames each)
+  sim.setTimer(() => {
+    for (let v = 1; v <= 4; v++) {
+      s.submit(marks(v));
+      s.submit(table(v, 1));
+      s.submit(table(v, 2));
+    }
+    s.submit(table(4, 2)); // an identical copy of a frame already waiting
+  }, 6000 - sim.t + 100);
+  sim.runUntil(12000);
+  const marksSent = sent.filter((x) => x.buf[0] === 0xb1);
+  const tablesSent = sent.filter((x) => x.buf[0] === 0xa7);
+  assert.strictEqual(marksSent.length, 1, 'one marks frame, not four');
+  assert.strictEqual(marksSent[0].buf[1], 4, 'the newest');
+  assert.deepStrictEqual(tablesSent.map((x) => [x.buf[1], x.buf[2]]), [[4, 1], [4, 2]], 'only the newest table, both its frames, no duplicate');
+  assert.ok(s.stats().superseded >= 9);
+});
+
+test('a scheduler without supersede queues every frame, as before', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 40; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const s = new TxScheduler({
+    send: (b) => { sent.push(b[0]); return true; },
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 25, count: 26, widthMs: 35, join: null },
+    slottedSyncs: new Set([0xb1]),
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  sim.runUntil(5500);
+  sim.setTimer(() => { for (let i = 0; i < 3; i++) s.submit(Buffer.from([0xb1, i, 0, 0])); }, 6000 - sim.t + 100);
+  sim.runUntil(20000);
+  assert.strictEqual(sent.filter((b) => b === 0xb1).length, 3);
+});

@@ -840,6 +840,9 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   therefore wait up to a cycle or two (the table's 10 s rebroadcast and a join-triggered one are not
   time-critical, and a frame waits at most `TX_GATE_MAX_AGE_MS` before it is dropped). With no bursts heard they
   go out at once.
+  A newer marks (or ping) frame replaces one still waiting, and a newer slot table replaces an older table's waiting
+  frames (an identical copy is not queued twice), so a flood of new boats queues one marks frame and one table instead
+  of one per boat.
 
 Slot width is fixed; it does not change with the number of boats. Separate fleets that race at the same time
 should have their own base and radio network (`ID`/`HP`); that keeps one base from hearing the other fleet's
