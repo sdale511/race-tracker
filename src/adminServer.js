@@ -323,7 +323,10 @@ function renderSlotsCard(slots, info, compact = false) {
   }
   if (compact) {
     return `<div class="card slots-card">
-      <div class="label">Transmit slots</div>
+      <div class="card-head">
+        <div class="label">Transmit slots</div>
+        <button type="button" class="card-btn" onclick="pingFleet(this)" title="Every boat reports its position now, even a stationary one that has already sent its one and only frame. Replies trickle in over the next few seconds.">Ping fleet</button>
+      </div>
       <div class="value">${slots.boats.length} of ${assignable}</div>
       <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use &middot; <a href="/radio">details</a></div>
       ${slotMap}
@@ -622,6 +625,9 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   .mode-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   .mode-radios input { width: 15px; height: 15px; accent-color: #f2b84b; cursor: pointer; }
   .slots-card { grid-column: span 2; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .card-head .label { margin-bottom: 0; }
+  .card-head .card-btn { flex: 0 0 auto; padding: 4px 12px; font-size: 11px; }
   ${SLOT_MAP_CSS}
   .link-card { grid-column: span 2; }
   @media (min-width: 1100px) { .link-card { grid-column: span 3; } }
