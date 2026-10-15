@@ -1492,6 +1492,10 @@ RADIO_PORT=/dev/ttyUSB1 FLEET_SIZE=5 FLEET_ID_START=6 FLEET_ADMIN_PORT_START=811
 - The boats see the base's frames a few milliseconds later than a real boat would (the hop through the fleet process), which is
   small next to the slot width, but means this tests slot sharing, collisions and the base's table, not exact RF timing
   of one boat.
+- **Keep the RTK correction radio on.** The boats time their slots from the correction bursts; with no bursts heard they are not
+  slot-timed, and five boats started together all send in the same instant. Frames written to the radio are also paced at
+  least `RF_BRIDGE_GAP_MS` (default 20 ms) apart so simultaneous frames do not reach the radio as one blob (the base cannot
+  receive while it transmits, and loses what follows the first frame); `0` turns pacing off.
 - The radios must be set up like a boat's (same network ID and settings). One radio transmits for all its boats, one frame
   at a time, so two boats of the same fleet never collide with each other; that is what the second radio is for.
 

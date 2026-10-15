@@ -37,6 +37,11 @@ const FLEET_SIZE = parseInt(process.env.FLEET_SIZE || '3', 10);
 // sends is written to the radio. Each boat has its own id, so each gets its own slot from the base's table. To test with more
 // boats than one radio can carry, run this on a second radio (or machine) with FLEET_ID_START so the ids do not repeat.
 const RF_BRIDGE = process.env.RF_BRIDGE === '1' || process.env.RF_BRIDGE === 'true';
+// Boats start this far apart (FLEET_STAGGER_MS): boat 1 at once, boat 2 after one gap, boat 3 after two, ... Boats that start in the same
+// moment all announce themselves, ask for the marks and send their first fix at once, before any of them has a slot - on a shared
+// radio that is a pile-up (a cold start of 20 boats put 40 sync errors on the base). Off (0) by default for the UDP fleet, 250 ms
+// for RF_BRIDGE; 0 starts everyone together.
+const FLEET_STAGGER_MS = parseInt(process.env.FLEET_STAGGER_MS || (RF_BRIDGE ? '250' : '0'), 10);
 // First number of this fleet's boat ids (00001, 00002, ...): a second fleet on a second radio starts after the first one's.
 const FLEET_ID_START = parseInt(process.env.FLEET_ID_START || '1', 10);
 // Matches boatAgent.js's own SIMULATE=1 default admin port (8093) as the
@@ -67,7 +72,7 @@ if (!Number.isInteger(FLEET_SIZE) || FLEET_SIZE < 1) {
 // interleaved per-boat log lines than random ids would be.
 const fleetBoatIds = Array.from({ length: FLEET_SIZE }, (_, i) => sequentialBoatId(FLEET_ID_START + i));
 
-console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s), BOAT_ID: ${fleetBoatIds.join(', ')}${RF_BRIDGE ? ` - over the real radio on ${config.radio.port}` : ''}`);
+console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s)${FLEET_STAGGER_MS > 0 ? ` ${FLEET_STAGGER_MS} ms apart` : ''}, BOAT_ID: ${fleetBoatIds.join(', ')}${RF_BRIDGE ? ` - over the real radio on ${config.radio.port}` : ''}`);
 
 // This script's whole purpose is a fleet of SIMULATED boats - defaults
 // SIMULATE=1 so `npm run fleet` works with no other env vars set, but
@@ -166,7 +171,10 @@ function startFleet() {
     const adminPort = ADMIN_PORT_START + i;
     const prefix = `[boat ${boatId}] `;
 
-    const child = spawn('node', [boatAgentPath], {
+    // A delayed start is a one-line wrapper that waits and then loads the boat agent as normal - the boat's own code has no idea
+    const startDelayMs = i * FLEET_STAGGER_MS;
+    const nodeArgs = startDelayMs > 0 ? ['-e', `setTimeout(() => require(${JSON.stringify(boatAgentPath)}), ${startDelayMs})`] : [boatAgentPath];
+    const child = spawn('node', nodeArgs, {
       // SIM_START_SLOT/SIM_FLEET_SIZE let boatAgent.js space this boat evenly
       // along the start line (index/fleetSize) instead of an independent
       // random draw - random placement across the whole fleet looks clustered
@@ -311,7 +319,13 @@ function startFleet() {
 // RTCM bursts, marks, pings and power frames - and, as on air, other boats' frames); a boat's frame is written to the radio
 // as one piece, in the order it arrives, so the boats' own slot timing is what spaces them on air.
 let rfRadio = null;
-const bridgeStats = { heard: 0, rtcm: 0, sent: 0, sentBytes: 0, refused: 0 };
+const bridgeStats = { heard: 0, rtcm: 0, sent: 0, sentBytes: 0, refused: 0, queuedMax: 0 };
+// Frames from the boats are written to the radio at least this far apart (RF_BRIDGE_GAP_MS, 0 = no pacing). Boats that send in the
+// same instant - heartbeats of boats started together, or any time the correction bursts are not being heard so nothing slot-times
+// them - would otherwise reach the radio glued together as one blob: the radio sends them as one or two RF packets, and the base
+// (which cannot receive while it transmits, e.g. its marks update for a new boat) loses everything after the first frame.
+const BRIDGE_GAP_MS = parseInt(process.env.RF_BRIDGE_GAP_MS || '20', 10);
+const BRIDGE_QUEUE_MAX = 500;
 function startRfBridge() {
   const { RadioLink } = require('./radioLink');
   const protocol = require('./protocol');
@@ -325,15 +339,36 @@ function startRfBridge() {
     const message = { radioRx: buf.toString('base64') };
     for (const child of children) if (child.connected) child.send(message);
   });
+  const txQueue = [];
+  let draining = false;
+  function writeOne(buf) {
+    if (rfRadio.send(buf)) {
+      bridgeStats.sent++;
+      bridgeStats.sentBytes += buf.length;
+    } else {
+      bridgeStats.refused++; // radio closed or its write buffer backed up: the frame is not sent, as a real boat's would not be
+    }
+  }
+  function drain() {
+    const buf = txQueue.shift();
+    if (!buf) {
+      draining = false;
+      return;
+    }
+    writeOne(buf);
+    setTimeout(drain, BRIDGE_GAP_MS);
+  }
   for (const child of children) {
     child.on('message', (msg) => {
       if (!msg || typeof msg.radioTx !== 'string') return;
       const buf = Buffer.from(msg.radioTx, 'base64');
-      if (rfRadio.send(buf)) {
-        bridgeStats.sent++;
-        bridgeStats.sentBytes += buf.length;
-      } else {
-        bridgeStats.refused++; // radio closed or its write buffer backed up: the frame is not sent, as a real boat's would not be
+      if (BRIDGE_GAP_MS <= 0) return writeOne(buf);
+      if (txQueue.length >= BRIDGE_QUEUE_MAX) txQueue.shift(); // far behind: drop the oldest, as a backed-up radio would
+      txQueue.push(buf);
+      bridgeStats.queuedMax = Math.max(bridgeStats.queuedMax, txQueue.length);
+      if (!draining) {
+        draining = true;
+        drain();
       }
     });
   }
@@ -341,9 +376,10 @@ function startRfBridge() {
     const b = bridgeStats;
     console.log(
       `[rfBridge] last 10 s: radio heard ${b.heard} frames (${b.rtcm} RTCM), boats sent ${b.sent} frames (${b.sentBytes} bytes)` +
-        (b.refused ? `, ${b.refused} refused by the radio` : '')
+        (b.refused ? `, ${b.refused} refused by the radio` : '') +
+        (b.queuedMax > 1 ? `, at most ${b.queuedMax} waiting to be paced out` : '')
     );
-    b.heard = b.rtcm = b.sent = b.sentBytes = b.refused = 0;
+    b.heard = b.rtcm = b.sent = b.sentBytes = b.refused = b.queuedMax = 0;
   }, 10000).unref();
 }
 

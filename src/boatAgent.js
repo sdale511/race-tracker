@@ -61,7 +61,10 @@ for (const method of ['log', 'warn', 'error']) {
 
 // Short labels for the rover admin dashboard (see getRoverStats below).
 const gpsMode = config.noGps ? 'none' : config.simulateGps ? 'simulated' : 'real';
-const radioMode = config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
+// RF_BRIDGE=1 (set by fleetSim.js, `npm run fleet-rf`): this simulated boat has no radio of its own - it shares its parent's one real
+// radio over IPC, so what it sends really goes out on air. Reported as a real radio.
+const rfBridged = config.simulate && process.env.RF_BRIDGE === '1' && typeof process.send === 'function';
+const radioMode = rfBridged ? 'real' : config.simulate ? 'simulated' : config.radio.enabled ? 'real' : 'none';
 // True whenever a radio link is actually expected to come up at all (real
 // or simulated) - RADIO_ENABLED=0 is the only case this is false. Reused
 // by transmitFix (below) and the status summary (further down) so "is the
@@ -96,7 +99,9 @@ console.log(
 console.log(
   `[boatAgent] radio=${radioMode}` +
     (radioMode === 'real'
-      ? ` ${config.radio.port}@${config.radio.baud}`
+      ? rfBridged
+        ? " shared with the other simulated boats of this fleet (RF_BRIDGE: the fleet's one real radio)"
+        : ` ${config.radio.port}@${config.radio.baud}`
       : radioMode === 'simulated'
       ? ` udp:${config.sim.port}`
       : ' (RADIO_ENABLED=0, fixes still log to SD)') +
@@ -175,8 +180,7 @@ function radioDropReason() {
 }
 
 if (config.simulate) {
-  // RF_BRIDGE=1 (set by fleetSim.js): this simulated boat shares its parent's one real radio, over IPC, instead of the UDP stand-in
-  const rfBridged = process.env.RF_BRIDGE === '1' && typeof process.send === 'function';
+  // rfBridged (above): this simulated boat shares its parent's one real radio, over IPC, instead of the UDP stand-in
   radio = rfBridged
     ? new (require('./ipcRadioLink').IpcRadioLink)()
     : new (require('./simRadioLink').SimRadioLink)({
