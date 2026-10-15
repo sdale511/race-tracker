@@ -927,6 +927,10 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
     if (!waiting) waitingFixes = []; // parked: nothing to backfill
     if (!pacer.due()) {
       if (waiting) holdWhileWaiting(fixes);
+      // Keep the newest fix for when the report is due. The distance gate lets a stationary boat queue only one fix a minute, so a
+      // fix thrown away here is not replaced by a later one: the boat's first report on the start grid, flushed at a slot opening
+      // before its (0-2 s) turn came, was lost, and the boat was not heard again until its next heartbeat.
+      pendingBatch = fixes.slice(-1);
       return;
     }
     pacer.sent();

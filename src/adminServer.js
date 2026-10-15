@@ -273,6 +273,21 @@ function renderBandwidthCard(bandwidth, mode) {
   </div>`;
 }
 
+// The radio frames card: fix and frame rates, status, totals, sync errors and the port. On the home page and the radio page.
+function renderRadioFramesCard(s) {
+  return `<div class="card">
+    <div class="label">Radio frames</div>
+    <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
+    <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
+    <div class="stat-rows">
+      ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
+      <div class="stat-row"><span class="name">Total frames</span><span class="val">${s.radio.framesReceived.toLocaleString()}</span></div>
+      <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
+      <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (RADIO_ENABLED=0)'}</span></div>
+    </div>
+  </div>`;
+}
+
 // The tab bar (adminNav.js): base mode has the dashboard pages plus map, console and config; markset/mark mode has only
 // the map, console and config because the map is its home page.
 function adminTabs(active, hasCourse, mapOnly) {
@@ -754,6 +769,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     page === 'home'
       ? `<div class="grid">
     ${renderSlotsCard(s.slots, s.slotInfo, true)}
+    ${renderRadioFramesCard(s)}
     ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
     ${
       s.course
@@ -813,17 +829,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   ${
     page === 'radio'
       ? `<div class="grid">
-    <div class="card">
-      <div class="label">Radio frames</div>
-      <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
-      <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
-      <div class="stat-rows">
-        ${connectionDot(s.radio.connected) ? `<div class="stat-row"><span class="name">Status</span><span class="val">${connectionDot(s.radio.connected)}</span></div>` : ''}
-        <div class="stat-row"><span class="name">Total frames</span><span class="val">${s.radio.framesReceived.toLocaleString()}</span></div>
-        <div class="stat-row"><span class="name">Sync errors</span><span class="val">${s.radio.syncErrors.toLocaleString()} (${pct(s.radio.syncErrors, s.radio.framesReceived + s.radio.syncErrors)})</span></div>
-        <div class="stat-row"><span class="name">Port</span><span class="val">${s.radio.port ? `${s.radio.port}${s.radio.baud ? ` @ ${s.radio.baud}` : ''}` : 'no radio (RADIO_ENABLED=0)'}</span></div>
-      </div>
-    </div>
+    ${renderRadioFramesCard(s)}
     ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
     ${renderSlotsCard(s.slots, s.slotInfo)}
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
