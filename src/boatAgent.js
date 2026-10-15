@@ -1404,7 +1404,7 @@ function getRoverStats() {
     sleep: { ...sleeper.status(), gps: gpsSleep.status() },
     txGate: txScheduler ? txScheduler.stats() : null,
     txSlot: txScheduler
-      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join, joinSlots: txScheduler.slot.join ? txScheduler.slot.join.n : 0, joinFirst: txScheduler.slot.join ? txScheduler.slot.join.first : null, tableHeard: !!(slotFollower && slotFollower.tablesHeard > 0), practice: practiceMode }
+      ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join, joinSlots: txScheduler.slot.join ? txScheduler.slot.join.n : 0, joinFirst: txScheduler.slot.join ? txScheduler.slot.join.first : null, tableHeard: !!(slotFollower && slotFollower.tablesHeard > 0), practice: practiceMode, table: slotFollower ? slotFollower.lastTable : null }
       : null,
     marksReceivedCount: snapshot.marks.received,
     lastMarksReceivedAt: snapshot.marks.lastReceivedAt,

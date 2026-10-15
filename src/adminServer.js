@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -298,13 +298,7 @@ function renderSlotsCard(slots, info, compact = false) {
   if (!slots) return '';
   const assignable = slots.slotCount - slots.joinSlots;
   const bySlot = new Map(slots.boats.map((b) => [b.slot, b.boatId]));
-  const cells = [];
-  for (let i = 0; i < slots.slotCount + 1; i++) {
-    if (i === slots.slotCount) cells.push('<span class="slot-cell base" title="Slot ' + i + ': the base\'s own frames (slot table, marks, pings)"></span>');
-    else if (i >= assignable) cells.push('<span class="slot-cell join" title="Slot ' + i + ': shared by boats that have no slot of their own yet"></span>');
-    else if (bySlot.has(i)) cells.push('<span class="slot-cell used" title="Slot ' + i + ': ' + escapeHtml(bySlot.get(i)) + '"></span>');
-    else cells.push('<span class="slot-cell" title="Slot ' + i + ': free"></span>');
-  }
+  const slotMap = renderSlotMap({ slotCount: slots.slotCount, joinSlots: slots.joinSlots, bySlot });
   const heard = info && info.heardPeriodMs ? Math.round(info.heardPeriodMs) : null;
   const cycleMs = heard || (info ? info.configuredPeriodMs : null);
   const usedMs = (slots.slotCount + 1) * slots.slotWidthMs + (info ? info.afterMs : 30);
@@ -332,16 +326,14 @@ function renderSlotsCard(slots, info, compact = false) {
       <div class="label">Transmit slots</div>
       <div class="value">${slots.boats.length} of ${assignable}</div>
       <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use &middot; <a href="/radio">details</a></div>
-      <div class="slot-map">${cells.join('')}</div>
-      <div class="slot-legend"><span><span class="slot-cell used"></span>in use</span><span><span class="slot-cell"></span>free</span><span><span class="slot-cell join"></span>shared</span><span><span class="slot-cell base"></span>base</span></div>
+      ${slotMap}
     </div>`;
   }
   return `<div class="card slots-card">
       <div class="label">Transmit slots</div>
       <div class="value">${slots.boats.length} of ${assignable}</div>
       <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use</div>
-      <div class="slot-map">${cells.join('')}</div>
-      <div class="slot-legend"><span><span class="slot-cell used"></span>in use</span><span><span class="slot-cell"></span>free</span><span><span class="slot-cell join"></span>shared</span><span><span class="slot-cell base"></span>base</span></div>
+      ${slotMap}
       <div class="stat-rows">${rows.map(([name, value, title]) => `<div class="stat-row"><span class="name" title="${title}">${name}</span><span class="val">${value}</span></div>`).join('')}</div>
       <div class="sub" title="Boats that stop moving give their slot back after a while, and a boat that comes back gets the same one if it is free">A slot is freed ${info ? info.staleS : 45} s after a boat stops (below ${info ? info.movingKn : 1.5} kn).</div>
     </div>`;
@@ -630,13 +622,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   .mode-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   .mode-radios input { width: 15px; height: 15px; accent-color: #f2b84b; cursor: pointer; }
   .slots-card { grid-column: span 2; }
-  .slot-map { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 4px; }
-  .slot-cell { width: 15px; height: 15px; border-radius: 3px; background: #1c222b; border: 1px solid #2d3542; box-sizing: border-box; }
-  .slot-cell.used { background: #1f6feb; border-color: #388bfd; }
-  .slot-cell.join { background: #4a3510; border-color: #f2b84b; }
-  .slot-cell.base { background: #6e40c9; border-color: #a371f7; }
-  .slot-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: #8b94a3; margin-bottom: 6px; }
-  .slot-legend .slot-cell { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-right: 4px; }
+  ${SLOT_MAP_CSS}
   .link-card { grid-column: span 2; }
   @media (min-width: 1100px) { .link-card { grid-column: span 3; } }
   .link-scroll { overflow-x: auto; margin-top: 8px; }

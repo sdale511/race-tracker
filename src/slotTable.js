@@ -489,6 +489,7 @@ class SlotTableFollower {
     this.layout = null; // the count, width and join slots from the last table heard
     this.lastVersion = null;
     this.tablesHeard = 0;
+    this.lastTable = null; // the last table heard, for the boat's dashboard: {version, practice, slotCount, slotWidthMs, joinSlots, entries, heardAt}
   }
 
   // Called by the boat as it enters or leaves the on-grid zone. Parked, it goes back to the shared join
@@ -508,6 +509,15 @@ class SlotTableFollower {
     if (this.pinned) return false;
     this.tablesHeard++;
     this.lastVersion = table.version;
+    this.lastTable = {
+      version: table.version,
+      practice: !!table.practice,
+      slotCount: table.slotCount,
+      slotWidthMs: table.slotWidthMs,
+      joinSlots: table.joinSlots,
+      entries: table.entries.map((e) => ({ boatId: e.boatId, slot: e.slot })),
+      heardAt: this.now(),
+    };
     if (!!table.practice !== this.practice) {
       this.practice = !!table.practice;
       if (this.onPractice) this.onPractice(this.practice);

@@ -590,3 +590,23 @@ test('the practice switch is remembered in a file, and a missing file means "nev
   fs.writeFileSync(file, 'not json');
   assert.strictEqual(getPersistedPractice(file), null);
 });
+
+test('follower: keeps the last table it heard so the boat dashboard can show it', () => {
+  const sim = { t: 0 };
+  const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 11, count: 30, widthMs: 30 });
+  const f = new SlotTableFollower({ boatId: 'LAT02', scheduler: sched, now: () => 5000 });
+  assert.strictEqual(f.lastTable, null, 'nothing heard yet');
+  f.onTable({ version: 4, practice: true, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [{ boatId: 'LAT01', slot: 0 }, { boatId: 'LAT02', slot: 5 }] });
+  assert.deepStrictEqual(f.lastTable, {
+    version: 4,
+    practice: true,
+    slotCount: 22,
+    slotWidthMs: 40,
+    joinSlots: 2,
+    entries: [{ boatId: 'LAT01', slot: 0 }, { boatId: 'LAT02', slot: 5 }],
+    heardAt: 5000,
+  });
+  f.onTable({ version: 5, slotCount: 22, slotWidthMs: 40, joinSlots: 2, entries: [] });
+  assert.strictEqual(f.lastTable.version, 5, 'the newest table replaces the old one');
+  assert.deepStrictEqual(f.lastTable.entries, []);
+});

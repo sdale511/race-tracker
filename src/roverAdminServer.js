@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -143,6 +143,37 @@ function joinSlotNumbers(txSlot) {
   return Array.from({ length: txSlot.joinSlots }, (_, i) => txSlot.joinFirst + i).join(', ');
 }
 
+// The slot table this boat is following: what the base broadcast, as a slot map with this boat's own slot highlighted and
+// the list behind it. Shown only once the boat has heard a table (a pinned boat never follows one).
+function renderSlotTableCard(s) {
+  const t = s.txSlot && s.txSlot.table;
+  if (!s.txSlot || !s.txSlot.enabled) return '';
+  if (!t) {
+    return `<div class="card slot-table-card">
+      <div class="label" title="The table of transmit slots the base broadcasts, listing which boat holds which slot">Slot table</div>
+      <div class="value">not heard yet</div>
+      <div class="sub">The base sends its slot table every few seconds; this boat has not heard one.</div>
+    </div>`;
+  }
+  const assignable = t.slotCount - t.joinSlots;
+  const bySlot = new Map(t.entries.map((e) => [e.slot, e.boatId]));
+  const mine = t.entries.find((e) => e.boatId === s.boatId);
+  const ago = Math.max(0, Math.round((Date.now() - t.heardAt) / 1000));
+  const rows = [...t.entries]
+    .sort((a, b) => a.slot - b.slot)
+    .map((e) => `<tr class="${e.boatId === s.boatId ? 'mine' : ''}"><td>slot ${e.slot}</td><td>boat ${e.boatId}${e.boatId === s.boatId ? ' (this boat)' : ''}</td></tr>`)
+    .join('');
+  return `<div class="card slot-table-card">
+      <div class="label" title="The table of transmit slots the base broadcasts, listing which boat holds which slot">Slot table</div>
+      <div class="value">${t.entries.length} of ${assignable}</div>
+      <div class="sub">${t.practice ? 'Practice mode' : 'Race mode'} &middot; table v${t.version}, heard ${ago} s ago &middot; ${
+        mine ? `this boat holds slot ${mine.slot}` : 'this boat is not listed (it shares the join slots)'
+      }</div>
+      ${renderSlotMap({ slotCount: t.slotCount, joinSlots: t.joinSlots, bySlot, mineId: s.boatId })}
+      <details class="slot-list"><summary>List the ${t.entries.length} boats</summary><table>${rows || '<tr><td>nobody holds a slot</td></tr>'}</table></details>
+    </div>`;
+}
+
 function renderDashboard(s, power) {
   const fix = s.lastFix;
   // receivedAt (this Pi's own local-clock receipt time), not timestamp
@@ -225,6 +256,13 @@ function renderDashboard(s, power) {
   }
   .manual-input::placeholder { color: #5a6270; }
   ${TABS_CSS}
+  ${SLOT_MAP_CSS}
+  .slot-table-card { grid-column: span 2; }
+  .slot-list { margin-top: 8px; font-size: 12px; color: #8b94a3; }
+  .slot-list summary { cursor: pointer; }
+  .slot-list table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  .slot-list td { padding: 2px 8px 2px 0; font-variant-numeric: tabular-nums; }
+  .slot-list tr.mine td { color: #56d364; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -424,6 +462,7 @@ function renderDashboard(s, power) {
     </div>`
         : ''
     }
+    ${renderSlotTableCard(s)}
     <div class="card">
       <div class="label">Frames sent</div>
       <div class="value">${s.radio.framesSent.toLocaleString()}</div>

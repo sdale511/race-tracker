@@ -66,4 +66,39 @@ function renderDiskCard(disk, scheduleText) {
     </div>`;
 }
 
-module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard };
+// The slot map shared by the base's Transmit slots card and the boat's Slot table card: one small square per slot of the
+// correction cycle - slots held by a boat, free ones, the shared join slots and the base's own - plus a legend. mineId
+// (the boat's own id, on the boat's dashboard) highlights that boat's slot.
+const SLOT_MAP_CSS = `
+  .slot-map { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 4px; }
+  .slot-cell { width: 15px; height: 15px; border-radius: 3px; background: #1c222b; border: 1px solid #2d3542; box-sizing: border-box; }
+  .slot-cell.used { background: #1f6feb; border-color: #388bfd; }
+  .slot-cell.join { background: #4a3510; border-color: #f2b84b; }
+  .slot-cell.base { background: #6e40c9; border-color: #a371f7; }
+  .slot-cell.mine { background: #2ea043; border-color: #56d364; }
+  .slot-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: #8b94a3; margin-bottom: 6px; }
+  .slot-legend .slot-cell { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-right: 4px; }`;
+
+function slotEsc(x) {
+  return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// bySlot: Map slot -> boat id. slotCount counts the join slots; the base's own slot is one more, after them.
+function renderSlotMap({ slotCount, joinSlots, bySlot, mineId = null }) {
+  const assignable = slotCount - joinSlots;
+  const cells = [];
+  for (let i = 0; i < slotCount + 1; i++) {
+    if (i === slotCount) cells.push(`<span class="slot-cell base" title="Slot ${i}: the base's own frames (slot table, marks, pings)"></span>`);
+    else if (i >= assignable) cells.push(`<span class="slot-cell join" title="Slot ${i}: shared by boats that have no slot of their own yet"></span>`);
+    else if (bySlot.has(i) && mineId !== null && bySlot.get(i) === mineId) cells.push(`<span class="slot-cell mine" title="Slot ${i}: this boat"></span>`);
+    else if (bySlot.has(i)) cells.push(`<span class="slot-cell used" title="Slot ${i}: ${slotEsc(bySlot.get(i))}"></span>`);
+    else cells.push(`<span class="slot-cell" title="Slot ${i}: free"></span>`);
+  }
+  const legend =
+    '<span><span class="slot-cell used"></span>in use</span>' +
+    (mineId !== null ? '<span><span class="slot-cell mine"></span>this boat</span>' : '') +
+    '<span><span class="slot-cell"></span>free</span><span><span class="slot-cell join"></span>shared</span><span><span class="slot-cell base"></span>base</span>';
+  return `<div class="slot-map">${cells.join('')}</div><div class="slot-legend">${legend}</div>`;
+}
+
+module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap };

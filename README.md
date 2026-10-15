@@ -831,7 +831,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;
   "shared (full)" for a boat that is waiting in the join slots because every slot is taken),
   shown only when the base runs the table. Each boat's own dashboard has a **Transmit slot** card (its slot or the shared
-  slots, whether it has heard a table, and its spilled, expired and dropped frame counts). The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
+  slots, whether it has heard a table, and its spilled, expired and dropped frame counts). A **Slot table** card shows the table that boat is following: a map of the slots with its own slot highlighted, the table version and how long ago it was heard, and the list of which boat holds which slot. The base also lists the table under `slots` in its status (`GET /api/stats`) and logs each assignment
   as `[slots] <boat> -> slot N`.
 - **The base's own slot.** The cycle has one more slot after the boats' (and the join slots): the slot table,
   marks, pings and sleep/wake frames from the base all wait for it, so the base never lands on a boat's frame.
