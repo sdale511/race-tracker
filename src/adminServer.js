@@ -762,6 +762,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     page === 'home'
       ? `<div class="grid">
     ${renderSlotsCard(s.slots, s.slotInfo, true)}
+    ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
     ${
       s.course
         ? `<div class="card marks-card">
