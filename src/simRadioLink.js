@@ -116,4 +116,4 @@ class SimRadioLink extends EventEmitter {
   }
 }
 
-module.exports = { SimRadioLink };
+module.exports = { SimRadioLink, decodeDatagram };

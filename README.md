@@ -1466,6 +1466,35 @@ holds - press SPACE in the fleet's terminal to release everyone at once
 `SIM_HOLD_FOR_START=0` to auto-depart after `SIM_PRESTART_DWELL_S`
 seconds instead.
 
+### RF test: several simulated boats over one real radio (`npm run fleet-rf`)
+
+Tests the slot table over the air with more boats than you have radios. `fleet-rf` runs `FLEET_SIZE` simulated boats (their
+GPS and race are simulated) behind **one real radio**: the fleet process opens the radio (`RADIO_PORT`, `RADIO_BAUD`, as a
+boat would) and relays frames both ways, so everything the radio hears - the base's RTCM bursts, slot table, marks, pings and
+power frames - reaches every boat, and every frame a boat sends is written to the radio and goes out on air. Each boat has its
+own id, so each is given its own slot by a real base. Nothing uses Redis or UDP; the marks come over the air as for a real boat.
+
+```
+# the base, on its own real radio (not SIMULATE): npm run base      (race or practice mode, as you like)
+
+# machine 1, radio on /dev/ttyUSB0 - boats 00001-00005
+RADIO_PORT=/dev/ttyUSB0 FLEET_SIZE=5 npm run fleet-rf
+
+# machine 2 (or a second radio on the same machine), after the first fleet's ids - boats 00006-00010
+RADIO_PORT=/dev/ttyUSB1 FLEET_SIZE=5 FLEET_ID_START=6 FLEET_ADMIN_PORT_START=8110 npm run fleet-rf
+```
+
+- `FLEET_ID_START` is the number of the fleet's first boat id, so a second radio's boats do not repeat the first's. Two fleets
+  on one machine also need different `FLEET_ADMIN_PORT_START` values (each boat has its own dashboard).
+- `SIM_HOLD_FOR_START` works as in `npm run fleet` (SPACE in the fleet's terminal starts everyone; `0` auto-departs).
+- Every 10 s the fleet prints `[rfBridge] last 10 s: radio heard N frames (M RTCM), boats sent K frames`. A boat's frame the radio
+  refuses (closed, or its write buffer backed up) is counted as `refused` and not sent, as a real boat's would not be.
+- The boats see the base's frames a few milliseconds later than a real boat would (the hop through the fleet process), which is
+  small next to the slot width, but means this tests slot sharing, collisions and the base's table, not exact RF timing
+  of one boat.
+- The radios must be set up like a boat's (same network ID and settings). One radio transmits for all its boats, one frame
+  at a time, so two boats of the same fleet never collide with each other; that is what the second radio is for.
+
 ### Simulated GPS with real radio hardware
 
 `SIMULATE_GPS=1` fakes just the GPS track, using real radios on both ends

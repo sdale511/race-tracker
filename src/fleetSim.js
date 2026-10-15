@@ -31,6 +31,14 @@ const { sequentialBoatId } = require('./boatIdFile');
 // has. Ctrl+C here forwards SIGINT to whichever boats are still racing.
 
 const FLEET_SIZE = parseInt(process.env.FLEET_SIZE || '3', 10);
+// RF_BRIDGE=1 (`npm run fleet-rf`): the fleet shares ONE real radio instead of the UDP stand-in, so its boats are heard by a real
+// base over the air - the RF test. This process opens the radio (RADIO_PORT/RADIO_BAUD, as a boat would) and relays frames both
+// ways over the children's IPC channel (ipcRadioLink.js): everything the radio hears goes to every boat, and every frame a boat
+// sends is written to the radio. Each boat has its own id, so each gets its own slot from the base's table. To test with more
+// boats than one radio can carry, run this on a second radio (or machine) with FLEET_ID_START so the ids do not repeat.
+const RF_BRIDGE = process.env.RF_BRIDGE === '1' || process.env.RF_BRIDGE === 'true';
+// First number of this fleet's boat ids (00001, 00002, ...): a second fleet on a second radio starts after the first one's.
+const FLEET_ID_START = parseInt(process.env.FLEET_ID_START || '1', 10);
 // Matches boatAgent.js's own SIMULATE=1 default admin port (8093) as the
 // base - each boat needs its own distinct port (an explicit ADMIN_PORT
 // from the parent env would otherwise collide across every child), so this
@@ -43,6 +51,10 @@ const ADMIN_PORT_START = parseInt(process.env.FLEET_ADMIN_PORT_START || '8093', 
 // itself. Set LOG_IPC=1 to see them.
 const LOG_IPC = process.env.LOG_IPC === '1' || process.env.LOG_IPC === 'true';
 
+if (!Number.isInteger(FLEET_ID_START) || FLEET_ID_START < 1) {
+  console.error(`[fleetSim] invalid FLEET_ID_START=${process.env.FLEET_ID_START} - must be a positive integer`);
+  process.exit(1);
+}
 if (!Number.isInteger(FLEET_SIZE) || FLEET_SIZE < 1) {
   console.error(`[fleetSim] invalid FLEET_SIZE=${process.env.FLEET_SIZE} - must be a positive integer`);
   process.exit(1);
@@ -53,9 +65,9 @@ if (!Number.isInteger(FLEET_SIZE) || FLEET_SIZE < 1) {
 // there's nothing to coordinate against and no reason to draw randomly;
 // a plain incrementing number is easier to track across a console full of
 // interleaved per-boat log lines than random ids would be.
-const fleetBoatIds = Array.from({ length: FLEET_SIZE }, (_, i) => sequentialBoatId(i + 1));
+const fleetBoatIds = Array.from({ length: FLEET_SIZE }, (_, i) => sequentialBoatId(FLEET_ID_START + i));
 
-console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s), BOAT_ID: ${fleetBoatIds.join(', ')}`);
+console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s), BOAT_ID: ${fleetBoatIds.join(', ')}${RF_BRIDGE ? ` - over the real radio on ${config.radio.port}` : ''}`);
 
 // This script's whole purpose is a fleet of SIMULATED boats - defaults
 // SIMULATE=1 so `npm run fleet` works with no other env vars set, but
@@ -63,6 +75,12 @@ console.log(`[fleetSim] starting ${FLEET_SIZE} boat(s), BOAT_ID: ${fleetBoatIds.
 // SIMULATE_GPS=1 with real radio hardware, bench-testing several actual
 // radios at once).
 const baseEnv = { ...process.env };
+if (RF_BRIDGE) {
+  // Boats are fully simulated (GPS and race) but their radio is the bridge below. Marks come over the air from the base, the
+  // same way a real boat gets them - nothing here reads Redis.
+  baseEnv.SIMULATE = '1';
+  baseEnv.RF_BRIDGE = '1';
+}
 if (baseEnv.SIMULATE !== '1' && baseEnv.SIMULATE !== 'true' && baseEnv.SIMULATE_GPS !== '1' && baseEnv.SIMULATE_GPS !== 'true') {
   baseEnv.SIMULATE = '1';
 }
@@ -289,6 +307,46 @@ function startFleet() {
   }
 }
 
+// RF_BRIDGE: the one real radio behind every boat of this fleet. Frames the radio hears go to all boats (the base's slot table,
+// RTCM bursts, marks, pings and power frames - and, as on air, other boats' frames); a boat's frame is written to the radio
+// as one piece, in the order it arrives, so the boats' own slot timing is what spaces them on air.
+let rfRadio = null;
+const bridgeStats = { heard: 0, rtcm: 0, sent: 0, sentBytes: 0, refused: 0 };
+function startRfBridge() {
+  const { RadioLink } = require('./radioLink');
+  const protocol = require('./protocol');
+  rfRadio = new RadioLink({ port: config.radio.port, baud: config.radio.baud });
+  rfRadio.on('error', (err) => console.error('[rfBridge] radio error:', err.message));
+  rfRadio.on('connected', () => console.log(`[rfBridge] radio open on ${config.radio.port} @ ${config.radio.baud}`));
+  rfRadio.on('disconnected', () => console.warn('[rfBridge] radio disconnected, retrying...'));
+  rfRadio.on('raw-frame', (buf) => {
+    bridgeStats.heard++;
+    if (buf[0] === protocol.RTCM_SYNC) bridgeStats.rtcm++;
+    const message = { radioRx: buf.toString('base64') };
+    for (const child of children) if (child.connected) child.send(message);
+  });
+  for (const child of children) {
+    child.on('message', (msg) => {
+      if (!msg || typeof msg.radioTx !== 'string') return;
+      const buf = Buffer.from(msg.radioTx, 'base64');
+      if (rfRadio.send(buf)) {
+        bridgeStats.sent++;
+        bridgeStats.sentBytes += buf.length;
+      } else {
+        bridgeStats.refused++; // radio closed or its write buffer backed up: the frame is not sent, as a real boat's would not be
+      }
+    });
+  }
+  setInterval(() => {
+    const b = bridgeStats;
+    console.log(
+      `[rfBridge] last 10 s: radio heard ${b.heard} frames (${b.rtcm} RTCM), boats sent ${b.sent} frames (${b.sentBytes} bytes)` +
+        (b.refused ? `, ${b.refused} refused by the radio` : '')
+    );
+    b.heard = b.rtcm = b.sent = b.sentBytes = b.refused = 0;
+  }, 10000).unref();
+}
+
 // Stops the fleet as a whole rather than leaving orphaned boats racing on
 // their own with nothing watching them - each child gets its own SIGINT,
 // same as if it had been started by hand in its own terminal (see
@@ -312,8 +370,11 @@ function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-ensureFreshMarksCached()
-  .then(startFleet)
+(RF_BRIDGE ? Promise.resolve() : ensureFreshMarksCached())
+  .then(() => {
+    startFleet();
+    if (RF_BRIDGE) startRfBridge();
+  })
   .catch((err) => {
     console.error('[fleetSim] failed to fetch course marks from Redis - not starting any boats:', err.message);
     process.exit(1);

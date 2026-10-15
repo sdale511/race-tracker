@@ -175,11 +175,14 @@ function radioDropReason() {
 }
 
 if (config.simulate) {
-  const { SimRadioLink } = require('./simRadioLink');
-  radio = new SimRadioLink({
-    port: config.sim.port,
-    packetLossPct: config.sim.packetLossPct,
-  });
+  // RF_BRIDGE=1 (set by fleetSim.js): this simulated boat shares its parent's one real radio, over IPC, instead of the UDP stand-in
+  const rfBridged = process.env.RF_BRIDGE === '1' && typeof process.send === 'function';
+  radio = rfBridged
+    ? new (require('./ipcRadioLink').IpcRadioLink)()
+    : new (require('./simRadioLink').SimRadioLink)({
+        port: config.sim.port,
+        packetLossPct: config.sim.packetLossPct,
+      });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });

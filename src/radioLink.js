@@ -182,6 +182,7 @@ class RadioLink extends EventEmitter {
       const candidate = this._buf.slice(0, len);
       const decoded = frameType.decode(candidate);
       if (decoded) {
+        this.emit('raw-frame', candidate); // the frame's own bytes, for fleetSim.js's RF bridge to hand to its simulated boats
         this.emit(frameType.event, decoded);
         this._buf = this._buf.slice(len);
       } else {

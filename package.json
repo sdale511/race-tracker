@@ -7,6 +7,7 @@
   "scripts": {
     "boat": "node src/boatAgent.js",
     "fleet": "node src/fleetSim.js",
+    "fleet-rf": "RF_BRIDGE=1 node src/fleetSim.js",
     "base": "node src/baseStation.js",
     "rtk": "node src/rtkStation.js",
     "basertk": "node src/baseRtkStation.js",
