@@ -172,6 +172,21 @@ function offsetToLatLon(centerLat, centerLon, { north, east }) {
 
 // Inverse of offsetToLatLon's flat-earth approximation - distance in meters
 // between two lat/lon points, fine at course-length scales.
+// Distance (m) from point p to the segment a-b, flat-earth like distanceMeters. Used for "near the finish line": a boat near the
+// middle of the line is as close as one near either end, which a distance to the two mark positions would not say.
+function distanceToSegmentM(p, a, b) {
+  const kx = METERS_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
+  const ax = 0;
+  const ay = 0;
+  const bx = (b.lon - a.lon) * kx;
+  const by = (b.lat - a.lat) * METERS_PER_DEG_LAT;
+  const px = (p.lon - a.lon) * kx;
+  const py = (p.lat - a.lat) * METERS_PER_DEG_LAT;
+  const len2 = bx * bx + by * by;
+  const u = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * bx + (py - ay) * by) / len2));
+  return Math.hypot(px - (ax + u * bx), py - (ay + u * by));
+}
+
 function distanceMeters(a, b) {
   const north = (b.lat - a.lat) * METERS_PER_DEG_LAT;
   const east = (b.lon - a.lon) * METERS_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
@@ -413,6 +428,7 @@ function resolveCourseCenter(regattaLat, regattaLon, fallbackLat, fallbackLon) {
 }
 
 module.exports = {
+  distanceToSegmentM,
   METERS_PER_DEG_LAT,
   NM_TO_M,
   COURSE_LENGTH_NM,

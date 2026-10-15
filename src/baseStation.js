@@ -20,6 +20,7 @@ const {
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
+const { decideOnGridPost } = require('./onGridPost');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
 const { MarkRoundingWatcher } = require('./markRoundingWatcher');
 const { MarkRoundingWebhookQueue } = require('./markRoundingWebhookQueue');
@@ -966,6 +967,7 @@ function main() {
       racingTtlMs: config.txGate.slot.racingS * 1000,
       zoneTtlMs: config.txGate.slot.racingS * 1000,
       unparkFixes: config.txGate.slot.unparkFixes,
+      parkDwellMs: config.txGate.slot.parkDwellS * 1000,
       holdMs: config.txGate.slot.holdS * 1000,
       activeWindowMs: config.txGate.slot.activeWindowS * 1000,
       log: (m) => console.log(m),
@@ -1874,6 +1876,7 @@ function main() {
   // windwardGreen/leewardGreen (needed for the watcher's own starboard-tack
   // exclusion corridor - see its module comment).
   const onGridWatchers = new Map();
+  const onGridHeld = new Set(); // boats whose on-grid event is being held because they are racing (see onGridPost.js)
 
   // How long a boat can sit continuously on-grid before its own latched
   // "already told RegattaUp" state (see detectRaceEvents' wasOnGrid check
@@ -2476,7 +2479,13 @@ function main() {
           ? ` (${Math.round((Date.now() - lastSent) / 1000)}s / ${ONGRID_RESEND_INTERVAL_MS / 1000}s latch)`
           : '';
       console.log(`[baseStation] boat=${decoded.boatId} ${label} the start grid${latchInfo}`);
-      if (config.regattaup.enabled && onGridMode === 'ongrid' && (!wasOnGrid || dueForResend)) {
+      // A racing boat clipping the zone is not staged for a start: its event is held until it has stayed long enough to be parked (see onGridPost.js)
+      const racingNow = !!(slotAllocator && slotAllocator.racing.has(decoded.boatId));
+      const decision = decideOnGridPost({ mode: onGridMode, wasOnGrid, dueForResend, racing: racingNow, held: onGridHeld.has(decoded.boatId) });
+      if (decision.held) onGridHeld.add(decoded.boatId);
+      else onGridHeld.delete(decoded.boatId);
+      if (decision.action === 'hold') console.log(`[baseStation] boat=${decoded.boatId} passing through the start grid while racing - on-grid event held`);
+      if (config.regattaup.enabled && decision.action === 'post') {
         const event = {
           boatId: decoded.boatId,
           mode: onGridMode,

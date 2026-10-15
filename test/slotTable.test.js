@@ -652,3 +652,60 @@ test('follower: keeps the last table it heard so the boat dashboard can show it'
   assert.strictEqual(f.lastTable.version, 5, 'the newest table replaces the old one');
   assert.deepStrictEqual(f.lastTable.entries, []);
 });
+
+test('zone state: a transit through the zone does not park, a boat that stays does, after the dwell', () => {
+  const z = new ZoneState(3, 5000);
+  let t = 0;
+  // a racing boat clips the zone: two fixes inside a second apart, then out
+  assert.strictEqual(z.update(true, false, t), false); t += 100;
+  assert.strictEqual(z.update(true, false, t), false); t += 100;
+  for (let i = 0; i < 3; i++) { assert.strictEqual(z.update(false, true, t), false); t += 100; }
+  // a boat that arrives and stays: parked once it has been inside 5 s
+  t = 20000;
+  assert.strictEqual(z.update(true, false, t), false);
+  t = 24900; assert.strictEqual(z.update(true, false, t), false, 'just short of the dwell');
+  t = 25000; assert.strictEqual(z.update(true, false, t), true);
+  // and it unparks only after the usual fixes outside
+  assert.strictEqual(z.update(false, false, t + 100), true);
+  assert.strictEqual(z.update(false, false, t + 200), true);
+  assert.strictEqual(z.update(false, false, t + 300), false);
+});
+
+test('zone state: a boat jostling at the edge keeps its stay, one that really leaves starts again', () => {
+  const z = new ZoneState(3, 5000);
+  z.update(true, false, 0);
+  z.update(false, false, 1000); // one fix outside is not leaving
+  assert.strictEqual(z.update(true, false, 5000), true, 'the stay carries on from the first fix inside');
+  const y = new ZoneState(3, 5000);
+  y.update(true, false, 0);
+  for (let i = 1; i <= 3; i++) y.update(false, false, i * 1000); // three outside in a row: it left before the dwell was up
+  assert.strictEqual(y.update(true, false, 6000), false, 'a new stay starts from here');
+  assert.strictEqual(y.update(true, false, 11000), true);
+});
+
+test('allocator: a boat that only clips the on-grid zone keeps its slot, one that stays is parked', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, widthMs: 40, joinSlots: 1, parkDwellMs: 5000, now: () => now });
+  const slot = a.noteHeard('FAST1', { moving: true, inZone: false });
+  assert.notStrictEqual(slot, null);
+  a.noteHeard('FAST1', { moving: true, inZone: true }); now += 1000; // through the zone in a second
+  now += 1000;
+  assert.strictEqual(a.noteHeard('FAST1', { moving: true, inZone: false }), slot, 'still has its slot');
+  assert.deepStrictEqual(a.status().parked, []);
+  now += 1000;
+  a.noteHeard('SLOW1', { moving: false, inZone: true });
+  assert.deepStrictEqual(a.status().parked, [], 'not yet: only just arrived');
+  now += 6000;
+  a.noteHeard('SLOW1', { moving: false, inZone: true });
+  assert.deepStrictEqual(a.status().parked, ['SLOW1']);
+});
+
+test('allocator: a boat inside the on-grid zone is never given a new slot, even before the dwell is up', () => {
+  let now = 0;
+  const a = new SlotAllocator({ count: 6, widthMs: 40, joinSlots: 1, parkDwellMs: 5000, now: () => now });
+  assert.strictEqual(a.noteHeard('NEW01', { moving: true, inZone: true }), null, 'moving, in the zone, no slot yet: none given');
+  now += 1000;
+  assert.strictEqual(a.noteHeard('NEW01', { moving: true, inZone: true }), null);
+  now += 1000;
+  assert.notStrictEqual(a.noteHeard('NEW01', { moving: true, inZone: false }), null, 'it gets one once it is out');
+});

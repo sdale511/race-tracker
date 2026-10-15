@@ -544,6 +544,10 @@ module.exports = {
       // 10 s, not shorter: a fleet's first reports straggle in over about 8 s, and a repeat inside that window adds a second round of frames to the busiest moment.
       parkedRepeatS: Math.max(0, parseFloat(process.env.TX_PARKED_REPEAT_S || '10') || 0),
       unparkFixes: Math.max(1, parseInt(process.env.TX_SLOT_UNPARK_FIXES || '3', 10) || 3),
+      // A boat counts as parked only after it has been inside the on-grid zone this many seconds (TX_SLOT_PARK_DWELL_S; boat and base).
+      // A racing boat that clips the zone going through the start line is gone in a second or two and keeps its slot; one waiting for
+      // a start stays and is parked after the dwell. 0 parks on the first fix inside.
+      parkDwellS: Math.max(0, parseFloat(process.env.TX_SLOT_PARK_DWELL_S || '5') || 0),
       // Boat: a boat with no slot of its own (waiting for one, or not racing so never going to get one) reports
       // quickly at first, then backs off to at most one report every joinReportS seconds, so a crowd of such
       // boats does not swamp the shared join slots. 0 turns the back-off off.

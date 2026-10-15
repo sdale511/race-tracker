@@ -132,6 +132,7 @@ const sections = [
       { label: 'slot', value: config.txGate.slot.index === null ? '(from boat id)' : config.txGate.slot.index, envVar: 'TX_SLOT', roles: ['boat'] },
       { label: 'slotCount', value: config.txGate.slot.count, envVar: 'TX_SLOT_COUNT', roles: ['boat'] },
       { label: 'parkedFirstS', value: config.txGate.slot.parkedFirstS, envVar: 'TX_PARKED_FIRST_S', unit: 's', roles: ['boat'] },
+      { label: 'parkDwellS', value: config.txGate.slot.parkDwellS, envVar: 'TX_SLOT_PARK_DWELL_S', unit: 's', roles: ['boat', 'base'] },
       { label: 'parkedRepeatS', value: config.txGate.slot.parkedRepeatS, envVar: 'TX_PARKED_REPEAT_S', unit: 's', roles: ['boat'] },
       { label: 'slotWidthMs', value: config.txGate.slot.widthMs, envVar: 'TX_SLOT_MS', unit: 'ms', roles: ['boat'] },
     ],

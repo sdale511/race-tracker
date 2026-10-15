@@ -61,29 +61,38 @@ function pickSlot(taken, count) {
 // "Parked" boats are those inside the on-grid zone behind the start line (onGridWatcher.js): they take no
 // slot, and report only occasionally (see ParkedReporter), so a fleet queueing for a start can't use up the
 // slots - or swamp the shared join slots - while another fleet is still racing. ZoneState adds hysteresis
-// so a boat jostling at the edge of the zone doesn't flip in and out: it is parked on the first fix inside
-// and unparked only after unparkFixes fixes in a row outside.
+// so a boat jostling at the edge of the zone doesn't flip in and out: it is parked once it has been inside for dwellMs
+// (0: on the first fix inside) and unparked only after unparkFixes fixes in a row outside. The dwell is what tells a boat
+// queueing for a start from a racing boat that clips the zone going through the line: a transit is over in a second or two,
+// a boat waiting for a start stays.
 class ZoneState {
-  constructor(unparkFixes = 3) {
+  constructor(unparkFixes = 3, dwellMs = 0) {
     this.unparkFixes = Math.max(1, unparkFixes);
+    this.dwellMs = Math.max(0, dwellMs);
     this.parked = false;
     this.outside = 0;
+    this.enteredAt = null; // when the current stay inside the zone began (a stay is broken by unparkFixes fixes outside)
     this.crossedLine = false;
   }
 
   // pastLine: this fix is past the start line on the course side. A boat that leaves the zone through the line
   // (crossedLine) has started; one that leaves backwards or sideways has not.
-  update(inZone, pastLine = false) {
+  update(inZone, pastLine = false, nowMs = Date.now()) {
     if (inZone) {
-      this.parked = true;
+      if (this.enteredAt === null) this.enteredAt = nowMs;
       this.outside = 0;
       this.crossedLine = false;
+      if (nowMs - this.enteredAt >= this.dwellMs) this.parked = true;
     } else if (this.parked) {
       if (pastLine) this.crossedLine = true;
       if (++this.outside >= this.unparkFixes) {
         this.parked = false;
         this.outside = 0;
+        this.enteredAt = null;
       }
+    } else if (this.enteredAt !== null && ++this.outside >= this.unparkFixes) {
+      this.enteredAt = null; // left before the dwell was up: the stay is over
+      this.outside = 0;
     }
     return this.parked;
   }
@@ -174,7 +183,7 @@ class JoinBackoff {
 }
 
 class SlotAllocator {
-  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, staleMs = 45 * 1000, activeFrames = 0, gridOnly = false, practice = false, racingTtlMs = 10 * 60 * 1000, zoneTtlMs = 10 * 60 * 1000, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
+  constructor({ count, widthMs, joinSlots = 0, unparkFixes = 3, parkDwellMs = 0, staleMs = 45 * 1000, activeFrames = 0, gridOnly = false, practice = false, racingTtlMs = 10 * 60 * 1000, zoneTtlMs = 10 * 60 * 1000, activeWindowMs = 20 * 1000, holdMs = 30 * 60 * 1000, now = () => Date.now(), log = () => {} }) {
     this.count = Math.max(1, Math.min(MAX_SLOTS, count));
     this.widthMs = Math.max(1, Math.min(255, widthMs));
     // The last joinSlots of the count are never assigned (see protocol.js's slot table frame): boats
@@ -182,6 +191,7 @@ class SlotAllocator {
     this.joinSlots = Math.max(0, Math.min(joinSlots, this.count - 1));
     this.staleMs = staleMs;
     this.unparkFixes = unparkFixes;
+    this.parkDwellMs = parkDwellMs;
     this.zones = new Map(); // boatId -> { state: ZoneState, lastHeard } for boats seen inside the on-grid zone
     this.holdMs = holdMs;
     this.released = new Map(); // boatId -> { slot, at } for slots given up, kept for holdMs
@@ -239,14 +249,15 @@ class SlotAllocator {
     // is remembered, so the boat gets the same one back if it is still free when it leaves the zone).
     let zone = this.zones.get(boatId);
     if (inZone && !zone) {
-      zone = { state: new ZoneState(this.unparkFixes), lastHeard: t };
+      zone = { state: new ZoneState(this.unparkFixes, this.parkDwellMs), lastHeard: t };
       this.zones.set(boatId, zone);
     }
     if (zone) {
       zone.lastHeard = t;
       const wasParked = zone.state.parked;
-      const parked = zone.state.update(inZone, pastLine);
-      if (!parked) this.zones.delete(boatId);
+      const parked = zone.state.update(inZone, pastLine, t);
+      // a stay still short of the dwell is kept (it is not parked yet, and is not forgotten until the boat has really left)
+      if (!parked && zone.state.enteredAt === null) this.zones.delete(boatId);
       if (parked && !wasParked) this.log(`[slots] ${boatId} is on the start grid - parked`);
       if (!parked && wasParked) {
         if (zone.state.crossedLine) {
@@ -270,6 +281,12 @@ class SlotAllocator {
         this.overflow.delete(boatId);
         return null;
       }
+    }
+    // Inside the zone but not parked yet (the dwell is not up): a boat that has a slot keeps it - it may be a racing boat clipping the
+    // zone - but one without a slot is not given one. Nothing on the grid is ever handed a slot.
+    if (inZone && !this.byBoat.has(boatId)) {
+      this.recent.delete(boatId);
+      return null;
     }
     const times = (this.recent.get(boatId) || []).filter((x) => t - x <= this.activeWindowMs);
     times.push(t);

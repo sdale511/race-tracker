@@ -77,3 +77,13 @@ test('thinBackfill keeps one fix per 500 ms at most and the corner of a turn', (
   for (let i = 1; i < r.length; i++) assert.ok(r[i].timestamp - r[i - 1].timestamp <= 500);
   assert.strictEqual(thinBackfill(l.slice(0, 2)).length, 2);
 });
+
+test('distanceToSegmentM: perpendicular to the middle, the end point beyond an end, and zero on the line', () => {
+  const { distanceToSegmentM, METERS_PER_DEG_LAT } = require('../src/course');
+  const m = 1 / METERS_PER_DEG_LAT;
+  const a = { lat: 40, lon: -118 };
+  const b = { lat: 40, lon: -118 + 100 * m / Math.cos((40 * Math.PI) / 180) }; // a 100 m segment running east
+  assert.ok(Math.abs(distanceToSegmentM({ lat: 40 + 30 * m, lon: a.lon + 50 * m / Math.cos((40 * Math.PI) / 180) }, a, b) - 30) < 0.5, '30 m north of the middle');
+  assert.ok(Math.abs(distanceToSegmentM({ lat: 40, lon: a.lon - 40 * m / Math.cos((40 * Math.PI) / 180) }, a, b) - 40) < 0.5, '40 m beyond the west end');
+  assert.ok(distanceToSegmentM({ lat: 40, lon: a.lon + 30 * m / Math.cos((40 * Math.PI) / 180) }, a, b) < 0.01, 'on the line');
+});

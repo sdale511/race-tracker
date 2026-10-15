@@ -13,9 +13,10 @@ const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
 const { pruneForDiskSpace } = require('./logRotation');
 const protocol = require('./protocol');
-const { distanceMeters, MARK_NAMES } = require('./course');
+const { distanceMeters, distanceToSegmentM, MARK_NAMES } = require('./course');
 const { DistanceGate } = require('./distanceGate');
 const { RtcmWatchdog } = require('./rtcmWatchdog');
+const { FinishBoost } = require('./finishBoost');
 const { orange } = require('./consoleColor');
 const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
@@ -339,9 +340,11 @@ try {
 // both known yet - handlePvt's own finish-approach check treats that the
 // same as the feature being off for this fix.
 let finishApproachWatcher = null;
+let finishBoost = null; // see finishBoost.js: sends the fixes around a finish crossing whatever state the boat is in
 function rebuildFinishApproachWatcher() {
   finishApproachWatcher =
     currentMarks && currentMarks.committeeFinish && currentMarks.finish ? new FinishApproachWatcher(currentMarks) : null;
+  finishBoost = currentMarks && currentMarks.committeeFinish && currentMarks.finish ? new FinishBoost(currentMarks) : null;
 }
 rebuildFinishApproachWatcher();
 
@@ -361,7 +364,7 @@ function rebuildZoneWatcher() {
   }
 }
 rebuildZoneWatcher();
-const zoneState = new ZoneState(config.txGate.slot.unparkFixes);
+const zoneState = new ZoneState(config.txGate.slot.unparkFixes, config.txGate.slot.parkDwellS * 1000);
 const parkedReporter = new ParkedReporter({
   intervalMs: config.txGate.slot.parkedReportS * 1000,
   firstMs: config.txGate.slot.parkedFirstS * 1000,
@@ -372,7 +375,11 @@ const parkingEnabled = config.txGate.enabled && config.txGate.slot.enabled && co
 // A boat with no slot of its own (waiting for the base to assign one, or not racing so never going to get one)
 // shares the join slots and backs off its reports (see JoinBackoff). Reset whenever it is given a slot.
 const joinBackoff = new JoinBackoff({ maxMs: config.txGate.slot.joinReportS * 1000 });
-if (slotFollower) slotFollower.onAssigned = () => joinBackoff.reset();
+// A boat under way without a slot (it lost it, or never had one) reports every cycle or two, not every 15 s: a racing boat that falls out of
+// its slot must not go quiet. The long back-off is for boats that are not going anywhere.
+const movingBackoff = new JoinBackoff({ maxMs: 4000, steps: [0, 2000] });
+const isWaitingPacer = (p) => p === joinBackoff || p === movingBackoff;
+if (slotFollower) slotFollower.onAssigned = () => { joinBackoff.reset(); movingBackoff.reset(); };
 function joinThrottleActive() {
   return (
     !parked &&
@@ -385,9 +392,16 @@ function joinThrottleActive() {
 }
 // The pacing that applies to this boat's radio sends right now, or null for none: parked on the start grid, or sharing
 // the join slots without a slot of its own.
+const MOVING_UNTHROTTLED_KN = 3; // above this a boat near a mark or the finish line is not paced
 function sendPacer() {
+  if (finishBoost && lastPvt && finishBoost.isUrgent(lastPvt.timestamp)) return null; // a finish crossing: no pacing, it must be seen
   if (parked && config.txGate.slot.parkedReportS > 0 && txScheduler && txScheduler.slotAligned()) return parkedReporter;
-  if (joinThrottleActive()) return joinBackoff;
+  if (joinThrottleActive()) {
+    // A boat under way: near a mark or the finish line it is not paced at all (the base needs its fixes to see the rounding or crossing);
+    // elsewhere it reports every cycle or two (movingBackoff), never every 15 s
+    if (lastPvt && (lastPvt.gSpeedMmS / 1000) * 1.94384 > MOVING_UNTHROTTLED_KN) return isNearRoundingMark(lastPvt) ? null : movingBackoff;
+    return joinBackoff;
+  }
   return null;
 }
 // The base's practice mode (from its slot table): no parking on the start grid, any moving boat has a slot
@@ -395,7 +409,7 @@ let practiceMode = false;
 function updateParked(pvt) {
   if (practiceMode || !parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
   const inZone = zoneWatcher.check(pvt.lat, pvt.lon) === 'ongrid';
-  const now = zoneState.update(inZone);
+  const now = zoneState.update(inZone, false, pvt.timestamp);
   if (now === parked) return;
   parked = now;
   if (slotFollower) slotFollower.setParked(parked);
@@ -670,7 +684,20 @@ function handlePvt(pvt) {
       ? config.txFinishDistanceM
       : config.txDistanceM;
   // A parked boat's report that was repeated for safety (see ParkedReporter) goes through even though the boat has not moved
-  const clearedTxGate = distanceGate.cleared(pvt, effectiveTxDistanceM) || (parked && parkedReporter.wantsRepeat());
+  // A finish crossing seen on the boat's own full-rate fixes: the fixes just before it (dropped by the gate) go back in the batch, and
+  // everything just after is let through, so the base sees the pair that straddles the line (see finishBoost.js)
+  let finishUrgent = false;
+  if (finishBoost && hasValidFix(pvt)) {
+    const boost = finishBoost.onFix(pvt);
+    finishUrgent = boost.urgent;
+    const lastQueuedAt = pendingBatch.length ? pendingBatch[pendingBatch.length - 1].timestamp : -Infinity;
+    for (const f of boost.before) {
+      if (f.timestamp <= lastQueuedAt) continue;
+      sdLogger.logPvt(f); // the SD log mirrors what is sent
+      pendingBatch.push(f);
+    }
+  }
+  const clearedTxGate = finishUrgent || distanceGate.cleared(pvt, effectiveTxDistanceM) || (parked && parkedReporter.wantsRepeat());
 
   // Every fix gets a console line, same as the base's own GPS logging
   // (openBaseGps in baseStation.js) - the console is a live "is this thing
@@ -856,7 +883,7 @@ function queueFixForTx(pvt) {
   if (pacer) {
     // parked or without a slot: only the latest fix is kept for the next (occasional) report. Without a slot (not
     // parked) the fix it replaces is kept for the first cycle in a slot, see waitingFixes
-    if (pacer === joinBackoff) holdWhileWaiting(pendingBatch);
+    if (isWaitingPacer(pacer)) holdWhileWaiting(pendingBatch);
     pendingBatch = [pvt];
     return;
   }
@@ -879,11 +906,14 @@ function queueFixForTx(pvt) {
   }
 }
 
-// True within config.txGate.slot.markZoneM of a windward/leeward mark, where the base needs every fix to see a rounding.
+// True within config.txGate.slot.markZoneM of a windward/leeward mark or of the finish line, where the base needs every fix to see a
+// rounding or a crossing: the whole slot is used and nothing is thinned away there.
 function isNearRoundingMark(fix) {
   const zone = config.txGate.slot.markZoneM;
   if (!zone || !currentMarks) return false;
-  return ROUNDING_MARKS.some((name) => currentMarks[name] && distanceMeters(currentMarks[name], fix) <= zone);
+  if (ROUNDING_MARKS.some((name) => currentMarks[name] && distanceMeters(currentMarks[name], fix) <= zone)) return true;
+  const { committeeFinish, finish } = currentMarks;
+  return !!(committeeFinish && finish && distanceToSegmentM(fix, committeeFinish, finish) <= zone);
 }
 const ROUNDING_MARKS = ['windwardGreen', 'windwardBlack', 'leewardGreen', 'leewardBlack'];
 
@@ -923,7 +953,7 @@ function flushPendingBatch({ forSlot = false, final = false } = {}) {
   if (pacer) {
     // parked, or without a slot of its own: one fix, only when the next report is due (the rest are on the SD card)
     // sharing the join slots (not parked): what is not sent is kept for the first cycle in a slot, see waitingFixes
-    const waiting = pacer === joinBackoff;
+    const waiting = isWaitingPacer(pacer);
     if (!waiting) waitingFixes = []; // parked: nothing to backfill
     if (!pacer.due()) {
       if (waiting) holdWhileWaiting(fixes);
