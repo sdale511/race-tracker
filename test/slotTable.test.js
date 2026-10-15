@@ -319,6 +319,24 @@ test('parked reporter: one report per interval, +-25%, nothing before the first 
   assert.strictEqual(hi.nextAt, 18750, 'and up to 125%');
 });
 
+test('parked reporter: the first report of a parking spell comes within firstMs, then one per interval', () => {
+  let t = 0;
+  const r = new ParkedReporter({ intervalMs: 15000, firstMs: 2000, now: () => t, rand: () => 0.5 });
+  r.reset();
+  assert.strictEqual(r.nextAt, 1000, 'half of the 2 s window');
+  t = 999; assert.strictEqual(r.due(), false);
+  t = 1000; assert.strictEqual(r.due(), true);
+  r.sent();
+  t = 1000 + 14000; assert.strictEqual(r.due(), false, 'after the first report it keeps to the interval');
+  t = 1000 + 15000; assert.strictEqual(r.due(), true);
+  const soon = new ParkedReporter({ intervalMs: 15000, firstMs: 2000, now: () => 0, rand: () => 0 });
+  soon.reset();
+  assert.strictEqual(soon.due(), true, 'it can be at once');
+  const late = new ParkedReporter({ intervalMs: 15000, firstMs: 2000, now: () => 0, rand: () => 1 });
+  late.reset();
+  assert.strictEqual(late.nextAt, 2000, 'and at most firstMs');
+});
+
 test('follower: a parked boat goes back to the join slots and ignores its old entry until it leaves', () => {
   const sim = { t: 0 };
   const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 24, count: 25, widthMs: 35, join: { first: 23, n: 2 } });

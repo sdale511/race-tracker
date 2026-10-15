@@ -92,17 +92,20 @@ class ZoneState {
 // Paces a parked boat's reports to one every intervalMs, plus or minus `jitter` (a fraction) chosen at
 // random each time so a fleet that entered the zone together does not report together.
 class ParkedReporter {
-  constructor({ intervalMs, jitter = 0.25, now = () => Date.now(), rand = Math.random }) {
+  // firstMs: the first report of a parking spell comes after a random 0..firstMs, so the base hears the boat arrive on the grid
+  // within moments, and then one report per intervalMs. Unset, the first report waits a whole interval like the rest.
+  constructor({ intervalMs, firstMs = null, jitter = 0.25, now = () => Date.now(), rand = Math.random }) {
     this.intervalMs = intervalMs;
+    this.firstMs = firstMs;
     this.jitter = jitter;
     this.now = now;
     this.rand = rand;
     this.nextAt = 0;
   }
 
-  // Start of a parking spell: the first report comes a (jittered) interval from now.
+  // Start of a parking spell: the first report comes within firstMs (or, unset, a jittered interval from now).
   reset() {
-    this.nextAt = this.now() + this._interval();
+    this.nextAt = this.now() + (this.firstMs === null ? this._interval() : this.rand() * this.firstMs);
   }
 
   due() {

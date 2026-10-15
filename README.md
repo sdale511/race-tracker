@@ -785,7 +785,9 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   *parked*: the base gives it no slot however active it is, and frees one it had. The boat works out the same
   zone itself from the course marks it receives: it drops back to the shared join slots and reports only every
   `TX_PARKED_REPORT_S` seconds (15, with a random +-25% so a fleet that arrived together doesn't report
-  together), sending just its latest fix (everything stays on its SD card). So a fleet queueing for a start
+  together), sending just its latest fix (everything stays on its SD card). The first report after it parks is not
+  15 s away: it comes within a random 0 to `TX_PARKED_FIRST_S` seconds (2), so the base hears the boat arrive on the
+  grid (and posts its on-grid event) within moments. So a fleet queueing for a start
   neither uses up the slots nor swamps the join slots while another fleet is still racing. A boat is unparked
   after `TX_SLOT_UNPARK_FIXES` (3) fixes in a row outside the zone, so one jostling at the edge doesn't flip in
   and out. If it left across the start line it is now racing and its first moving fix earns a slot (the one it

@@ -360,7 +360,7 @@ function rebuildZoneWatcher() {
 }
 rebuildZoneWatcher();
 const zoneState = new ZoneState(config.txGate.slot.unparkFixes);
-const parkedReporter = new ParkedReporter({ intervalMs: config.txGate.slot.parkedReportS * 1000 });
+const parkedReporter = new ParkedReporter({ intervalMs: config.txGate.slot.parkedReportS * 1000, firstMs: config.txGate.slot.parkedFirstS * 1000 });
 let parked = false;
 const parkingEnabled = config.txGate.enabled && config.txGate.slot.enabled && config.txGate.slot.index === null;
 // A boat with no slot of its own (waiting for the base to assign one, or not racing so never going to get one)

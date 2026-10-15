@@ -528,6 +528,9 @@ module.exports = {
       // unparkFixes fixes in a row outside the zone. 0 turns the throttle off (the base still assigns no slots
       // to boats in the zone).
       parkedReportS: Math.max(0, parseFloat(process.env.TX_PARKED_REPORT_S || '15') || 0),
+      // Boat: the first report after parking comes within a random 0..parkedFirstS seconds (so the base hears the boat arrive on the
+      // grid at once, not 15 s later), then every parkedReportS. Set it equal to parkedReportS to wait a whole interval first.
+      parkedFirstS: Math.max(0, parseFloat(process.env.TX_PARKED_FIRST_S || '2') || 0),
       unparkFixes: Math.max(1, parseInt(process.env.TX_SLOT_UNPARK_FIXES || '3', 10) || 3),
       // Boat: a boat with no slot of its own (waiting for one, or not racing so never going to get one) reports
       // quickly at first, then backs off to at most one report every joinReportS seconds, so a crowd of such
