@@ -84,12 +84,7 @@ for (const method of ['log', 'warn', 'error']) {
 // when stderr is a real terminal - same isTTY gating as gpsLineDirty above,
 // so a piped/redirected log (systemd, a file) never gets raw escape codes
 // embedded in it instead of an actual color.
-function red(text, stream = process.stderr) {
-  return stream.isTTY ? `\x1b[31m${text}\x1b[0m` : text;
-}
-function orange(text, stream = process.stderr) {
-  return stream.isTTY ? `\x1b[38;5;208m${text}\x1b[0m` : text;
-}
+const { red, orange } = require('./consoleColor');
 
 // Base station: sits at the committee boat/shore with the matching radio.
 // Decodes incoming frames and fans them out to whatever your race tracking

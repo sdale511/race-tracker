@@ -337,6 +337,30 @@ test('parked reporter: the first report of a parking spell comes within firstMs,
   assert.strictEqual(late.nextAt, 2000, 'and at most firstMs');
 });
 
+test('parked reporter: the first report is repeated once a few seconds later, then the normal interval', () => {
+  let t = 0;
+  const r = new ParkedReporter({ intervalMs: 15000, firstMs: 2000, repeatMs: 6000, now: () => t, rand: () => 0.5 });
+  r.reset();
+  assert.strictEqual(r.wantsRepeat(), false, 'nothing to repeat before the first report');
+  t = 1000; assert.strictEqual(r.due(), true);
+  r.sent();
+  assert.strictEqual(r.nextAt, 1000 + 6000, 'the repeat comes about repeatMs after the first');
+  t = 6999; assert.strictEqual(r.wantsRepeat(), false);
+  t = 7000; assert.strictEqual(r.wantsRepeat(), true);
+  r.sent();
+  assert.strictEqual(r.wantsRepeat(), false, 'only one repeat');
+  assert.strictEqual(r.nextAt, 7000 + 15000, 'then the normal interval');
+  // a new parking spell starts over
+  t = 100000; r.reset();
+  assert.strictEqual(r.wantsRepeat(), false);
+  t = 101000; r.sent();
+  assert.ok(r.nextAt > 101000 && r.nextAt <= 101000 + 7500);
+  const none = new ParkedReporter({ intervalMs: 15000, firstMs: 2000, repeatMs: 0, now: () => t, rand: () => 0.5 });
+  t = 0; none.reset(); t = 1000; none.sent();
+  assert.strictEqual(none.nextAt, 1000 + 15000, 'repeatMs 0: no repeat');
+  assert.strictEqual(none.wantsRepeat(), false);
+});
+
 test('follower: a parked boat goes back to the join slots and ignores its old entry until it leaves', () => {
   const sim = { t: 0 };
   const sched = boatScheduler(sim, new BurstTracker({ now: () => sim.t }), { enabled: true, index: 24, count: 25, widthMs: 35, join: { first: 23, n: 2 } });

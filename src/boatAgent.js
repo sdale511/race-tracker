@@ -15,6 +15,8 @@ const { pruneForDiskSpace } = require('./logRotation');
 const protocol = require('./protocol');
 const { distanceMeters, MARK_NAMES } = require('./course');
 const { DistanceGate } = require('./distanceGate');
+const { RtcmWatchdog } = require('./rtcmWatchdog');
+const { orange } = require('./consoleColor');
 const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
@@ -360,7 +362,11 @@ function rebuildZoneWatcher() {
 }
 rebuildZoneWatcher();
 const zoneState = new ZoneState(config.txGate.slot.unparkFixes);
-const parkedReporter = new ParkedReporter({ intervalMs: config.txGate.slot.parkedReportS * 1000, firstMs: config.txGate.slot.parkedFirstS * 1000 });
+const parkedReporter = new ParkedReporter({
+  intervalMs: config.txGate.slot.parkedReportS * 1000,
+  firstMs: config.txGate.slot.parkedFirstS * 1000,
+  repeatMs: config.txGate.slot.parkedRepeatS * 1000,
+});
 let parked = false;
 const parkingEnabled = config.txGate.enabled && config.txGate.slot.enabled && config.txGate.slot.index === null;
 // A boat with no slot of its own (waiting for the base to assign one, or not racing so never going to get one)
@@ -663,7 +669,8 @@ function handlePvt(pvt) {
     finishApproachWatcher.isApproachingUpwind(pvt.lat, pvt.lon, config.txFinishApproachZoneM)
       ? config.txFinishDistanceM
       : config.txDistanceM;
-  const clearedTxGate = distanceGate.cleared(pvt, effectiveTxDistanceM);
+  // A parked boat's report that was repeated for safety (see ParkedReporter) goes through even though the boat has not moved
+  const clearedTxGate = distanceGate.cleared(pvt, effectiveTxDistanceM) || (parked && parkedReporter.wantsRepeat());
 
   // Every fix gets a console line, same as the base's own GPS logging
   // (openBaseGps in baseStation.js) - the console is a live "is this thing
@@ -1074,6 +1081,19 @@ radio.on('ping', () => {
 // GPS on every correction burst.
 // null unless RTCM_LOG is set (1 = a tight line per second, 2 = a decoded line per message)
 const rtcmLogger = config.rtcm.log ? createRtcmLogger({ level: config.rtcm.log }) : null;
+
+// An orange warning when the correction bursts are not heard (see rtcmWatchdog.js), unless the boat's corrections come another way
+if (config.txGate.enabled && config.txGate.rtcmWatch.enabled && radioExpected) {
+  const rtcmWatchdog = new RtcmWatchdog({
+    tracker: burstTracker,
+    warn: (m) => console.warn(m),
+    color: (m) => orange(m),
+    graceMs: config.txGate.rtcmWatch.warnS * 1000,
+    repeatMs: config.txGate.rtcmWatch.repeatS * 1000,
+    paused: () => sleeper.isSleeping() || gpsSleep.isAsleep(),
+  });
+  setInterval(() => rtcmWatchdog.check(), 5000).unref();
+}
 
 radio.on('rtcm', (frame) => {
   burstTracker.onRtcm(frame.type, undefined, frame.length);

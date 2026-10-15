@@ -456,6 +456,14 @@ module.exports = {
   txGate: {
     // TX_GATE=0 turns the whole thing off.
     enabled: process.env.TX_GATE !== '0' && process.env.TX_GATE !== 'false',
+    // Boat: an orange console warning when the base's correction bursts are not heard (see rtcmWatchdog.js) - after warnS seconds
+    // without them, repeated every repeatS. RTCM_WATCHDOG=0 turns it off, for a boat whose corrections arrive on a separate radio
+    // (so the bursts are never heard on its telemetry radio on purpose).
+    rtcmWatch: {
+      enabled: process.env.RTCM_WATCHDOG !== '0' && process.env.RTCM_WATCHDOG !== 'false',
+      warnS: Math.max(1, parseFloat(process.env.RTCM_WATCHDOG_WARN_S || '20') || 20),
+      repeatS: Math.max(5, parseFloat(process.env.RTCM_WATCHDOG_REPEAT_S || '30') || 30),
+    },
     // Conflict window around a burst start, as the listening radio decodes it: from blockBeforeMs
     // before to blockAfterMs after (measured: about 40 ms before to 10-20 ms after), plus guardMs
     // each side for timing jitter (measured about 3 ms for clear frames, 10 ms covers most).
@@ -531,6 +539,9 @@ module.exports = {
       // Boat: the first report after parking comes within a random 0..parkedFirstS seconds (so the base hears the boat arrive on the
       // grid at once, not 15 s later), then every parkedReportS. Set it equal to parkedReportS to wait a whole interval first.
       parkedFirstS: Math.max(0, parseFloat(process.env.TX_PARKED_FIRST_S || '2') || 0),
+      // Boat: that first report is sent once more about this many seconds later (+-25%), so one lost in the shared join slots is not
+      // lost for a whole heartbeat (TX_INTERVAL_S, 60 s). 0 = no repeat.
+      parkedRepeatS: Math.max(0, parseFloat(process.env.TX_PARKED_REPEAT_S || '6') || 0),
       unparkFixes: Math.max(1, parseInt(process.env.TX_SLOT_UNPARK_FIXES || '3', 10) || 3),
       // Boat: a boat with no slot of its own (waiting for one, or not racing so never going to get one) reports
       // quickly at first, then backs off to at most one report every joinReportS seconds, so a crowd of such

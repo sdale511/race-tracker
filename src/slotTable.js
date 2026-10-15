@@ -94,9 +94,14 @@ class ZoneState {
 class ParkedReporter {
   // firstMs: the first report of a parking spell comes after a random 0..firstMs, so the base hears the boat arrive on the grid
   // within moments, and then one report per intervalMs. Unset, the first report waits a whole interval like the rest.
-  constructor({ intervalMs, firstMs = null, jitter = 0.25, now = () => Date.now(), rand = Math.random }) {
+  // repeatMs: the first report of a spell is sent once more about this long after it (jittered), because a report lost in the shared
+  // join slots would otherwise not be tried again until the boat's next heartbeat, a minute later. 0 = no repeat.
+  constructor({ intervalMs, firstMs = null, repeatMs = 0, jitter = 0.25, now = () => Date.now(), rand = Math.random }) {
     this.intervalMs = intervalMs;
     this.firstMs = firstMs;
+    this.repeatMs = repeatMs;
+    this.firstDone = false;
+    this.repeatsLeft = 0;
     this.jitter = jitter;
     this.now = now;
     this.rand = rand;
@@ -106,6 +111,8 @@ class ParkedReporter {
   // Start of a parking spell: the first report comes within firstMs (or, unset, a jittered interval from now).
   reset() {
     this.nextAt = this.now() + (this.firstMs === null ? this._interval() : this.rand() * this.firstMs);
+    this.firstDone = false;
+    this.repeatsLeft = this.repeatMs > 0 ? 1 : 0;
   }
 
   due() {
@@ -113,7 +120,24 @@ class ParkedReporter {
   }
 
   sent() {
-    this.nextAt = this.now() + this._interval();
+    if (!this.firstDone) {
+      this.firstDone = true;
+      this.nextAt = this.now() + (this.repeatsLeft > 0 ? this._repeatDelay() : this._interval());
+    } else if (this.repeatsLeft > 0) {
+      this.repeatsLeft--;
+      this.nextAt = this.now() + this._interval();
+    } else {
+      this.nextAt = this.now() + this._interval();
+    }
+  }
+
+  // The repeat of the first report is due: the boat should let a fix through even though it has not moved (see boatAgent.js's handlePvt).
+  wantsRepeat() {
+    return this.firstDone && this.repeatsLeft > 0 && this.due();
+  }
+
+  _repeatDelay() {
+    return this.repeatMs * (1 - this.jitter + 2 * this.jitter * this.rand());
   }
 
   _interval() {
