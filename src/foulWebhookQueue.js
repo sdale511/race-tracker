@@ -95,6 +95,11 @@ class FoulWebhookQueue {
     });
   }
 
+  // Every row still waiting, oldest first - for the admin Data page's webhook queues card.
+  pending() {
+    return this._rows('SELECT * FROM pending_fouls ORDER BY id');
+  }
+
   close() {
     this._save();
     this.db.close();

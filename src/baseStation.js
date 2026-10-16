@@ -2143,6 +2143,33 @@ function main() {
     }
   }
 
+  // What is still waiting to go to RegattaUp, for the admin Data page: one entry per queue, each row with what the event
+  // was, how many attempts it has had and when it is next due (the same backoff dueForRetry uses).
+  const WEBHOOK_QUEUE_LABELS = [
+    ['Laps', (r) => `lap ${r.lap}`],
+    ['On grid', (r) => r.mode],
+    ['Mark roundings', (r) => r.mark],
+    ['Fouls', (r) => r.reason],
+  ];
+  function webhookQueueSnapshot() {
+    return webhookQueues.map((entry, i) => {
+      const queue = entry.get();
+      const [name, what] = WEBHOOK_QUEUE_LABELS[i];
+      const rows = queue
+        ? queue.pending().map((r) => ({
+            boatId: r.boat_id,
+            what: what(r),
+            eventAt: Math.round(r.rtc_time / 1000), // stored as microseconds
+            attempts: r.attempts,
+            lastAttemptAt: r.last_attempt_at,
+            nextAttemptAt: r.attempts > 0 ? r.last_attempt_at + Math.min(config.regattaup.maxBackoffMs, 1000 * 2 ** r.attempts) : null,
+            inFlight: entry.inFlight.has(r.id),
+          }))
+        : [];
+      return { name, ready: !!queue, rows };
+    });
+  }
+
   // Pointless under marksetMode - all four queues above are permanently
   // null there, so every tick would just walk the list finding nothing.
   if (!marksetMode) setInterval(drainOneWebhook, config.regattaup.postIntervalMs);
@@ -2758,6 +2785,7 @@ function main() {
       webhook: {
         enabled: config.regattaup.enabled,
         queueReady: !!lapWebhookQueue,
+        queues: webhookQueueSnapshot(),
       },
       regatta: await getRegattaStatus(),
     };

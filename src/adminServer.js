@@ -404,6 +404,48 @@ function renderLinkHealthCard(h, slots) {
     </div>`;
 }
 
+// The webhook retry queues (laps, on-grid, mark roundings, fouls): everything still waiting to be accepted by RegattaUp. An
+// empty list is the healthy state; rows that stay show how many attempts they have had and when the next one is due.
+function renderWebhookQueuesCard(w) {
+  if (!w || !w.enabled) return '';
+  const queues = w.queues || [];
+  const total = queues.reduce((n, q) => n + q.rows.length, 0);
+  const rows = queues
+    .flatMap((q) => q.rows.map((r) => ({ ...r, queue: q.name })))
+    .sort((a, b) => (a.eventAt || 0) - (b.eventAt || 0));
+  const shown = rows.slice(0, 40);
+  const next = (r) => {
+    if (r.inFlight) return 'sending now';
+    if (r.nextAttemptAt === null) return 'due now';
+    const s = Math.round((r.nextAttemptAt - Date.now()) / 1000);
+    return s <= 0 ? 'due now' : `in ${s} s`;
+  };
+  const body = shown
+    .map(
+      (r) => `<tr>
+        <td>${escapeHtml(r.queue)}</td>
+        <td>${escapeHtml(r.boatId)}</td>
+        <td>${escapeHtml(r.what)}</td>
+        <td>${r.eventAt ? formatAgo(r.eventAt) : '—'}</td>
+        <td>${r.attempts}</td>
+        <td>${r.lastAttemptAt ? formatAgo(r.lastAttemptAt) : 'never'}</td>
+        <td>${next(r)}</td>
+      </tr>`
+    )
+    .join('');
+  const counts = queues.map((q) => `${escapeHtml(q.name.toLowerCase())} ${q.rows.length}`).join(', ');
+  return `<div class="card link-card">
+      <div class="label">Webhook retry queues</div>
+      <div class="value" style="font-size:20px;"><span class="dot ${total === 0 ? 'dot-green' : rows.some((r) => r.attempts > 1) ? 'dot-orange' : 'dot-gray'}"></span>${total === 0 ? 'Nothing waiting' : `${total} waiting`}</div>
+      <div class="sub">${counts}. A row leaves once RegattaUp accepts it; a failed one is tried again after 2 s, 4 s, 8 s... up to ${Math.round(config.regattaup.maxBackoffMs / 60000)} min.${queues.some((q) => !q.ready) ? ' Not every queue is open yet.' : ''}</div>
+      ${
+        shown.length
+          ? `<div class="link-scroll"><table><thead><tr><th>Queue</th><th>Boat</th><th>Event</th><th title="When the boat's event happened">Happened</th><th>Attempts</th><th>Last try</th><th>Next try</th></tr></thead><tbody>${body}</tbody></table></div>${rows.length > shown.length ? `<div class="sub">+ ${rows.length - shown.length} more</div>` : ''}`
+          : ''
+      }
+    </div>`;
+}
+
 // page is 'home' (the default: slots at a glance, course marks, the boat table), 'data' (fleet controls and uploads) or
 // 'radio' (the radio, GPS and system cards) - three views of the same stats, switched by the tabs under the title.
 function renderDashboard(s, rtkControlsEnabled, page = 'home') {
@@ -826,6 +868,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
         <div class="stat-row"><span class="name">Failures</span><span class="val">${s.upload.failures.toLocaleString()}</span></div>
       </div>
     </div>
+    ${renderWebhookQueuesCard(s.webhook)}
   </div>`
       : ''
   }
