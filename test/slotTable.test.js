@@ -671,6 +671,11 @@ test('zone state: a transit through the zone does not park, a boat that stays do
   assert.strictEqual(z.update(false, false, t + 300), false);
 });
 
+test('zone state: a stationary boat is parked on its first fix inside, whatever the dwell', () => {
+  const z = new ZoneState(3, 5000);
+  assert.strictEqual(z.update(true, false, 0, true), true);
+});
+
 test('zone state: a boat jostling at the edge keeps its stay, one that really leaves starts again', () => {
   const z = new ZoneState(3, 5000);
   z.update(true, false, 0);
@@ -693,11 +698,13 @@ test('allocator: a boat that only clips the on-grid zone keeps its slot, one tha
   assert.strictEqual(a.noteHeard('FAST1', { moving: true, inZone: false }), slot, 'still has its slot');
   assert.deepStrictEqual(a.status().parked, []);
   now += 1000;
-  a.noteHeard('SLOW1', { moving: false, inZone: true });
-  assert.deepStrictEqual(a.status().parked, [], 'not yet: only just arrived');
+  a.noteHeard('SLOW1', { moving: true, inZone: true });
+  assert.deepStrictEqual(a.status().parked, [], 'a boat still moving, only just arrived: not yet');
   now += 6000;
-  a.noteHeard('SLOW1', { moving: false, inZone: true });
-  assert.deepStrictEqual(a.status().parked, ['SLOW1']);
+  a.noteHeard('SLOW1', { moving: true, inZone: true });
+  assert.deepStrictEqual(a.status().parked, ['SLOW1'], 'and parked once it has stayed past the dwell');
+  a.noteHeard('STOP1', { moving: false, inZone: true });
+  assert.ok(a.status().parked.includes('STOP1'), 'a boat that is stopped on the grid is parked on its first fix');
 });
 
 test('allocator: a boat inside the on-grid zone is never given a new slot, even before the dwell is up', () => {

@@ -46,6 +46,11 @@ class TxScheduler {
     // table, whose second byte is its version: frames of an older version are dropped, and an identical copy already waiting is
     // not queued again). The base uses it so a flood of new boats queues one marks frame and one table, not one per boat.
     supersede = new Map(),
+    // Called with the frame's buffer when it is actually written to the radio (onSent) and when it is given up on - dropped from a full
+    // queue, expired after maxAgeMs, or refused by the radio (onDropped). The boat uses them to keep its distance gate honest: a fix whose
+    // frame was dropped must not be counted as reported, or a boat that has not moved sends nothing more for a minute.
+    onSent = null,
+    onDropped = null,
     trafficLabel = "this boat's", // for the warning when the slot is too small
     warnSpill = true, // the base's own slot (table + marks) spills into the next cycle by design - it does not warn
     maxQueue = 12,
@@ -61,6 +66,8 @@ class TxScheduler {
     this.slot = slot;
     this.slottedSyncs = slottedSyncs;
     this.supersede = supersede;
+    this.onSent = onSent;
+    this.onDropped = onDropped;
     this.trafficLabel = trafficLabel;
     this.warnSpill = warnSpill;
     this.maxQueue = maxQueue;
@@ -200,13 +207,14 @@ class TxScheduler {
       if (!active || this._waitFor(buf.length, slotted, t) <= 0.5) {
         this.counters.passedThrough++;
         if (slotted && active) this._markSlotUsed(buf.length, t);
-        return this.rawSend(buf);
+        return this._write(buf);
       }
     }
     if (this._coalesce(buf, t)) return true;
     if (this.queue.length >= this.maxQueue) {
-      this.queue.shift(); // oldest first: positions are logged to SD and stale ones help nobody
+      const gone = this.queue.shift(); // oldest first: positions are logged to SD and stale ones help nobody
       this.counters.dropped++;
+      if (this.onDropped) this.onDropped(gone.buf);
     }
     this.queue.push({ buf, bytes: buf.length, at: t, slotted });
     this._schedule(0);
@@ -328,8 +336,9 @@ class TxScheduler {
     this.timer = null;
     const t0 = this.now();
     while (this.queue.length && t0 - this.queue[0].at > this.maxAgeMs) {
-      this.queue.shift();
+      const gone = this.queue.shift();
       this.counters.expired++;
+      if (this.onDropped) this.onDropped(gone.buf);
     }
     if (!this.tracker.isActive(t0)) {
       // bursts stopped being heard: send everything straight out, in order
@@ -360,7 +369,18 @@ class TxScheduler {
       this.counters.slotted++;
       if (this.tracker.isActive(t)) this._markSlotUsed(e.bytes, t);
     }
-    this.rawSend(e.buf);
+    this._write(e.buf);
+  }
+
+  // Hands a frame to the radio and tells the owner how it went.
+  _write(buf) {
+    const ok = this.rawSend(buf);
+    if (ok === false) {
+      if (this.onDropped) this.onDropped(buf);
+    } else if (this.onSent) {
+      this.onSent(buf);
+    }
+    return ok;
   }
 
   // Send everything still held, in order, right now - ignoring the gate and the slot. For a boat that is about to exit
@@ -370,7 +390,7 @@ class TxScheduler {
     this.timer = null;
     const held = this.queue;
     this.queue = [];
-    for (const e of held) this.rawSend(e.buf);
+    for (const e of held) this._write(e.buf);
     return held.length;
   }
 

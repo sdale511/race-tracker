@@ -16,7 +16,7 @@ const protocol = require('./protocol');
 const { distanceMeters, distanceToSegmentM, MARK_NAMES } = require('./course');
 const { DistanceGate } = require('./distanceGate');
 const { RtcmWatchdog } = require('./rtcmWatchdog');
-const { FinishBoost } = require('./finishBoost');
+const { EventBoost } = require('./eventBoost');
 const { orange } = require('./consoleColor');
 const { FinishApproachWatcher } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
@@ -274,6 +274,13 @@ if (config.txGate.enabled && radioExpected) {
     slot: { ...config.txGate.slot, count: slotCount, index: pinnedSlot !== null ? pinnedSlot : slotCount - 1, join: slotJoin },
     maxQueue: config.txGate.maxQueue,
     maxAgeMs: config.txGate.maxAgeMs,
+    // A frame the scheduler gives up on (queue full, too old, refused by the radio) must not leave its fixes counted as reported: the
+    // distance gate falls back to the last fix that really went out, so the next fix passes at once instead of a minute later
+    onSent: (buf) => {
+      const f = frameLastFix.get(buf);
+      if (f) distanceGate.sent(f);
+    },
+    onDropped: () => distanceGate.failed(),
     log: (m) => console.log(m),
   });
   radio.send = (buf) => txScheduler.submit(buf);
@@ -340,11 +347,11 @@ try {
 // both known yet - handlePvt's own finish-approach check treats that the
 // same as the feature being off for this fix.
 let finishApproachWatcher = null;
-let finishBoost = null; // see finishBoost.js: sends the fixes around a finish crossing whatever state the boat is in
+let eventBoost = null; // see eventBoost.js: sends the fixes around a start, finish or foul crossing whatever state the boat is in
 function rebuildFinishApproachWatcher() {
   finishApproachWatcher =
     currentMarks && currentMarks.committeeFinish && currentMarks.finish ? new FinishApproachWatcher(currentMarks) : null;
-  finishBoost = currentMarks && currentMarks.committeeFinish && currentMarks.finish ? new FinishBoost(currentMarks) : null;
+  eventBoost = currentMarks && currentMarks.pin && currentMarks.committeeStart ? new EventBoost(currentMarks, { zoneM: config.regattaup.onGridZoneM }) : null;
 }
 rebuildFinishApproachWatcher();
 
@@ -394,7 +401,7 @@ function joinThrottleActive() {
 // the join slots without a slot of its own.
 const MOVING_UNTHROTTLED_KN = 3; // above this a boat near a mark or the finish line is not paced
 function sendPacer() {
-  if (finishBoost && lastPvt && finishBoost.isUrgent(lastPvt.timestamp)) return null; // a finish crossing: no pacing, it must be seen
+  if (eventBoost && lastPvt && eventBoost.isUrgent(lastPvt.timestamp)) return null; // a line crossing: no pacing, it must be seen
   if (parked && config.txGate.slot.parkedReportS > 0 && txScheduler && txScheduler.slotAligned()) return parkedReporter;
   if (joinThrottleActive()) {
     // A boat under way: near a mark or the finish line it is not paced at all (the base needs its fixes to see the rounding or crossing);
@@ -409,7 +416,8 @@ let practiceMode = false;
 function updateParked(pvt) {
   if (practiceMode || !parkingEnabled || !zoneWatcher || !hasValidFix(pvt)) return;
   const inZone = zoneWatcher.check(pvt.lat, pvt.lon) === 'ongrid';
-  const now = zoneState.update(inZone, false, pvt.timestamp);
+  const stationary = (pvt.gSpeedMmS / 1000) * 1.94384 < config.txGate.slot.movingKn; // stopped on the grid: parked at once, the dwell is for a boat under way
+  const now = zoneState.update(inZone, false, pvt.timestamp, stationary);
   if (now === parked) return;
   parked = now;
   if (slotFollower) slotFollower.setParked(parked);
@@ -587,6 +595,7 @@ let lastTxPosition = null; // {lat, lon} of the last fix actually transmitted
 let lastTxTime = null; // pvt.timestamp of the last fix actually transmitted
 // What handlePvt's distance/heartbeat gate measures from: the last fix that cleared it (sent or queued for its slot), see distanceGate.js
 const distanceGate = new DistanceGate({ intervalMs: config.txIntervalMs });
+const frameLastFix = new WeakMap(); // frame buffer -> the newest fix in it, so the scheduler's delivered/dropped notices can reach the gate
 // Fixes accumulated for the next batch send - see queueFixForTx/
 // flushPendingBatch below. Always empty when config.txBatchSize is 1 -
 // that path never touches this at all, see handlePvt.
@@ -684,11 +693,11 @@ function handlePvt(pvt) {
       ? config.txFinishDistanceM
       : config.txDistanceM;
   // A parked boat's report that was repeated for safety (see ParkedReporter) goes through even though the boat has not moved
-  // A finish crossing seen on the boat's own full-rate fixes: the fixes just before it (dropped by the gate) go back in the batch, and
-  // everything just after is let through, so the base sees the pair that straddles the line (see finishBoost.js)
+  // A start, finish or foul crossing seen on the boat's own full-rate fixes: the fixes just before it (dropped by the gate) go back in the batch, and
+  // everything just after is let through, so the base sees the pair that straddles the line (see eventBoost.js)
   let finishUrgent = false;
-  if (finishBoost && hasValidFix(pvt)) {
-    const boost = finishBoost.onFix(pvt);
+  if (eventBoost && hasValidFix(pvt)) {
+    const boost = eventBoost.onFix(pvt);
     finishUrgent = boost.urgent;
     const lastQueuedAt = pendingBatch.length ? pendingBatch[pendingBatch.length - 1].timestamp : -Infinity;
     for (const f of boost.before) {
@@ -850,7 +859,10 @@ function transmitFix(pvt) {
   if (sleeper.isSleeping()) return; // radio sleep mode - SD-logged above, nothing to transmit
   const pacer = sendPacer();
   if (pacer) {
-    if (!pacer.due()) return; // parked, or without a slot: SD-logged above, reported only now and then
+    if (!pacer.due()) {
+      distanceGate.failed(); // not reported: the next fix must be able to pass the gate (the gate is not told this one went out)
+      return; // parked, or without a slot: SD-logged above, reported only now and then
+    }
     pacer.sent();
   }
   const frame = protocol.encode(config.boatId, pvt);
@@ -858,7 +870,8 @@ function transmitFix(pvt) {
   if (sent || !radioExpected) {
     lastTxPosition = { lat: pvt.lat, lon: pvt.lon };
     lastTxTime = pvt.timestamp;
-    distanceGate.sent(pvt);
+    if (txScheduler) frameLastFix.set(frame, pvt);
+    else distanceGate.sent(pvt);
   }
   if (sent) {
     roverStats.recordFrameSent();
@@ -1030,7 +1043,8 @@ function sendFixes(fixes) {
     if (sent || !radioExpected) {
       lastTxPosition = { lat: last.lat, lon: last.lon };
       lastTxTime = last.timestamp;
-      distanceGate.sent(last);
+      if (txScheduler) frameLastFix.set(buf, last);
+      else distanceGate.sent(last);
     }
     if (sent) {
       roverStats.recordFrameSent();

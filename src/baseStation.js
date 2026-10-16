@@ -2429,7 +2429,15 @@ function main() {
   // was ready, without also re-running the side effects (stats, CSV/Redis
   // logging, the local UDP re-broadcast) that already happened live when the
   // frame first arrived.
+  // Newest fix time each boat's event detectors have seen. The detectors work on consecutive fixes, so a fix that arrives late - older than
+  // one already seen (a frame that spilled to a later cycle, a backfill) - is not fed to them: it would make the previous position a stale
+  // one and could count a crossing twice or miss it. A clock that has jumped (older by a minute or more) restarts the sequence instead.
+  const lastEventFixAt = new Map();
+  const OUT_OF_ORDER_TOLERANCE_MS = 60000;
   function detectRaceEvents(decoded) {
+    const lastAt = lastEventFixAt.get(decoded.boatId);
+    if (lastAt !== undefined && decoded.timestamp < lastAt && lastAt - decoded.timestamp < OUT_OF_ORDER_TOLERANCE_MS) return;
+    lastEventFixAt.set(decoded.boatId, decoded.timestamp);
     const watcher = watcherFor(decoded.boatId);
     const crossing = watcher && watcher.check(decoded.lat, decoded.lon, decoded.timestamp);
     if (crossing) {

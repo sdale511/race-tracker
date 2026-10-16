@@ -344,3 +344,34 @@ test('a scheduler without supersede queues every frame, as before', () => {
   sim.runUntil(20000);
   assert.strictEqual(sent.filter((b) => b === 0xb1).length, 3);
 });
+
+test('onSent / onDropped: the owner is told which frames went out and which were given up on (queue full, expired, refused)', () => {
+  const sim = new Sim();
+  const tr = new BurstTracker({ now: sim.now });
+  for (let k = 0; k < 60; k++) sim.setTimer(() => TYPES.forEach((ty) => tr.onRtcm(ty, sim.t)), 130 + k * 1000);
+  const sent = [];
+  const dropped = [];
+  let refuse = false;
+  const s = new TxScheduler({
+    send: (b) => (refuse ? false : (sent.push(b[1]), true)),
+    tracker: tr, gate: new TxGate({ tracker: tr, now: sim.now }),
+    slot: { enabled: true, index: 25, count: 26, widthMs: 35, join: null },
+    slottedSyncs: new Set([0xb1]),
+    maxQueue: 2, maxAgeMs: 3000,
+    onSent: (b) => sent.push('ok' + b[1]),
+    onDropped: (b) => dropped.push(b[1]),
+    now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
+  });
+  sim.runUntil(5500);
+  // five frames in a burst window with room for two: the oldest three are dropped from the full queue
+  sim.setTimer(() => { for (let i = 1; i <= 5; i++) s.submit(Buffer.from([0xb1, i, 0, 0])); }, 6000 - sim.t + 100);
+  sim.runUntil(6150);
+  assert.deepStrictEqual(dropped, [1, 2, 3], 'the three oldest were given up on');
+  sim.runUntil(12000);
+  assert.deepStrictEqual(sent.filter((x) => typeof x === 'string'), ['ok4', 'ok5'], 'the two that stayed were delivered, and reported as such');
+  // a radio that refuses a frame: reported as dropped, not sent
+  refuse = true;
+  sim.setTimer(() => s.submit(Buffer.from([0xb1, 9, 0, 0])), 20000 - sim.t);
+  sim.runUntil(26000);
+  assert.ok(dropped.includes(9), 'a frame the radio refused is reported as dropped');
+});

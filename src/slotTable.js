@@ -77,12 +77,15 @@ class ZoneState {
 
   // pastLine: this fix is past the start line on the course side. A boat that leaves the zone through the line
   // (crossedLine) has started; one that leaves backwards or sideways has not.
-  update(inZone, pastLine = false, nowMs = Date.now()) {
+  // stationary: this fix shows the boat stopped (below the moving speed). A boat that is not moving is waiting for a start, not racing
+  // through, so it is parked at once: the dwell is only for a boat under way, and a boat sitting on the grid reports so rarely (a minute
+  // apart) that a dwell counted between its fixes would leave it unparked for a minute.
+  update(inZone, pastLine = false, nowMs = Date.now(), stationary = false) {
     if (inZone) {
       if (this.enteredAt === null) this.enteredAt = nowMs;
       this.outside = 0;
       this.crossedLine = false;
-      if (nowMs - this.enteredAt >= this.dwellMs) this.parked = true;
+      if (stationary || nowMs - this.enteredAt >= this.dwellMs) this.parked = true;
     } else if (this.parked) {
       if (pastLine) this.crossedLine = true;
       if (++this.outside >= this.unparkFixes) {
@@ -255,7 +258,7 @@ class SlotAllocator {
     if (zone) {
       zone.lastHeard = t;
       const wasParked = zone.state.parked;
-      const parked = zone.state.update(inZone, pastLine, t);
+      const parked = zone.state.update(inZone, pastLine, t, !moving);
       // a stay still short of the dwell is kept (it is not parked yet, and is not forgotten until the boat has really left)
       if (!parked && zone.state.enteredAt === null) this.zones.delete(boatId);
       if (parked && !wasParked) this.log(`[slots] ${boatId} is on the start grid - parked`);

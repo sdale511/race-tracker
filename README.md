@@ -696,12 +696,19 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   names any message not used, and any with a CRC failure. `RTCM_LOG=2` prints a decoded line
   per message instead, e.g. `[rtcm-radio] 1074 GPS 8sv 12c 129B` (`c` = signal cells) and
   `[rtcm] 1074 used`. `GPS_LOG_RTCM` is the old name for this setting. A base's telemetry station hears the same RTCM and simply ignores it.
-- **The finish line is protected.** Near a windward or leeward mark, or the finish line (`TX_SLOT_MARK_ZONE_M`, 80 m), a boat uses
-  its whole slot and nothing is thinned away. A boat under way without a slot reports every cycle or two instead of backing off
-  to every 15 s (near those points it is not paced at all). And the boat watches its own full-rate fixes for the finish crossing
-  the base looks for (`finishBoost.js`): when it sees one it sends the fixes just before it, which its gates had dropped, and
-  every fix for the next 1.5 s, whatever state it is in. The base counts a lap only when two fixes it received straddle the
-  line, so a boat that was reporting sparsely there could finish without being seen.
+- **A lost frame never strands a boat.** The base detects the start, a lap (the finish) and the fouls from two consecutive fixes it
+  received that straddle a line - one fix on each side is all it needs - so the boat makes sure that pair is sent:
+  - it watches its own full-rate (10 Hz) fixes for the same crossings (`eventBoost.js`); when it sees one it sends the two fixes just
+    before it, which its gates had dropped, and every fix for the next 0.6 s, whatever state it is in (parked, no slot, backing off);
+  - near a windward or leeward mark or the finish line (`TX_SLOT_MARK_ZONE_M`, 80 m) it uses its whole slot, nothing is thinned
+    away, and a boat under way is not paced (the mark roundings need several fixes inside the zone, so they rely on this);
+  - a boat under way without a slot reports every 2 to 4 s, not every 15 s;
+  - the distance gate counts a fix as reported only when its frame was actually written to the radio: if the scheduler drops it (queue
+    full, too old, refused by the radio) the gate falls back to the last fix that really went out, so the next fix passes at once
+    instead of a stationary boat staying silent until its 60 s heartbeat;
+  - a parked boat whose report is not due yet keeps its newest fix for when it is, and repeats its first report once;
+  - on the base, a fix that arrives late (older than one already seen) is not fed to the event detectors, so it cannot make a stale
+    position the previous one and miss or double-count a crossing.
 - **Warned about when missing.** A boat that does not hear the correction bursts is not slot-timed (it sends unslotted, on top
   of other boats) and probably is not getting RTK corrections either. After `RTCM_WATCHDOG_WARN_S` (20) seconds without a burst -
   counted from when the boat started if it has never heard one - the boat prints an orange (when the console is a terminal)
@@ -799,8 +806,8 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   `TX_PARKED_REPORT_S` seconds (15, with a random +-25% so a fleet that arrived together doesn't report
   together), sending just its latest fix (everything stays on its SD card). The first report after it parks is not
   15 s away: it comes within a random 0 to `TX_PARKED_FIRST_S` seconds (2), so the base hears the boat arrive on the
-  grid (and posts its on-grid event) within moments. A boat counts as parked only after it has been inside the zone for
-  `TX_SLOT_PARK_DWELL_S` (5) seconds, on the boat and on the base, so a racing boat that clips the zone going through the
+  grid (and posts its on-grid event) within moments. A boat that is moving counts as parked only after it has been inside the zone for
+  `TX_SLOT_PARK_DWELL_S` (5) seconds (one that has stopped there is parked at once), on the boat and on the base, so a racing boat that clips the zone going through the
   start line is gone in a second or two and keeps its slot, while one waiting for a start is parked after the dwell. For the same reason the base holds the "on grid" webhook for a boat that is racing (it has crossed the start line) while it passes through the zone: if it leaves, nothing is sent; if it stays until it is parked, the event goes then. Without that, RegattaUp was told a racing boat was back on the grid. That first report is sent once more about `TX_PARKED_REPEAT_S` (10, +-25%; a fleet's first reports straggle in over about 8 s, so a shorter repeat would land inside that)
   seconds later - a report lost in the shared join slots would otherwise not be tried again until the boat's next
   heartbeat (`TX_INTERVAL_S`, 60 s; the 15 s above only slows a boat down, it cannot make a stationary boat report more often) -
