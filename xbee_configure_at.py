@@ -638,9 +638,19 @@ def main():
                 print(f"\nSetting BD to {target_baud} (code {bd_code}) - this switches the radio's "
                       f"actual serial speed, so this session (still at {args.connect_baud}) may stop "
                       f"responding right after. Reconnecting at {target_baud}...")
-                send_at(ser, f"ATBD{bd_code:X}")  # response may or may not still arrive at the old baud
+                bd_resp = send_at(ser, f"ATBD{bd_code:X}")  # response may or may not still arrive at the old baud
+                # Many radios only switch speed when command mode ends, not at the moment BD is set. Reconnecting at
+                # the new speed straight away then finds a radio still listening at the old one, the script stops
+                # there, and the new baud is never written to non-volatile memory - the radio comes back at 9600 after
+                # the next power cycle. So write it now, while this session still works, then leave command mode
+                # (CN), which is what makes the new speed take effect.
+                if "OK" in bd_resp:
+                    wr_old = send_at(ser, "ATWR")
+                    print(f"  BD written to non-volatile memory at {args.connect_baud} baud (WR): "
+                          f"{'OK' if 'OK' in wr_old else wr_old.strip()!r}")
+                    send_at(ser, "ATCN")
                 ser.close()
-                time.sleep(0.3)
+                time.sleep(1.5)  # the guard time before +++ at the new speed
                 ser = open_and_enter_command_mode(args.port, target_baud)
                 # The BD change itself may not have made it into non-volatile
                 # memory if the switch happened before WR was processed -
