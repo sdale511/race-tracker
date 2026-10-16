@@ -42,3 +42,25 @@ test('an implausible fix is never posted and does not become the reference', () 
   assert.strictEqual(store.decideRecord({ ...fix(T), lat: 95 }), 'invalid');
   assert.strictEqual(store.decideRecord(fix(T + 1000)), 'post');
 });
+
+test('a boat\'s own track key is trimmed to the window, at most once per trim interval', () => {
+  const trims = [];
+  const store = Object.assign(Object.create(RedisStore.prototype), {
+    boatTrackWindowMs: 2 * 60000,
+    lastBoatTrimAt: new Map(),
+    client: { zremrangebyscore: (key, min, max) => { trims.push([key, min, max]); return Promise.resolve(0); } },
+  });
+  store._trimBoatTrack('00001', 'k:00001', 2_000_000);
+  store._trimBoatTrack('00001', 'k:00001', 2_001_000); // too soon after the first trim
+  store._trimBoatTrack('00002', 'k:00002', 2_000_000); // another boat has its own interval
+  assert.deepStrictEqual(trims, [['k:00001', '-inf', 2_000_000 - 120000], ['k:00002', '-inf', 2_000_000 - 120000]]);
+});
+
+test('a window of 0 keeps the whole per-boat track', () => {
+  const store = Object.assign(Object.create(RedisStore.prototype), {
+    boatTrackWindowMs: 0,
+    lastBoatTrimAt: new Map(),
+    client: { zremrangebyscore: () => assert.fail('must not trim') },
+  });
+  store._trimBoatTrack('00001', 'k', 1);
+});

@@ -850,7 +850,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
 - **Dashboard.** The base's admin has three pages and a map link, switched by the tabs under the title: **Regatta & boats** (the home page
   at `/`: a compact Transmit slots card with the count, the slot map and a **Ping fleet** button, the radio bandwidth and radio frames cards (also on the radio page; the frames card has a **Clear stats** button that restarts its totals, the sync-error count and the bandwidth graph from zero), the course marks, and the boat table),
   **Radio, GPS & system** (`/radio`: radio bandwidth and frames, the full transmit slots card,
-  link health, base GPS and its survey-in controls, disk and Redis memory), **Data** (`/data`: fleet controls, uploads and the **Webhook retry queues**: every lap, on-grid, mark rounding and foul still waiting for RegattaUp to accept it, with its attempts, last try and when the next is due; "Nothing waiting" is the healthy state), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config; markset and mark mode have Map, Console and Config, because the map is their home page. The header on every page holds the regatta
+  link health, base GPS and its survey-in controls, and disk), **Data** (`/data`: fleet controls, uploads, the **Redis memory** card and the **Webhook retry queues**: a table of the four queues (lap, on-grid, mark rounding, foul) with how many are waiting and the oldest, then every event still waiting for RegattaUp to accept it, with its attempts, last try and when the next is due; anything waiting over 5 minutes is red; "Nothing waiting" is the healthy state), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config; markset and mark mode have Map, Console and Config, because the map is their home page. The header on every page holds the regatta
   select and webhook status, and a small mode card (**RACE MODE** or **PRACTICE MODE**, with
   radio buttons to change it). The full **Transmit slots** card (below) is on the radio page, and the boat table has a **Slot** column (hover for the
   slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;
@@ -1874,10 +1874,17 @@ is `none` for anything recorded with no regatta selected.
 | `regattas:<id>:mark:<name>` | Hash: `lat`/`lon`, plus `assignedBoatId`/`assignedAt` while a mark-mode rover actively posts it |
 | `regattas:<id>:course:pin_boundary_enabled` | On/off flag; when on, also publishes `mark:pinBoundary` (computed) for RegattaUp's generic scan |
 | `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
-| `regattas:<id>:boat:<boatId>:track` | Sorted set per boat, scored by fix timestamp. `getBoatTrack(boatId, fromMs, toMs, regattaId)` |
+| `regattas:<id>:boat:<boatId>:track` | Sorted set per boat, scored by fix timestamp, **only the last `REDIS_BOAT_TRACK_MINUTES` (2; 0 keeps everything)**. The one reader is RegattaUp's `getRaceTracks`, for each boat's newest fix. `getBoatTrack(boatId, fromMs, toMs, regattaId)` |
 | `regattas:<id>:all:track` | Sorted set, every boat's fixes for the regatta. `getAllTrack(fromMs, toMs, regattaId)` |
 | `regattas:<id>:boats:known` | Set of boat IDs that reported in. `knownBoatIds()` |
 | `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
+
+**Memory.** A stored fix costs roughly 230 bytes in each sorted set it is in, so keeping the whole race in both `all:track` and
+every boat's own key doubled what Redis held (about 100 MB for a 30-boat, 30-minute race; the 48 h expiry meant a day of racing
+did not fit in 256 MB). The per-boat key is now trimmed to the last `REDIS_BOAT_TRACK_MINUTES` minutes whenever that boat
+writes (at most every 10 s, and its newest fix is always kept). RegattaUp's `generateRaceTrackArchive` removes a race's
+fixes from `all:track` and the boats' own keys once the archive is saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
+`REDIS_TRACK_RETENTION_HOURS` (48) is the backstop expiry. The Redis memory card is on the Data page.
 
 Each stored fix: the decoded frame (`boatId, lat, lon, speedKnots, headingDeg,
 gnssFixOk, carrSoln, numSV`, plus the fix time `t` so members stay unique) as a compact JSON member, with the fix's own GPS

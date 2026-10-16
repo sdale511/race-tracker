@@ -886,6 +886,10 @@ module.exports = {
     // forever (there's no other cleanup for these besides `npm run
     // clear-base-logs`, which is manual).
     trackRetentionHours: parseFloat(process.env.REDIS_TRACK_RETENTION_HOURS || '48'),
+    // How much of each boat's own boat:<id>:track key is kept, in minutes (0 = all of it). The whole race stays in all:track,
+    // so this only bounds the second copy, which exists to answer "where was this boat last" (RegattaUp's getRaceTracks
+    // lastPositions - the one reader). The trim runs on that boat's own writes, so its newest fix is always kept.
+    boatTrackMinutes: parseFloat(process.env.REDIS_BOAT_TRACK_MINUTES || '2'),
     // The admin dashboard's "Redis memory" card divides usedBytes by this to
     // show a percentage/ALERT status, the same way the disk-space card does
     // for the filesystem - but unlike disk space, Redis has no OS syscall to

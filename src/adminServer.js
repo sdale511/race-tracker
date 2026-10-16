@@ -408,21 +408,38 @@ function renderLinkHealthCard(h, slots) {
 // empty list is the healthy state; rows that stay show how many attempts they have had and when the next one is due.
 function renderWebhookQueuesCard(w) {
   if (!w || !w.enabled) return '';
+  const STALE_MS = 5 * 60 * 1000; // a row that has been waiting this long is red
   const queues = w.queues || [];
   const total = queues.reduce((n, q) => n + q.rows.length, 0);
+  const now = Date.now();
+  const age = (r) => (r.eventAt ? now - r.eventAt : 0);
+  const isStale = (r) => age(r) > STALE_MS;
   const rows = queues
     .flatMap((q) => q.rows.map((r) => ({ ...r, queue: q.name })))
     .sort((a, b) => (a.eventAt || 0) - (b.eventAt || 0));
+  const staleCount = rows.filter(isStale).length;
   const shown = rows.slice(0, 40);
   const next = (r) => {
     if (r.inFlight) return 'sending now';
     if (r.nextAttemptAt === null) return 'due now';
-    const s = Math.round((r.nextAttemptAt - Date.now()) / 1000);
+    const s = Math.round((r.nextAttemptAt - now) / 1000);
     return s <= 0 ? 'due now' : `in ${s} s`;
   };
+  const summary = queues
+    .map((q) => {
+      const oldest = q.rows.reduce((m, r) => Math.max(m, age(r)), 0);
+      const stale = q.rows.filter(isStale).length;
+      return `<tr${stale ? ' class="wq-stale"' : ''}>
+        <td>${escapeHtml(q.name)}${q.ready ? '' : ' <span class="muted">(not open yet)</span>'}</td>
+        <td>${q.rows.length}</td>
+        <td>${q.rows.length ? formatDuration(oldest) : '—'}</td>
+        <td>${stale || '—'}</td>
+      </tr>`;
+    })
+    .join('');
   const body = shown
     .map(
-      (r) => `<tr>
+      (r) => `<tr${isStale(r) ? ' class="wq-stale"' : ''}>
         <td>${escapeHtml(r.queue)}</td>
         <td>${escapeHtml(r.boatId)}</td>
         <td>${escapeHtml(r.what)}</td>
@@ -433,14 +450,15 @@ function renderWebhookQueuesCard(w) {
       </tr>`
     )
     .join('');
-  const counts = queues.map((q) => `${escapeHtml(q.name.toLowerCase())} ${q.rows.length}`).join(', ');
+  const dot = staleCount ? 'dot-red' : total === 0 ? 'dot-green' : rows.some((r) => r.attempts > 1) ? 'dot-orange' : 'dot-gray';
   return `<div class="card link-card">
       <div class="label">Webhook retry queues</div>
-      <div class="value" style="font-size:20px;"><span class="dot ${total === 0 ? 'dot-green' : rows.some((r) => r.attempts > 1) ? 'dot-orange' : 'dot-gray'}"></span>${total === 0 ? 'Nothing waiting' : `${total} waiting`}</div>
-      <div class="sub">${counts}. A row leaves once RegattaUp accepts it; a failed one is tried again after 2 s, 4 s, 8 s... up to ${Math.round(config.regattaup.maxBackoffMs / 60000)} min.${queues.some((q) => !q.ready) ? ' Not every queue is open yet.' : ''}</div>
+      <div class="value" style="font-size:20px;"><span class="dot ${dot}"></span>${total === 0 ? 'Nothing waiting' : `${total} waiting`}${staleCount ? ` <span class="wq-red" style="font-size:14px;">${staleCount} over 5 min</span>` : ''}</div>
+      <div class="sub">A row leaves once RegattaUp accepts it; a failed one is tried again after 2 s, 4 s, 8 s... up to ${Math.round(config.regattaup.maxBackoffMs / 60000)} min. Red: waiting over 5 min.</div>
+      <div class="link-scroll"><table class="wq-table"><thead><tr><th>Queue</th><th>Waiting</th><th>Oldest</th><th>Over 5 min</th></tr></thead><tbody>${summary}</tbody></table></div>
       ${
         shown.length
-          ? `<div class="link-scroll"><table><thead><tr><th>Queue</th><th>Boat</th><th>Event</th><th title="When the boat's event happened">Happened</th><th>Attempts</th><th>Last try</th><th>Next try</th></tr></thead><tbody>${body}</tbody></table></div>${rows.length > shown.length ? `<div class="sub">+ ${rows.length - shown.length} more</div>` : ''}`
+          ? `<div class="link-scroll"><table class="wq-table"><thead><tr><th>Queue</th><th>Boat</th><th>Event</th><th title="When the boat's event happened">Happened</th><th>Attempts</th><th>Last try</th><th>Next try</th></tr></thead><tbody>${body}</tbody></table></div>${rows.length > shown.length ? `<div class="sub">+ ${rows.length - shown.length} more</div>` : ''}`
           : ''
       }
     </div>`;
@@ -692,6 +710,9 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   .link-card { grid-column: span 2; }
   @media (min-width: 1100px) { .link-card { grid-column: span 3; } }
   .link-scroll { overflow-x: auto; margin-top: 8px; }
+  .wq-table { min-width: 0 !important; }
+  .wq-stale td { color: #f85149; }
+  .wq-red { color: #f85149; }
   .link-scroll table { margin: 0; min-width: 560px; }
   .link-scroll th, .link-scroll td { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
   .link-scroll th:nth-child(2), .link-scroll td:nth-child(2) { min-width: 0; }
@@ -869,6 +890,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       </div>
     </div>
     ${renderWebhookQueuesCard(s.webhook)}
+    ${renderRedisMemoryCard(s.redisMemory, s.redis && s.redis.writeHealth, config.redis.trackRetentionHours)}
   </div>`
       : ''
   }
@@ -883,7 +905,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     ${rtkControlsEnabled ? renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${rtkControlsEnabled ? renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${renderDiskCard(s.disk, `New log file daily, kept ${config.logRetentionDays} days`)}
-    ${renderRedisMemoryCard(s.redisMemory, s.redis && s.redis.writeHealth, config.redis.trackRetentionHours)}
   </div>`
       : ''
   }

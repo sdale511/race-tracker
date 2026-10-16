@@ -309,6 +309,7 @@ const sections = [
         envVar: 'REDIS_TRACK_RETENTION_HOURS',
         unit: 'h',
       },
+      { label: 'boatTrackMinutes', value: config.redis.boatTrackMinutes, envVar: 'REDIS_BOAT_TRACK_MINUTES', unit: 'min' },
       { label: 'memoryLimitMb', value: config.redis.memoryLimitMb, envVar: 'REDIS_MEMORY_LIMIT_MB', unit: 'MB' },
     ],
   },

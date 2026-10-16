@@ -122,9 +122,12 @@ class RedisStore {
   // to be worth recording - see recordFix. `trackRetentionHours` (default
   // 48) is how long a track key lives before Redis expires it on its own -
   // see recordFix's own comment on why this is set once, not refreshed on
-  // every write. `keepaliveIntervalMs` (default 60000) is how often an
+  // every write. `boatTrackMinutes` (default 2, 0 = keep it all) is how much of each boat's own track key is kept: the
+  // whole race is in all:track, which is what the archives and the map read, so a full copy per boat would double what
+  // Redis holds for nothing - the only reader of the per-boat key is RegattaUp's getRaceTracks, for each boat's newest
+  // fix (lastPositions). The trim runs when the boat writes, so its newest fix is always kept however old it is. `keepaliveIntervalMs` (default 60000) is how often an
   // idle-connection keepalive PING is sent - see its own comment below.
-  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, keepaliveIntervalMs = 60000 }) {
+  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, boatTrackMinutes = 2, keepaliveIntervalMs = 60000 }) {
     // Fixed 3s retry backoff, matching the reconnect cadence used elsewhere
     // in this app (radioLink.js, boatAgent.js's GPS reopen) instead of
     // ioredis's default rapid-fire retry.
@@ -187,6 +190,8 @@ class RedisStore {
     }, keepaliveIntervalMs);
     this.minMovementM = minMovementM;
     this.trackRetentionSeconds = Math.round(trackRetentionHours * 3600);
+    this.boatTrackWindowMs = Math.round(boatTrackMinutes * 60000);
+    this.lastBoatTrimAt = new Map(); // boatId -> when its own track key was last trimmed
     // In-memory only (per boatId) - not persisted, so a restarted base
     // station just records the next fix from each boat unconditionally
     // (nothing to compare against yet), which is harmless.
@@ -310,7 +315,19 @@ class RedisStore {
     // just means this key won't self-expire until some later write
     // succeeds in setting it, not that anything was lost.
     this.client.expire(boatTrackKey, this.trackRetentionSeconds, 'NX').catch(() => {});
+    this._trimBoatTrack(decoded.boatId, boatTrackKey, score);
     this.client.expire(allTrackKey, this.trackRetentionSeconds, 'NX').catch(() => {});
+  }
+
+  // Drop the boat's own copy of fixes older than the window, at most every TRIM_EVERY_MS per boat (the sorted set is
+  // ordered by time, so the trim is cheap, and a minute of extra fixes in the key is nothing). Best effort, like the
+  // expiry above: all:track still has every fix.
+  _trimBoatTrack(boatId, boatTrackKey, score) {
+    if (!(this.boatTrackWindowMs > 0)) return;
+    const now = Date.now();
+    if (now - (this.lastBoatTrimAt.get(boatId) || 0) < RedisStore.TRIM_EVERY_MS) return;
+    this.lastBoatTrimAt.set(boatId, now);
+    this.client.zremrangebyscore(boatTrackKey, '-inf', score - this.boatTrackWindowMs).catch(() => {});
   }
 
   _recordTrackWriteFailure(err) {
@@ -684,5 +701,7 @@ class RedisStore {
     await this.client.quit();
   }
 }
+
+RedisStore.TRIM_EVERY_MS = 10000;
 
 module.exports = { RedisStore, packFix, unpackFix };
