@@ -129,6 +129,12 @@ function recordSyncError() {
   syncErrors++;
 }
 
+// The dashboard's "Clear stats" button on the radio frames card: start the frame and sync-error totals from zero.
+function resetRadioCounters() {
+  framesReceived = 0;
+  syncErrors = 0;
+}
+
 function recordUploadAttempt(boatId) {
   uploadAttempts++;
   _boatUpload(normalizeBoatId(boatId)).attempts++;
@@ -203,6 +209,7 @@ function snapshot() {
 module.exports = {
   recordFrame,
   recordSyncError,
+  resetRadioCounters,
   recordUploadAttempt,
   recordUploadSuccess,
   recordUploadFailure,

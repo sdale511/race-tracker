@@ -276,7 +276,10 @@ function renderBandwidthCard(bandwidth, mode) {
 // The radio frames card: fix and frame rates, status, totals, sync errors and the port. On the home page and the radio page.
 function renderRadioFramesCard(s) {
   return `<div class="card">
-    <div class="label">Radio frames</div>
+    <div class="card-head">
+      <div class="label">Radio frames</div>
+      <button type="button" class="card-btn" onclick="clearRadioStats(this)" title="Start the frame and sync-error totals and the bandwidth graph again from zero.">Clear stats</button>
+    </div>
     <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
     <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
     <div class="stat-rows">
@@ -769,8 +772,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     page === 'home'
       ? `<div class="grid">
     ${renderSlotsCard(s.slots, s.slotInfo, true)}
-    ${renderRadioFramesCard(s)}
     ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
+    ${renderRadioFramesCard(s)}
     ${
       s.course
         ? `<div class="card marks-card">
@@ -829,8 +832,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   ${
     page === 'radio'
       ? `<div class="grid">
-    ${renderRadioFramesCard(s)}
     ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
+    ${renderRadioFramesCard(s)}
     ${renderSlotsCard(s.slots, s.slotInfo)}
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
@@ -943,6 +946,19 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
         alert('Failed: ' + err.message);
         document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = false));
         revert();
+      }
+    }
+
+    async function clearRadioStats(btn) {
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/clear-radio-stats', { method: 'POST' });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
       }
     }
 
@@ -2093,6 +2109,7 @@ function startAdminServer({
   setPinBoundaryEnabled,
   resetCourseToDefault,
   pingFleet,
+  clearRadioStats,
   sleepFleet,
   wakeFleet,
   setPracticeMode,
@@ -2145,6 +2162,19 @@ function startAdminServer({
     if (req.url === '/api/ping-fleet' && req.method === 'POST') {
       try {
         pingFleet();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // The radio frames card's "Clear stats" button (see baseStation.js's clearRadioStats).
+    if (req.url === '/api/clear-radio-stats' && req.method === 'POST') {
+      try {
+        clearRadioStats();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

@@ -848,8 +848,8 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   meanwhile and no other is free, the boat shares the join slots until one opens. (A boat stopped for longer than `TX_SLOT_RACING_S` is no longer racing and must come off the grid across the line
   again to get a slot.)
 - **Dashboard.** The base's admin has three pages and a map link, switched by the tabs under the title: **Regatta & boats** (the home page
-  at `/`: a compact Transmit slots card with the count, the slot map and a **Ping fleet** button, the radio frames and radio bandwidth cards (also on the radio page), the course marks, and the boat table),
-  **Radio, GPS & system** (`/radio`: radio frames and bandwidth, the full transmit slots card,
+  at `/`: a compact Transmit slots card with the count, the slot map and a **Ping fleet** button, the radio bandwidth and radio frames cards (also on the radio page; the frames card has a **Clear stats** button that restarts its totals, the sync-error count and the bandwidth graph from zero), the course marks, and the boat table),
+  **Radio, GPS & system** (`/radio`: radio bandwidth and frames, the full transmit slots card,
   link health, base GPS and its survey-in controls, disk and Redis memory), **Data** (`/data`: fleet controls and
   uploads), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config; markset and mark mode have Map, Console and Config, because the map is their home page. The header on every page holds the regatta
   select and webhook status, and a small mode card (**RACE MODE** or **PRACTICE MODE**, with

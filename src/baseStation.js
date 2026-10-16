@@ -920,6 +920,17 @@ function main() {
   // config.js's pingResponseJitterMs), not all at once - nothing to
   // reconcile here on the base side beyond that; replies just arrive as
   // ordinary frames through the normal radio.on('frame', ...) path above.
+  // The radio frames card's "Clear stats" button: the frame and sync-error totals, the link-quality window and the
+  // bandwidth history all start again from zero (a clean number to read before a test run).
+  function clearRadioStats() {
+    stats.resetRadioCounters();
+    framesOk = 0;
+    syncErrors = 0;
+    lastLoggedSyncErrors = null;
+    bandwidthHistory.length = 0;
+    bandwidthWindow = { rx: 0, tx: 0, frames: 0, fixes: 0, syncErrors: 0 };
+  }
+
   function pingFleet() {
     // Clears every boat's on-grid state (not lap counts or mark roundings)
     // so whatever on-grid status comes back in each boat's reply is
@@ -2799,6 +2810,7 @@ function main() {
     setPinBoundaryEnabled,
     resetCourseToDefault,
     pingFleet,
+    clearRadioStats,
     sleepFleet,
     wakeFleet,
     setPracticeMode,
