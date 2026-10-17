@@ -1428,8 +1428,8 @@ killed mid-track. Disabled by default. Settings persist to
 macOS, so a leftover schedule never shuts down a dev machine.
 
 **Only handles powering DOWN, never back up** - a Pi has no built-in way
-to power itself back on; that needs a physical re-power or dedicated wake
-hardware this repo doesn't drive.
+to power itself back on; that needs a physical re-power or wake hardware,
+such as the Witty Pi 4 in the next section, which starts the Pi from a schedule.
 
 Requires passwordless `shutdown` for the service's user:
 ```
@@ -1452,6 +1452,44 @@ so a no-arg run saves every default network in one pass. Falls back to
 range-independent. Blank password = open network. Only adds/updates given
 networks, existing ones untouched. If nothing associates, set a WiFi
 country code: `sudo raspi-config nonint do_wifi_country <CC>` (one-time).
+
+### Witty Pi 4: power the boat on and off on a schedule
+
+A Witty Pi 4 (UUGear) stacked on the Pi gives it a battery-backed clock and a power switch it can drive from a schedule, so the Pi
+is only on, and only drawing power, when it is needed. The board powers the Pi from its own USB-C input (the power bank plugs into it,
+not the Pi's own port), and the Pi talks to it over I2C (address `08`) with three signal lines: **GPIO 4** (the button and shutdown
+request), **GPIO 17** (the Pi tells the board it has booted) and **GPIO 14** (the board watches the Pi's TX pin to see it has halted,
+and cuts power a few seconds later). So GPIO 4 and 17 must be free: `RADIO_SLEEP_GPIO` is **27**, not 17, on a Pi with a Witty Pi.
+GPS and radio on the UART (GPIO 14/15) are fine.
+
+Install the board's software in the default folder, `~/wittypi` (the installer puts it wherever it is run from):
+`wget https://www.uugear.com/repo/WittyPi4/install.sh`, then `sudo sh install.sh`, with I2C on (`raspi-config`).
+`i2cdetect -y 1` should show `08`. In `./wittyPi.sh` set "Default state when powered" to ON (the factory setting is OFF, so the
+Pi would wait for a button tap), and the clock from the network. A power bank that switches itself off when the Pi is halted
+needs the dummy load ("Dummy load duration" in "View/change other settings"; the pulsing interval is how often it is applied).
+
+**The schedule is set on the base admin and sent to the boats over the radio.** The Data page's **Witty Pi power schedule** card sets
+one schedule for the whole fleet (the times are local, nothing depends on the boat): **always** (no schedule), **daily** between
+two times (the default idea is 09:00 to 17:00), or **sunrise to sunset** at a latitude and longitude (**Use course** fills in
+the course's own place), with minutes of margin before sunrise and after sunset for boot and GPS lock. "At the end of the day" is either **cut the power** (the Witty Pi shuts the Pi down at the end time, even mid-race)
+or **let each boat shut itself down once it has stopped**: the ON state ends with `WAIT`, the Witty Pi schedules no
+shutdown, and the boat uses its own Scheduled shutdown card (`ROVER_SHUTDOWN_AT`): once that time has passed and the boat has
+been stopped for its idle minutes it halts, so a boat still moving stays on, and one with no time on that card would never
+shut down (its own Witty Pi card warns about it). Save sends it at once.
+
+The frame (`0xB5`, 23 bytes, `protocol.js`) carries the settings, not the schedule file; each boat builds `~/wittypi/schedule.wpi`
+from them and enables it by running the board's own `runScript.sh` (as the service's user, then through passwordless `sudo`
+if that fails - the board is on I2C). A boat that is powered off cannot hear it, so the base repeats the latest settings every
+`WITTY_REBROADCAST_S` (60) seconds, 'always' included, and a boat applies it when it boots. A boat **applies only when the
+settings differ** from what it applied last (stored in `race-config/witty-applied.json`): the repeats, and saving the same
+settings again, cost nothing, while a changed setting, a missing `schedule.wpi`, a failed earlier attempt, or a
+sunrise-to-sunset file with under two weeks left (it covers `Days`, 366 by default, from the day it was written) are applied
+again. A boat without the Witty Pi software ignores the frame and says so once in its console. Choosing "always" removes the
+file and clears the board's next startup and shutdown. The boat dashboard shows a read-only **Witty Pi schedule** card with
+what it applied and whether it worked. The file follows the Witty Pi's own format (`BEGIN`, `END`, then `ON` and `OFF`
+states with durations such as `H8` or `M30`; a fixed daily cycle drifts an hour across a daylight-saving change until the board
+next runs the script, which it does at every boot). Sunrise and sunset come from the standard sunrise equation in
+`sunSchedule.js`, good to about a minute.
 
 ## Simulation mode (no hardware)
 

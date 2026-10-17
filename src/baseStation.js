@@ -19,6 +19,7 @@ const {
 } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
+const wittySchedule = require('./wittySchedule');
 const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
 const { decideOnGridPost } = require('./onGridPost');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
@@ -286,9 +287,9 @@ function main() {
       ...(slotLayout
         ? {
             slot: { enabled: true, index: slotLayout.boatSlots, count: slotLayout.boatSlots + 1, widthMs: slotLayout.widthMs, join: null },
-            slottedSyncs: new Set([protocol.SLOT_TABLE_SYNC, protocol.MARKS_SYNC, protocol.PING_SYNC, protocol.POWER_SYNC]),
+            slottedSyncs: new Set([protocol.SLOT_TABLE_SYNC, protocol.MARKS_SYNC, protocol.PING_SYNC, protocol.POWER_SYNC, protocol.WITTY_SCHEDULE_SYNC]),
             // a flood of new boats queues one marks frame and one slot table (the newest), not one per boat - the base's slot passes only a couple of frames a cycle
-            supersede: new Map([[protocol.SLOT_TABLE_SYNC, 'version'], [protocol.MARKS_SYNC, 'latest'], [protocol.PING_SYNC, 'latest']]),
+            supersede: new Map([[protocol.SLOT_TABLE_SYNC, 'version'], [protocol.MARKS_SYNC, 'latest'], [protocol.PING_SYNC, 'latest'], [protocol.WITTY_SCHEDULE_SYNC, 'latest']]),
             trafficLabel: "the base's",
             warnSpill: false,
           }
@@ -921,6 +922,51 @@ function main() {
   // config.js's pingResponseJitterMs), not all at once - nothing to
   // reconcile here on the base side beyond that; replies just arrive as
   // ordinary frames through the normal radio.on('frame', ...) path above.
+  // The Witty Pi power schedule for the fleet (see wittySchedule.js): set on the admin's Witty Pi card, stored in
+  // race-config/, and sent to the boats now and then every WITTY_REBROADCAST_S - a boat that was powered off hears it after it
+  // boots, and applies each version (its stamp) once. Once any schedule has been set the base keeps sending whatever the
+  // latest settings are, 'off' included, so a boat that missed the change to 'off' still gets it.
+  let wittySettings = wittySchedule.loadSettings();
+  let wittyLastSentAt = null;
+  let wittySendCount = 0;
+
+  function sendWittySchedule() {
+    if (!wittySettings || radioMode === 'none') return false;
+    radio.broadcast(protocol.encodeWittySchedule(wittySettings));
+    wittyLastSentAt = Date.now();
+    wittySendCount++;
+    return true;
+  }
+
+  // Validates, stores and sends new settings; throws a plain message on bad input.
+  function setWittySchedule(input) {
+    const settings = wittySchedule.validateSettings({ ...input, stamp: null }); // a new stamp: the boats apply this version once
+    wittySettings = settings;
+    wittySchedule.saveSettings(settings);
+    wittySendCount = 0;
+    sendWittySchedule();
+    console.log(`[witty] fleet schedule set: ${wittySchedule.describe(settings)}`);
+    return wittyStatus();
+  }
+
+  function wittyStatus() {
+    const marks = raceMarks && (raceMarks.committeeStart || raceMarks.pin);
+    return {
+      settings: wittySettings,
+      description: wittySettings ? wittySchedule.describe(wittySettings) : null,
+      lastSentAt: wittyLastSentAt,
+      sendCount: wittySendCount,
+      rebroadcastS: config.witty.rebroadcastS,
+      radioEnabled: radioMode !== 'none',
+      // where the course is, as a starting point for the sunrise-to-sunset fields
+      defaultPlace: marks && Number.isFinite(marks.lat) ? { lat: marks.lat, lon: marks.lon } : null,
+    };
+  }
+
+  if (!marksetMode && radioMode !== 'none') {
+    setInterval(sendWittySchedule, config.witty.rebroadcastS * 1000);
+  }
+
   // The radio frames card's "Clear stats" button: the frame and sync-error totals, the link-quality window and the
   // bandwidth history all start again from zero (a clean number to read before a test run).
   function clearRadioStats() {
@@ -2783,6 +2829,7 @@ function main() {
       baseGpsFix: baseGps.getFix(),
       baseGpsSurvey: baseGps.getSurveyStatus(),
       markAssignment: getMarkAssignment(),
+      witty: wittyStatus(),
       webhook: {
         enabled: config.regattaup.enabled,
         queueReady: !!lapWebhookQueue,
@@ -2840,6 +2887,7 @@ function main() {
     resetCourseToDefault,
     pingFleet,
     clearRadioStats,
+    setWittySchedule,
     sleepFleet,
     wakeFleet,
     setPracticeMode,

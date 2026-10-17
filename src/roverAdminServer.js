@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -37,6 +37,31 @@ function dopQualityText(dop) {
 // running right now, which is worth calling out with its own color/copy
 // rather than folding into the same "armed" state as "configured but nothing
 // imminent."
+// The Witty Pi 4 power schedule this boat got from the base admin (see wittySchedule.js) - read only here; the base sets it for
+// the whole fleet. Says so when the board's software is not installed on this boat. A schedule that lets the boat halt itself
+// needs the "Scheduled shutdown" card above to have a time, or the boat would stay on after the day ends.
+const escapeWitty = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function renderWittyCard(witty, power) {
+  if (!witty) return '';
+  if (!witty.installed) {
+    return `<div class="card power-card">
+      <div class="label">Witty Pi schedule</div>
+      <div class="value" style="font-size:16px;"><span class="dot dot-gray"></span>not installed</div>
+      <div class="sub">expected install path: <code>${escapeWitty(witty.dir)}</code> (WITTYPI_DIR overrides); a schedule from the base is ignored on this boat</div>
+    </div>`;
+  }
+  const a = witty.applied;
+  const halts = a && a.ok && a.settings && a.settings.mode !== 'off' && a.settings.haltItself;
+  const dot = !a ? 'dot-gray' : !a.ok ? 'dot-red' : halts && !power.shutdownAt ? 'dot-orange' : 'dot-green';
+  const text = !a ? 'no schedule from the base yet' : !a.ok ? `not applied: ${escapeWitty(a.message)}` : escapeWitty(witty.description || a.message);
+  return `<div class="card power-card">
+      <div class="label">Witty Pi schedule</div>
+      <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${text}</div>
+      <div class="sub">${a ? `applied ${formatDuration(Date.now() - a.appliedAt)} ago, ` : ''}set on the base admin and sent over the radio; Witty Pi software at <code>${escapeWitty(witty.dir)}</code>${halts && !power.shutdownAt ? '. <strong>This schedule leaves the shutdown to the boat, but the Scheduled shutdown card has no time, so the boat would stay on.</strong>' : ''}</div>
+      ${witty.file ? `<details><summary class="sub">schedule file</summary><pre style="font-size:11px; overflow-x:auto; margin:6px 0 0;">${escapeWitty(witty.file)}</pre></details>` : ''}
+    </div>`;
+}
+
 function renderPowerCard(power) {
   const dotClass = power.triggered ? 'dot-red' : power.idleSince ? 'dot-orange' : power.armed ? 'dot-green' : 'dot-gray';
   const statusText = power.triggered
@@ -174,7 +199,7 @@ function renderSlotTableCard(s) {
     </div>`;
 }
 
-function renderDashboard(s, power) {
+function renderDashboard(s, power, witty) {
   const fix = s.lastFix;
   // receivedAt (this Pi's own local-clock receipt time), not timestamp
   // (the fix's own GPS-derived time, which can legitimately diverge from
@@ -193,7 +218,6 @@ function renderDashboard(s, power) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>boat ${s.boatId} - rover admin</title>
-<meta http-equiv="refresh" content="5">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -206,6 +230,8 @@ function renderDashboard(s, power) {
   }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: #8b94a3; font-size: 13px; margin-bottom: 24px; }
+  .refresh-control { cursor: pointer; user-select: none; color: #c3cad5; }
+  .refresh-control input { vertical-align: middle; accent-color: #f2b84b; cursor: pointer; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 24px; }
   .card {
     background: #161b22;
@@ -274,7 +300,7 @@ function renderDashboard(s, power) {
     &nbsp;·&nbsp; <span class="dot ${fixStale ? 'dot-red' : 'dot-green'}"></span>GPS ${s.gpsMode}
     &nbsp;·&nbsp; radio ${s.radioMode}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
-    &nbsp;·&nbsp; refreshes every 5s
+    &nbsp;·&nbsp; reloads every 5s &nbsp;${REFRESH_CONTROL_HTML}
     ${s.baseIp ? `&nbsp;·&nbsp; <a href="http://${s.baseIp}:${s.adminPort}/" target="_blank" rel="noopener">base dashboard ↗</a>` : ''}
   </div>
 
@@ -509,6 +535,7 @@ function renderDashboard(s, power) {
     ${s.markMode ? renderMarkCard(s) : ''}
     ${renderMarkLogCard()}
     ${renderPowerCard(power)}
+    ${renderWittyCard(witty, power)}
   </div>
 
   <script>
@@ -603,6 +630,7 @@ function renderDashboard(s, power) {
       }
     }
   </script>
+  <script>${REFRESH_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -1343,7 +1371,7 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, updatePowerSchedule, sendSetMark, setMarkName, sendMarkLog }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, updatePowerSchedule, sendSetMark, setMarkName, sendMarkLog }) {
   const server = http.createServer(async (req, res) => {
     // Power card's Save/Disable buttons (see renderPowerCard) - the only
     // write route this server has, so it's handled up front rather than
@@ -1444,7 +1472,7 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, up
 
     if (req.url === '/' || req.url === '') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderDashboard(getStats(), getPowerStatus()));
+      res.end(renderDashboard(getStats(), getPowerStatus(), getWittyStatus ? getWittyStatus() : null));
       return;
     }
 

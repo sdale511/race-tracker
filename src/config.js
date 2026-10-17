@@ -736,6 +736,11 @@ module.exports = {
   // large fleet, and short enough that an operator isn't left waiting long
   // for the dashboard to reflect a stationary boat's current position.
   pingResponseJitterMs: parseInt(process.env.PING_RESPONSE_JITTER_MS || '3000', 10),
+  // The Witty Pi power schedule the base admin sets for the fleet (see wittySchedule.js): the base repeats the settings this often,
+  // so a boat that was powered off, or out of range, picks them up when it boots. A boat applies each version once.
+  witty: {
+    rebroadcastS: parseInt(process.env.WITTY_REBROADCAST_S || '60', 10),
+  },
 
   // Boat only - max random delay (ms, uniform between 0 and this value)
   // before the FIRST hello announcement once the radio connects (see

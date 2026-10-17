@@ -15,6 +15,8 @@ function decodeDatagram(msg) {
   if (marks) return { event: 'marks', decoded: marks };
   const ping = protocol.decodePing(msg);
   if (ping) return { event: 'ping', decoded: ping };
+  const witty = protocol.decodeWittySchedule(msg);
+  if (witty) return { event: 'witty-schedule', decoded: witty };
   const hello = protocol.decodeHello(msg);
   if (hello) return { event: 'hello', decoded: hello };
   const batch = protocol.decodeBatch(msg);

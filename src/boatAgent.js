@@ -34,6 +34,7 @@ const roverStats = require('./roverStats');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 const { startShutdownScheduler } = require('./powerSchedule');
+const wittySchedule = require('./wittySchedule');
 
 // True while the cursor is sitting mid-line after an in-place GPS log
 // overwrite (see handlePvt's inPlaceMode) - any *other* log call landing
@@ -1114,6 +1115,20 @@ function startHelloAnnounce() {
 // whether they're ever transmitted), after a random delay up to
 // config.pingResponseJitterMs so an entire fleet doesn't all key up over
 // each other on the same shared channel the instant they hear the request.
+// The fleet's Witty Pi power schedule from the base admin (see wittySchedule.js): applied only when it differs from what
+// this boat last applied, and only if the board's software is installed here. The base repeats it every minute or so.
+radio.on('witty-schedule', async (frame) => {
+  try {
+    const result = await wittySchedule.handleScheduleFrame(frame);
+    if (!result) return;
+    if (result.notInstalled) console.log('[witty] the base sent a power schedule but the Witty Pi software is not installed here - ignored');
+    else if (result.ok) console.log(`[witty] ${result.message}`);
+    else console.error(`[witty] could not apply the base's power schedule: ${result.message}`);
+  } catch (err) {
+    console.error('[witty] schedule handling failed:', err.message);
+  }
+});
+
 radio.on('ping', () => {
   if (!lastPvt || !hasValidFix(lastPvt)) return; // no fix yet, or not a valid one - nothing to report
   const delayMs = Math.random() * config.pingResponseJitterMs;
@@ -1594,6 +1609,7 @@ startRoverAdminServer({
   getStats: getRoverStats,
   getPosition,
   getPowerStatus: powerScheduler.getStatus,
+  getWittyStatus: wittySchedule.boatStatus,
   updatePowerSchedule: powerScheduler.updateParams,
   sendSetMark,
   setMarkName,

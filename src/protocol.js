@@ -298,6 +298,79 @@ function decodePing(buf) {
   return { timestamp: buf.readUInt32LE(1) * 1000 };
 }
 
+// Witty Pi schedule, base -> boats. The base admin's Witty Pi card sets one power schedule for the whole fleet (the Pi
+// runs 09:00 to 17:00 every day, or from sunrise to sunset - see wittySchedule.js); this carries the SETTINGS, not the
+// schedule file, so it is a small fixed frame whatever the schedule: each boat builds the file itself and enables it on its
+// Witty Pi board. A boat that is powered off cannot hear it, so the base repeats it every minute or so and a boat applies
+// it when it boots; `stamp` (unix seconds when the settings were last changed) is how a boat knows it has already applied
+// this version and ignores the repeats.
+//
+// Layout (all little-endian):
+//   [0]      sync byte      0xB5
+//   [1]      mode           uint8   low 2 bits: 0 off (no schedule), 1 daily hours, 2 sunrise to sunset;
+//                                   bit 7: the boat halts itself at the end of the day (the Witty Pi schedules no shutdown)
+//   [2..5]   stamp          uint32  unix seconds the settings were set
+//   [6..7]   start          uint16  minutes after midnight, local time (daily mode)
+//   [8..9]   end            uint16  minutes after midnight, local time (daily mode)
+//   [10..13] latitude       int32   degrees x 1e5 (sunrise-to-sunset mode)
+//   [14..17] longitude      int32   degrees x 1e5
+//   [18]     before         uint8   minutes of margin before sunrise
+//   [19]     after          uint8   minutes of margin after sunset
+//   [20..21] days           uint16  days the sunrise-to-sunset schedule covers
+//   [22]     checksum       uint8   (sum of bytes 1..21 mod 256)
+
+const WITTY_SCHEDULE_SYNC = 0xb5;
+const WITTY_SCHEDULE_FRAME_LEN = 23;
+const WITTY_MODES = ['off', 'daily', 'sun'];
+
+const hhmmToMinutes = (t) => {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(t || '').trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : 0;
+};
+const minutesToHhmm = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+
+// settings: { mode: 'off'|'daily'|'sun', haltItself, stamp, startTime 'HH:MM', endTime 'HH:MM', lat, lon, beforeMin,
+// afterMin, days } - already validated (wittySchedule.js's validateSettings).
+function encodeWittySchedule(settings) {
+  const buf = Buffer.alloc(WITTY_SCHEDULE_FRAME_LEN);
+  buf.writeUInt8(WITTY_SCHEDULE_SYNC, 0);
+  buf.writeUInt8(WITTY_MODES.indexOf(settings.mode) | (settings.haltItself ? 0x80 : 0), 1);
+  buf.writeUInt32LE(settings.stamp >>> 0, 2);
+  buf.writeUInt16LE(hhmmToMinutes(settings.startTime), 6);
+  buf.writeUInt16LE(hhmmToMinutes(settings.endTime), 8);
+  buf.writeInt32LE(Math.round((settings.lat || 0) * 1e5), 10);
+  buf.writeInt32LE(Math.round((settings.lon || 0) * 1e5), 14);
+  buf.writeUInt8(Math.min(255, settings.beforeMin || 0), 18);
+  buf.writeUInt8(Math.min(255, settings.afterMin || 0), 19);
+  buf.writeUInt16LE(Math.min(65535, settings.days || 0), 20);
+  let sum = 0;
+  for (let i = 1; i < WITTY_SCHEDULE_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, WITTY_SCHEDULE_FRAME_LEN - 1);
+  return buf;
+}
+
+// The settings object, or null if the buffer isn't a valid schedule frame.
+function decodeWittySchedule(buf) {
+  if (buf.length !== WITTY_SCHEDULE_FRAME_LEN || buf[0] !== WITTY_SCHEDULE_SYNC) return null;
+  let sum = 0;
+  for (let i = 1; i < WITTY_SCHEDULE_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[WITTY_SCHEDULE_FRAME_LEN - 1]) return null;
+  const mode = WITTY_MODES[buf[1] & 0x03];
+  if (!mode) return null;
+  return {
+    mode,
+    haltItself: (buf[1] & 0x80) !== 0,
+    stamp: buf.readUInt32LE(2),
+    startTime: minutesToHhmm(buf.readUInt16LE(6) % 1440),
+    endTime: minutesToHhmm(buf.readUInt16LE(8) % 1440),
+    lat: buf.readInt32LE(10) / 1e5,
+    lon: buf.readInt32LE(14) / 1e5,
+    beforeMin: buf[18],
+    afterMin: buf[19],
+    days: buf.readUInt16LE(20),
+  };
+}
+
 // Boat -> base only, sent unprompted right at radio startup, before any
 // GPS fix exists - see boatAgent.js's own startup hello logic. The
 // opposite direction/purpose from PING above (base -> boats, "report your
@@ -1125,6 +1198,10 @@ module.exports = {
   RADIO_MAX_PAYLOAD,
   MARKS_SYNC,
   encodePing,
+  encodeWittySchedule,
+  decodeWittySchedule,
+  WITTY_SCHEDULE_FRAME_LEN,
+  WITTY_SCHEDULE_SYNC,
   decodePing,
   PING_FRAME_LEN,
   PING_SYNC,

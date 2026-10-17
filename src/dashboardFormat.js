@@ -101,4 +101,30 @@ function renderSlotMap({ slotCount, joinSlots, bySlot, mineId = null }) {
   return `<div class="slot-map">${cells.join('')}</div><div class="slot-legend">${legend}</div>`;
 }
 
-module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap };
+// The dashboards reload themselves every 5 s, which resets any field being edited. This replaces the old
+// <meta http-equiv="refresh">: a "Pause refresh" checkbox (remembered in the browser, so it stays on across pages and
+// reloads) and a reload that is also skipped while a field has focus or has been changed since the page loaded.
+// REFRESH_CONTROL_HTML goes in the page header, REFRESH_SCRIPT at the end of the body.
+const REFRESH_CONTROL_HTML = '<label class="refresh-control" title="Stop the page reloading itself, so values you are setting do not reset. It also holds off while you are typing in a field."><input type="checkbox" id="pauseRefresh"> pause refresh</label>';
+const REFRESH_SCRIPT = `
+(function () {
+  var KEY = 'adminRefreshPaused';
+  var box = document.getElementById('pauseRefresh');
+  var dirty = false;
+  function stored() { try { return localStorage.getItem(KEY) === '1'; } catch (e) { return false; } }
+  if (box) {
+    box.checked = stored();
+    box.addEventListener('change', function () {
+      try { localStorage.setItem(KEY, box.checked ? '1' : '0'); } catch (e) {}
+    });
+  }
+  function isField(el) { return el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.id !== 'pauseRefresh'; }
+  document.addEventListener('input', function (e) { if (isField(e.target)) dirty = true; });
+  document.addEventListener('change', function (e) { if (isField(e.target)) dirty = true; });
+  setInterval(function () {
+    if ((box && box.checked) || stored() || dirty || isField(document.activeElement)) return;
+    location.reload();
+  }, 5000);
+})();`;
+
+module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT };

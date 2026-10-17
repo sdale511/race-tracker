@@ -137,6 +137,7 @@ class RadioLink extends EventEmitter {
     { sync: protocol.SYNC, len: protocol.FRAME_LEN, decode: protocol.decode, event: 'frame' },
     { sync: protocol.MARKS_SYNC, len: protocol.MARKS_FRAME_LEN, decode: protocol.decodeMarks, event: 'marks' },
     { sync: protocol.PING_SYNC, len: protocol.PING_FRAME_LEN, decode: protocol.decodePing, event: 'ping' },
+    { sync: protocol.WITTY_SCHEDULE_SYNC, len: protocol.WITTY_SCHEDULE_FRAME_LEN, decode: protocol.decodeWittySchedule, event: 'witty-schedule' },
     { sync: protocol.HELLO_SYNC, len: protocol.HELLO_FRAME_LEN, decode: protocol.decodeHello, event: 'hello' },
     { sync: protocol.BATCH_SYNC, getLen: protocol.batchFrameLenFromHeader, decode: protocol.decodeBatch, event: 'frame-batch' },
     { sync: protocol.SET_MARK_SYNC, len: protocol.SET_MARK_FRAME_LEN, decode: protocol.decodeSetMark, event: 'set-mark' },

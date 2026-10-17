@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -404,6 +404,54 @@ function renderLinkHealthCard(h, slots) {
     </div>`;
 }
 
+// The fleet's Witty Pi power schedule (see wittySchedule.js): one schedule for every boat, set here and sent over the radio. A
+// boat that has the Witty Pi software writes the schedule file and enables it, but only when it differs from what the boat
+// already applied; a boat that is powered off applies it after it boots (the base repeats it every minute or so).
+function renderWittyScheduleCard(w) {
+  if (!w) return '';
+  const st = w.settings || { mode: 'off', startTime: '09:00', endTime: '17:00', haltItself: false, lat: null, lon: null, beforeMin: 30, afterMin: 30, days: 366 };
+  const place = w.defaultPlace || {};
+  const lat = st.lat != null ? st.lat : place.lat != null ? place.lat : '';
+  const lon = st.lon != null ? st.lon : place.lon != null ? place.lon : '';
+  const sentAgo = w.lastSentAt ? formatAgo(w.lastSentAt) : 'not sent yet';
+  const dot = !w.settings ? 'dot-gray' : !w.radioEnabled ? 'dot-orange' : st.mode === 'off' ? 'dot-gray' : 'dot-green';
+  const summary = !w.settings ? 'no schedule set' : st.mode === 'off' ? 'schedule off' : escapeHtml(w.description);
+  const opt = (v, label) => `<option value="${v}"${st.mode === v ? ' selected' : ''}>${label}</option>`;
+  return `<div class="card controls-card" id="wittyCard" data-place-lat="${place.lat != null ? place.lat : ''}" data-place-lon="${place.lon != null ? place.lon : ''}">
+      <div class="label">Witty Pi power schedule</div>
+      <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${summary}</div>
+      <div class="sub">${w.settings ? `sent ${w.sendCount} time${w.sendCount === 1 ? '' : 's'}, last ${sentAgo}; ` : ''}every ${w.rebroadcastS} s${w.radioEnabled ? '' : ' - <strong>no radio on this base, nothing is sent</strong>'}</div>
+      <div class="fc-section">
+        <div class="controls-row">
+          <label for="wittyMode">Boats run</label>
+          <select id="wittyMode" onchange="wittyModeChanged()">${opt('off', 'always (no schedule)')}${opt('daily', 'daily, between two times')}${opt('sun', 'sunrise to sunset')}</select>
+        </div>
+        <div class="controls-row" id="wittyDaily">
+          <label for="wittyStart">From</label><input type="time" id="wittyStart" value="${st.startTime}">
+          <label for="wittyEnd">to</label><input type="time" id="wittyEnd" value="${st.endTime}">
+        </div>
+        <div class="controls-row" id="wittySun">
+          <label for="wittyLat">Lat</label><input type="number" step="any" id="wittyLat" value="${lat}" style="width:90px">
+          <label for="wittyLon">Lon</label><input type="number" step="any" id="wittyLon" value="${lon}" style="width:100px">
+          <button type="button" class="card-btn" onclick="wittyUseCourse()" ${place.lat != null ? '' : 'disabled'} title="The course's own location, from the committee start mark">Use course</button>
+          <label for="wittyBefore">Before sunrise</label><input type="number" min="0" max="255" id="wittyBefore" value="${st.beforeMin}" style="width:60px"> min
+          <label for="wittyAfter">after sunset</label><input type="number" min="0" max="255" id="wittyAfter" value="${st.afterMin}" style="width:60px"> min
+          <label for="wittyDays">Days</label><input type="number" min="1" max="1000" id="wittyDays" value="${st.days}" style="width:70px">
+        </div>
+        <div class="controls-row" id="wittyHaltRow">
+          <span>At the end of the day:</span>
+          <label title="The Witty Pi shuts the Pi down at the end time and cuts its power, whatever the boat is doing - even in the middle of a race."><input type="radio" name="wittyEnd" value="cut"${st.haltItself ? '' : ' checked'}> cut the power</label>
+          <label title="The Witty Pi does not shut the boat down. The boat does it itself, using its own Scheduled shutdown card: once that card's time has passed and the boat has been stopped for its idle minutes. A boat that is still moving stays on, and a boat whose Scheduled shutdown card has no time never shuts down."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> let each boat shut itself down once it has stopped</label>
+        </div>
+        <div class="sub" id="wittyHaltNote">"Let each boat shut itself down" uses the boat's own Scheduled shutdown card (a time, and how long it must be stopped). A boat that is still moving stays on, and one with no time on that card never shuts down.</div>
+        <div class="controls-row">
+          <button type="button" class="card-btn" onclick="saveWittySchedule(this)">Save and send to boats</button>
+        </div>
+        <div class="sub" title="Each boat compares the settings with the ones it applied last and reprograms its Witty Pi only if they differ. A boat without the Witty Pi software ignores it.">Boats apply it when they hear it, and only if it differs from what they already have. A boat that is powered off applies it after it boots. The times are the boats' local time.</div>
+      </div>
+    </div>`;
+}
+
 // The webhook retry queues (laps, on-grid, mark roundings, fouls): everything still waiting to be accepted by RegattaUp. An
 // empty list is the healthy state; rows that stay show how many attempts they have had and when the next one is due.
 function renderWebhookQueuesCard(w) {
@@ -653,7 +701,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>race-tracker admin</title>
-<meta http-equiv="refresh" content="5">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -666,6 +713,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: #8b94a3; font-size: 13px; margin-bottom: 24px; }
+  .refresh-control { cursor: pointer; user-select: none; color: #c3cad5; }
+  .refresh-control input { vertical-align: middle; accent-color: #f2b84b; cursor: pointer; }
   ${TABS_CSS}
   .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; }
   .regatta-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; color: #8b94a3; }
@@ -828,7 +877,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
     &nbsp;·&nbsp; upload address ${s.base.ip ? `${s.base.ip}:${s.base.uploadPort}` : 'unknown'}
-    &nbsp;·&nbsp; refreshes every 5s
+    &nbsp;·&nbsp; reloads every 5s &nbsp;${REFRESH_CONTROL_HTML}
   </div>
 
   ${
@@ -879,6 +928,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
         <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
       </div>
     </div>
+    ${renderWittyScheduleCard(s.witty)}
     <div class="card">
       <div class="label">Uploads</div>
       <div class="value">${s.upload.successes.toLocaleString()}</div>
@@ -1013,6 +1063,49 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       }
     }
 
+    // The Witty Pi power schedule card (see renderWittyScheduleCard): show only the fields of the chosen mode, and send it.
+    function wittyModeChanged() {
+      const mode = document.getElementById('wittyMode').value;
+      document.getElementById('wittyDaily').style.display = mode === 'daily' ? '' : 'none';
+      document.getElementById('wittySun').style.display = mode === 'sun' ? '' : 'none';
+      document.getElementById('wittyHaltRow').style.display = mode === 'off' ? 'none' : '';
+      document.getElementById('wittyHaltNote').style.display = mode === 'off' ? 'none' : '';
+    }
+    function wittyUseCourse() {
+      const card = document.getElementById('wittyCard');
+      document.getElementById('wittyLat').value = card.dataset.placeLat;
+      document.getElementById('wittyLon').value = card.dataset.placeLon;
+    }
+    async function saveWittySchedule(btn) {
+      const mode = document.getElementById('wittyMode').value;
+      if (mode === 'off' && !confirm('Remove the power schedule from every boat that has a Witty Pi? They go back to staying on until shut down.')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/witty-schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode,
+            startTime: document.getElementById('wittyStart').value,
+            endTime: document.getElementById('wittyEnd').value,
+            haltItself: document.querySelector('input[name=wittyEnd]:checked').value === 'halt',
+            lat: document.getElementById('wittyLat').value,
+            lon: document.getElementById('wittyLon').value,
+            beforeMin: document.getElementById('wittyBefore').value,
+            afterMin: document.getElementById('wittyAfter').value,
+            days: document.getElementById('wittyDays').value,
+          }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+    if (document.getElementById('wittyMode')) wittyModeChanged();
+
     async function clearRadioStats(btn) {
       btn.disabled = true;
       try {
@@ -1083,6 +1176,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       }
     }
   </script>
+  <script>${REFRESH_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -2174,6 +2268,7 @@ function startAdminServer({
   resetCourseToDefault,
   pingFleet,
   clearRadioStats,
+  setWittySchedule,
   sleepFleet,
   wakeFleet,
   setPracticeMode,
@@ -2239,6 +2334,20 @@ function startAdminServer({
     if (req.url === '/api/clear-radio-stats' && req.method === 'POST') {
       try {
         clearRadioStats();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // The Witty Pi power schedule card (see baseStation.js's setWittySchedule): validate, store and send to the boats.
+    if (req.url === '/api/witty-schedule' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        setWittySchedule(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {
