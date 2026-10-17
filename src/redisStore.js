@@ -305,39 +305,37 @@ class RedisStore {
     }
     this._recordTrackWriteSuccess();
 
-    // Best-effort - EXPIRE NX only sets a TTL when the key has none (the first write), so a key never goes without one.
-    // It is not refreshed here: _keepRollingWindow below does that once a minute, together with trimming all:track to the
-    // retention window. Failure isn't tracked as a write failure above - the fix already landed; a missing TTL just means
-    // the key gets one on a later write.
-    this.client.expire(boatTrackKey, this.trackRetentionSeconds, 'NX').catch(() => {});
+    // Best-effort, and no per-fix commands: each track key's expiry is set and kept fresh by the periodic maintenance below
+    // (a boat's own key every TRIM_EVERY_MS, all:track once a minute, both on a key's first write), not on every write. A
+    // failure isn't tracked as a write failure above - the fix already landed; the next interval retries.
     this._trimBoatTrack(decoded.boatId, boatTrackKey, score);
-    this.client.expire(allTrackKey, this.trackRetentionSeconds, 'NX').catch(() => {});
-    this._keepRollingWindow(allTrackKey, boatTrackKey);
+    this._keepRollingWindow(allTrackKey);
   }
 
-  // A rolling retention window. The EXPIRE NX above sets a key's expiry once, when it is created, so on its own a track
-  // key vanishes (every fix in it, a race in progress included) trackRetentionHours after its FIRST write, whatever has
-  // been written since. Every TRIM_EVERY_MS this instead (1) drops the fixes older than the retention window from
-  // all:track, and (2) pushes both keys' expiry out again, so the key lives until trackRetentionHours after its last write
-  // and holds exactly the last trackRetentionHours of fixes. Best effort; a failure is retried at the next interval.
-  _keepRollingWindow(allTrackKey, boatTrackKey) {
+  // A rolling retention window for all:track. An expiry set once, when a key is created, would delete the whole key (every
+  // race's fixes, a race in progress included) trackRetentionHours after its FIRST write, whatever was written since. So
+  // once a minute this (1) drops the fixes older than the retention window and (2) pushes the key's expiry out again: it
+  // holds the last trackRetentionHours of fixes and only expires that long after its last write. The first write of a key
+  // does it at once, so a key never goes without an expiry. Best effort; a failure is retried at the next interval.
+  _keepRollingWindow(allTrackKey) {
     const now = Date.now();
     if (now - (this.lastWindowAt.get(allTrackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
     this.lastWindowAt.set(allTrackKey, now);
     this.client.zremrangebyscore(allTrackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
     this.client.expire(allTrackKey, this.trackRetentionSeconds).catch(() => {});
-    this.client.expire(boatTrackKey, this.trackRetentionSeconds).catch(() => {});
   }
 
-  // Drop the boat's own copy of fixes older than the window, at most every TRIM_EVERY_MS per boat (the sorted set is
-  // ordered by time, so the trim is cheap, and a minute of extra fixes in the key is nothing). Best effort, like the
-  // expiry above: all:track still has every fix.
+  // Maintenance of the boat's own key, at most every TRIM_EVERY_MS per boat (the sorted set is ordered by time, so the trim
+  // is cheap): drop fixes older than the window (boatTrackMinutes; 0 keeps all of them) and refresh the key's expiry, which
+  // also gives a key its expiry on its first write. Best effort: all:track still has every fix.
   _trimBoatTrack(boatId, boatTrackKey, score) {
-    if (!(this.boatTrackWindowMs > 0)) return;
     const now = Date.now();
     if (now - (this.lastBoatTrimAt.get(boatId) || 0) < RedisStore.TRIM_EVERY_MS) return;
     this.lastBoatTrimAt.set(boatId, now);
-    this.client.zremrangebyscore(boatTrackKey, '-inf', score - this.boatTrackWindowMs).catch(() => {});
+    if (this.boatTrackWindowMs > 0) {
+      this.client.zremrangebyscore(boatTrackKey, '-inf', score - this.boatTrackWindowMs).catch(() => {});
+    }
+    this.client.expire(boatTrackKey, this.trackRetentionSeconds).catch(() => {});
   }
 
   _recordTrackWriteFailure(err) {

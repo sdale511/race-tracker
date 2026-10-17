@@ -43,29 +43,42 @@ test('an implausible fix is never posted and does not become the reference', () 
   assert.strictEqual(store.decideRecord(fix(T + 1000)), 'post');
 });
 
-test('a boat\'s own track key is trimmed to the window, at most once per trim interval', () => {
-  const trims = [];
+test('a boat\'s own track key is trimmed to the window and its expiry refreshed, at most once per trim interval', () => {
+  const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
     boatTrackWindowMs: 2 * 60000,
+    trackRetentionSeconds: 172800,
     lastBoatTrimAt: new Map(),
-    client: { zremrangebyscore: (key, min, max) => { trims.push([key, min, max]); return Promise.resolve(0); } },
+    client: {
+      zremrangebyscore: (key, min, max) => { calls.push(['zrem', key, min, max]); return Promise.resolve(0); },
+      expire: (key, seconds) => { calls.push(['expire', key, seconds]); return Promise.resolve(1); },
+    },
   });
   store._trimBoatTrack('00001', 'k:00001', 2_000_000);
-  store._trimBoatTrack('00001', 'k:00001', 2_001_000); // too soon after the first trim
+  store._trimBoatTrack('00001', 'k:00001', 2_001_000); // too soon after the first
   store._trimBoatTrack('00002', 'k:00002', 2_000_000); // another boat has its own interval
-  assert.deepStrictEqual(trims, [['k:00001', '-inf', 2_000_000 - 120000], ['k:00002', '-inf', 2_000_000 - 120000]]);
+  assert.deepStrictEqual(calls, [
+    ['zrem', 'k:00001', '-inf', 2_000_000 - 120000], ['expire', 'k:00001', 172800],
+    ['zrem', 'k:00002', '-inf', 2_000_000 - 120000], ['expire', 'k:00002', 172800],
+  ]);
 });
 
-test('a window of 0 keeps the whole per-boat track', () => {
+test('a window of 0 keeps the whole per-boat track but still sets its expiry', () => {
+  const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
     boatTrackWindowMs: 0,
+    trackRetentionSeconds: 172800,
     lastBoatTrimAt: new Map(),
-    client: { zremrangebyscore: () => assert.fail('must not trim') },
+    client: {
+      zremrangebyscore: () => assert.fail('must not trim'),
+      expire: (key, seconds) => { calls.push([key, seconds]); return Promise.resolve(1); },
+    },
   });
   store._trimBoatTrack('00001', 'k', 1);
+  assert.deepStrictEqual(calls, [['k', 172800]]);
 });
 
-test('the rolling window trims all:track to the retention period and refreshes the expiry, once a minute', () => {
+test('the rolling window trims all:track to the retention period and refreshes its expiry, once a minute', () => {
   const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
     trackRetentionSeconds: 48 * 3600,
@@ -76,11 +89,11 @@ test('the rolling window trims all:track to the retention period and refreshes t
     },
   });
   const before = Date.now();
-  store._keepRollingWindow('all', 'boat');
-  store._keepRollingWindow('all', 'boat'); // inside the same minute: nothing
-  assert.strictEqual(calls.length, 3);
+  store._keepRollingWindow('all');
+  store._keepRollingWindow('all'); // inside the same minute: nothing
+  assert.strictEqual(calls.length, 2);
   assert.strictEqual(calls[0][0], 'zrem');
   assert.strictEqual(calls[0][2], '-inf');
   assert.ok(calls[0][3] >= before - 48 * 3600 * 1000 && calls[0][3] <= Date.now() - 48 * 3600 * 1000);
-  assert.deepStrictEqual(calls.slice(1), [['expire', 'all', 172800], ['expire', 'boat', 172800]]);
+  assert.deepStrictEqual(calls[1], ['expire', 'all', 172800]);
 });
