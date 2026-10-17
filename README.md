@@ -1415,21 +1415,23 @@ after it starts. Reassigning always resets the movement gate, so the very
 next fix sends a fresh position rather than waiting out
 `MARK_DISTANCE_M` from wherever the previous mark happened to be.
 
-### Scheduled shutdown (boat, battery-saving)
+### Boat shutdown (battery-saving)
 
-Set from the rover dashboard's "Scheduled shutdown" card (time, idle
-threshold, speed threshold - no restart needed), or pre-configure via
-`ROVER_SHUTDOWN_AT` (e.g. `21:00`) before the process starts. Shuts the Pi
-down once BOTH the clock has passed that time AND the boat has been idle
-(stationary or no fresh fix) for `ROVER_SHUTDOWN_IDLE_MIN` continuous
-minutes (default 10) - the idle gate stops a race running late from being
-killed mid-track. Disabled by default. Settings persist to
-`race-config/power-schedule.txt`. **Linux-only** - refuses to arm on
-macOS, so a leftover schedule never shuts down a dev machine.
+Each boat can shut its own Pi down: once the local time has passed `shutdownAt` AND the boat has been idle (stationary or no
+fresh fix) for `ROVER_SHUTDOWN_IDLE_MIN` continuous minutes (default 10) it runs `shutdown -h now` - the idle gate stops a race
+running late from being killed mid-track, so a boat that is still moving stays on. It needs no Witty Pi, so it always works.
+**Linux-only** - refuses to arm on macOS, so a leftover schedule never shuts down a dev machine.
 
-**Only handles powering DOWN, never back up** - a Pi has no built-in way
-to power itself back on; that needs a physical re-power or wake hardware,
-such as the Witty Pi 4 in the next section, which starts the Pi from a schedule.
+**It is set on the base admin.** The Data page's **Boat shutdown** card (time, idle minutes, speed under which the boat counts as
+stopped, **Save**, **Enable** / **Disable**) sets it for the whole fleet and sends it to the boats over the radio, in the same
+frame as the Witty Pi schedule below (`protocol.js`'s power schedule frame, repeated every `WITTY_REBROADCAST_S`, 60). A boat
+applies it only when it differs from what it last got from the base (`race-config/fleet-shutdown-applied.json`) and keeps it
+across a restart (`race-config/power-schedule.txt`); Disable disarms it. A boat's own dashboard shows a read-only **Boat
+shutdown** card (armed, idle for how long, what the base sent and when it was applied) - it cannot be edited there. A boat that has
+never heard from a base starts from `ROVER_SHUTDOWN_AT` (e.g. `21:00`; disabled by default) or what it last had.
+
+**Only handles powering DOWN, never back up** - a Pi has no built-in way to power itself back on; that needs a physical re-power
+or wake hardware, such as the Witty Pi 4 in the next section, which starts the Pi from a schedule.
 
 Requires passwordless `shutdown` for the service's user:
 ```
@@ -1469,27 +1471,31 @@ Pi would wait for a button tap), and the clock from the network. A power bank th
 needs the dummy load ("Dummy load duration" in "View/change other settings"; the pulsing interval is how often it is applied).
 
 **The schedule is set on the base admin and sent to the boats over the radio.** The Data page's **Witty Pi power schedule** card sets
-one schedule for the whole fleet (the times are local, nothing depends on the boat): **always** (no schedule), **daily** between
-two times (the default idea is 09:00 to 17:00), or **sunrise to sunset** at a latitude and longitude (**Use course** fills in
-the course's own place), with minutes of margin before sunrise and after sunset for boot and GPS lock. "At the end of the day" is either **cut the power** (the Witty Pi shuts the Pi down at the end time, even mid-race)
-or **let each boat shut itself down once it has stopped**: the ON state ends with `WAIT`, the Witty Pi schedules no
-shutdown, and the boat uses its own Scheduled shutdown card (`ROVER_SHUTDOWN_AT`): once that time has passed and the boat has
-been stopped for its idle minutes it halts, so a boat still moving stays on, and one with no time on that card would never
-shut down (its own Witty Pi card warns about it). Save sends it at once.
+one schedule for the whole fleet (the times are local, nothing depends on the boat): **daily** between two times (for example
+09:00 to 17:00) or **sunrise to sunset** at a latitude and longitude (**Use course** fills in the course's own place), with minutes
+of margin before sunrise and after sunset for boot and GPS lock. **Save** stores it; **Enable** sends it to the boats and
+**Disable** removes the schedule from every boat that has a Witty Pi (it clears the file and the board's next startup and
+shutdown). "At the end of the day" is either **cut the power** (the Witty Pi shuts the Pi down at the end time, even mid-race) or
+**let each boat shut itself down**: the ON state ends with `WAIT`, the Witty Pi schedules no shutdown, and the boat uses its own
+shutdown (the **Boat shutdown** card above): once that time has passed and the boat has been stopped for its idle minutes it
+halts, so a boat still moving stays on, and a fleet with no enabled Boat shutdown would never shut down (both cards warn about it).
 
-The frame (`0xB5`, 23 bytes, `protocol.js`) carries the settings, not the schedule file; each boat builds `~/wittypi/schedule.wpi`
-from them and enables it by running the board's own `runScript.sh` (as the service's user, then through passwordless `sudo`
-if that fails - the board is on I2C). A boat that is powered off cannot hear it, so the base repeats the latest settings every
-`WITTY_REBROADCAST_S` (60) seconds, 'always' included, and a boat applies it when it boots. A boat **applies only when the
-settings differ** from what it applied last (stored in `race-config/witty-applied.json`): the repeats, and saving the same
-settings again, cost nothing, while a changed setting, a missing `schedule.wpi`, a failed earlier attempt, or a
-sunrise-to-sunset file with under two weeks left (it covers `Days`, 366 by default, from the day it was written) are applied
-again. A boat without the Witty Pi software ignores the frame and says so once in its console. Choosing "always" removes the
-file and clears the board's next startup and shutdown. The boat dashboard shows a read-only **Witty Pi schedule** card with
-what it applied and whether it worked. The file follows the Witty Pi's own format (`BEGIN`, `END`, then `ON` and `OFF`
-states with durations such as `H8` or `M30`; a fixed daily cycle drifts an hour across a daylight-saving change until the board
-next runs the script, which it does at every boot). Sunrise and sunset come from the standard sunrise equation in
-`sunSchedule.js`, good to about a minute.
+**One frame carries both rules.** The Witty Pi schedule and the Boat shutdown go out together in one fixed 31-byte frame
+(`0xB5`, `protocol.js`'s power schedule frame) with the *settings*, not any file. The base repeats it every `WITTY_REBROADCAST_S`
+(60) seconds - disabled rules included, so a boat that missed a change still gets it - and a boat that is powered off applies it
+after it boots. A rule the base has never saved is marked "not managed" and the boat leaves its own setting for it alone. Each
+boat applies each rule **only when it differs** from what it last got from the base (`race-config/witty-applied.json`,
+`race-config/fleet-shutdown-applied.json`): the repeats, and saving the same settings again, cost nothing.
+
+**On the boat,** the Witty Pi part builds `~/wittypi/schedule.wpi` from the settings and enables it by running the board's own
+`runScript.sh` (as the service's user, then through passwordless `sudo` if that fails - the board is on I2C). It is applied again
+if the settings change, the file has gone, an earlier attempt failed, or a sunrise-to-sunset file has under two weeks left (it
+covers `Days`, 366 by default, from the day it was written). A boat without the Witty Pi software ignores that part and says so
+once in its console; the shutdown part always works. The boat dashboard has a read-only **Witty Pi schedule** card (not installed,
+the expected install path, what was applied and whether it worked, and the schedule file) and the read-only **Boat shutdown**
+card. The file follows the Witty Pi's own format (`BEGIN`, `END`, then `ON` and `OFF` states with durations such as `H8` or
+`M30`; a fixed daily cycle drifts an hour across a daylight-saving change until the board next runs the script, which it does at
+every boot). Sunrise and sunset come from the standard sunrise equation in `sunSchedule.js`, good to about a minute.
 
 ## Simulation mode (no hardware)
 

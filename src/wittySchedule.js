@@ -110,9 +110,11 @@ function describe(settings) {
 
 // ---- the base's stored copy ----
 
+// Stored with `enabled` (the card's Enable / Disable): validateSettings knows nothing of it, so it is kept alongside.
 function loadSettings(file = DEFAULT_SETTINGS_FILE) {
   try {
-    return validateSettings(JSON.parse(fs.readFileSync(file, 'utf8')));
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { ...validateSettings(raw), enabled: raw.enabled === true };
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('[witty] failed to read the stored schedule:', err.message);
     return null;

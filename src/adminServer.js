@@ -404,27 +404,33 @@ function renderLinkHealthCard(h, slots) {
     </div>`;
 }
 
-// The fleet's Witty Pi power schedule (see wittySchedule.js): one schedule for every boat, set here and sent over the radio. A
-// boat that has the Witty Pi software writes the schedule file and enables it, but only when it differs from what the boat
-// already applied; a boat that is powered off applies it after it boots (the base repeats it every minute or so).
-function renderWittyScheduleCard(w) {
-  if (!w) return '';
-  const st = w.settings || { mode: 'off', startTime: '09:00', endTime: '17:00', haltItself: false, lat: null, lon: null, beforeMin: 30, afterMin: 30, days: 366 };
+// The fleet's two power rules, each its own card with Save and Enable / Disable. Both are set here, stored, and sent to the
+// boats over the radio in one frame (baseStation.js's setWittySchedule / setShutdownSchedule); a boat applies each rule only
+// when it differs from what it already got from the base, and a boat that is powered off applies them after it boots. A rule
+// that has never been saved is not sent, and the boats keep their own setting for it.
+function powerSentLine(p, saved) {
+  const ago = p.lastSentAt ? formatAgo(p.lastSentAt) : 'not sent yet';
+  return `${saved ? `sent ${p.sendCount} time${p.sendCount === 1 ? '' : 's'}, last ${ago}; ` : ''}repeated every ${p.rebroadcastS} s${p.radioEnabled ? '' : ' - <strong>no radio on this base, nothing is sent</strong>'}`;
+}
+
+function renderWittyScheduleCard(p) {
+  if (!p) return '';
+  const w = p.witty;
+  const st = w.settings || { mode: 'daily', startTime: '09:00', endTime: '17:00', haltItself: false, lat: null, lon: null, beforeMin: 30, afterMin: 30, days: 366, enabled: false };
   const place = w.defaultPlace || {};
   const lat = st.lat != null ? st.lat : place.lat != null ? place.lat : '';
   const lon = st.lon != null ? st.lon : place.lon != null ? place.lon : '';
-  const sentAgo = w.lastSentAt ? formatAgo(w.lastSentAt) : 'not sent yet';
-  const dot = !w.settings ? 'dot-gray' : !w.radioEnabled ? 'dot-orange' : st.mode === 'off' ? 'dot-gray' : 'dot-green';
-  const summary = !w.settings ? 'no schedule set' : st.mode === 'off' ? 'schedule off' : escapeHtml(w.description);
+  const dot = !w.settings ? 'dot-gray' : !st.enabled ? 'dot-gray' : !p.radioEnabled ? 'dot-orange' : 'dot-green';
+  const summary = !w.settings ? 'not set - boats keep their own' : `${st.enabled ? 'enabled' : 'disabled'}: ${escapeHtml(w.description)}`;
   const opt = (v, label) => `<option value="${v}"${st.mode === v ? ' selected' : ''}>${label}</option>`;
   return `<div class="card controls-card" id="wittyCard" data-place-lat="${place.lat != null ? place.lat : ''}" data-place-lon="${place.lon != null ? place.lon : ''}">
       <div class="label">Witty Pi power schedule</div>
       <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${summary}</div>
-      <div class="sub">${w.settings ? `sent ${w.sendCount} time${w.sendCount === 1 ? '' : 's'}, last ${sentAgo}; ` : ''}every ${w.rebroadcastS} s${w.radioEnabled ? '' : ' - <strong>no radio on this base, nothing is sent</strong>'}</div>
+      <div class="sub">${powerSentLine(p, !!w.settings)}</div>
       <div class="fc-section">
         <div class="controls-row">
-          <label for="wittyMode">Boats run</label>
-          <select id="wittyMode" onchange="wittyModeChanged()">${opt('off', 'always (no schedule)')}${opt('daily', 'daily, between two times')}${opt('sun', 'sunrise to sunset')}</select>
+          <label for="wittyMode">The Witty Pi runs the boats</label>
+          <select id="wittyMode" onchange="wittyModeChanged()">${opt('daily', 'daily, between two times')}${opt('sun', 'from sunrise to sunset')}</select>
         </div>
         <div class="controls-row" id="wittyDaily">
           <label for="wittyStart">From</label><input type="time" id="wittyStart" value="${st.startTime}">
@@ -441,13 +447,40 @@ function renderWittyScheduleCard(w) {
         <div class="controls-row" id="wittyHaltRow">
           <span>At the end of the day:</span>
           <label title="The Witty Pi shuts the Pi down at the end time and cuts its power, whatever the boat is doing - even in the middle of a race."><input type="radio" name="wittyEnd" value="cut"${st.haltItself ? '' : ' checked'}> cut the power</label>
-          <label title="The Witty Pi does not shut the boat down. The boat does it itself, using its own Scheduled shutdown card: once that card's time has passed and the boat has been stopped for its idle minutes. A boat that is still moving stays on, and a boat whose Scheduled shutdown card has no time never shuts down."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> let each boat shut itself down once it has stopped</label>
+          <label title="The Witty Pi does not shut the boat down. The boat does it itself, using the Boat shutdown card below: once that card's time has passed and the boat has been stopped for its idle minutes. A boat that is still moving stays on."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> let each boat shut itself down (the Boat shutdown card)</label>
         </div>
-        <div class="sub" id="wittyHaltNote">"Let each boat shut itself down" uses the boat's own Scheduled shutdown card (a time, and how long it must be stopped). A boat that is still moving stays on, and one with no time on that card never shuts down.</div>
         <div class="controls-row">
-          <button type="button" class="card-btn" onclick="saveWittySchedule(this)">Save and send to boats</button>
+          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/witty-schedule', 'save', wittyFields())">Save</button>
+          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/witty-schedule', '${st.enabled ? 'disable' : 'enable'}')" ${w.settings ? '' : 'disabled'}>${st.enabled ? 'Disable' : 'Enable'}</button>
         </div>
-        <div class="sub" title="Each boat compares the settings with the ones it applied last and reprograms its Witty Pi only if they differ. A boat without the Witty Pi software ignores it.">Boats apply it when they hear it, and only if it differs from what they already have. A boat that is powered off applies it after it boots. The times are the boats' local time.</div>
+        <div class="sub" title="Each boat compares the settings with the ones it applied last and reprograms its Witty Pi only if they differ. A boat without the Witty Pi software ignores it.">Enable sends it to the boats; Disable removes the schedule from every boat that has a Witty Pi. Boats without a Witty Pi ignore it. The times are the boats' local time.${
+          w.settings && st.enabled && st.haltItself && !(p.shutdown.settings && p.shutdown.settings.enabled) ? ' <strong>The boats are to shut themselves down, but the Boat shutdown card is not enabled - they would stay on.</strong>' : ''
+        }</div>
+      </div>
+    </div>`;
+}
+
+function renderShutdownScheduleCard(p) {
+  if (!p) return '';
+  const sd = p.shutdown;
+  const st = sd.settings || { enabled: false, time: '17:00', idleMinutes: 10, speedKn: 0.5 };
+  const dot = !sd.settings || !st.enabled ? 'dot-gray' : !p.radioEnabled ? 'dot-orange' : 'dot-green';
+  const summary = !sd.settings ? 'not set - boats keep their own' : `${st.enabled ? 'enabled' : 'disabled'}: ${escapeHtml(sd.description)}`;
+  return `<div class="card controls-card">
+      <div class="label">Boat shutdown</div>
+      <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${summary}</div>
+      <div class="sub">${powerSentLine(p, !!sd.settings)}</div>
+      <div class="fc-section">
+        <div class="controls-row">
+          <label for="sdTime">Shut down after</label><input type="time" id="sdTime" value="${st.time}">
+          <label for="sdIdle">once stopped for</label><input type="number" min="0" max="1440" id="sdIdle" value="${st.idleMinutes}" style="width:70px"> min
+          <label for="sdSpeed">(under</label><input type="number" step="any" min="0" id="sdSpeed" value="${st.speedKn}" style="width:70px"> kn)
+        </div>
+        <div class="controls-row">
+          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/shutdown-schedule', 'save', shutdownFields())">Save</button>
+          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/shutdown-schedule', '${st.enabled ? 'disable' : 'enable'}')" ${sd.settings ? '' : 'disabled'}>${st.enabled ? 'Disable' : 'Enable'}</button>
+        </div>
+        <div class="sub" title="This is each boat's own software shutdown. It needs no Witty Pi, so it always works. The idle gate stops a race running late from being cut off mid-track.">Each boat halts itself once the time has passed and it has been stopped (or has no fresh fix) for the idle minutes, so a boat still moving stays on. It needs no Witty Pi. The time is the boat's local time.</div>
       </div>
     </div>`;
 }
@@ -928,7 +961,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
         <div class="sub" title="A sleeping rover wakes its radio for a moment every cycle to listen for a wake command, so waking can take up to one full cycle. Leave the boat ids blank to target every rover; otherwise list ids separated by commas. Sleeping a boat also frees its transmit slot.">Powers rovers' radios down to save battery. Waking takes up to one cycle.${sleepingIds.length ? ` Asleep: ${sleepingIds.map((id) => escapeHtml(id)).join(', ')}.` : ''}</div>
       </div>
     </div>
-    ${renderWittyScheduleCard(s.witty)}
+    ${renderWittyScheduleCard(s.powerSchedule)}
+    ${renderShutdownScheduleCard(s.powerSchedule)}
     <div class="card">
       <div class="label">Uploads</div>
       <div class="value">${s.upload.successes.toLocaleString()}</div>
@@ -1063,38 +1097,46 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       }
     }
 
-    // The Witty Pi power schedule card (see renderWittyScheduleCard): show only the fields of the chosen mode, and send it.
+    // The two power cards (see renderWittyScheduleCard / renderShutdownScheduleCard): show only the fields of the chosen mode, and send.
     function wittyModeChanged() {
       const mode = document.getElementById('wittyMode').value;
       document.getElementById('wittyDaily').style.display = mode === 'daily' ? '' : 'none';
       document.getElementById('wittySun').style.display = mode === 'sun' ? '' : 'none';
-      document.getElementById('wittyHaltRow').style.display = mode === 'off' ? 'none' : '';
-      document.getElementById('wittyHaltNote').style.display = mode === 'off' ? 'none' : '';
     }
     function wittyUseCourse() {
       const card = document.getElementById('wittyCard');
       document.getElementById('wittyLat').value = card.dataset.placeLat;
       document.getElementById('wittyLon').value = card.dataset.placeLon;
     }
-    async function saveWittySchedule(btn) {
-      const mode = document.getElementById('wittyMode').value;
-      if (mode === 'off' && !confirm('Remove the power schedule from every boat that has a Witty Pi? They go back to staying on until shut down.')) return;
+    function wittyFields() {
+      return {
+        mode: document.getElementById('wittyMode').value,
+        startTime: document.getElementById('wittyStart').value,
+        endTime: document.getElementById('wittyEnd').value,
+        haltItself: document.querySelector('input[name=wittyEnd]:checked').value === 'halt',
+        lat: document.getElementById('wittyLat').value,
+        lon: document.getElementById('wittyLon').value,
+        beforeMin: document.getElementById('wittyBefore').value,
+        afterMin: document.getElementById('wittyAfter').value,
+        days: document.getElementById('wittyDays').value,
+      };
+    }
+    function shutdownFields() {
+      return {
+        time: document.getElementById('sdTime').value,
+        idleMinutes: document.getElementById('sdIdle').value,
+        speedKn: document.getElementById('sdSpeed').value,
+      };
+    }
+    // action: 'save' (with fields), 'enable' or 'disable'
+    async function postPowerRule(btn, url, action, fields) {
+      if (action === 'disable' && !confirm('Disable it? Boats are told to stop using it the next time they hear the base.')) return;
       btn.disabled = true;
       try {
-        const res = await fetch('/api/witty-schedule', {
+        const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode,
-            startTime: document.getElementById('wittyStart').value,
-            endTime: document.getElementById('wittyEnd').value,
-            haltItself: document.querySelector('input[name=wittyEnd]:checked').value === 'halt',
-            lat: document.getElementById('wittyLat').value,
-            lon: document.getElementById('wittyLon').value,
-            beforeMin: document.getElementById('wittyBefore').value,
-            afterMin: document.getElementById('wittyAfter').value,
-            days: document.getElementById('wittyDays').value,
-          }),
+          body: JSON.stringify({ ...(fields || {}), action }),
         });
         const result = await res.json();
         if (!result.ok) throw new Error(result.error || 'request failed');
@@ -2269,6 +2311,7 @@ function startAdminServer({
   pingFleet,
   clearRadioStats,
   setWittySchedule,
+  setShutdownSchedule,
   sleepFleet,
   wakeFleet,
   setPracticeMode,
@@ -2348,6 +2391,20 @@ function startAdminServer({
       try {
         const body = await readJsonBody(req);
         setWittySchedule(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // The Boat shutdown card (see baseStation.js's setShutdownSchedule): save, enable or disable, and send to the boats.
+    if (req.url === '/api/shutdown-schedule' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        setShutdownSchedule(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

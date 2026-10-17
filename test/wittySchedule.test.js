@@ -85,7 +85,12 @@ test('without the Witty Pi software nothing is written', async () => {
   assert.deepStrictEqual(fs.readdirSync(dir), []);
 });
 
-const frameFor = (extra) => protocol.decodeWittySchedule(protocol.encodeWittySchedule(w.validateSettings({ mode: 'daily', startTime: '09:00', endTime: '17:00', stamp: 1000, ...extra })));
+// A schedule as a boat hears it: through the combined power schedule frame, Witty Pi part only
+const frameFor = (extra) => {
+  const s = w.validateSettings({ mode: 'daily', startTime: '09:00', endTime: '17:00', stamp: 1000, ...extra });
+  const back = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: s.stamp, witty: s, shutdown: null }));
+  return { ...back.witty, stamp: back.stamp };
+};
 const boat = () => {
   const dir = fakeInstall();
   const calls = { runs: 0 };
@@ -147,22 +152,32 @@ test('a boat without the Witty Pi software says so once, and records nothing', a
   assert.ok(!fs.existsSync(deps.appliedFile));
 });
 
-test('the schedule frame survives the radio encoding', () => {
+test('the power schedule frame carries both rules, and a rule the base has not set stays null', () => {
   const s = w.validateSettings({ mode: 'sun', lat: 40.89, lon: -118.39, beforeMin: 20, afterMin: 40, days: 200, haltItself: true, stamp: 12345 });
-  const back = protocol.decodeWittySchedule(protocol.encodeWittySchedule(s));
-  assert.strictEqual(back.mode, 'sun');
-  assert.strictEqual(back.haltItself, true);
-  assert.strictEqual(back.stamp, 12345);
-  assert.ok(Math.abs(back.lat - 40.89) < 1e-5 && Math.abs(back.lon + 118.39) < 1e-5);
-  assert.strictEqual(back.days, 200);
+  const sd = { enabled: true, time: '17:30', idleMinutes: 10, speedKn: 0.5 };
+  const both = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 12345, witty: s, shutdown: sd }));
+  assert.strictEqual(both.stamp, 12345);
+  assert.strictEqual(both.witty.mode, 'sun');
+  assert.strictEqual(both.witty.haltItself, true);
+  assert.ok(Math.abs(both.witty.lat - 40.89) < 1e-5 && Math.abs(both.witty.lon + 118.39) < 1e-5);
+  assert.strictEqual(both.witty.days, 200);
+  assert.deepStrictEqual(both.shutdown, sd);
+  const onlyShutdown = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 1, witty: null, shutdown: { ...sd, enabled: false } }));
+  assert.strictEqual(onlyShutdown.witty, null);
+  assert.strictEqual(onlyShutdown.shutdown.enabled, false);
+  const onlyWitty = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 1, witty: s, shutdown: null }));
+  assert.strictEqual(onlyWitty.shutdown, null);
+  const corrupt = Buffer.from(protocol.encodePowerSchedule({ stamp: 1, witty: s, shutdown: sd }));
+  corrupt[9] ^= 1;
+  assert.strictEqual(protocol.decodePowerSchedule(corrupt), null);
 });
 
-test('the simulated radio link delivers the schedule frame as a witty-schedule event', () => {
+test('the simulated radio link delivers the power schedule frame as a power-schedule event', () => {
   const { decodeDatagram } = require('../src/simRadioLink');
-  const frame = protocol.encodeWittySchedule(w.validateSettings({ mode: 'daily', startTime: '09:00', endTime: '17:00', stamp: 9 }));
+  const frame = protocol.encodePowerSchedule({ stamp: 9, witty: w.validateSettings({ mode: 'daily', startTime: '09:00', endTime: '17:00', stamp: 9 }), shutdown: null });
   const got = decodeDatagram(frame);
-  assert.strictEqual(got.event, 'witty-schedule');
-  assert.strictEqual(got.decoded.endTime, '17:00');
+  assert.strictEqual(got.event, 'power-schedule');
+  assert.strictEqual(got.decoded.witty.endTime, '17:00');
 });
 
 test('the boat status says whether the software is installed and shows what was applied', async () => {

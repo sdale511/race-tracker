@@ -39,7 +39,7 @@ function dopQualityText(dop) {
 // imminent."
 // The Witty Pi 4 power schedule this boat got from the base admin (see wittySchedule.js) - read only here; the base sets it for
 // the whole fleet. Says so when the board's software is not installed on this boat. A schedule that lets the boat halt itself
-// needs the "Scheduled shutdown" card above to have a time, or the boat would stay on after the day ends.
+// needs the "Boat shutdown" card above to have a time, or the boat would stay on after the day ends.
 const escapeWitty = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 function renderWittyCard(witty, power) {
   if (!witty) return '';
@@ -57,12 +57,12 @@ function renderWittyCard(witty, power) {
   return `<div class="card power-card">
       <div class="label">Witty Pi schedule</div>
       <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${text}</div>
-      <div class="sub">${a ? `applied ${formatDuration(Date.now() - a.appliedAt)} ago, ` : ''}set on the base admin and sent over the radio; Witty Pi software at <code>${escapeWitty(witty.dir)}</code>${halts && !power.shutdownAt ? '. <strong>This schedule leaves the shutdown to the boat, but the Scheduled shutdown card has no time, so the boat would stay on.</strong>' : ''}</div>
+      <div class="sub">${a ? `applied ${formatDuration(Date.now() - a.appliedAt)} ago, ` : ''}set on the base admin and sent over the radio; Witty Pi software at <code>${escapeWitty(witty.dir)}</code>${halts && !power.shutdownAt ? '. <strong>This schedule leaves the shutdown to the boat, but the Boat shutdown card has no time, so the boat would stay on.</strong>' : ''}</div>
       ${witty.file ? `<details><summary class="sub">schedule file</summary><pre style="font-size:11px; overflow-x:auto; margin:6px 0 0;">${escapeWitty(witty.file)}</pre></details>` : ''}
     </div>`;
 }
 
-function renderPowerCard(power) {
+function renderPowerCard(power, fromBase) {
   const dotClass = power.triggered ? 'dot-red' : power.idleSince ? 'dot-orange' : power.armed ? 'dot-green' : 'dot-gray';
   const statusText = power.triggered
     ? 'shutting down now'
@@ -79,27 +79,16 @@ function renderPowerCard(power) {
     ? `shutdown -h now only runs on Linux (platform=${process.platform}) - safe to leave configured for when this runs on the Pi`
     : power.shutdownAt
     ? `after ${power.shutdownAt} local time, once stationary &lt;${power.shutdownSpeedKn}kn (or no fresh fix) for ${power.shutdownIdleMinutes} continuous minutes`
-    : 'set a time below to arm';
+    : 'no shutdown time set';
+  // Read only: the base admin sets the shutdown for the whole fleet and sends it over the radio (fleetShutdown.js).
+  const source = fromBase
+    ? `set by the base admin${fromBase.ok ? '' : ' (not applied: ' + escapeWitty(fromBase.message) + ')'}, ${formatDuration(Date.now() - fromBase.appliedAt)} ago`
+    : 'not set by a base yet (starts from ROVER_SHUTDOWN_AT, or what this boat last had)';
   return `<div class="card power-card">
-      <div class="label">Scheduled shutdown</div>
+      <div class="label">Boat shutdown</div>
       <div class="value"><span class="dot ${dotClass}"></span>${statusText}</div>
       <div class="sub">${subText}</div>
-      <div class="manual-fixed-field">
-        <label for="powerShutdownAt">Time</label>
-        <input type="time" class="manual-input" id="powerShutdownAt" value="${power.shutdownAt || ''}" ${power.triggered ? 'disabled' : ''}>
-      </div>
-      <div class="manual-fixed-field">
-        <label for="powerIdleMin">Idle min</label>
-        <input type="number" step="any" min="0" class="manual-input" id="powerIdleMin" value="${power.shutdownIdleMinutes}" ${power.triggered ? 'disabled' : ''}>
-      </div>
-      <div class="manual-fixed-field">
-        <label for="powerSpeedKn">Speed (kn)</label>
-        <input type="number" step="any" min="0" class="manual-input" id="powerSpeedKn" value="${power.shutdownSpeedKn}" ${power.triggered ? 'disabled' : ''}>
-      </div>
-      <div class="card-actions">
-        <button type="button" class="card-btn" onclick="savePowerSchedule(this)" ${power.triggered ? 'disabled' : ''}>Save</button>
-        ${power.shutdownAt ? `<button type="button" class="card-btn" onclick="disablePowerSchedule(this)" ${power.triggered ? 'disabled' : ''}>Disable</button>` : ''}
-      </div>
+      <div class="sub">${source}. Change it on the base admin's Data page.</div>
     </div>`;
 }
 
@@ -199,7 +188,7 @@ function renderSlotTableCard(s) {
     </div>`;
 }
 
-function renderDashboard(s, power, witty) {
+function renderDashboard(s, power, witty, shutdownFromBase) {
   const fix = s.lastFix;
   // receivedAt (this Pi's own local-clock receipt time), not timestamp
   // (the fix's own GPS-derived time, which can legitimately diverge from
@@ -534,51 +523,11 @@ function renderDashboard(s, power, witty) {
     ${renderDiskCard(s.disk, `Logs chunked every ${config.logChunkMinutes}min, kept ${config.logRetentionDays} days`)}
     ${s.markMode ? renderMarkCard(s) : ''}
     ${renderMarkLogCard()}
-    ${renderPowerCard(power)}
+    ${renderPowerCard(power, shutdownFromBase)}
     ${renderWittyCard(witty, power)}
   </div>
 
   <script>
-    // Shared by savePowerSchedule/disablePowerSchedule below - POSTs
-    // whatever's in the power card's own fields (see powerSchedule.js's
-    // updateParams for the validation/persistence this triggers on the
-    // boat side) and reloads on success so the card's status/dot reflect
-    // the now-live schedule immediately, rather than waiting on this
-    // page's own 5s meta-refresh.
-    async function postPowerSchedule(btn, body) {
-      btn.disabled = true;
-      try {
-        const res = await fetch('/api/power', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const result = await res.json();
-        if (!result.ok) throw new Error(result.error || 'request failed');
-        location.reload();
-      } catch (err) {
-        alert('Failed: ' + err.message);
-        btn.disabled = false;
-      }
-    }
-
-    function savePowerSchedule(btn) {
-      postPowerSchedule(btn, {
-        shutdownAt: document.getElementById('powerShutdownAt').value || null,
-        shutdownIdleMinutes: Number(document.getElementById('powerIdleMin').value),
-        shutdownSpeedKn: Number(document.getElementById('powerSpeedKn').value),
-      });
-    }
-
-    // Clears shutdownAt specifically (the whole feature's on/off switch -
-    // see config.js) without touching whatever idle minutes/speed are
-    // currently in the fields, so re-enabling later (typing a time back in
-    // and hitting Save) doesn't also need those retyped.
-    function disablePowerSchedule(btn) {
-      if (!confirm('Disable scheduled shutdown for this boat?')) return;
-      postPowerSchedule(btn, { shutdownAt: null });
-    }
-
     // markMode's own card (see renderMarkCard) - assigns/clears which mark
     // this device continuously represents (see boatAgent.js's
     // setMarkName). Reloads on success, same reasoning as
@@ -1371,27 +1320,8 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, updatePowerSchedule, sendSetMark, setMarkName, sendMarkLog }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, getShutdownFromBase, sendSetMark, setMarkName, sendMarkLog }) {
   const server = http.createServer(async (req, res) => {
-    // Power card's Save/Disable buttons (see renderPowerCard) - the only
-    // write route this server has, so it's handled up front rather than
-    // folded into the blanket "non-GET -> 404" below. Same body-parsing
-    // contract as adminServer.js's own readJsonBody - duplicated rather
-    // than imported, same reasoning as this file's other small
-    // duplicated-not-shared helpers (see dopQualityText above).
-    if (req.url === '/api/power' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req);
-        updatePowerSchedule(body);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-      return;
-    }
-
     // Dashboard's "Mark log" card (see renderDashboard) - sends a short
     // free-text note to the base over the radio (see boatAgent.js's
     // sendMarkLog/protocol.js's encodeMarkLog), no GPS fix or WiFi needed
@@ -1472,7 +1402,7 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, ge
 
     if (req.url === '/' || req.url === '') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderDashboard(getStats(), getPowerStatus(), getWittyStatus ? getWittyStatus() : null));
+      res.end(renderDashboard(getStats(), getPowerStatus(), getWittyStatus ? getWittyStatus() : null, getShutdownFromBase ? getShutdownFromBase() : null));
       return;
     }
 

@@ -298,29 +298,35 @@ function decodePing(buf) {
   return { timestamp: buf.readUInt32LE(1) * 1000 };
 }
 
-// Witty Pi schedule, base -> boats. The base admin's Witty Pi card sets one power schedule for the whole fleet (the Pi
-// runs 09:00 to 17:00 every day, or from sunrise to sunset - see wittySchedule.js); this carries the SETTINGS, not the
-// schedule file, so it is a small fixed frame whatever the schedule: each boat builds the file itself and enables it on its
-// Witty Pi board. A boat that is powered off cannot hear it, so the base repeats it every minute or so and a boat applies
-// it when it boots; `stamp` (unix seconds when the settings were last changed) is how a boat knows it has already applied
-// this version and ignores the repeats.
+// Power schedule, base -> boats: the fleet's two power rules in one frame. The base admin sets (1) the Witty Pi power schedule
+// (the Pi runs 09:00 to 17:00 every day, or from sunrise to sunset - see wittySchedule.js) and (2) the boat's own software
+// shutdown (once a time has passed and the boat has been stopped for a while it halts - fleetShutdown.js, which needs no Witty
+// Pi). This carries the SETTINGS, not the schedule file, so it is a small fixed frame whatever the schedule: each boat builds
+// the Witty Pi file itself and enables it. A boat that is powered off cannot hear it, so the base repeats it every minute or
+// so and a boat applies each part when it boots - and only when that part differs from what it last got from the base. A
+// part the base has never set is marked "not managed": the boat leaves its own setting for it alone.
 //
 // Layout (all little-endian):
-//   [0]      sync byte      0xB5
-//   [1]      mode           uint8   low 2 bits: 0 off (no schedule), 1 daily hours, 2 sunrise to sunset;
-//                                   bit 7: the boat halts itself at the end of the day (the Witty Pi schedules no shutdown)
-//   [2..5]   stamp          uint32  unix seconds the settings were set
-//   [6..7]   start          uint16  minutes after midnight, local time (daily mode)
-//   [8..9]   end            uint16  minutes after midnight, local time (daily mode)
-//   [10..13] latitude       int32   degrees x 1e5 (sunrise-to-sunset mode)
-//   [14..17] longitude      int32   degrees x 1e5
-//   [18]     before         uint8   minutes of margin before sunrise
-//   [19]     after          uint8   minutes of margin after sunset
-//   [20..21] days           uint16  days the sunrise-to-sunset schedule covers
-//   [22]     checksum       uint8   (sum of bytes 1..21 mod 256)
+//   [0]      sync byte        0xB5
+//   [1]      managed          uint8   bit 0: the Witty Pi schedule is set by the base; bit 1: the shutdown is set by the base
+//   [2]      Witty Pi mode    uint8   low 2 bits: 0 off (no schedule), 1 daily hours, 2 sunrise to sunset;
+//                                     bit 7: the boat halts itself at the end of the day (the Witty Pi schedules no shutdown)
+//   [3]      shutdown flags   uint8   bit 0: the shutdown is enabled (clear = the boat disarms it)
+//   [4..7]   stamp            uint32  unix seconds either part was last changed
+//   [8..9]   start            uint16  minutes after midnight, local time (daily mode)
+//   [10..11] end              uint16  minutes after midnight, local time (daily mode)
+//   [12..15] latitude         int32   degrees x 1e5 (sunrise-to-sunset mode)
+//   [16..19] longitude        int32   degrees x 1e5
+//   [20]     before           uint8   minutes of margin before sunrise
+//   [21]     after            uint8   minutes of margin after sunset
+//   [22..23] days             uint16  days the sunrise-to-sunset schedule covers
+//   [24..25] shutdown time    uint16  minutes after midnight, the boat's local time
+//   [26..27] shutdown idle    uint16  minutes the boat must have been stopped
+//   [28..29] shutdown speed   uint16  knots x 100: slower than this counts as stopped
+//   [30]     checksum         uint8   (sum of bytes 1..29 mod 256)
 
-const WITTY_SCHEDULE_SYNC = 0xb5;
-const WITTY_SCHEDULE_FRAME_LEN = 23;
+const POWER_SCHEDULE_SYNC = 0xb5;
+const POWER_SCHEDULE_FRAME_LEN = 31;
 const WITTY_MODES = ['off', 'daily', 'sun'];
 
 const hhmmToMinutes = (t) => {
@@ -329,45 +335,70 @@ const hhmmToMinutes = (t) => {
 };
 const minutesToHhmm = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
 
-// settings: { mode: 'off'|'daily'|'sun', haltItself, stamp, startTime 'HH:MM', endTime 'HH:MM', lat, lon, beforeMin,
-// afterMin, days } - already validated (wittySchedule.js's validateSettings).
-function encodeWittySchedule(settings) {
-  const buf = Buffer.alloc(WITTY_SCHEDULE_FRAME_LEN);
-  buf.writeUInt8(WITTY_SCHEDULE_SYNC, 0);
-  buf.writeUInt8(WITTY_MODES.indexOf(settings.mode) | (settings.haltItself ? 0x80 : 0), 1);
-  buf.writeUInt32LE(settings.stamp >>> 0, 2);
-  buf.writeUInt16LE(hhmmToMinutes(settings.startTime), 6);
-  buf.writeUInt16LE(hhmmToMinutes(settings.endTime), 8);
-  buf.writeInt32LE(Math.round((settings.lat || 0) * 1e5), 10);
-  buf.writeInt32LE(Math.round((settings.lon || 0) * 1e5), 14);
-  buf.writeUInt8(Math.min(255, settings.beforeMin || 0), 18);
-  buf.writeUInt8(Math.min(255, settings.afterMin || 0), 19);
-  buf.writeUInt16LE(Math.min(65535, settings.days || 0), 20);
+// { stamp, witty, shutdown }: witty is null (not set by the base) or { mode: 'off'|'daily'|'sun', haltItself, startTime 'HH:MM',
+// endTime 'HH:MM', lat, lon, beforeMin, afterMin, days }; shutdown is null or { enabled, time 'HH:MM', idleMinutes, speedKn }.
+// Already validated (wittySchedule.js's validateSettings, fleetShutdown.js's validate).
+function encodePowerSchedule({ stamp, witty, shutdown }) {
+  const buf = Buffer.alloc(POWER_SCHEDULE_FRAME_LEN);
+  buf.writeUInt8(POWER_SCHEDULE_SYNC, 0);
+  buf.writeUInt8((witty ? 1 : 0) | (shutdown ? 2 : 0), 1);
+  if (witty) buf.writeUInt8(WITTY_MODES.indexOf(witty.mode) | (witty.haltItself ? 0x80 : 0), 2);
+  if (shutdown) buf.writeUInt8(shutdown.enabled ? 1 : 0, 3);
+  buf.writeUInt32LE(stamp >>> 0, 4);
+  if (witty) {
+    buf.writeUInt16LE(hhmmToMinutes(witty.startTime), 8);
+    buf.writeUInt16LE(hhmmToMinutes(witty.endTime), 10);
+    buf.writeInt32LE(Math.round((witty.lat || 0) * 1e5), 12);
+    buf.writeInt32LE(Math.round((witty.lon || 0) * 1e5), 16);
+    buf.writeUInt8(Math.min(255, witty.beforeMin || 0), 20);
+    buf.writeUInt8(Math.min(255, witty.afterMin || 0), 21);
+    buf.writeUInt16LE(Math.min(65535, witty.days || 0), 22);
+  }
+  if (shutdown) {
+    buf.writeUInt16LE(hhmmToMinutes(shutdown.time), 24);
+    buf.writeUInt16LE(Math.min(65535, Math.round(shutdown.idleMinutes)), 26);
+    buf.writeUInt16LE(Math.min(65535, Math.round(shutdown.speedKn * 100)), 28);
+  }
   let sum = 0;
-  for (let i = 1; i < WITTY_SCHEDULE_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
-  buf.writeUInt8(sum, WITTY_SCHEDULE_FRAME_LEN - 1);
+  for (let i = 1; i < POWER_SCHEDULE_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, POWER_SCHEDULE_FRAME_LEN - 1);
   return buf;
 }
 
-// The settings object, or null if the buffer isn't a valid schedule frame.
-function decodeWittySchedule(buf) {
-  if (buf.length !== WITTY_SCHEDULE_FRAME_LEN || buf[0] !== WITTY_SCHEDULE_SYNC) return null;
+// { stamp, witty, shutdown } (the parts null when not managed), or null if the buffer isn't a valid power schedule frame.
+function decodePowerSchedule(buf) {
+  if (buf.length !== POWER_SCHEDULE_FRAME_LEN || buf[0] !== POWER_SCHEDULE_SYNC) return null;
   let sum = 0;
-  for (let i = 1; i < WITTY_SCHEDULE_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
-  if (sum !== buf[WITTY_SCHEDULE_FRAME_LEN - 1]) return null;
-  const mode = WITTY_MODES[buf[1] & 0x03];
+  for (let i = 1; i < POWER_SCHEDULE_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[POWER_SCHEDULE_FRAME_LEN - 1]) return null;
+  const mode = WITTY_MODES[buf[2] & 0x03];
   if (!mode) return null;
+  const stamp = buf.readUInt32LE(4);
   return {
-    mode,
-    haltItself: (buf[1] & 0x80) !== 0,
-    stamp: buf.readUInt32LE(2),
-    startTime: minutesToHhmm(buf.readUInt16LE(6) % 1440),
-    endTime: minutesToHhmm(buf.readUInt16LE(8) % 1440),
-    lat: buf.readInt32LE(10) / 1e5,
-    lon: buf.readInt32LE(14) / 1e5,
-    beforeMin: buf[18],
-    afterMin: buf[19],
-    days: buf.readUInt16LE(20),
+    stamp,
+    witty:
+      buf[1] & 1
+        ? {
+            mode,
+            haltItself: (buf[2] & 0x80) !== 0,
+            startTime: minutesToHhmm(buf.readUInt16LE(8) % 1440),
+            endTime: minutesToHhmm(buf.readUInt16LE(10) % 1440),
+            lat: buf.readInt32LE(12) / 1e5,
+            lon: buf.readInt32LE(16) / 1e5,
+            beforeMin: buf[20],
+            afterMin: buf[21],
+            days: buf.readUInt16LE(22),
+          }
+        : null,
+    shutdown:
+      buf[1] & 2
+        ? {
+            enabled: (buf[3] & 1) !== 0,
+            time: minutesToHhmm(buf.readUInt16LE(24) % 1440),
+            idleMinutes: buf.readUInt16LE(26),
+            speedKn: buf.readUInt16LE(28) / 100,
+          }
+        : null,
   };
 }
 
@@ -1198,10 +1229,10 @@ module.exports = {
   RADIO_MAX_PAYLOAD,
   MARKS_SYNC,
   encodePing,
-  encodeWittySchedule,
-  decodeWittySchedule,
-  WITTY_SCHEDULE_FRAME_LEN,
-  WITTY_SCHEDULE_SYNC,
+  encodePowerSchedule,
+  decodePowerSchedule,
+  POWER_SCHEDULE_FRAME_LEN,
+  POWER_SCHEDULE_SYNC,
   decodePing,
   PING_FRAME_LEN,
   PING_SYNC,

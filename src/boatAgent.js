@@ -35,6 +35,7 @@ const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 const { startShutdownScheduler } = require('./powerSchedule');
 const wittySchedule = require('./wittySchedule');
+const fleetShutdown = require('./fleetShutdown');
 
 // True while the cursor is sitting mid-line after an in-place GPS log
 // overwrite (see handlePvt's inPlaceMode) - any *other* log call landing
@@ -1115,17 +1116,25 @@ function startHelloAnnounce() {
 // whether they're ever transmitted), after a random delay up to
 // config.pingResponseJitterMs so an entire fleet doesn't all key up over
 // each other on the same shared channel the instant they hear the request.
-// The fleet's Witty Pi power schedule from the base admin (see wittySchedule.js): applied only when it differs from what
-// this boat last applied, and only if the board's software is installed here. The base repeats it every minute or so.
-radio.on('witty-schedule', async (frame) => {
+// The fleet's power schedule from the base admin (one frame, protocol.js's decodePowerSchedule): the Witty Pi schedule
+// (wittySchedule.js) and the boat's own software shutdown (fleetShutdown.js). The base repeats it every minute or so; each part
+// is applied only when it differs from what this boat last got from the base, and a part the base has never set is left alone.
+// The Witty Pi part needs the board's software installed here; the shutdown part always works.
+radio.on('power-schedule', async (frame) => {
   try {
-    const result = await wittySchedule.handleScheduleFrame(frame);
-    if (!result) return;
-    if (result.notInstalled) console.log('[witty] the base sent a power schedule but the Witty Pi software is not installed here - ignored');
-    else if (result.ok) console.log(`[witty] ${result.message}`);
-    else console.error(`[witty] could not apply the base's power schedule: ${result.message}`);
+    if (frame.shutdown) {
+      const r = fleetShutdown.handleFrame({ ...frame.shutdown, stamp: frame.stamp }, { updateParams: (p) => powerScheduler.updateParams(p) });
+      if (r) (r.ok ? console.log : console.error)(`[power] ${r.message}`);
+    }
+    if (frame.witty) {
+      const r = await wittySchedule.handleScheduleFrame({ ...frame.witty, stamp: frame.stamp });
+      if (!r) return;
+      if (r.notInstalled) console.log('[witty] the base sent a power schedule but the Witty Pi software is not installed here - ignored');
+      else if (r.ok) console.log(`[witty] ${r.message}`);
+      else console.error(`[witty] could not apply the base's power schedule: ${r.message}`);
+    }
   } catch (err) {
-    console.error('[witty] schedule handling failed:', err.message);
+    console.error('[power] schedule handling failed:', err.message);
   }
 });
 
@@ -1610,7 +1619,7 @@ startRoverAdminServer({
   getPosition,
   getPowerStatus: powerScheduler.getStatus,
   getWittyStatus: wittySchedule.boatStatus,
-  updatePowerSchedule: powerScheduler.updateParams,
+  getShutdownFromBase: fleetShutdown.boatStatus,
   sendSetMark,
   setMarkName,
   sendMarkLog,

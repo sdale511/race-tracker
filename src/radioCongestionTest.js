@@ -248,9 +248,6 @@ startRoverAdminServer({
   }),
   getPosition: () => null,
   getPowerStatus: powerScheduler.getStatus,
-  updatePowerSchedule: () => {
-    throw new Error('no scheduled shutdown here - this is a bench-test process, not a real rover');
-  },
   sendSetMark: () => {
     throw new Error('no course marks in radio-congestion - this is a bench test, not a real rover');
   },
