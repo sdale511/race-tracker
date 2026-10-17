@@ -1884,7 +1884,7 @@ every boat's own key doubled what Redis held (about 100 MB for a 30-boat, 30-min
 did not fit in 256 MB). The per-boat key is now trimmed to the last `REDIS_BOAT_TRACK_MINUTES` minutes whenever that boat
 writes (at most every 10 s, and its newest fix is always kept). RegattaUp's `generateRaceTrackArchive` removes a race's
 fixes from `all:track` and the boats' own keys once the archive is saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
-`REDIS_TRACK_RETENTION_HOURS` (48) is the backstop expiry. The Redis memory card is on the Data page.
+`REDIS_TRACK_RETENTION_HOURS` (48) is a rolling window: once a minute the base drops fixes older than that from `all:track` and pushes both keys' expiry out again, so the key holds the last 48 hours of fixes and never vanishes in one go (an expiry set only once, on a key's first write, deleted every race's fixes together 48 h after the first fix of all). The Redis memory card is on the Data page.
 
 Each stored fix: the decoded frame (`boatId, lat, lon, speedKnots, headingDeg,
 gnssFixOk, carrSoln, numSV`, plus the fix time `t` so members stay unique) as a compact JSON member, with the fix's own GPS

@@ -192,6 +192,7 @@ class RedisStore {
     this.trackRetentionSeconds = Math.round(trackRetentionHours * 3600);
     this.boatTrackWindowMs = Math.round(boatTrackMinutes * 60000);
     this.lastBoatTrimAt = new Map(); // boatId -> when its own track key was last trimmed
+    this.lastWindowAt = new Map(); // all:track key -> when its rolling window was last applied
     // In-memory only (per boatId) - not persisted, so a restarted base
     // station just records the next fix from each boat unconditionally
     // (nothing to compare against yet), which is harmless.
@@ -304,19 +305,28 @@ class RedisStore {
     }
     this._recordTrackWriteSuccess();
 
-    // Best-effort - EXPIRE NX only actually sets a TTL the first time a
-    // given key is written on a given day (a no-op every write after that,
-    // see the constructor's own comment), so a track key expires roughly
-    // trackRetentionHours after its OWN first fix, not trackRetentionHours
-    // after whatever the most RECENT fix was - a whole day's worth of races
-    // all age out together instead of the window rolling forward every time
-    // any boat reports in. Failure here isn't tracked as a write failure
-    // above - the actual data already landed successfully; a missing TTL
-    // just means this key won't self-expire until some later write
-    // succeeds in setting it, not that anything was lost.
+    // Best-effort - EXPIRE NX only sets a TTL when the key has none (the first write), so a key never goes without one.
+    // It is not refreshed here: _keepRollingWindow below does that once a minute, together with trimming all:track to the
+    // retention window. Failure isn't tracked as a write failure above - the fix already landed; a missing TTL just means
+    // the key gets one on a later write.
     this.client.expire(boatTrackKey, this.trackRetentionSeconds, 'NX').catch(() => {});
     this._trimBoatTrack(decoded.boatId, boatTrackKey, score);
     this.client.expire(allTrackKey, this.trackRetentionSeconds, 'NX').catch(() => {});
+    this._keepRollingWindow(allTrackKey, boatTrackKey);
+  }
+
+  // A rolling retention window. The EXPIRE NX above sets a key's expiry once, when it is created, so on its own a track
+  // key vanishes (every fix in it, a race in progress included) trackRetentionHours after its FIRST write, whatever has
+  // been written since. Every TRIM_EVERY_MS this instead (1) drops the fixes older than the retention window from
+  // all:track, and (2) pushes both keys' expiry out again, so the key lives until trackRetentionHours after its last write
+  // and holds exactly the last trackRetentionHours of fixes. Best effort; a failure is retried at the next interval.
+  _keepRollingWindow(allTrackKey, boatTrackKey) {
+    const now = Date.now();
+    if (now - (this.lastWindowAt.get(allTrackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
+    this.lastWindowAt.set(allTrackKey, now);
+    this.client.zremrangebyscore(allTrackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
+    this.client.expire(allTrackKey, this.trackRetentionSeconds).catch(() => {});
+    this.client.expire(boatTrackKey, this.trackRetentionSeconds).catch(() => {});
   }
 
   // Drop the boat's own copy of fixes older than the window, at most every TRIM_EVERY_MS per boat (the sorted set is

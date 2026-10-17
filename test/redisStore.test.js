@@ -64,3 +64,23 @@ test('a window of 0 keeps the whole per-boat track', () => {
   });
   store._trimBoatTrack('00001', 'k', 1);
 });
+
+test('the rolling window trims all:track to the retention period and refreshes the expiry, once a minute', () => {
+  const calls = [];
+  const store = Object.assign(Object.create(RedisStore.prototype), {
+    trackRetentionSeconds: 48 * 3600,
+    lastWindowAt: new Map(),
+    client: {
+      zremrangebyscore: (key, min, max) => { calls.push(['zrem', key, min, max]); return Promise.resolve(0); },
+      expire: (key, seconds) => { calls.push(['expire', key, seconds]); return Promise.resolve(1); },
+    },
+  });
+  const before = Date.now();
+  store._keepRollingWindow('all', 'boat');
+  store._keepRollingWindow('all', 'boat'); // inside the same minute: nothing
+  assert.strictEqual(calls.length, 3);
+  assert.strictEqual(calls[0][0], 'zrem');
+  assert.strictEqual(calls[0][2], '-inf');
+  assert.ok(calls[0][3] >= before - 48 * 3600 * 1000 && calls[0][3] <= Date.now() - 48 * 3600 * 1000);
+  assert.deepStrictEqual(calls.slice(1), [['expire', 'all', 172800], ['expire', 'boat', 172800]]);
+});
