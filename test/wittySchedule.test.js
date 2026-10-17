@@ -145,6 +145,13 @@ test('a sunrise-to-sunset file that is about to run out is written again', () =>
   assert.strictEqual(w.needsApply(settings, applied, true, noon.getTime() + 10 * 86400000), true); // 10 days left
 });
 
+test('a short sunrise-to-sunset schedule is not rewritten on every repeat', () => {
+  const settings = w.validateSettings({ mode: 'sun', lat: 40, lon: -118, days: 3 });
+  const applied = { ok: true, settings, coversUntil: noon.getTime() + 3 * 86400000 };
+  assert.strictEqual(w.needsApply(settings, applied, true, noon.getTime() + 3600000), false);
+  assert.strictEqual(w.needsApply(settings, applied, true, noon.getTime() + 2.5 * 86400000), true); // under a quarter left
+});
+
 test('a boat without the Witty Pi software says so once, and records nothing', async () => {
   const deps = { dir: tmp(), appliedFile: path.join(tmp(), 'applied.json'), now: noon };
   assert.strictEqual((await w.handleScheduleFrame(frameFor({ stamp: 77 }), deps)).notInstalled, true);

@@ -404,14 +404,16 @@ function renderLinkHealthCard(h, slots) {
     </div>`;
 }
 
-// The fleet's two power rules, each its own card with Save and Enable / Disable. Both are set here, stored, and sent to the
-// boats over the radio in one frame (baseStation.js's setWittySchedule / setShutdownSchedule); a boat applies each rule only
-// when it differs from what it already got from the base, and a boat that is powered off applies them after it boots. A rule
-// that has never been saved is not sent, and the boats keep their own setting for it.
-function powerSentLine(p, saved) {
-  const ago = p.lastSentAt ? formatAgo(p.lastSentAt) : 'not sent yet';
-  return `${saved ? `sent ${p.sendCount} time${p.sendCount === 1 ? '' : 's'}, last ${ago}; ` : ''}repeated every ${p.rebroadcastS} s${p.radioEnabled ? '' : ' - <strong>no radio on this base, nothing is sent</strong>'}`;
-}
+// The fleet's two power rules, each its own card: the fields and one Enable / Disable. Both are stored here and sent to the boats
+// over the radio in one frame (baseStation.js's setWittySchedule / setShutdownSchedule). Enable saves the fields and turns the
+// rule on (an enabled card offers Update, which does the same); Disable turns it off and keeps the values.
+// The card header: its name and, in the upper right, the Enabled checkbox (ticking it saves the fields and enables the rule,
+// clearing it disables the rule and keeps the values), then an Update button while enabled to send changed fields.
+const powerHead = (title, boxId, url, enabled, fieldsFn) =>
+  `<div class="card-head"><div class="label">${title}</div>
+        <label class="enable-box"><input type="checkbox" id="${boxId}" ${enabled ? 'checked' : ''} onchange="togglePowerRule(this, '${url}', '${fieldsFn}')"> Enabled</label></div>`;
+const powerUpdate = (url, enabled, fieldsFn) =>
+  enabled ? `<div class="controls-row"><button type="button" class="card-btn" onclick="postPowerRule(this, '${url}', 'enable', ${fieldsFn}())">Update</button></div>` : '';
 
 function renderWittyScheduleCard(p) {
   if (!p) return '';
@@ -420,17 +422,13 @@ function renderWittyScheduleCard(p) {
   const place = w.defaultPlace || {};
   const lat = st.lat != null ? st.lat : place.lat != null ? place.lat : '';
   const lon = st.lon != null ? st.lon : place.lon != null ? place.lon : '';
-  const dot = !w.settings ? 'dot-gray' : !st.enabled ? 'dot-gray' : !p.radioEnabled ? 'dot-orange' : 'dot-green';
-  const summary = !w.settings ? 'not set - boats keep their own' : `${st.enabled ? 'enabled' : 'disabled'}: ${escapeHtml(w.description)}`;
   const opt = (v, label) => `<option value="${v}"${st.mode === v ? ' selected' : ''}>${label}</option>`;
+  const needsShutdown = st.enabled && st.haltItself && !(p.shutdown.settings && p.shutdown.settings.enabled);
   return `<div class="card controls-card" id="wittyCard" data-place-lat="${place.lat != null ? place.lat : ''}" data-place-lon="${place.lon != null ? place.lon : ''}">
-      <div class="label">Witty Pi power schedule</div>
-      <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${summary}</div>
-      <div class="sub">${powerSentLine(p, !!w.settings)}</div>
+      ${powerHead('Witty Pi power schedule', 'wittyEnabled', '/api/witty-schedule', st.enabled, 'wittyFields')}
       <div class="fc-section">
         <div class="controls-row">
-          <label for="wittyMode">The Witty Pi runs the boats</label>
-          <select id="wittyMode" onchange="wittyModeChanged()">${opt('daily', 'daily, between two times')}${opt('sun', 'from sunrise to sunset')}</select>
+          <select id="wittyMode" onchange="wittyModeChanged()">${opt('daily', 'daily, between two times')}${opt('sun', 'sunrise to sunset')}</select>
         </div>
         <div class="controls-row" id="wittyDaily">
           <label for="wittyStart">From</label><input type="time" id="wittyStart" value="${st.startTime}">
@@ -439,48 +437,34 @@ function renderWittyScheduleCard(p) {
         <div class="controls-row" id="wittySun">
           <label for="wittyLat">Lat</label><input type="number" step="any" id="wittyLat" value="${lat}" style="width:90px">
           <label for="wittyLon">Lon</label><input type="number" step="any" id="wittyLon" value="${lon}" style="width:100px">
-          <button type="button" class="card-btn" onclick="wittyUseCourse()" ${place.lat != null ? '' : 'disabled'} title="The course's own location, from the committee start mark">Use course</button>
-          <label for="wittyBefore">Before sunrise</label><input type="number" min="0" max="255" id="wittyBefore" value="${st.beforeMin}" style="width:60px"> min
+          <button type="button" class="card-btn" onclick="wittyUseCourse()" ${place.lat != null ? '' : 'disabled'}>Use course</button>
+          <label for="wittyBefore">Before sunrise</label><input type="number" min="0" max="255" id="wittyBefore" value="${st.beforeMin}" style="width:60px">
           <label for="wittyAfter">after sunset</label><input type="number" min="0" max="255" id="wittyAfter" value="${st.afterMin}" style="width:60px"> min
           <label for="wittyDays">Days</label><input type="number" min="1" max="1000" id="wittyDays" value="${st.days}" style="width:70px">
         </div>
-        <div class="controls-row" id="wittyHaltRow">
-          <span>At the end of the day:</span>
-          <label title="The Witty Pi shuts the Pi down at the end time and cuts its power, whatever the boat is doing - even in the middle of a race."><input type="radio" name="wittyEnd" value="cut"${st.haltItself ? '' : ' checked'}> cut the power</label>
-          <label title="The Witty Pi does not shut the boat down. The boat does it itself, using the Boat shutdown card below: once that card's time has passed and the boat has been stopped for its idle minutes. A boat that is still moving stays on."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> let each boat shut itself down (the Boat shutdown card)</label>
-        </div>
         <div class="controls-row">
-          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/witty-schedule', 'save', wittyFields())">Save</button>
-          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/witty-schedule', '${st.enabled ? 'disable' : 'enable'}')" ${w.settings ? '' : 'disabled'}>${st.enabled ? 'Disable' : 'Enable'}</button>
+          <span>At the end:</span>
+          <label><input type="radio" name="wittyEnd" value="cut"${st.haltItself ? '' : ' checked'}> cut the power</label>
+          <label title="The boat shuts itself down using the Boat shutdown card: once its time has passed and the boat has been stopped for the idle minutes. A boat still moving stays on."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> boat shuts itself down</label>
         </div>
-        <div class="sub" title="Each boat compares the settings with the ones it applied last and reprograms its Witty Pi only if they differ. A boat without the Witty Pi software ignores it.">Enable sends it to the boats; Disable removes the schedule from every boat that has a Witty Pi. Boats without a Witty Pi ignore it. The times are the boats' local time.${
-          w.settings && st.enabled && st.haltItself && !(p.shutdown.settings && p.shutdown.settings.enabled) ? ' <strong>The boats are to shut themselves down, but the Boat shutdown card is not enabled - they would stay on.</strong>' : ''
-        }</div>
+        ${powerUpdate('/api/witty-schedule', st.enabled, 'wittyFields')}
+        ${needsShutdown ? '<div class="sub"><strong>Boat shutdown is not enabled - the boats would stay on.</strong></div>' : ''}
       </div>
     </div>`;
 }
 
 function renderShutdownScheduleCard(p) {
   if (!p) return '';
-  const sd = p.shutdown;
-  const st = sd.settings || { enabled: false, time: '17:00', idleMinutes: 10, speedKn: 0.5 };
-  const dot = !sd.settings || !st.enabled ? 'dot-gray' : !p.radioEnabled ? 'dot-orange' : 'dot-green';
-  const summary = !sd.settings ? 'not set - boats keep their own' : `${st.enabled ? 'enabled' : 'disabled'}: ${escapeHtml(sd.description)}`;
+  const st = p.shutdown.settings || { enabled: false, time: '17:00', idleMinutes: 10, speedKn: 0.5 };
   return `<div class="card controls-card">
-      <div class="label">Boat shutdown</div>
-      <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${summary}</div>
-      <div class="sub">${powerSentLine(p, !!sd.settings)}</div>
+      ${powerHead('Boat shutdown', 'shutdownEnabled', '/api/shutdown-schedule', st.enabled, 'shutdownFields')}
       <div class="fc-section">
         <div class="controls-row">
-          <label for="sdTime">Shut down after</label><input type="time" id="sdTime" value="${st.time}">
-          <label for="sdIdle">once stopped for</label><input type="number" min="0" max="1440" id="sdIdle" value="${st.idleMinutes}" style="width:70px"> min
-          <label for="sdSpeed">(under</label><input type="number" step="any" min="0" id="sdSpeed" value="${st.speedKn}" style="width:70px"> kn)
+          <label for="sdTime">After</label><input type="time" id="sdTime" value="${st.time}">
+          <label for="sdIdle">stopped for</label><input type="number" min="0" max="1440" id="sdIdle" value="${st.idleMinutes}" style="width:70px"> min
+          <label for="sdSpeed">under</label><input type="number" step="any" min="0" id="sdSpeed" value="${st.speedKn}" style="width:70px"> kn
         </div>
-        <div class="controls-row">
-          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/shutdown-schedule', 'save', shutdownFields())">Save</button>
-          <button type="button" class="card-btn" onclick="postPowerRule(this, '/api/shutdown-schedule', '${st.enabled ? 'disable' : 'enable'}')" ${sd.settings ? '' : 'disabled'}>${st.enabled ? 'Disable' : 'Enable'}</button>
-        </div>
-        <div class="sub" title="This is each boat's own software shutdown. It needs no Witty Pi, so it always works. The idle gate stops a race running late from being cut off mid-track.">Each boat halts itself once the time has passed and it has been stopped (or has no fresh fix) for the idle minutes, so a boat still moving stays on. It needs no Witty Pi. The time is the boat's local time.</div>
+        ${powerUpdate('/api/shutdown-schedule', st.enabled, 'shutdownFields')}
       </div>
     </div>`;
 }
@@ -788,6 +772,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
   .card-head .label { margin-bottom: 0; }
   .card-head .card-btn { flex: 0 0 auto; padding: 4px 12px; font-size: 11px; }
+  .enable-box { flex: 0 0 auto; font-size: 12px; color: #c3cad5; cursor: pointer; user-select: none; }
+  .enable-box input { vertical-align: middle; accent-color: #3fb950; cursor: pointer; }
   ${SLOT_MAP_CSS}
   .link-card { grid-column: span 2; }
   @media (min-width: 1100px) { .link-card { grid-column: span 3; } }
@@ -1130,7 +1116,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     }
     // action: 'save' (with fields), 'enable' or 'disable'
     async function postPowerRule(btn, url, action, fields) {
-      if (action === 'disable' && !confirm('Disable it? Boats are told to stop using it the next time they hear the base.')) return;
       btn.disabled = true;
       try {
         const res = await fetch(url, {
@@ -1144,6 +1129,25 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       } catch (err) {
         alert('Failed: ' + err.message);
         btn.disabled = false;
+      }
+    }
+    // The Enabled checkbox in a power card's header: ticking sends the card's fields and enables, clearing disables.
+    async function togglePowerRule(box, url, fieldsFn) {
+      const enable = box.checked;
+      box.disabled = true;
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...(enable ? window[fieldsFn]() : {}), action: enable ? 'enable' : 'disable' }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        box.checked = !enable;
+        box.disabled = false;
       }
     }
     if (document.getElementById('wittyMode')) wittyModeChanged();

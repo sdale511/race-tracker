@@ -57,7 +57,7 @@ function renderWittyCard(witty, power) {
   return `<div class="card power-card">
       <div class="label">Witty Pi schedule</div>
       <div class="value" style="font-size:16px;"><span class="dot ${dot}"></span>${text}</div>
-      <div class="sub">${a ? `applied ${formatDuration(Date.now() - a.appliedAt)} ago, ` : ''}set on the base admin and sent over the radio; Witty Pi software at <code>${escapeWitty(witty.dir)}</code>${halts && !power.shutdownAt ? '. <strong>This schedule leaves the shutdown to the boat, but the Boat shutdown card has no time, so the boat would stay on.</strong>' : ''}</div>
+      <div class="sub">${a ? `applied ${formatDuration(Date.now() - a.appliedAt)} ago, ` : ''}Witty Pi software at <code>${escapeWitty(witty.dir)}</code>${halts && !power.shutdownAt ? '. <strong>This schedule leaves the shutdown to the boat, but the Boat shutdown card has no time, so the boat would stay on.</strong>' : ''}</div>
       ${witty.file ? `<details><summary class="sub">schedule file</summary><pre style="font-size:11px; overflow-x:auto; margin:6px 0 0;">${escapeWitty(witty.file)}</pre></details>` : ''}
     </div>`;
 }
@@ -82,13 +82,13 @@ function renderPowerCard(power, fromBase) {
     : 'no shutdown time set';
   // Read only: the base admin sets the shutdown for the whole fleet and sends it over the radio (fleetShutdown.js).
   const source = fromBase
-    ? `set by the base admin${fromBase.ok ? '' : ' (not applied: ' + escapeWitty(fromBase.message) + ')'}, ${formatDuration(Date.now() - fromBase.appliedAt)} ago`
-    : 'not set by a base yet (starts from ROVER_SHUTDOWN_AT, or what this boat last had)';
+    ? `from the base ${formatDuration(Date.now() - fromBase.appliedAt)} ago${fromBase.ok ? '' : ' (not applied: ' + escapeWitty(fromBase.message) + ')'}`
+    : 'not set by a base';
   return `<div class="card power-card">
       <div class="label">Boat shutdown</div>
       <div class="value"><span class="dot ${dotClass}"></span>${statusText}</div>
       <div class="sub">${subText}</div>
-      <div class="sub">${source}. Change it on the base admin's Data page.</div>
+      <div class="sub">${source}</div>
     </div>`;
 }
 

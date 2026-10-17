@@ -951,16 +951,22 @@ function main() {
     return true;
   }
 
-  // The Witty Pi card: { action: 'save', ...fields } stores the fields (kept enabled or disabled as they were), 'enable' and
-  // 'disable' switch the stored schedule on and off. Throws a plain message on bad input.
+  // The Witty Pi card: 'enable' stores the fields it is sent (if any) and turns the schedule on - it is also how an enabled
+  // schedule is updated; 'disable' turns it off and keeps the stored fields. Throws a plain message on bad input.
   function setWittySchedule(input) {
-    const action = input.action || 'save';
-    if (action === 'save') {
-      const settings = wittySchedule.validateSettings({ ...input, mode: input.mode === 'off' ? 'daily' : input.mode, stamp: null });
-      wittyStored = { ...settings, enabled: wittyStored ? wittyStored.enabled : false };
-    } else if (action === 'enable' || action === 'disable') {
-      if (!wittyStored) throw new Error('save the schedule first');
-      wittyStored = { ...wittyStored, enabled: action === 'enable', stamp: Math.floor(Date.now() / 1000) };
+    const action = input.action;
+    if (action === 'enable') {
+      if (input.mode) {
+        const settings = wittySchedule.validateSettings({ ...input, mode: input.mode === 'off' ? 'daily' : input.mode, stamp: null });
+        wittyStored = { ...settings, enabled: true };
+      } else if (wittyStored) {
+        wittyStored = { ...wittyStored, enabled: true, stamp: Math.floor(Date.now() / 1000) };
+      } else {
+        throw new Error('fill in the schedule first');
+      }
+    } else if (action === 'disable') {
+      if (!wittyStored) throw new Error('there is no schedule to disable');
+      wittyStored = { ...wittyStored, enabled: false, stamp: Math.floor(Date.now() / 1000) };
     } else {
       throw new Error(`unknown action ${JSON.stringify(action)}`);
     }
@@ -970,14 +976,20 @@ function main() {
     console.log(`[witty] fleet Witty Pi schedule ${wittyStored.enabled ? 'enabled' : 'disabled'}: ${wittySchedule.describe(wittyStored)}`);
   }
 
-  // The boat shutdown card: the same three actions.
+  // The boat shutdown card: the same two actions.
   function setShutdownSchedule(input) {
-    const action = input.action || 'save';
-    if (action === 'save') {
-      shutdownStored = fleetShutdown.validate({ ...input, enabled: shutdownStored ? shutdownStored.enabled : false, stamp: null });
-    } else if (action === 'enable' || action === 'disable') {
-      if (!shutdownStored) throw new Error('save the shutdown time first');
-      shutdownStored = { ...shutdownStored, enabled: action === 'enable', stamp: Math.floor(Date.now() / 1000) };
+    const action = input.action;
+    if (action === 'enable') {
+      if (input.time) {
+        shutdownStored = fleetShutdown.validate({ ...input, enabled: true, stamp: null });
+      } else if (shutdownStored) {
+        shutdownStored = { ...shutdownStored, enabled: true, stamp: Math.floor(Date.now() / 1000) };
+      } else {
+        throw new Error('set the shutdown time first');
+      }
+    } else if (action === 'disable') {
+      if (!shutdownStored) throw new Error('there is no shutdown to disable');
+      shutdownStored = { ...shutdownStored, enabled: false, stamp: Math.floor(Date.now() / 1000) };
     } else {
       throw new Error(`unknown action ${JSON.stringify(action)}`);
     }

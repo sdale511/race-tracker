@@ -215,7 +215,8 @@ function needsApply(settings, applied, fileExists, nowMs = Date.now()) {
   if (!applied || !applied.ok || !applied.settings) return true;
   if (JSON.stringify(relevant(applied.settings)) !== JSON.stringify(relevant(settings))) return true;
   if (settings.mode !== 'off' && !fileExists) return true;
-  if (settings.mode === 'sun' && applied.coversUntil && applied.coversUntil - nowMs < SUN_RENEW_MS) return true;
+  // renewed when under two weeks are left, or under a quarter of a short schedule (so a 3 day one is not rewritten every repeat)
+  if (settings.mode === 'sun' && applied.coversUntil && applied.coversUntil - nowMs < Math.min(SUN_RENEW_MS, (settings.days * 86400000) / 4)) return true;
   return false;
 }
 
