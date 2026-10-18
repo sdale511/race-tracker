@@ -121,3 +121,14 @@ test('a boat that has an old file saved before Enable existed stays disabled', (
   assert.strictEqual(store.status().witty.settings.enabled, false);
   assert.strictEqual(protocol.decodePowerSchedule(store.frame()).witty.mode, 'off');
 });
+
+test('two changes within one second are still two versions (the stamp always rises)', () => {
+  const { store, sent } = make();
+  store.setWitty(daily);
+  store.setWitty({ action: 'disable' });
+  store.setWitty({ action: 'enable' });
+  store.setShutdown(shutdownOn);
+  const stamps = sent.map((f) => f.stamp);
+  assert.strictEqual(new Set(stamps).size, stamps.length);
+  assert.deepStrictEqual(stamps, [...stamps].sort((a, b) => a - b));
+});

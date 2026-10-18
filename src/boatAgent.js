@@ -1120,27 +1120,27 @@ function startHelloAnnounce() {
 // (wittySchedule.js) and the boat's own software shutdown (fleetShutdown.js). The base repeats it every minute or so; each part
 // is applied only when it differs from what this boat last got from the base, and a part the base has never set is left alone.
 // The Witty Pi part needs the board's software installed here; the shutdown part always works.
-let ignoredPowerScheduleLogged = false;
 let lastHeardPowerStamp = null;
 radio.on('power-schedule', async (frame) => {
   // A fully simulated boat (SIMULATE=1, `npm run fleet`, `npm run fleet-rf`) must not act on the fleet's power schedule: dozens of
   // them share one machine and one race-config/, and on a Linux dev box the shutdown rule would arm a real shutdown of it.
   // ACCEPT_POWER_SCHEDULE=1 lets one simulated boat apply it, to test the whole path (README, Witty Pi).
-  if (config.simulate && process.env.ACCEPT_POWER_SCHEDULE !== '1') {
-    if (!ignoredPowerScheduleLogged) console.log('[power] simulated boat - ignoring the base\'s power schedule');
-    ignoredPowerScheduleLogged = true;
-    return;
-  }
+  const ignoring = config.simulate && process.env.ACCEPT_POWER_SCHEDULE !== '1';
   try {
-    // Say what arrived, once per version of the schedule (the base repeats it every minute or so, which stays silent)
+    // Say what arrived, once per version of the schedule (the base repeats it every minute or so, which stays silent) - an
+    // ignoring simulated boat too, so every change the base makes shows in its console
     if (frame.stamp !== lastHeardPowerStamp) {
       lastHeardPowerStamp = frame.stamp;
       const parts = [
         frame.witty ? `Witty Pi: ${wittySchedule.describe(frame.witty)}` : 'Witty Pi: not set by the base',
         frame.shutdown ? `shutdown: ${fleetShutdown.describe(frame.shutdown)}` : 'shutdown: not set by the base',
       ];
-      console.log(`[power] heard the base's power schedule (${config.simulate ? 'simulated radio' : 'radio'}) - ${parts.join('; ')}`);
+      console.log(
+        `[power] heard the base's power schedule (${config.simulate ? 'simulated radio' : 'radio'}) - ${parts.join('; ')}` +
+          (ignoring ? ' - ignored: simulated boat (ACCEPT_POWER_SCHEDULE=1 applies it)' : '')
+      );
     }
+    if (ignoring) return;
     if (frame.shutdown) {
       const r = fleetShutdown.handleFrame({ ...frame.shutdown, stamp: frame.stamp }, { updateParams: (p) => powerScheduler.updateParams(p) });
       if (r) (r.ok ? console.log : console.error)(`[power] ${r.message}`);

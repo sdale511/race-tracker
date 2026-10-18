@@ -26,7 +26,9 @@ function createPowerScheduleStore({
   let shutdown = fleetShutdown.load(shutdownFile); // { enabled, time, idleMinutes, speedKn, stamp } or null
   let lastSentAt = null;
   let sendCount = 0;
-  const stampNow = () => Math.floor(nowMs() / 1000);
+  // A new version's stamp: the time in seconds, but always above every earlier one, so two changes within a second are still two
+  // versions to a boat (it logs and applies a stamp once).
+  const stampNow = () => Math.max(Math.floor(nowMs() / 1000), (witty ? witty.stamp : 0) + 1, (shutdown ? shutdown.stamp : 0) + 1);
 
   // The frame for the current settings, or null when neither rule was ever set.
   function frame() {
@@ -52,7 +54,7 @@ function createPowerScheduleStore({
   function setWitty(input) {
     if (input.action === 'enable') {
       if (input.mode) {
-        const settings = wittySchedule.validateSettings({ ...input, mode: input.mode === 'off' ? 'daily' : input.mode, stamp: null }, nowMs());
+        const settings = wittySchedule.validateSettings({ ...input, mode: input.mode === 'off' ? 'daily' : input.mode, stamp: stampNow() }, nowMs());
         witty = { ...settings, enabled: true };
       } else if (witty) {
         witty = { ...witty, enabled: true, stamp: stampNow() };
@@ -74,7 +76,7 @@ function createPowerScheduleStore({
   function setShutdown(input) {
     if (input.action === 'enable') {
       if (input.time) {
-        shutdown = fleetShutdown.validate({ ...input, enabled: true, stamp: null }, nowMs());
+        shutdown = fleetShutdown.validate({ ...input, enabled: true, stamp: stampNow() }, nowMs());
       } else if (shutdown) {
         shutdown = { ...shutdown, enabled: true, stamp: stampNow() };
       } else {
