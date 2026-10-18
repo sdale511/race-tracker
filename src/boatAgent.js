@@ -1121,6 +1121,7 @@ function startHelloAnnounce() {
 // is applied only when it differs from what this boat last got from the base, and a part the base has never set is left alone.
 // The Witty Pi part needs the board's software installed here; the shutdown part always works.
 let ignoredPowerScheduleLogged = false;
+let lastHeardPowerStamp = null;
 radio.on('power-schedule', async (frame) => {
   // A fully simulated boat (SIMULATE=1, `npm run fleet`, `npm run fleet-rf`) must not act on the fleet's power schedule: dozens of
   // them share one machine and one race-config/, and on a Linux dev box the shutdown rule would arm a real shutdown of it.
@@ -1131,6 +1132,15 @@ radio.on('power-schedule', async (frame) => {
     return;
   }
   try {
+    // Say what arrived, once per version of the schedule (the base repeats it every minute or so, which stays silent)
+    if (frame.stamp !== lastHeardPowerStamp) {
+      lastHeardPowerStamp = frame.stamp;
+      const parts = [
+        frame.witty ? `Witty Pi: ${wittySchedule.describe(frame.witty)}` : 'Witty Pi: not set by the base',
+        frame.shutdown ? `shutdown: ${fleetShutdown.describe(frame.shutdown)}` : 'shutdown: not set by the base',
+      ];
+      console.log(`[power] heard the base's power schedule (${config.simulate ? 'simulated radio' : 'radio'}) - ${parts.join('; ')}`);
+    }
     if (frame.shutdown) {
       const r = fleetShutdown.handleFrame({ ...frame.shutdown, stamp: frame.stamp }, { updateParams: (p) => powerScheduler.updateParams(p) });
       if (r) (r.ok ? console.log : console.error)(`[power] ${r.message}`);
