@@ -15,6 +15,9 @@ function timestamp() {
   return new Date().toISOString();
 }
 
-console.log = (...args) => originalLog(timestamp(), ...args);
+// An empty console.log() (or console.log('')) is a blank line on purpose - a spacer or a marker the operator added with Return -
+// so it gets no timestamp.
+const isBlank = (args) => args.length === 0 || (args.length === 1 && args[0] === '');
+console.log = (...args) => (isBlank(args) ? originalLog() : originalLog(timestamp(), ...args));
 console.warn = (...args) => originalWarn(timestamp(), ...args);
 console.error = (...args) => originalError(timestamp(), ...args);
