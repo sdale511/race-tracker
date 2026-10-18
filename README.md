@@ -1541,7 +1541,8 @@ wrapper does not reliably forward the signal. Use `pkill -f
 
 By default (`SIM_HOLD_FOR_START=1`) the whole fleet gets on the grid and
 holds - press SPACE in the fleet's terminal to release everyone at once
-(same for a standalone boat, its own terminal). Set
+(same for a standalone boat, its own terminal). While it waits, Return prints a blank, timestamped line, a marker to
+separate what follows in the log. Set
 `SIM_HOLD_FOR_START=0` to auto-depart after `SIM_PRESTART_DWELL_S`
 seconds instead.
 

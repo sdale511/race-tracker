@@ -298,6 +298,8 @@ function startFleet() {
           process.kill(process.pid, 'SIGINT');
           return;
         }
+        // Raw mode shows no Return, so echo it as a blank line: a marker to separate what comes next in the log
+        if (data.includes(0x0d) || data.includes(0x0a)) console.log('');
         if (started || !data.includes(0x20)) return;
         started = true;
         clearInterval(reminderIntervalId);
