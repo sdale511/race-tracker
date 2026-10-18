@@ -105,6 +105,11 @@ function resolveDefaultPowerSchedule() {
       process.env.ROVER_SHUTDOWN_SPEED_KN !== undefined
         ? parseFloat(process.env.ROVER_SHUTDOWN_SPEED_KN)
         : persisted.shutdownSpeedKn ?? 0.5,
+    // false: shut down as soon as the time has passed, whatever the boat is doing (no idle gate). The fleet's Boat shutdown card sets it.
+    shutdownRequireIdle:
+      process.env.ROVER_SHUTDOWN_REQUIRE_IDLE !== undefined
+        ? process.env.ROVER_SHUTDOWN_REQUIRE_IDLE !== '0'
+        : persisted.shutdownRequireIdle ?? true,
     shutdownCheckIntervalMs:
       process.env.ROVER_SHUTDOWN_CHECK_INTERVAL_MS !== undefined
         ? parseInt(process.env.ROVER_SHUTDOWN_CHECK_INTERVAL_MS, 10)

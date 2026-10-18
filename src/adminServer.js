@@ -418,7 +418,7 @@ const powerUpdate = (url, enabled, fieldsFn) =>
 function renderWittyScheduleCard(p) {
   if (!p) return '';
   const w = p.witty;
-  const st = w.settings || { mode: 'daily', startTime: '09:00', endTime: '17:00', haltItself: false, lat: null, lon: null, beforeMin: 30, afterMin: 30, days: 366, enabled: false };
+  const st = w.settings || { mode: 'daily', startTime: '09:00', endTime: '17:00', haltItself: true, lat: null, lon: null, beforeMin: 30, afterMin: 30, days: 366, enabled: false };
   const place = w.defaultPlace || {};
   const lat = st.lat != null ? st.lat : place.lat != null ? place.lat : '';
   const lon = st.lon != null ? st.lon : place.lon != null ? place.lon : '';
@@ -438,14 +438,14 @@ function renderWittyScheduleCard(p) {
           <label for="wittyLat">Lat</label><input type="number" step="any" id="wittyLat" value="${lat}" style="width:90px">
           <label for="wittyLon">Lon</label><input type="number" step="any" id="wittyLon" value="${lon}" style="width:100px">
           <button type="button" class="card-btn" onclick="wittyUseCourse()" ${place.lat != null ? '' : 'disabled'}>Use course</button>
-          <label for="wittyBefore">Before sunrise</label><input type="number" min="0" max="255" id="wittyBefore" value="${st.beforeMin}" style="width:60px">
+          <label for="wittyBefore">Before sunrise</label><input type="number" min="0" max="255" id="wittyBefore" value="${st.beforeMin}" style="width:60px"> min
           <label for="wittyAfter">after sunset</label><input type="number" min="0" max="255" id="wittyAfter" value="${st.afterMin}" style="width:60px"> min
           <label for="wittyDays">Days</label><input type="number" min="1" max="1000" id="wittyDays" value="${st.days}" style="width:70px">
         </div>
         <div class="controls-row">
           <span>At the end:</span>
-          <label><input type="radio" name="wittyEnd" value="cut"${st.haltItself ? '' : ' checked'}> cut the power</label>
-          <label title="The boat shuts itself down using the Boat shutdown card: once its time has passed and the boat has been stopped for the idle minutes. A boat still moving stays on."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> boat shuts itself down</label>
+          <label title="The Witty Pi shuts the boat down at the end time, whatever it is doing - even in the middle of a race."><input type="radio" name="wittyEnd" value="cut"${st.haltItself ? '' : ' checked'}> shut down at once</label>
+          <label title="The Witty Pi leaves the shutdown to the boat: the Boat shutdown card decides, once its time has passed and the boat has stopped. A boat still moving stays on."><input type="radio" name="wittyEnd" value="halt"${st.haltItself ? ' checked' : ''}> wait until the boat has stopped</label>
         </div>
         ${powerUpdate('/api/witty-schedule', st.enabled, 'wittyFields')}
         ${needsShutdown ? '<div class="sub"><strong>Boat shutdown is not enabled - the boats would stay on.</strong></div>' : ''}
@@ -455,13 +455,20 @@ function renderWittyScheduleCard(p) {
 
 function renderShutdownScheduleCard(p) {
   if (!p) return '';
-  const st = p.shutdown.settings || { enabled: false, time: '17:00', idleMinutes: 10, speedKn: 0.5 };
+  const st = p.shutdown.settings || { enabled: false, whenIdle: true, time: '17:00', idleMinutes: 10, speedKn: 0.5 };
   return `<div class="card controls-card">
       ${powerHead('Boat shutdown', 'shutdownEnabled', '/api/shutdown-schedule', st.enabled, 'shutdownFields')}
       <div class="fc-section">
         <div class="controls-row">
-          <label for="sdTime">After</label><input type="time" id="sdTime" value="${st.time}">
-          <label for="sdIdle">stopped for</label><input type="number" min="0" max="1440" id="sdIdle" value="${st.idleMinutes}" style="width:70px"> min
+          <label for="sdTime">From</label><input type="time" id="sdTime" value="${st.time}">
+        </div>
+        <div class="controls-row">
+          <span>At the end:</span>
+          <label title="The boat shuts down as soon as the time has passed, whatever it is doing - even in the middle of a race."><input type="radio" name="sdEnd" value="now"${st.whenIdle ? '' : ' checked'} onchange="shutdownModeChanged()"> shut down at once</label>
+          <label title="The boat waits until it has been stopped for the idle minutes, so a race still running is not cut off. A boat still moving stays on."><input type="radio" name="sdEnd" value="idle"${st.whenIdle ? ' checked' : ''} onchange="shutdownModeChanged()"> wait until the boat has stopped</label>
+        </div>
+        <div class="controls-row" id="sdIdleRow">
+          <label for="sdIdle">Stopped for</label><input type="number" min="0" max="1440" id="sdIdle" value="${st.idleMinutes}" style="width:70px"> min
           <label for="sdSpeed">under</label><input type="number" step="any" min="0" id="sdSpeed" value="${st.speedKn}" style="width:70px"> kn
         </div>
         ${powerUpdate('/api/shutdown-schedule', st.enabled, 'shutdownFields')}
@@ -1107,9 +1114,13 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
         days: document.getElementById('wittyDays').value,
       };
     }
+    function shutdownModeChanged() {
+      document.getElementById('sdIdleRow').style.display = document.querySelector('input[name=sdEnd]:checked').value === 'idle' ? '' : 'none';
+    }
     function shutdownFields() {
       return {
         time: document.getElementById('sdTime').value,
+        whenIdle: document.querySelector('input[name=sdEnd]:checked').value === 'idle',
         idleMinutes: document.getElementById('sdIdle').value,
         speedKn: document.getElementById('sdSpeed').value,
       };
@@ -1151,6 +1162,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       }
     }
     if (document.getElementById('wittyMode')) wittyModeChanged();
+    if (document.getElementById('sdIdleRow')) shutdownModeChanged();
 
     async function clearRadioStats(btn) {
       btn.disabled = true;

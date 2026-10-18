@@ -68,15 +68,19 @@ function renderPowerCard(power, fromBase) {
     ? 'shutting down now'
     : !power.capable
     ? 'unsupported on this platform'
-    : power.shutdownAt
+    : power.shutdownAt && power.shutdownRequireIdle !== false
     ? power.idleSince
         ? `idle ${formatDuration(Date.now() - power.idleSince)} of ${power.shutdownIdleMinutes}m`
         : 'armed'
+    : power.shutdownAt
+    ? 'armed'
     : 'disabled';
   const subText = power.triggered
     ? 'device is powering off'
     : !power.capable
     ? `shutdown -h now only runs on Linux (platform=${process.platform}) - safe to leave configured for when this runs on the Pi`
+    : power.shutdownAt && power.shutdownRequireIdle === false
+    ? `at ${power.shutdownAt} local time, whatever the boat is doing`
     : power.shutdownAt
     ? `after ${power.shutdownAt} local time, once stationary &lt;${power.shutdownSpeedKn}kn (or no fresh fix) for ${power.shutdownIdleMinutes} continuous minutes`
     : 'no shutdown time set';

@@ -1617,6 +1617,7 @@ const powerScheduler = startShutdownScheduler({
   shutdownAt: config.power.shutdownAt,
   shutdownIdleMinutes: config.power.shutdownIdleMinutes,
   shutdownSpeedKn: config.power.shutdownSpeedKn,
+  shutdownRequireIdle: config.power.shutdownRequireIdle,
   shutdownCheckIntervalMs: config.power.shutdownCheckIntervalMs,
   getLastFix: () => lastPvt,
   isSuspended: () => sleeper.isSleeping(), // a sleeping rover's GPS is silent on purpose - not "idle"

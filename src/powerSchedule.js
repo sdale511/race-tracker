@@ -32,11 +32,13 @@ function isShutdownCapablePlatform() {
 // it directly without the setInterval/exec wiring below. `now` is
 // injectable (defaults to Date.now()) purely for tests; production callers
 // never pass it.
-function evaluateGate({ shutdownAt, shutdownSpeedKn, shutdownIdleMinutes, idleSince, lastFix, now = Date.now() }) {
+function evaluateGate({ shutdownAt, shutdownSpeedKn, shutdownIdleMinutes, requireIdle = true, idleSince, lastFix, now = Date.now() }) {
   const [h, m] = shutdownAt.split(':').map(Number);
   const scheduledToday = new Date(now);
   scheduledToday.setHours(h, m, 0, 0);
   if (now < scheduledToday.getTime()) return { idleSince: null, shouldShutDown: false }; // not yet time today
+  // requireIdle off: no idle gate - shut down as soon as the time has passed, whatever the boat is doing
+  if (!requireIdle) return { idleSince: null, shouldShutDown: true };
 
   const fixIsFresh = lastFix && lastFix.timestamp != null && now - lastFix.timestamp < FIX_STALE_MS;
   const speedKn = fixIsFresh ? ((lastFix.gSpeedMmS || 0) / 1000) * KNOTS_PER_MS : null;
@@ -85,6 +87,7 @@ function startShutdownScheduler({
   shutdownAt,
   shutdownIdleMinutes,
   shutdownSpeedKn,
+  shutdownRequireIdle = true,
   shutdownCheckIntervalMs,
   getLastFix,
   isSuspended = () => false,
@@ -95,6 +98,7 @@ function startShutdownScheduler({
     shutdownAt: shutdownAt || null,
     shutdownIdleMinutes,
     shutdownSpeedKn,
+    shutdownRequireIdle: shutdownRequireIdle !== false,
     shutdownCheckIntervalMs,
     idleSince: null,
     triggered: false,
@@ -108,6 +112,8 @@ function startShutdownScheduler({
       console.warn(
         `[power] shutdownAt=${state.shutdownAt} is set but this isn't Linux (platform=${process.platform}) - scheduled shutdown disabled here to avoid shutting down the wrong machine`
       );
+    } else if (!state.shutdownRequireIdle) {
+      console.log(`[power] scheduled shutdown armed: after ${state.shutdownAt} local time, whatever the boat is doing`);
     } else {
       console.log(
         `[power] scheduled shutdown armed: after ${state.shutdownAt} local time, once stationary (<${state.shutdownSpeedKn}kn or no fresh fix) for ${state.shutdownIdleMinutes} continuous minutes`
@@ -128,6 +134,7 @@ function startShutdownScheduler({
       shutdownAt: state.shutdownAt,
       shutdownSpeedKn: state.shutdownSpeedKn,
       shutdownIdleMinutes: state.shutdownIdleMinutes,
+      requireIdle: state.shutdownRequireIdle,
       idleSince: state.idleSince,
       lastFix: getLastFix(),
     });
@@ -135,7 +142,7 @@ function startShutdownScheduler({
     if (result.shouldShutDown) {
       state.triggered = true;
       clearInterval(timer);
-      console.log(`[power] past ${state.shutdownAt} and stationary for ${state.shutdownIdleMinutes}+ min - shutting down now`);
+      console.log(state.shutdownRequireIdle ? `[power] past ${state.shutdownAt} and stationary for ${state.shutdownIdleMinutes}+ min - shutting down now` : `[power] past ${state.shutdownAt} - shutting down now`);
       runShutdown();
     }
   }
@@ -160,12 +167,14 @@ function startShutdownScheduler({
     if ('shutdownAt' in partial) next.shutdownAt = validateShutdownAt(partial.shutdownAt);
     if ('shutdownIdleMinutes' in partial) next.shutdownIdleMinutes = validateNumber('shutdownIdleMinutes', partial.shutdownIdleMinutes, 0);
     if ('shutdownSpeedKn' in partial) next.shutdownSpeedKn = validateNumber('shutdownSpeedKn', partial.shutdownSpeedKn, 0);
+    if ('shutdownRequireIdle' in partial) next.shutdownRequireIdle = partial.shutdownRequireIdle !== false;
     if ('shutdownCheckIntervalMs' in partial)
       next.shutdownCheckIntervalMs = validateNumber('shutdownCheckIntervalMs', partial.shutdownCheckIntervalMs, 1000);
 
     state.shutdownAt = next.shutdownAt;
     state.shutdownIdleMinutes = next.shutdownIdleMinutes;
     state.shutdownSpeedKn = next.shutdownSpeedKn;
+    state.shutdownRequireIdle = next.shutdownRequireIdle;
     state.shutdownCheckIntervalMs = next.shutdownCheckIntervalMs;
     state.idleSince = null;
 
@@ -173,6 +182,7 @@ function startShutdownScheduler({
       shutdownAt: state.shutdownAt,
       shutdownIdleMinutes: state.shutdownIdleMinutes,
       shutdownSpeedKn: state.shutdownSpeedKn,
+      shutdownRequireIdle: state.shutdownRequireIdle,
       shutdownCheckIntervalMs: state.shutdownCheckIntervalMs,
     });
     logArmedState();
@@ -184,6 +194,7 @@ function startShutdownScheduler({
       shutdownAt: state.shutdownAt,
       shutdownIdleMinutes: state.shutdownIdleMinutes,
       shutdownSpeedKn: state.shutdownSpeedKn,
+      shutdownRequireIdle: state.shutdownRequireIdle,
       shutdownCheckIntervalMs: state.shutdownCheckIntervalMs,
       capable,
       armed: !!state.shutdownAt && capable,

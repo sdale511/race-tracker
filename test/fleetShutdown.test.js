@@ -24,7 +24,7 @@ test('a boat applies the base\'s shutdown once, however often it is repeated, an
   const calls = [];
   const deps = { appliedFile: file, updateParams: (p) => calls.push(p) };
   assert.strictEqual(f.handleFrame(settings(), deps).ok, true);
-  assert.deepStrictEqual(calls[0], { shutdownAt: '17:00', shutdownIdleMinutes: 10, shutdownSpeedKn: 0.5 });
+  assert.deepStrictEqual(calls[0], { shutdownAt: '17:00', shutdownIdleMinutes: 10, shutdownSpeedKn: 0.5, shutdownRequireIdle: true });
   assert.strictEqual(f.handleFrame(settings(), deps), null); // the repeat
   assert.strictEqual(f.handleFrame(settings({ stamp: 2000 }), deps), null); // saved again, same settings
   assert.strictEqual(calls.length, 1);
@@ -65,4 +65,28 @@ test('the boat status describes what the base sent', () => {
   assert.strictEqual(f.boatStatus(file), null);
   f.handleFrame(settings(), { appliedFile: file, updateParams: () => {} });
   assert.match(f.boatStatus(file).description, /after 17:00 local time/);
+});
+
+test('the idle gate is on by default and can be turned off, which the boat is told and which counts as a change', () => {
+  assert.strictEqual(settings().whenIdle, true);
+  assert.strictEqual(settings({ whenIdle: false }).whenIdle, false);
+  const calls = [];
+  const deps = { appliedFile: appliedFile(), updateParams: (p) => calls.push(p) };
+  f.handleFrame(settings(), deps);
+  assert.strictEqual(f.handleFrame(settings({ stamp: 2000, whenIdle: false }), deps).ok, true);
+  assert.strictEqual(calls[1].shutdownRequireIdle, false);
+  assert.match(f.describe(settings({ whenIdle: false })), /whatever the boat is doing/);
+  // without the idle gate the idle minutes and speed no longer matter
+  assert.strictEqual(f.handleFrame(settings({ stamp: 3000, whenIdle: false, idleMinutes: 30, speedKn: 2 }), deps), null);
+  assert.strictEqual(calls.length, 2);
+});
+
+test('the boat\'s shutdown gate: with the idle gate a moving boat stays on, without it the boat shuts down at the time', () => {
+  const { evaluateGate } = require('../src/powerSchedule');
+  const now = new Date(2026, 9, 16, 17, 30).getTime(); // past 17:00
+  const moving = { timestamp: now - 1000, gSpeedMmS: 3000 }; // about 5.8 kn
+  const base = { shutdownAt: '17:00', shutdownSpeedKn: 0.5, shutdownIdleMinutes: 10, idleSince: null, lastFix: moving, now };
+  assert.strictEqual(evaluateGate({ ...base, requireIdle: true }).shouldShutDown, false);
+  assert.strictEqual(evaluateGate({ ...base, requireIdle: false }).shouldShutDown, true);
+  assert.strictEqual(evaluateGate({ ...base, requireIdle: false, now: new Date(2026, 9, 16, 16, 0).getTime() }).shouldShutDown, false); // not yet 17:00
 });

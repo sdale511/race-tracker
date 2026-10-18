@@ -161,7 +161,7 @@ test('a boat without the Witty Pi software says so once, and records nothing', a
 
 test('the power schedule frame carries both rules, and a rule the base has not set stays null', () => {
   const s = w.validateSettings({ mode: 'sun', lat: 40.89, lon: -118.39, beforeMin: 20, afterMin: 40, days: 200, haltItself: true, stamp: 12345 });
-  const sd = { enabled: true, time: '17:30', idleMinutes: 10, speedKn: 0.5 };
+  const sd = { enabled: true, whenIdle: true, time: '17:30', idleMinutes: 10, speedKn: 0.5 };
   const both = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 12345, witty: s, shutdown: sd }));
   assert.strictEqual(both.stamp, 12345);
   assert.strictEqual(both.witty.mode, 'sun');
@@ -172,6 +172,8 @@ test('the power schedule frame carries both rules, and a rule the base has not s
   const onlyShutdown = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 1, witty: null, shutdown: { ...sd, enabled: false } }));
   assert.strictEqual(onlyShutdown.witty, null);
   assert.strictEqual(onlyShutdown.shutdown.enabled, false);
+  const hardStop = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 1, witty: null, shutdown: { ...sd, whenIdle: false } }));
+  assert.strictEqual(hardStop.shutdown.whenIdle, false);
   const onlyWitty = protocol.decodePowerSchedule(protocol.encodePowerSchedule({ stamp: 1, witty: s, shutdown: null }));
   assert.strictEqual(onlyWitty.shutdown, null);
   const corrupt = Buffer.from(protocol.encodePowerSchedule({ stamp: 1, witty: s, shutdown: sd }));

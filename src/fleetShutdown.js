@@ -4,7 +4,8 @@
 // down" option leaves the shutdown to this). Like the Witty Pi schedule (wittySchedule.js) the base stores it, sends it over the
 // radio every minute or so, and a boat applies it only when it differs from what it last got from the base.
 //
-// Settings: { enabled, time 'HH:MM', idleMinutes, speedKn, stamp }. Disabled settings disarm the boat's shutdown.
+// Settings: { enabled, whenIdle, time 'HH:MM', idleMinutes, speedKn, stamp }. Disabled settings disarm the boat's shutdown.
+// whenIdle (the default) keeps the idle gate; without it the boat shuts down as soon as the time has passed, even mid-race.
 
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +25,7 @@ function validate(input, nowMs = Date.now()) {
   const stamp = Number(input.stamp);
   return {
     enabled: !!input.enabled,
+    whenIdle: input.whenIdle !== false, // only once the boat has stopped (the default); false = at the time, whatever it is doing
     time: `${m[1].padStart(2, '0')}:${m[2]}`,
     idleMinutes: Math.round(idleMinutes),
     speedKn: Math.round(speedKn * 100) / 100,
@@ -34,6 +36,7 @@ function validate(input, nowMs = Date.now()) {
 function describe(s) {
   if (!s) return 'not set';
   if (!s.enabled) return 'disabled';
+  if (!s.whenIdle) return `at ${s.time} local time, whatever the boat is doing`;
   return `after ${s.time} local time, once stopped (under ${s.speedKn} kn) for ${s.idleMinutes} min`;
 }
 
@@ -65,7 +68,7 @@ function readApplied(file = DEFAULT_APPLIED_FILE) {
 // What the boat's controller is given for these settings: disabled disarms it (no time); the idle and speed values are
 // always passed so a later enable already has them.
 function toParams(s) {
-  return { shutdownAt: s.enabled ? s.time : null, shutdownIdleMinutes: s.idleMinutes, shutdownSpeedKn: s.speedKn };
+  return { shutdownAt: s.enabled ? s.time : null, shutdownIdleMinutes: s.idleMinutes, shutdownSpeedKn: s.speedKn, shutdownRequireIdle: s.whenIdle };
 }
 
 // Does this boat need to apply these settings? Only if they differ from what it last got from the base (or that never
@@ -76,7 +79,8 @@ function needsApply(settings, applied) {
   const a = applied.settings;
   if (a.enabled !== settings.enabled) return true;
   if (!settings.enabled) return false;
-  return a.time !== settings.time || a.idleMinutes !== settings.idleMinutes || a.speedKn !== settings.speedKn;
+  if (a.time !== settings.time || (a.whenIdle !== false) !== settings.whenIdle) return true;
+  return settings.whenIdle && (a.idleMinutes !== settings.idleMinutes || a.speedKn !== settings.speedKn); // the idle values only matter with the idle gate
 }
 
 // A boat has heard the base's shutdown settings (radio 'shutdown-schedule' event). `updateParams` is the boat's

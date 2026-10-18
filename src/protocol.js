@@ -311,7 +311,8 @@ function decodePing(buf) {
 //   [1]      managed          uint8   bit 0: the Witty Pi schedule is set by the base; bit 1: the shutdown is set by the base
 //   [2]      Witty Pi mode    uint8   low 2 bits: 0 off (no schedule), 1 daily hours, 2 sunrise to sunset;
 //                                     bit 7: the boat halts itself at the end of the day (the Witty Pi schedules no shutdown)
-//   [3]      shutdown flags   uint8   bit 0: the shutdown is enabled (clear = the boat disarms it)
+//   [3]      shutdown flags   uint8   bit 0: the shutdown is enabled (clear = the boat disarms it);
+//                                     bit 1: only once the boat has stopped (clear = at the time, whatever the boat is doing)
 //   [4..7]   stamp            uint32  unix seconds either part was last changed
 //   [8..9]   start            uint16  minutes after midnight, local time (daily mode)
 //   [10..11] end              uint16  minutes after midnight, local time (daily mode)
@@ -336,14 +337,14 @@ const hhmmToMinutes = (t) => {
 const minutesToHhmm = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
 
 // { stamp, witty, shutdown }: witty is null (not set by the base) or { mode: 'off'|'daily'|'sun', haltItself, startTime 'HH:MM',
-// endTime 'HH:MM', lat, lon, beforeMin, afterMin, days }; shutdown is null or { enabled, time 'HH:MM', idleMinutes, speedKn }.
+// endTime 'HH:MM', lat, lon, beforeMin, afterMin, days }; shutdown is null or { enabled, whenIdle, time 'HH:MM', idleMinutes, speedKn }.
 // Already validated (wittySchedule.js's validateSettings, fleetShutdown.js's validate).
 function encodePowerSchedule({ stamp, witty, shutdown }) {
   const buf = Buffer.alloc(POWER_SCHEDULE_FRAME_LEN);
   buf.writeUInt8(POWER_SCHEDULE_SYNC, 0);
   buf.writeUInt8((witty ? 1 : 0) | (shutdown ? 2 : 0), 1);
   if (witty) buf.writeUInt8(WITTY_MODES.indexOf(witty.mode) | (witty.haltItself ? 0x80 : 0), 2);
-  if (shutdown) buf.writeUInt8(shutdown.enabled ? 1 : 0, 3);
+  if (shutdown) buf.writeUInt8((shutdown.enabled ? 1 : 0) | (shutdown.whenIdle === false ? 0 : 2), 3);
   buf.writeUInt32LE(stamp >>> 0, 4);
   if (witty) {
     buf.writeUInt16LE(hhmmToMinutes(witty.startTime), 8);
@@ -394,6 +395,7 @@ function decodePowerSchedule(buf) {
       buf[1] & 2
         ? {
             enabled: (buf[3] & 1) !== 0,
+            whenIdle: (buf[3] & 2) !== 0,
             time: minutesToHhmm(buf.readUInt16LE(24) % 1440),
             idleMinutes: buf.readUInt16LE(26),
             speedKn: buf.readUInt16LE(28) / 100,

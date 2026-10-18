@@ -1420,10 +1420,12 @@ next fix sends a fresh position rather than waiting out
 Each boat can shut its own Pi down: once the local time has passed `shutdownAt` AND the boat has been idle (stationary or no
 fresh fix) for `ROVER_SHUTDOWN_IDLE_MIN` continuous minutes (default 10) it runs `shutdown -h now` - the idle gate stops a race
 running late from being killed mid-track, so a boat that is still moving stays on. It needs no Witty Pi, so it always works.
+The idle gate can be turned off (**shut down at once**, `ROVER_SHUTDOWN_REQUIRE_IDLE=0`): the boat then halts as soon as the time has passed,
+whatever it is doing.
 **Linux-only** - refuses to arm on macOS, so a leftover schedule never shuts down a dev machine.
 
 **It is set on the base admin.** The Data page's **Boat shutdown** card (time, idle minutes, speed under which the boat counts as
-stopped, and an **Enabled** checkbox in the upper right) sets it for the whole fleet and sends it to the boats over the radio, in the same
+stopped, **At the end: shut down at once / wait until the boat has stopped**, and an **Enabled** checkbox in the upper right) sets it for the whole fleet and sends it to the boats over the radio, in the same
 frame as the Witty Pi schedule below (`protocol.js`'s power schedule frame, repeated every `WITTY_REBROADCAST_S`, 60). A boat
 applies it only when it differs from what it last got from the base (`race-config/fleet-shutdown-applied.json`) and keeps it
 across a restart (`race-config/power-schedule.txt`); Disable disarms it. A boat's own dashboard shows a read-only **Boat
@@ -1476,10 +1478,12 @@ one schedule for the whole fleet (the times are local, nothing depends on the bo
 of margin before sunrise and after sunset for boot and GPS lock. The **Enabled** checkbox in the card's upper right sends it to the
 boats (ticking it saves the fields and enables it; **Update** appears while it is enabled, to send changed fields), and clearing
 it removes the schedule from every boat that has a Witty Pi (it clears the file and the board's next startup and shutdown); the
-values are kept. "At the end of the day" is either **cut the power** (the Witty Pi shuts the Pi down at the end time, even mid-race) or
-**let each boat shut itself down**: the ON state ends with `WAIT`, the Witty Pi schedules no shutdown, and the boat uses its own
-shutdown (the **Boat shutdown** card above): once that time has passed and the boat has been stopped for its idle minutes it
-halts, so a boat still moving stays on, and a fleet with no enabled Boat shutdown would never shut down (both cards warn about it).
+values are kept. Both cards end the same way, **At the end:
+shut down at once** or **wait until the boat has stopped** (the default on both). On the Witty Pi card the first has the Witty Pi
+shut the Pi down at the end time, even mid-race; the second ends the ON state with `WAIT`, so the Witty Pi schedules no shutdown
+and the boat's own shutdown (the **Boat shutdown** card) decides: once its time has passed and the boat has been stopped for its
+idle minutes it halts, so a boat still moving stays on. That needs the Boat shutdown card enabled (the Witty Pi card warns when it
+is not, or the boats would never shut down).
 
 **One frame carries both rules.** The Witty Pi schedule and the Boat shutdown go out together in one fixed 31-byte frame
 (`0xB5`, `protocol.js`'s power schedule frame) with the *settings*, not any file. The base repeats it every `WITTY_REBROADCAST_S`
