@@ -1492,7 +1492,9 @@ boat applies each rule **only when it differs** from what it last got from the b
 `runScript.sh` (as the service's user, then through passwordless `sudo` if that fails - the board is on I2C). It is applied again
 if the settings change, the file has gone, an earlier attempt failed, or a sunrise-to-sunset file has under two weeks left (it
 covers `Days`, 366 by default, from the day it was written). A boat without the Witty Pi software ignores that part and says so
-once in its console; the shutdown part always works. The boat dashboard has a read-only **Witty Pi schedule** card (not installed,
+once in its console; the shutdown part always works. A fully simulated boat (`SIMULATE=1`, `npm run fleet`, `npm run fleet-rf`) ignores the
+whole frame, since dozens of them share one machine and one `race-config/` (and on a Linux dev box the shutdown rule would arm a
+real shutdown); `ACCEPT_POWER_SCHEDULE=1` lets one apply it, for testing the path end to end. The boat dashboard has a read-only **Witty Pi schedule** card (not installed,
 the expected install path, what was applied and whether it worked, and the schedule file) and the read-only **Boat shutdown**
 card. The file follows the Witty Pi's own format (`BEGIN`, `END`, then `ON` and `OFF` states with durations such as `H8` or
 `M30`; a fixed daily cycle drifts an hour across a daylight-saving change until the board next runs the script, which it does at

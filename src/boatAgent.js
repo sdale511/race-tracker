@@ -1120,7 +1120,16 @@ function startHelloAnnounce() {
 // (wittySchedule.js) and the boat's own software shutdown (fleetShutdown.js). The base repeats it every minute or so; each part
 // is applied only when it differs from what this boat last got from the base, and a part the base has never set is left alone.
 // The Witty Pi part needs the board's software installed here; the shutdown part always works.
+let ignoredPowerScheduleLogged = false;
 radio.on('power-schedule', async (frame) => {
+  // A fully simulated boat (SIMULATE=1, `npm run fleet`, `npm run fleet-rf`) must not act on the fleet's power schedule: dozens of
+  // them share one machine and one race-config/, and on a Linux dev box the shutdown rule would arm a real shutdown of it.
+  // ACCEPT_POWER_SCHEDULE=1 lets one simulated boat apply it, to test the whole path (README, Witty Pi).
+  if (config.simulate && process.env.ACCEPT_POWER_SCHEDULE !== '1') {
+    if (!ignoredPowerScheduleLogged) console.log('[power] simulated boat - ignoring the base\'s power schedule');
+    ignoredPowerScheduleLogged = true;
+    return;
+  }
   try {
     if (frame.shutdown) {
       const r = fleetShutdown.handleFrame({ ...frame.shutdown, stamp: frame.stamp }, { updateParams: (p) => powerScheduler.updateParams(p) });

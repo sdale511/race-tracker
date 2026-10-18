@@ -19,8 +19,7 @@ const {
 } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
-const wittySchedule = require('./wittySchedule');
-const fleetShutdown = require('./fleetShutdown');
+const { createPowerScheduleStore } = require('./powerScheduleStore');
 const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
 const { decideOnGridPost } = require('./onGridPost');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
@@ -923,102 +922,23 @@ function main() {
   // config.js's pingResponseJitterMs), not all at once - nothing to
   // reconcile here on the base side beyond that; replies just arrive as
   // ordinary frames through the normal radio.on('frame', ...) path above.
-  // The fleet's power schedule: two rules set on the admin's Data page and sent to the boats in ONE frame (protocol.js's
-  // encodePowerSchedule) - the Witty Pi power schedule (wittySchedule.js) and the boat's own software shutdown
-  // (fleetShutdown.js, which needs no Witty Pi). Each has its own Enable / Disable; a part never set here is sent as "not
-  // managed" and the boat leaves its own setting alone. The frame goes out when either changes and then every
-  // WITTY_REBROADCAST_S: a boat that was powered off hears it after it boots, and applies each part only if it differs from
-  // what it last got from the base. Disabled parts are still sent (a Witty Pi schedule as 'off', a shutdown as disabled), so a
-  // boat that missed the change still gets it.
-  let wittyStored = wittySchedule.loadSettings(); // { ...settings, enabled } or null
-  let shutdownStored = fleetShutdown.load(); // { enabled, time, idleMinutes, speedKn, stamp } or null
-  let powerLastSentAt = null;
-  let powerSendCount = 0;
-
-  function powerScheduleFrame() {
-    if (!wittyStored && !shutdownStored) return null;
-    const witty = wittyStored ? (wittyStored.enabled ? wittyStored : { ...wittyStored, mode: 'off' }) : null;
-    const stamp = Math.max(wittyStored ? wittyStored.stamp : 0, shutdownStored ? shutdownStored.stamp : 0);
-    return protocol.encodePowerSchedule({ stamp, witty, shutdown: shutdownStored });
-  }
-
-  function sendPowerSchedule() {
-    const frame = powerScheduleFrame();
-    if (!frame || radioMode === 'none') return false;
-    radio.broadcast(frame);
-    powerLastSentAt = Date.now();
-    powerSendCount++;
-    return true;
-  }
-
-  // The Witty Pi card: 'enable' stores the fields it is sent (if any) and turns the schedule on - it is also how an enabled
-  // schedule is updated; 'disable' turns it off and keeps the stored fields. Throws a plain message on bad input.
-  function setWittySchedule(input) {
-    const action = input.action;
-    if (action === 'enable') {
-      if (input.mode) {
-        const settings = wittySchedule.validateSettings({ ...input, mode: input.mode === 'off' ? 'daily' : input.mode, stamp: null });
-        wittyStored = { ...settings, enabled: true };
-      } else if (wittyStored) {
-        wittyStored = { ...wittyStored, enabled: true, stamp: Math.floor(Date.now() / 1000) };
-      } else {
-        throw new Error('fill in the schedule first');
-      }
-    } else if (action === 'disable') {
-      if (!wittyStored) throw new Error('there is no schedule to disable');
-      wittyStored = { ...wittyStored, enabled: false, stamp: Math.floor(Date.now() / 1000) };
-    } else {
-      throw new Error(`unknown action ${JSON.stringify(action)}`);
-    }
-    wittySchedule.saveSettings(wittyStored);
-    powerSendCount = 0;
-    sendPowerSchedule();
-    console.log(`[witty] fleet Witty Pi schedule ${wittyStored.enabled ? 'enabled' : 'disabled'}: ${wittySchedule.describe(wittyStored)}`);
-  }
-
-  // The boat shutdown card: the same two actions.
-  function setShutdownSchedule(input) {
-    const action = input.action;
-    if (action === 'enable') {
-      if (input.time) {
-        shutdownStored = fleetShutdown.validate({ ...input, enabled: true, stamp: null });
-      } else if (shutdownStored) {
-        shutdownStored = { ...shutdownStored, enabled: true, stamp: Math.floor(Date.now() / 1000) };
-      } else {
-        throw new Error('set the shutdown time first');
-      }
-    } else if (action === 'disable') {
-      if (!shutdownStored) throw new Error('there is no shutdown to disable');
-      shutdownStored = { ...shutdownStored, enabled: false, stamp: Math.floor(Date.now() / 1000) };
-    } else {
-      throw new Error(`unknown action ${JSON.stringify(action)}`);
-    }
-    fleetShutdown.save(shutdownStored);
-    powerSendCount = 0;
-    sendPowerSchedule();
-    console.log(`[shutdown] fleet shutdown ${shutdownStored.enabled ? 'enabled' : 'disabled'}: ${fleetShutdown.describe(shutdownStored)}`);
-  }
-
-  // What the admin cards show.
-  function powerScheduleStatus() {
-    const marks = raceMarks && (raceMarks.committeeStart || raceMarks.pin);
-    return {
-      lastSentAt: powerLastSentAt,
-      sendCount: powerSendCount,
-      rebroadcastS: config.witty.rebroadcastS,
-      radioEnabled: radioMode !== 'none',
-      witty: {
-        settings: wittyStored,
-        description: wittyStored ? wittySchedule.describe(wittyStored) : null,
-        // where the course is, as a starting point for the sunrise-to-sunset fields
-        defaultPlace: marks && Number.isFinite(marks.lat) ? { lat: marks.lat, lon: marks.lon } : null,
-      },
-      shutdown: { settings: shutdownStored, description: shutdownStored ? fleetShutdown.describe(shutdownStored) : null },
-    };
-  }
-
-  if (!marksetMode && radioMode !== 'none') {
-    setInterval(sendPowerSchedule, config.witty.rebroadcastS * 1000);
+  // The fleet's power schedule (powerScheduleStore.js): the Witty Pi power schedule and the boat shutdown, set on the admin's Data
+  // page and sent to the boats in ONE frame - now when either changes, and then every WITTY_REBROADCAST_S so a boat that was
+  // powered off hears it after it boots. A boat applies each part only if it differs from what it last got from the base.
+  const powerSchedule = createPowerScheduleStore({
+    send: (frame) => radio.broadcast(frame),
+    rebroadcastS: config.witty.rebroadcastS,
+    radioEnabled: () => radioMode !== 'none',
+    getPlace: () => {
+      const m = raceMarks && (raceMarks.committeeStart || raceMarks.pin); // where the course is, for the sunrise-to-sunset fields
+      return m && Number.isFinite(m.lat) ? { lat: m.lat, lon: m.lon } : null;
+    },
+  });
+  const setWittySchedule = (input) => powerSchedule.setWitty(input);
+  const setShutdownSchedule = (input) => powerSchedule.setShutdown(input);
+  // never faster than every 5 s, whatever WITTY_REBROADCAST_S says (0 would otherwise be a tight loop on the radio)
+  if (!marksetMode && radioMode !== 'none' && config.witty.rebroadcastS > 0) {
+    setInterval(() => powerSchedule.sendNow(), Math.max(5, config.witty.rebroadcastS) * 1000);
   }
 
   // The radio frames card's "Clear stats" button: the frame and sync-error totals, the link-quality window and the
@@ -2883,7 +2803,7 @@ function main() {
       baseGpsFix: baseGps.getFix(),
       baseGpsSurvey: baseGps.getSurveyStatus(),
       markAssignment: getMarkAssignment(),
-      powerSchedule: powerScheduleStatus(),
+      powerSchedule: powerSchedule.status(),
       webhook: {
         enabled: config.regattaup.enabled,
         queueReady: !!lapWebhookQueue,

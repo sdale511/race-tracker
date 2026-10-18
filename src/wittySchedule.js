@@ -167,6 +167,14 @@ async function defaultRunner(dir, script) {
 // Removing the schedule file stops the script engine, but the board keeps the startup and shutdown it was last told, so
 // clear those too, best effort (the board's own utilities.sh names them clear_startup_time and clear_shutdown_time).
 const CLEAR_SCRIPT = '. ./utilities.sh && clear_startup_time && clear_shutdown_time';
+async function defaultClear(dir) {
+  let r = await run('bash', ['-c', CLEAR_SCRIPT], dir);
+  if (r.code !== 0) {
+    const viaSudo = await run('sudo', ['-n', 'bash', '-c', CLEAR_SCRIPT], dir);
+    if (viaSudo.code === 0) r = viaSudo;
+  }
+  return r;
+}
 
 // Applies settings on this Pi: writes (or removes) schedule.wpi and has the Witty Pi load it. `deps` is for tests.
 // Resolves { ok, installed, wrote, message }; never throws.
@@ -181,7 +189,7 @@ async function applySettings(settings, deps = {}) {
   try {
     if (settings.mode === 'off') {
       fs.rmSync(file, { force: true });
-      const cleared = await (deps.clear || ((d) => run('bash', ['-c', CLEAR_SCRIPT], d)))(dir);
+      const cleared = await (deps.clear || defaultClear)(dir);
       return {
         ok: true,
         installed: true,
@@ -225,7 +233,18 @@ function needsApply(settings, applied, fileExists, nowMs = Date.now()) {
 // settings cost nothing. A boat with no Witty Pi software ignores them without recording anything, so installing the board
 // later still picks the schedule up on the next repeat. Resolves a result for the log, or null when there is nothing to do.
 let warnedNotInstalledStamp = null;
+let applying = false; // the base's repeat can arrive while an apply (up to 30 s) is still running: skip it, the next repeat comes
 async function handleScheduleFrame(frame, deps = {}) {
+  if (applying) return null;
+  applying = true;
+  try {
+    return await handleScheduleFrameNow(frame, deps);
+  } finally {
+    applying = false;
+  }
+}
+
+async function handleScheduleFrameNow(frame, deps) {
   const appliedFile = deps.appliedFile || DEFAULT_APPLIED_FILE;
   let settings;
   try {
