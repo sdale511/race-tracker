@@ -64,30 +64,68 @@ test('a boat\'s own track key is trimmed to the window, its expiry refreshed and
   ]);
 });
 
-test('a fix writes only the two track entries; boats:known is added on a boat\'s first fix in each regatta, not on every fix', async () => {
+const writeStore = (calls, extra = {}) => Object.assign(Object.create(RedisStore.prototype), {
+  ready: Promise.resolve(),
+  currentRegattaId: 'r1',
+  boatTrackWindowMs: 0,
+  trackRetentionSeconds: 172800,
+  lastBoatTrimAt: new Map(),
+  lastWindowAt: new Map(),
+  lastRecordedPosition: new Map(),
+  trackWriteHealthy: true,
+  trackWriteFailureCount: 0,
+  _pendingFixes: [],
+  _flushing: null,
+  client: {
+    zadd: (key, ...args) => { calls.push(['zadd', key, args.length / 2]); return Promise.resolve(1); },
+    sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); },
+    zremrangebyscore: () => Promise.resolve(0),
+    expire: () => Promise.resolve(1),
+  },
+  ...extra,
+});
+
+test('a frame\'s fixes, arriving in one tick, are written as one ZADD per key', async () => {
   const calls = [];
-  const store = Object.assign(Object.create(RedisStore.prototype), {
-    ready: Promise.resolve(),
-    currentRegattaId: 'r1',
-    boatTrackWindowMs: 0,
-    trackRetentionSeconds: 172800,
-    lastBoatTrimAt: new Map(),
-    lastWindowAt: new Map(),
-    lastRecordedPosition: new Map(),
-    trackWriteHealthy: true,
-    client: {
-      zadd: (key) => { calls.push(['zadd', key]); return Promise.resolve(1); },
-      sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); },
-      zremrangebyscore: () => Promise.resolve(0),
-      expire: () => Promise.resolve(1),
-    },
-  });
-  for (let i = 0; i < 5; i++) await store.writeFix(fix(T + i * 100));
+  const store = writeStore(calls);
+  const boat2 = (t) => ({ ...fix(t), boatId: '00002' });
+  await Promise.all([...[0, 1, 2, 3, 4].map((i) => store.writeFix(fix(T + i * 100))), store.writeFix(boat2(T))]);
+  assert.deepStrictEqual(calls.filter((c) => c[0] === 'zadd'), [
+    ['zadd', 'regattas:r1:boat:00001:track', 5],
+    ['zadd', 'regattas:r1:all:track', 6],
+    ['zadd', 'regattas:r1:boat:00002:track', 1],
+  ]);
+  // boats:known: each boat once, on its first fix
+  assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd').map((c) => c[2]), ['00001', '00002']);
+});
+
+test('boats:known is added on a boat\'s first fix in each regatta, not on every fix', async () => {
+  const calls = [];
+  const store = writeStore(calls);
+  for (let i = 0; i < 5; i++) await store.writeFix(fix(T + i * 100)); // separate ticks: separate flushes
   assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 10);
   assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd'), [['sadd', 'regattas:r1:boats:known', '00001']]);
   store.currentRegattaId = 'r2'; // a regatta switch inside the trim interval still lists the boat in the new regatta at once
   await store.writeFix(fix(T + 600));
   assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd').at(-1), ['sadd', 'regattas:r2:boats:known', '00001']);
+});
+
+test('a failed batch is counted once and every boat in it posts its next fix again', async () => {
+  const calls = [];
+  const store = writeStore(calls);
+  store.client.zadd = () => Promise.reject(new Error('OOM'));
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    store.decideRecord(fix(T));
+    store.decideRecord({ ...fix(T), boatId: '00002' });
+    await Promise.all([store.writeFix(fix(T)), store.writeFix({ ...fix(T), boatId: '00002' })]);
+  } finally {
+    console.error = origError;
+  }
+  assert.strictEqual(store.trackWriteFailureCount, 1);
+  assert.strictEqual(store.lastRecordedPosition.size, 0);
+  assert.strictEqual(calls.filter((c) => c[0] === 'sadd').length, 0); // no upkeep after a failed write
 });
 
 test('a window of 0 keeps the whole per-boat track but still sets its expiry', () => {

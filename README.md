@@ -1944,6 +1944,11 @@ time as the sorted-set score (no arrival time is stored). If Redis is
 unreachable, `baseStation.js` logs and keeps running - console/CSV/UDP
 unaffected.
 
+**Writes are batched per tick.** A radio frame's fixes (up to 8, 16 a slot) all reach the base in the same tick, so
+`writeFix` queues them and writes them together at the end of the tick: one `ZADD` per key with every fix's score/member
+pair, so a full frame is 2 commands (the boat's key and `all:track`), not 16. For 25 boats at 8 Hz that is about 50
+writes a second instead of 400. A failed batch counts as one write failure on the Redis card.
+
 **Reading tracks live.** Fixes reach Redis late and in bursts: a boat's slot
 delivers its last cycle of fixes at once (about 1 s old on average at a 2 s
 interval, up to 2 s), and boats arrive in different orders. A reader that polls

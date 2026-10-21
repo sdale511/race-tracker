@@ -193,6 +193,9 @@ class RedisStore {
     this.boatTrackWindowMs = Math.round(boatTrackMinutes * 60000);
     this.lastBoatTrimAt = new Map(); // boat track key -> when it was last trimmed (per key, so a regatta switch starts fresh)
     this.lastWindowAt = new Map(); // all:track key -> when its rolling window was last applied
+    // Fixes waiting for this tick's flush (see writeFix), and the promise that flush resolves.
+    this._pendingFixes = [];
+    this._flushing = null;
     // In-memory only (per boatId) - not persisted, so a restarted base
     // station just records the next fix from each boat unconditionally
     // (nothing to compare against yet), which is harmless.
@@ -284,21 +287,40 @@ class RedisStore {
     return verdict;
   }
 
-  // Writes a fix that decideRecord approved. Never rejects on a Redis failure (see recordFix's history above).
-  async writeFix(decoded) {
+  // Writes a fix that decideRecord approved; resolves once it is in Redis (or has failed). Never rejects on a Redis failure
+  // (see recordFix's history above). A radio frame carries up to 8 fixes (16 a slot) and they all reach the base in the
+  // same tick, so fixes are queued and written together at the end of the tick: one ZADD per key with every queued fix's
+  // score/member pair, instead of one ZADD per fix per key - a full frame is 2 commands, not 16.
+  writeFix(decoded) {
+    const prefix = this._prefix(); // the regatta as of the fix's arrival, even if it changes before the flush
+    this._pendingFixes.push({ decoded, prefix, score: decoded.timestamp, member: packFix(decoded) });
+    if (!this._flushing) {
+      this._flushing = new Promise((resolve) => setImmediate(() => this._flushFixes().then(resolve)));
+    }
+    return this._flushing;
+  }
+
+  async _flushFixes() {
     await this.ready;
-    const member = packFix(decoded);
-    const score = decoded.timestamp;
-    const prefix = this._prefix();
-    const boatTrackKey = `${prefix}boat:${decoded.boatId}:track`;
-    const allTrackKey = `${prefix}all:track`;
+    const batch = this._pendingFixes;
+    this._pendingFixes = [];
+    this._flushing = null; // a fix queued from here on goes in the next flush
+    const argsByKey = new Map(); // key -> [score, member, score, member, ...]
+    const newestByBoatKey = new Map(); // boat track key -> { boatId, prefix, score } of its newest fix in this batch
+    for (const { decoded, prefix, score, member } of batch) {
+      const boatTrackKey = `${prefix}boat:${decoded.boatId}:track`;
+      for (const key of [boatTrackKey, `${prefix}all:track`]) {
+        if (!argsByKey.has(key)) argsByKey.set(key, []);
+        argsByKey.get(key).push(score, member);
+      }
+      const newest = newestByBoatKey.get(boatTrackKey);
+      if (!newest || score > newest.score) newestByBoatKey.set(boatTrackKey, { boatId: decoded.boatId, prefix, score });
+    }
     try {
-      await Promise.all([
-        this.client.zadd(boatTrackKey, score, member),
-        this.client.zadd(allTrackKey, score, member),
-      ]);
+      await Promise.all([...argsByKey].map(([key, args]) => this.client.zadd(key, ...args)));
     } catch (err) {
-      this.lastRecordedPosition.delete(decoded.boatId); // so the next fix is posted again whatever its distance
+      // so each boat's next fix is posted again whatever its distance
+      for (const { decoded } of batch) this.lastRecordedPosition.delete(decoded.boatId);
       this._recordTrackWriteFailure(err);
       return;
     }
@@ -306,10 +328,12 @@ class RedisStore {
 
     // Best-effort, and no per-fix commands: each track key's expiry (and the boat's boats:known entry) is set and kept fresh
     // by the periodic maintenance below (a boat's own key every TRIM_EVERY_MS, all:track once a minute, both on a key's first
-    // write), not on every write. A failure isn't tracked as a write failure above - the fix already landed; the next
+    // write), not on every write. A failure isn't tracked as a write failure above - the fixes already landed; the next
     // interval retries.
-    this._trimBoatTrack(decoded.boatId, boatTrackKey, score, `${prefix}boats:known`);
-    this._keepRollingWindow(allTrackKey);
+    for (const [boatTrackKey, { boatId, prefix, score }] of newestByBoatKey) {
+      this._trimBoatTrack(boatId, boatTrackKey, score, `${prefix}boats:known`);
+    }
+    for (const key of argsByKey.keys()) if (key.endsWith(':all:track')) this._keepRollingWindow(key);
   }
 
   // A rolling retention window for all:track. An expiry set once, when a key is created, would delete the whole key (every
@@ -710,6 +734,7 @@ class RedisStore {
   async close() {
     this._closing = true;
     clearInterval(this._keepaliveTimer);
+    if (this._flushing) await this._flushing; // the last tick's fixes, still queued (see writeFix)
     await this.client.quit();
   }
 }
