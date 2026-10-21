@@ -2,6 +2,7 @@ const { SerialPort } = require('serialport');
 const { EventEmitter } = require('events');
 const { execFile } = require('child_process');
 const protocol = require('./protocol');
+const { setNodeIdentifier } = require('./xbeeAt');
 
 // Wraps the telemetry radio's UART. Assumes a transparent-serial radio
 // (RFD900x/SiK-style): bytes written here are transmitted over the air and
@@ -9,7 +10,7 @@ const protocol = require('./protocol');
 // specific framing needed on our side; we handle framing at the app layer
 // with protocol.js.
 class RadioLink extends EventEmitter {
-  constructor({ port, baud, sleepGpio = null }) {
+  constructor({ port, baud, sleepGpio = null, nodeIdentifier = null }) {
     super();
     this.portPath = port;
     this.baud = baud;
@@ -25,6 +26,11 @@ class RadioLink extends EventEmitter {
     // always starts with an empty write buffer, so this resets to true
     // there too, not just in the constructor.
     this._writable = true;
+    // The XBee node identifier (NI) to set when the port first opens, or null - see _setNodeIdentifier below. Emits
+    // 'node-identifier' with the outcome; while it runs, send() refuses and incoming bytes go to it, not the frame parser.
+    this._nodeIdentifier = nodeIdentifier;
+    this._atBusy = false;
+    this._atListener = null;
     this._open();
   }
 
@@ -42,8 +48,13 @@ class RadioLink extends EventEmitter {
     // only ever fires on the *error* path. Lets a caller (see
     // baseStation.js's dashboard connection-status tracking) tell "opened
     // fine" apart from "still trying" without polling anything.
-    this.port.on('open', () => this.emit('connected'));
-    this.port.on('data', (chunk) => this._onData(chunk));
+    this.port.on('open', () => {
+      if (this._nodeIdentifier === null) return this.emit('connected');
+      this._setNodeIdentifier().then(() => {
+        if (this.port.isOpen) this.emit('connected'); // a port that closed meanwhile has already said 'disconnected'
+      });
+    });
+    this.port.on('data', (chunk) => (this._atListener ? this._atListener(chunk) : this._onData(chunk)));
     this.port.on('close', () => {
       this.emit('disconnected');
       this._scheduleReconnect();
@@ -55,6 +66,30 @@ class RadioLink extends EventEmitter {
     this.port.on('drain', () => {
       this._writable = true;
     });
+  }
+
+  // Once per process (the first open; a reconnect doesn't repeat it): set the XBee's NI over AT command mode. 'connected'
+  // waits for it, so nothing is sent in command mode, which would turn telemetry bytes into AT commands.
+  async _setNodeIdentifier() {
+    const ni = this._nodeIdentifier;
+    this._nodeIdentifier = null;
+    this._atBusy = true;
+    const port = this.port;
+    const io = {
+      write: (text) => port.write(text),
+      onData: (cb) => {
+        this._atListener = cb;
+        return () => {
+          if (this._atListener === cb) this._atListener = null;
+        };
+      },
+    };
+    try {
+      this.emit('node-identifier', { wanted: ni, ...(await setNodeIdentifier(io, ni)) });
+    } finally {
+      this._atListener = null;
+      this._atBusy = false;
+    }
   }
 
   get canSleep() {
@@ -102,6 +137,7 @@ class RadioLink extends EventEmitter {
   // covers congestion too, not just a literally-disconnected radio.
   send(buf) {
     if (this._sleeping) return false; // radio powered down - see setSleeping()
+    if (this._atBusy) return false; // in AT command mode setting the node identifier - see _setNodeIdentifier()
     if (!this.port || !this.port.isOpen) return false;
     if (!this._writable) return false; // still draining a backed-up buffer - don't pile more on top of it
     if (!this.port.write(buf)) this._writable = false; // this write itself filled the buffer - wait for 'drain'

@@ -399,6 +399,15 @@ python3 xbee_configure_at.py --port /dev/ttyUSB0 --role rtcm  # an XBee-PRO 900H
 
 **Encryption (`EE`) is switched off** by the script (and `--dry-run` shows it as the `EE (Encryption)` row). With AES on, every RF packet loses 9 bytes of its 100-byte payload, so the marks frame (91 bytes) would still fit but the slot table (up to 97) and power (up to 95) frames would be split across two packets and lost if either half is. `EE` has to be the same on every radio in the network, so run the script on all of them (or check each with `--dry-run`).
 
+**The node identifier (`NI`) is the one setting a boat writes itself.** In boat mode (not mark or markset mode, and not
+`SIMULATE=1`) the boat sets its telemetry XBee's `NI` to its `BOAT_ID` when the radio port first opens, so a radio taken
+out of a boat, or listed by XCTU's network discovery, says which boat it belongs to. It enters AT command mode the same
+way this script does (`+++` with a 1.1 s guard time), reads `NI`, and writes and saves it (`ATNI`, `ATWR`) only when it
+is different, so a normal boot writes nothing to the radio's flash. That adds about 2 s before the radio is ready,
+and nothing is transmitted in the meantime. The start log shows `xbee node identifier (NI): setting to "<id>"` with the
+other startup lines, then `already "<id>"`, `set to "<id>" (was "...")`, or why it could not (for example a radio in API
+mode, which never answers `+++`); the boat carries on either way.
+
 The stock ArduSimple LR radio's settings, side by side with each preset above, are
 recorded in [`docs/xbee-radio-settings.md`](docs/xbee-radio-settings.md).
 

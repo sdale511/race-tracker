@@ -91,6 +91,12 @@ const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate
 // unrelated setup code further down this file, which made them easy to
 // miss and hard to compare against each other at a glance.
 console.log(`[boatAgent] boatId=${config.boatId}`);
+// Boat mode only (not a mark or markset device): the XBee's node identifier (NI) is set to the boat id when the radio
+// port opens, so a radio taken out of a boat, or listed by XCTU, says which boat it is - see radioLink.js/xbeeAt.js.
+const xbeeNodeIdentifier = !config.simulate && config.radio.enabled && !config.markMode && !config.marksetMode ? config.boatId : null;
+if (xbeeNodeIdentifier !== null) {
+  console.log(`[boatAgent] xbee node identifier (NI): setting to "${xbeeNodeIdentifier}" when ${config.radio.port} opens`);
+}
 console.log(
   `[boatAgent] gps=${gpsMode}` +
     (gpsMode === 'real'
@@ -196,7 +202,17 @@ if (config.simulate) {
   radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
 } else if (config.radio.enabled) {
-  radio = new RadioLink({ port: config.radio.port, baud: config.radio.baud, sleepGpio: config.radio.sleepGpio });
+  radio = new RadioLink({
+    port: config.radio.port,
+    baud: config.radio.baud,
+    sleepGpio: config.radio.sleepGpio,
+    nodeIdentifier: xbeeNodeIdentifier,
+  });
+  radio.on('node-identifier', ({ wanted, ok, previous, changed, error }) => {
+    if (!ok) console.warn(`[radio] could not set the xbee node identifier (NI) to "${wanted}": ${error} - carrying on`);
+    else if (changed) console.log(`[radio] xbee node identifier (NI) set to "${wanted}" (was "${previous}") and saved`);
+    else console.log(`[radio] xbee node identifier (NI) already "${wanted}"`);
+  });
   radio.on('error', (err) => console.error('[radio] error:', err.message));
   radio.on('connected', () => { radioConnected = true; startHelloAnnounce(); });
   radio.on('disconnected', () => { radioConnected = false; console.warn('[radio] disconnected, retrying...'); });
