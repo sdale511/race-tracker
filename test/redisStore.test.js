@@ -163,3 +163,26 @@ test('the rolling window trims all:track to the retention period and refreshes i
   assert.ok(calls[0][3] >= before - 48 * 3600 * 1000 && calls[0][3] <= Date.now() - 48 * 3600 * 1000);
   assert.deepStrictEqual(calls[1], ['expire', 'all', 172800]);
 });
+
+test('marks:index follows every mark write and delete, and getMarks indexes the marks already there', async () => {
+  const calls = [];
+  const store = Object.assign(Object.create(RedisStore.prototype), {
+    ready: Promise.resolve(),
+    currentRegattaId: 'r1',
+    client: {
+      hset: () => Promise.resolve(1),
+      del: () => Promise.resolve(1),
+      sadd: (key, ...names) => { calls.push(['sadd', key, ...names]); return Promise.resolve(1); },
+      srem: (key, name) => { calls.push(['srem', key, name]); return Promise.resolve(1); },
+      hgetall: (key) => Promise.resolve(key.endsWith(':mark:pin') ? { lat: '40.1', lon: '-118.1' } : {}),
+    },
+  });
+  await store.setMark('pinBoundary', { lat: 40.2, lon: -118.2 });
+  await store.deleteMark('pinBoundary');
+  await store.getMarks();
+  assert.deepStrictEqual(calls, [
+    ['sadd', 'regattas:r1:marks:index', 'pinBoundary'],
+    ['srem', 'regattas:r1:marks:index', 'pinBoundary'],
+    ['sadd', 'regattas:r1:marks:index', 'pin'],
+  ]);
+});

@@ -443,10 +443,22 @@ class RedisStore {
   // so boats can be checked against where the marks actually are (e.g.
   // confirming a rounding), and so anything else (a dashboard, race
   // software, another simulator) has one shared place to look up the
-  // course for the currently-selected regatta.
+  // course for the currently-selected regatta. Each mark's name is also kept in the `marks:index` set, so RegattaUp's
+  // getRaceTracks (every viewer, every 5 s) reads the marks by name instead of SCANning the whole keyspace for mark:*
+  // - see _indexMarks below.
   async setMark(name, { lat, lon }) {
     await this.ready;
-    await this.client.hset(`${this._prefix()}mark:${name}`, { lat: String(lat), lon: String(lon) });
+    const prefix = this._prefix();
+    await Promise.all([
+      this.client.hset(`${prefix}mark:${name}`, { lat: String(lat), lon: String(lon) }),
+      this.client.sadd(`${prefix}marks:index`, name),
+    ]);
+  }
+
+  // Adds marks already in Redis to marks:index - for a course published before the index existed (setMark adds new
+  // ones), so getRaceTracks can stop scanning for it. Best effort: a reader with no index falls back to its scan.
+  _indexMarks(names) {
+    if (names.length > 0) this.client.sadd(`${this._prefix()}marks:index`, ...names).catch(() => {});
   }
 
   async getMark(name) {
@@ -477,7 +489,8 @@ class RedisStore {
   // turns the gate off, without touching any other mark.
   async deleteMark(name) {
     await this.ready;
-    await this.client.del(`${this._prefix()}mark:${name}`);
+    const prefix = this._prefix();
+    await Promise.all([this.client.del(`${prefix}mark:${name}`), this.client.srem(`${prefix}marks:index`, name)]);
   }
 
   // Records that boatId's own mark-mode is CURRENTLY auto-posting this
@@ -508,6 +521,7 @@ class RedisStore {
 
   async getMarks() {
     const values = await Promise.all(MARK_NAMES.map((name) => this.getMark(name)));
+    this._indexMarks(MARK_NAMES.filter((name, i) => values[i]));
     return Object.fromEntries(MARK_NAMES.map((name, i) => [name, values[i]]));
   }
 
@@ -557,6 +571,7 @@ class RedisStore {
     const keys = [
       ...MARK_NAMES.map((name) => `${prefix}mark:${name}`),
       `${prefix}mark:${PIN_BOUNDARY_MARK}`,
+      `${prefix}marks:index`,
       `${prefix}course:pin_boundary_enabled`,
       `${prefix}course:on_grid_zone`,
     ];

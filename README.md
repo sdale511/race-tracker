@@ -1924,6 +1924,7 @@ is `none` for anything recorded with no regatta selected.
 | Key | Contents |
 |---|---|
 | `regattas:<id>:mark:<name>` | Hash: `lat`/`lon`, plus `assignedBoatId`/`assignedAt` while a mark-mode rover actively posts it |
+| `regattas:<id>:marks:index` | Set of the mark names above, kept with every mark write and delete (and filled in from the marks already there at startup), so RegattaUp's `getRaceTracks` reads each mark by name instead of scanning the whole keyspace on every poll |
 | `regattas:<id>:course:pin_boundary_enabled` | On/off flag; when on, also publishes `mark:pinBoundary` (computed) for RegattaUp's generic scan |
 | `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
 | `regattas:<id>:boat:<boatId>:track` | Sorted set per boat, scored by fix timestamp, **only the last `REDIS_BOAT_TRACK_MINUTES` (2; 0 keeps everything)**. The one reader is RegattaUp's `getRaceTracks`, for each boat's newest fix. `getBoatTrack(boatId, fromMs, toMs, regattaId)` |
