@@ -191,7 +191,7 @@ class RedisStore {
     this.minMovementM = minMovementM;
     this.trackRetentionSeconds = Math.round(trackRetentionHours * 3600);
     this.boatTrackWindowMs = Math.round(boatTrackMinutes * 60000);
-    this.lastBoatTrimAt = new Map(); // boatId -> when its own track key was last trimmed
+    this.lastBoatTrimAt = new Map(); // boat track key -> when it was last trimmed (per key, so a regatta switch starts fresh)
     this.lastWindowAt = new Map(); // all:track key -> when its rolling window was last applied
     // In-memory only (per boatId) - not persisted, so a restarted base
     // station just records the next fix from each boat unconditionally
@@ -296,7 +296,6 @@ class RedisStore {
       await Promise.all([
         this.client.zadd(boatTrackKey, score, member),
         this.client.zadd(allTrackKey, score, member),
-        this.client.sadd(`${prefix}boats:known`, String(decoded.boatId)),
       ]);
     } catch (err) {
       this.lastRecordedPosition.delete(decoded.boatId); // so the next fix is posted again whatever its distance
@@ -305,10 +304,11 @@ class RedisStore {
     }
     this._recordTrackWriteSuccess();
 
-    // Best-effort, and no per-fix commands: each track key's expiry is set and kept fresh by the periodic maintenance below
-    // (a boat's own key every TRIM_EVERY_MS, all:track once a minute, both on a key's first write), not on every write. A
-    // failure isn't tracked as a write failure above - the fix already landed; the next interval retries.
-    this._trimBoatTrack(decoded.boatId, boatTrackKey, score);
+    // Best-effort, and no per-fix commands: each track key's expiry (and the boat's boats:known entry) is set and kept fresh
+    // by the periodic maintenance below (a boat's own key every TRIM_EVERY_MS, all:track once a minute, both on a key's first
+    // write), not on every write. A failure isn't tracked as a write failure above - the fix already landed; the next
+    // interval retries.
+    this._trimBoatTrack(decoded.boatId, boatTrackKey, score, `${prefix}boats:known`);
     this._keepRollingWindow(allTrackKey);
   }
 
@@ -327,11 +327,15 @@ class RedisStore {
 
   // Maintenance of the boat's own key, at most every TRIM_EVERY_MS per boat (the sorted set is ordered by time, so the trim
   // is cheap): drop fixes older than the window (boatTrackMinutes; 0 keeps all of them) and refresh the key's expiry, which
-  // also gives a key its expiry on its first write. Best effort: all:track still has every fix.
-  _trimBoatTrack(boatId, boatTrackKey, score) {
+  // also gives a key its expiry on its first write. It also adds the boat to boats:known, which RegattaUp's getRaceTracks
+  // reads on every poll for its boat list and each boat's last position: once on the boat's first write, then again each
+  // interval so the set refills within TRIM_EVERY_MS if it is cleared or Redis is flushed (adding it on every fix was a
+  // third of all write commands, every one after the first a no-op). Best effort: all:track still has every fix.
+  _trimBoatTrack(boatId, boatTrackKey, score, knownKey) {
     const now = Date.now();
-    if (now - (this.lastBoatTrimAt.get(boatId) || 0) < RedisStore.TRIM_EVERY_MS) return;
-    this.lastBoatTrimAt.set(boatId, now);
+    if (now - (this.lastBoatTrimAt.get(boatTrackKey) || 0) < RedisStore.TRIM_EVERY_MS) return;
+    this.lastBoatTrimAt.set(boatTrackKey, now);
+    this.client.sadd(knownKey, String(boatId)).catch(() => {});
     if (this.boatTrackWindowMs > 0) {
       this.client.zremrangebyscore(boatTrackKey, '-inf', score - this.boatTrackWindowMs).catch(() => {});
     }

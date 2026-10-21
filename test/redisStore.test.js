@@ -43,24 +43,51 @@ test('an implausible fix is never posted and does not become the reference', () 
   assert.strictEqual(store.decideRecord(fix(T + 1000)), 'post');
 });
 
-test('a boat\'s own track key is trimmed to the window and its expiry refreshed, at most once per trim interval', () => {
+test('a boat\'s own track key is trimmed to the window, its expiry refreshed and the boat added to boats:known, at most once per trim interval', () => {
   const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
     boatTrackWindowMs: 2 * 60000,
     trackRetentionSeconds: 172800,
     lastBoatTrimAt: new Map(),
     client: {
+      sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); },
       zremrangebyscore: (key, min, max) => { calls.push(['zrem', key, min, max]); return Promise.resolve(0); },
       expire: (key, seconds) => { calls.push(['expire', key, seconds]); return Promise.resolve(1); },
     },
   });
-  store._trimBoatTrack('00001', 'k:00001', 2_000_000);
-  store._trimBoatTrack('00001', 'k:00001', 2_001_000); // too soon after the first
-  store._trimBoatTrack('00002', 'k:00002', 2_000_000); // another boat has its own interval
+  store._trimBoatTrack('00001', 'k:00001', 2_000_000, 'known');
+  store._trimBoatTrack('00001', 'k:00001', 2_001_000, 'known'); // too soon after the first
+  store._trimBoatTrack('00002', 'k:00002', 2_000_000, 'known'); // another boat has its own interval
   assert.deepStrictEqual(calls, [
-    ['zrem', 'k:00001', '-inf', 2_000_000 - 120000], ['expire', 'k:00001', 172800],
-    ['zrem', 'k:00002', '-inf', 2_000_000 - 120000], ['expire', 'k:00002', 172800],
+    ['sadd', 'known', '00001'], ['zrem', 'k:00001', '-inf', 2_000_000 - 120000], ['expire', 'k:00001', 172800],
+    ['sadd', 'known', '00002'], ['zrem', 'k:00002', '-inf', 2_000_000 - 120000], ['expire', 'k:00002', 172800],
   ]);
+});
+
+test('a fix writes only the two track entries; boats:known is added on a boat\'s first fix in each regatta, not on every fix', async () => {
+  const calls = [];
+  const store = Object.assign(Object.create(RedisStore.prototype), {
+    ready: Promise.resolve(),
+    currentRegattaId: 'r1',
+    boatTrackWindowMs: 0,
+    trackRetentionSeconds: 172800,
+    lastBoatTrimAt: new Map(),
+    lastWindowAt: new Map(),
+    lastRecordedPosition: new Map(),
+    trackWriteHealthy: true,
+    client: {
+      zadd: (key) => { calls.push(['zadd', key]); return Promise.resolve(1); },
+      sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); },
+      zremrangebyscore: () => Promise.resolve(0),
+      expire: () => Promise.resolve(1),
+    },
+  });
+  for (let i = 0; i < 5; i++) await store.writeFix(fix(T + i * 100));
+  assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 10);
+  assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd'), [['sadd', 'regattas:r1:boats:known', '00001']]);
+  store.currentRegattaId = 'r2'; // a regatta switch inside the trim interval still lists the boat in the new regatta at once
+  await store.writeFix(fix(T + 600));
+  assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd').at(-1), ['sadd', 'regattas:r2:boats:known', '00001']);
 });
 
 test('a window of 0 keeps the whole per-boat track but still sets its expiry', () => {
@@ -70,11 +97,12 @@ test('a window of 0 keeps the whole per-boat track but still sets its expiry', (
     trackRetentionSeconds: 172800,
     lastBoatTrimAt: new Map(),
     client: {
+      sadd: () => Promise.resolve(1),
       zremrangebyscore: () => assert.fail('must not trim'),
       expire: (key, seconds) => { calls.push([key, seconds]); return Promise.resolve(1); },
     },
   });
-  store._trimBoatTrack('00001', 'k', 1);
+  store._trimBoatTrack('00001', 'k', 1, 'known');
   assert.deepStrictEqual(calls, [['k', 172800]]);
 });
 
