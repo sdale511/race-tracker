@@ -196,6 +196,8 @@ class RedisStore {
     // Fixes waiting for this tick's flush (see writeFix), and the promise that flush resolves.
     this._pendingFixes = [];
     this._flushing = null;
+    // `${prefix}${boatId}` -> the time of the fix last written to that regatta's boats:last for the boat (see _flushFixes)
+    this.lastPositionAt = new Map();
     // In-memory only (per boatId) - not persisted, so a restarted base
     // station just records the next fix from each boat unconditionally
     // (nothing to compare against yet), which is harmless.
@@ -306,7 +308,7 @@ class RedisStore {
     this._pendingFixes = [];
     this._flushing = null; // a fix queued from here on goes in the next flush
     const argsByKey = new Map(); // key -> [score, member, score, member, ...]
-    const newestByBoatKey = new Map(); // boat track key -> { boatId, prefix, score } of its newest fix in this batch
+    const newestByBoatKey = new Map(); // boat track key -> { boatId, prefix, score, member } of its newest fix in this batch
     for (const { decoded, prefix, score, member } of batch) {
       const boatTrackKey = `${prefix}boat:${decoded.boatId}:track`;
       for (const key of [boatTrackKey, `${prefix}all:track`]) {
@@ -314,10 +316,29 @@ class RedisStore {
         argsByKey.get(key).push(score, member);
       }
       const newest = newestByBoatKey.get(boatTrackKey);
-      if (!newest || score > newest.score) newestByBoatKey.set(boatTrackKey, { boatId: decoded.boatId, prefix, score });
+      if (!newest || score > newest.score) newestByBoatKey.set(boatTrackKey, { boatId: decoded.boatId, prefix, score, member });
+    }
+    // boats:last: each boat's newest fix, one hash field per boat, which RegattaUp's getRaceTracks reads (one HGETALL)
+    // for every boat's last position instead of one read per boat's own key. One HSET per regatta in the batch, with each
+    // boat's newest fix, only if it is newer than what was last written there (a fix that arrives late must not replace a
+    // newer one) and not more than a minute in the future (the sanity check allows 48 h either way, and one such fix would
+    // freeze the boat's marker there).
+    const lastArgsByKey = new Map(); // boats:last key -> [boatId, member, boatId, member, ...]
+    const lastWrites = []; // [lastPositionAt key, score] to remember once written
+    const maxValidTs = Date.now() + 60_000;
+    for (const { boatId, prefix, score, member } of newestByBoatKey.values()) {
+      const seenKey = `${prefix}${boatId}`;
+      if (score > maxValidTs || score <= (this.lastPositionAt.get(seenKey) ?? -Infinity)) continue;
+      const lastKey = `${prefix}boats:last`;
+      if (!lastArgsByKey.has(lastKey)) lastArgsByKey.set(lastKey, []);
+      lastArgsByKey.get(lastKey).push(String(boatId), member);
+      lastWrites.push([seenKey, score]);
     }
     try {
-      await Promise.all([...argsByKey].map(([key, args]) => this.client.zadd(key, ...args)));
+      await Promise.all([
+        ...[...argsByKey].map(([key, args]) => this.client.zadd(key, ...args)),
+        ...[...lastArgsByKey].map(([key, args]) => this.client.hset(key, ...args)),
+      ]);
     } catch (err) {
       // so each boat's next fix is posted again whatever its distance
       for (const { decoded } of batch) this.lastRecordedPosition.delete(decoded.boatId);
@@ -325,6 +346,7 @@ class RedisStore {
       return;
     }
     this._recordTrackWriteSuccess();
+    for (const [seenKey, score] of lastWrites) this.lastPositionAt.set(seenKey, score);
 
     // Best-effort, and no per-fix commands: each track key's expiry (and the boat's boats:known entry) is set and kept fresh
     // by the periodic maintenance below (a boat's own key every TRIM_EVERY_MS, all:track once a minute, both on a key's first
@@ -333,7 +355,9 @@ class RedisStore {
     for (const [boatTrackKey, { boatId, prefix, score }] of newestByBoatKey) {
       this._trimBoatTrack(boatId, boatTrackKey, score, `${prefix}boats:known`);
     }
-    for (const key of argsByKey.keys()) if (key.endsWith(':all:track')) this._keepRollingWindow(key);
+    for (const key of argsByKey.keys()) {
+      if (key.endsWith(':all:track')) this._keepRollingWindow(key, key.replace(/all:track$/, 'boats:last'));
+    }
   }
 
   // A rolling retention window for all:track. An expiry set once, when a key is created, would delete the whole key (every
@@ -341,12 +365,14 @@ class RedisStore {
   // once a minute this (1) drops the fixes older than the retention window and (2) pushes the key's expiry out again: it
   // holds the last trackRetentionHours of fixes and only expires that long after its last write. The first write of a key
   // does it at once, so a key never goes without an expiry. Best effort; a failure is retried at the next interval.
-  _keepRollingWindow(allTrackKey) {
+  // boats:last (lastKey) gets the same expiry, so it goes with the track it summarises.
+  _keepRollingWindow(allTrackKey, lastKey) {
     const now = Date.now();
     if (now - (this.lastWindowAt.get(allTrackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
     this.lastWindowAt.set(allTrackKey, now);
     this.client.zremrangebyscore(allTrackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
     this.client.expire(allTrackKey, this.trackRetentionSeconds).catch(() => {});
+    if (lastKey) this.client.expire(lastKey, this.trackRetentionSeconds).catch(() => {});
   }
 
   // Maintenance of the boat's own key, at most every TRIM_EVERY_MS per boat (the sorted set is ordered by time, so the trim
@@ -661,6 +687,7 @@ class RedisStore {
       ...boatIds.map((id) => `${prefix}boat:${id}:track`),
       `${prefix}all:track`,
       `${prefix}boats:known`,
+      `${prefix}boats:last`,
       `${prefix}boats:start_slots`,
       `${prefix}boats:start_slot_counter`,
     ];

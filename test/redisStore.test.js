@@ -76,8 +76,10 @@ const writeStore = (calls, extra = {}) => Object.assign(Object.create(RedisStore
   trackWriteFailureCount: 0,
   _pendingFixes: [],
   _flushing: null,
+  lastPositionAt: new Map(),
   client: {
     zadd: (key, ...args) => { calls.push(['zadd', key, args.length / 2]); return Promise.resolve(1); },
+    hset: (key, ...args) => { calls.push(['hset', key, ...args]); return Promise.resolve(1); },
     sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); },
     zremrangebyscore: () => Promise.resolve(0),
     expire: () => Promise.resolve(1),
@@ -185,4 +187,25 @@ test('marks:index follows every mark write and delete, and getMarks indexes the 
     ['srem', 'regattas:r1:marks:index', 'pinBoundary'],
     ['sadd', 'regattas:r1:marks:index', 'pin'],
   ]);
+});
+
+test('boats:last gets each boat\'s newest fix once per batch, never a late or future-dated one', async () => {
+  const calls = [];
+  const store = writeStore(calls);
+  const hsets = () => calls.filter((c) => c[0] === 'hset').map(([, key, ...args]) =>
+    [key, ...args.map((a, i) => (i % 2 ? JSON.parse(a).t : a))]);
+  // a batch: three fixes from one boat, one from another - one HSET, each boat's newest
+  await Promise.all([store.writeFix(fix(T)), store.writeFix(fix(T + 200)), store.writeFix(fix(T + 100)),
+    store.writeFix({ ...fix(T + 50), boatId: '00002' })]);
+  assert.deepStrictEqual(hsets(), [['regattas:r1:boats:last', '00001', T + 200, '00002', T + 50]]);
+  // a late fix older than the one already written: stored in the track, not in boats:last
+  calls.length = 0;
+  await store.writeFix(fix(T + 150));
+  assert.deepStrictEqual(hsets(), []);
+  assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 2);
+  // more than a minute in the future: never in boats:last
+  await store.writeFix(fix(Date.now() + 120_000));
+  assert.deepStrictEqual(hsets(), []);
+  await store.writeFix(fix(T + 300));
+  assert.deepStrictEqual(hsets(), [['regattas:r1:boats:last', '00001', T + 300]]);
 });

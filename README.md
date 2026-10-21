@@ -1929,6 +1929,7 @@ is `none` for anything recorded with no regatta selected.
 | `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
 | `regattas:<id>:boat:<boatId>:track` | Sorted set per boat, scored by fix timestamp, **only the last `REDIS_BOAT_TRACK_MINUTES` (2; 0 keeps everything)**. The one reader is RegattaUp's `getRaceTracks`, for each boat's newest fix. `getBoatTrack(boatId, fromMs, toMs, regattaId)` |
 | `regattas:<id>:all:track` | Sorted set, every boat's fixes for the regatta. `getAllTrack(fromMs, toMs, regattaId)` |
+| `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position, instead of one read per boat's own key. Expires with `all:track` |
 | `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed with the boat's own key every 10 s (not on every fix), so it refills within 10 s if cleared. `knownBoatIds()` |
 | `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
 
