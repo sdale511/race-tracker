@@ -222,8 +222,8 @@ if (config.simulate) {
 }
 
 // Radio sleep mode (see roverSleep.js): the base can put this rover's radio to
-// sleep and wake it again with a power frame. GPS fixes keep logging to SD
-// while asleep; they just aren't transmitted until the base wakes the rover.
+// sleep and wake it again with a power frame. The GPS board sleeps with it (see
+// gpsSleep below), so nothing is logged to SD or transmitted until it wakes.
 const sleeper = new RoverSleep({ radio, listenMs: config.sleep.listenMs, defaultCycleS: config.sleep.cycleS });
 radio.on('power', (frame) => sleeper.handlePower(frame, config.boatId));
 

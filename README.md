@@ -1125,8 +1125,10 @@ link itself, using one frame type (`protocol.js`'s `encodePower`, sync
 
 - **Sleep:** the rover powers its radio down (the XBee's SLEEP_RQ pin, see
   "Radio sleep wiring") and wakes it for `SLEEP_LISTEN_MS` every `cycleS`
-  seconds to listen for a wake frame. Nothing is transmitted while it is
-  asleep, but GPS fixes keep logging to the SD card.
+  seconds to listen for a wake frame. Its GPS board sleeps too, for the whole
+  sleep (u-blox backup mode - see "GPS sleep and cold starts"), so nothing is
+  transmitted or logged to the SD card while it is asleep: a boat moved while
+  asleep leaves no track for that time.
 - **Wake:** a sleeping rover's listen windows aren't synchronised with the
   base, so a single wake frame would almost always be missed. The base
   repeats it every `WAKE_REPEAT_MS` for one full cycle plus a listen window.

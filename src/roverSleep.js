@@ -14,8 +14,9 @@
 //              the rest of the app is concerned (no position frames go out -
 //              only a wake frame can end it)
 //
-// Only the radio sleeps: GPS fixes keep arriving and keep logging to the SD
-// card (see boatAgent.js), they just aren't transmitted until the rover wakes.
+// The GPS board sleeps too, for the whole sleep (not each listen window - see
+// gpsSleep.js), so no fixes are logged to the SD card or transmitted until the
+// rover wakes; fixes from a receiver that refused backup mode are dropped too.
 
 const { EventEmitter } = require('events');
 
