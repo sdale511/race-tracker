@@ -82,7 +82,7 @@ const sections = [
     ],
   },
   {
-    title: 'Local UDP broadcast (base and boat both)',
+    title: 'Local UDP broadcast',
     roles: ['base', 'boat'],
     rows: [
       { label: 'format', value: config.localBroadcast.format, envVar: 'GPS_OUTPUT_FORMAT' },
@@ -91,7 +91,7 @@ const sections = [
     ],
   },
   {
-    title: 'GPS (simpleRTK2B LR)',
+    title: 'GPS receiver',
     rows: [
       // Shared by all three modes: the boat's own GPS, an optional GPS
       // wired directly to the base, and rtkStation.js's entire reason to
@@ -109,7 +109,7 @@ const sections = [
     ],
   },
   {
-    title: 'RTCM corrections (boat only)',
+    title: 'RTCM corrections',
     roles: ['boat'],
     rows: [
       { label: 'log', value: config.rtcm.log, envVar: 'RTCM_LOG', note: 'old name GPS_LOG_RTCM still works' },
@@ -292,7 +292,7 @@ const sections = [
     rows: [{ label: 'port', value: config.admin.port, envVar: 'ADMIN_PORT' }],
   },
   {
-    title: 'Redis (base station only)',
+    title: 'Redis',
     roles: ['base'],
     rows: [
       { label: 'url', value: config.redis.url || '(unset)', envVar: 'REDIS_URL' },
@@ -318,7 +318,7 @@ const sections = [
     ],
   },
   {
-    title: 'RegattaUp webhooks - lap + on-grid + mark rounding (base station only)',
+    title: 'RegattaUp webhooks',
     roles: ['base'],
     rows: [
       { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
