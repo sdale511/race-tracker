@@ -4,7 +4,7 @@ set -euo pipefail
 # Shorthand for `sudo systemctl start <mode's unit>` (see
 # install-service.sh) - starts the service without touching whether it
 # auto-starts on boot (see service-autostart.sh for that). One script for
-# all six modes (see README's "Running" section) instead of a separate
+# all five modes (see README's "Running" section) instead of a separate
 # boat-start.sh/base-start.sh pair.
 #
 # Usage:
@@ -25,10 +25,9 @@ case "$MODE" in
   base)     SERVICE_NAME="base-station" ;;
   rtk)      SERVICE_NAME="rtk-station" ;;
   basertk)  SERVICE_NAME="basertk-station" ;;
-  markset)  SERVICE_NAME="markset-station" ;;
   mark)     SERVICE_NAME="mark-station" ;;
   *)
-    echo "error: MODE must be one of: boat base rtk basertk markset mark (got \"$MODE\")" >&2
+    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
     echo "usage: sudo $0 MODE" >&2
     exit 1
     ;;

@@ -3,19 +3,19 @@ const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CS
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
-const { TABS_CSS, renderTabs, baseTabs, markTabs } = require('./adminNav');
+const { TABS_CSS, renderTabs, baseTabs } = require('./adminNav');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
 // Display order for the map's own mark list (the "Set" button rows and the
 // mark-assignment dropdown) - the physical order marks actually sit along
-// the course, south to north: leewardBlack, leewardGreen, the start/finish
-// complex, windwardGreen, windwardBlack (see course.js's START_LINE_POSITION
+// the course, windward to leeward (top to bottom, as on the map): windwardBlack,
+// windwardGreen, the start/finish complex, leewardGreen, leewardBlack (see course.js's START_LINE_POSITION
 // comment - green marks sit halfway between the start/finish complex and
 // their own black mark). Deliberately separate from MARK_NAMES' own order,
 // which is fixed by Redis key names and the radio protocol and has nothing
 // to do with how the list should read in a UI.
-const MAP_MARK_ORDER = ['leewardBlack', 'leewardGreen', 'pin', 'committeeStart', 'committeeFinish', 'finish', 'windwardGreen', 'windwardBlack'];
+const MAP_MARK_ORDER = ['windwardBlack', 'windwardGreen', 'pin', 'committeeStart', 'committeeFinish', 'finish', 'leewardGreen', 'leewardBlack'];
 const {
   fixQualityText,
   connectionDot,
@@ -30,6 +30,12 @@ const {
 // threshold than any single TX_DISTANCE_M-driven gap, just enough to tell
 // "actively out there" from "was here earlier, gone quiet."
 const ONLINE_THRESHOLD_MS = 60000;
+
+// The map's "Set from rover" picker refuses a rover heard longer ago than this. A rover sitting still at a mark sends
+// nothing until it moves TX_DISTANCE_M or its TX_INTERVAL_S heartbeat falls due, so a quiet minute is normal there; past
+// one heartbeat plus a slot cycle or two of slack, it has gone out of range or off.
+// TX_INTERVAL_S=0 (no heartbeat) still allows a minute.
+const ROVER_SET_MAX_AGE_MS = Math.max(config.txIntervalMs, 60000) + 30000;
 
 // Regatta name/venue (unlike everything else this dashboard renders) come
 // from an external HTTP response (RegattaUp's getActiveRegattas), not this
@@ -95,8 +101,7 @@ function markAssignmentsByBoatId(courseMarks) {
 // session has ever tried to record (nothing to report yet), treated the
 // same as healthy rather than as a third "unknown" state - there's no
 // failure to warn about yet either way. Shared by renderDashboard's own
-// subtitle dot and renderMap's topbar (under mapOnly - see its own
-// comment) - the same connection, same meaning, wherever it's shown.
+// subtitle dot.
 function redisStatusFor(s) {
   const writeHealth = s.redis && s.redis.writeHealth;
   return !s.base.redisConnected
@@ -110,10 +115,7 @@ function redisStatusFor(s) {
 // selectRegatta) - no confirm(), just picking which of possibly several
 // concurrent RegattaUp regattas this base station reports events against.
 // Reloads so every other regatta-dependent bit of whichever page embeds
-// this (the dashboard's own warning banner, or markset's map/course data)
-// reflects the new selection. Shared between renderDashboard's own select
-// and renderMap's compact one (under mapOnly) - same request, same
-// behavior, wherever it's triggered from.
+// this (the dashboard's own warning banner) reflects the new selection.
 const SELECT_REGATTA_JS = `
     async function selectRegatta(select) {
       const id = select.value;
@@ -291,10 +293,9 @@ function renderRadioFramesCard(s) {
   </div>`;
 }
 
-// The tab bar (adminNav.js): base mode has the dashboard pages plus map, console and config; markset/mark mode has only
-// the map, console and config because the map is its home page.
-function adminTabs(active, hasCourse, mapOnly) {
-  return renderTabs(mapOnly ? markTabs() : baseTabs(hasCourse), active);
+// The tab bar (adminNav.js): the dashboard pages plus map, console and config.
+function adminTabs(active, hasCourse) {
+  return renderTabs(baseTabs(hasCourse), active);
 }
 
 // Renders the whole dashboard server-side from one stats snapshot (see
@@ -1312,46 +1313,10 @@ function buildCourseInfoHtml(marks) {
   </div>`;
 }
 
-// mapOnly (see baseStation.js's marksetMode/adminServer.js's own
-// startAdminServer param) hides every "back to dashboard" link - under
-// `npm run markset` there IS no separate dashboard page at all (`/` and
-// `/map` are aliases of this exact page), so a link back to itself would
-// just be confusing, not merely redundant.
-function renderMap(s, { mapOnly, markMode } = {}) {
-  const backToDashboardLink = mapOnly ? '' : '<a href="/">&larr; back to dashboard</a>';
-  // Under mapOnly (markset - see baseStation.js's marksetMode) this page IS
-  // the only UI, with no dashboard reachable at all to show the Regatta
-  // card or the Redis status dot that would normally live there - both are
-  // shown compactly here instead, in the topbar, since marks are useless
-  // without the right regatta selected and Redis is the actual store
-  // setMark writes to. Plain base/basertk skip this entirely - they still
-  // have the real Regatta/Redis cards one click away on the dashboard, so
-  // duplicating a second, smaller copy of them here would just be clutter.
-  // Computed before the early "no course yet" return below too, since a
-  // freshly-started markset with no regatta selected yet is exactly the
-  // moment this control is most needed - that's the one state with
-  // nothing else on the page to reach it from otherwise.
-  const redisStatus = redisStatusFor(s);
-  const regattaControlsHtml = mapOnly
-    ? `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:16px;font-size:12px;color:#8b94a3;white-space:nowrap;">
-        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${
-          redisStatus.dot === 'dot-green' ? '#3fb950' : redisStatus.dot === 'dot-orange' ? '#e3b341' : '#f85149'
-        };" title="${escapeHtml(redisStatus.text)}"></span>Redis ${escapeHtml(redisStatus.text)}
-      </span>
-      <select
-        onchange="selectRegatta(this)"
-        style="margin-left:10px;background:#161b22;color:#e6e9ef;border:1px solid #262c36;border-radius:6px;padding:4px 8px;font-size:12px;max-width:240px;"
-        title="${s.regatta.selected ? 'Reporting for ' + escapeHtml(s.regatta.selected.name) : 'No regatta selected - marks/course have nowhere to be stored until one is picked'}"
-      >
-        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
-        ${s.regatta.regattas
-          .map(
-            (r) =>
-              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)}</option>`
-          )
-          .join('')}
-      </select>`
-    : '';
+// markMode (see baseStation.js's markMode): this base's own GPS stands in for
+// one course mark - see markAssignmentHtml below.
+function renderMap(s, { markMode } = {}) {
+  const backToDashboardLink = '<a href="/">&larr; back to dashboard</a>';
   if (!s.course) {
     return `<!doctype html>
 <html>
@@ -1371,8 +1336,6 @@ function renderMap(s, { mapOnly, markMode } = {}) {
 </head>
 <body>
   <div>No course marks published yet.${backToDashboardLink}</div>
-  ${regattaControlsHtml ? `<div>${regattaControlsHtml}</div>` : ''}
-  <script>${mapOnly ? SELECT_REGATTA_JS : ''}</script>
 </body>
 </html>`;
   }
@@ -1419,7 +1382,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   // .edit-column below) - each button sets that mark to wherever the
   // fixed center crosshair currently points, read from map.getCenter()
   // at click time (see setEditMode/set-mark-btn handler below), not
-  // anything server-rendered here. Under mark mode (mapOnly with a mark
+  // anything server-rendered here. Under mark mode (markMode with a mark
   // actually assigned - see markAssignmentHtml below), the assigned row
   // swaps its "Set" button for a small badge instead - manually setting a
   // mark this device is already auto-posting for would just fight its own
@@ -1428,21 +1391,13 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   // DIFFERENT mark while this one auto-tracks is still a completely normal
   // thing to want.
   //
-  // hideSetButtons is true in two cases, not just "this device already has
-  // an assignment": under `npm run mark` specifically (markMode), that
-  // mode's whole purpose is single-mark auto-tracking, not general course
-  // editing, so the list is reference-only even before anything's been
-  // assigned yet - there's nothing to prompt-and-wait for if an operator
-  // could just start clicking "Set" buttons instead. Under plain
-  // `npm run markset`, the list stays fully interactive right up until (if
-  // ever) this same device is ALSO given a mark assignment from its own
-  // dropdown - at that point it's functionally in the same state as mark
-  // mode, so the same rule applies (see README's "Mark mode" on why
-  // markset+assignment and mark are the same underlying state).
-  const hideSetButtons = mapOnly && (markMode || !!s.markAssignment);
+  // Under markMode the list is reference-only even before anything's been
+  // assigned - that mode's whole purpose is single-mark auto-tracking, not
+  // general course editing.
+  const hideSetButtons = !!markMode;
   const markSetRowsHtml = MAP_MARK_ORDER.map((name) => {
     const isAssigned = hideSetButtons && s.markAssignment === name;
-    // Plain base/basertk (never hideSetButtons - that's the mapOnly-only
+    // Plain base/basertk (never hideSetButtons - that's the markMode-only
     // case above) still show a normal "Set" button for every mark, even
     // one a mark-mode rover currently represents - a manual edit here is a
     // legitimate thing to want (correcting a mark mode rover that's
@@ -1475,11 +1430,9 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   // physically attached to one course mark, auto-posting that mark's
   // position to Redis as it moves (baseStation.js's onFix, gated on
   // config.markDistanceM) instead of an operator manually walking between
-  // marks and clicking "Set" below. Only shown under mapOnly (markset/mark
-  // - see renderMap's own comment on why the Redis/regatta topbar controls
-  // are scoped the same way) - plain base/basertk's /map stays exactly as
-  // it is today, fleet-oriented, not this workflow.
-  const markAssignmentHtml = mapOnly
+  // marks and clicking "Set" below. Only shown under markMode - plain
+  // base/basertk's /map stays fleet-oriented, not this workflow.
+  const markAssignmentHtml = markMode
     ? `<div class="mark-assignment">
         <label for="markAssignSelect" style="display:block;font-size:11px;color:#8b94a3;margin-bottom:4px;">This rover represents</label>
         <select id="markAssignSelect" onchange="assignMark(this)" data-current="${s.markAssignment || ''}" style="width:100%;background:#0f1216;color:#e6e9ef;border:1px solid #262c36;border-radius:6px;padding:7px 10px;font-size:13px;">
@@ -1638,8 +1591,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
   <div class="topbar">
     <h1>Course map</h1>
     <span class="map-regatta" style="margin-left:16px; font-size:12px; color:#8b94a3;">Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}</span>
-    ${adminTabs('map', true, mapOnly)}
-    ${regattaControlsHtml}
+    ${adminTabs('map', true)}
     <div class="spacer"></div>
     <label class="refresh-toggle">
       <input type="checkbox" id="editToggle">
@@ -1679,11 +1631,22 @@ function renderMap(s, { mapOnly, markMode } = {}) {
         <button type="button" class="recenter-btn" id="recenterBaseGps">Recenter on base GPS</button>`
             : '' /* No GPS_PORT configured on this process at all (the common case for plain base) - omitted
                     entirely rather than shown as a permanent "unavailable"/"unreachable" row with nothing to
-                    do. Present whenever a GPS actually is configured - base with GPS_PORT set, basertk, and
-                    always under markset (see baseStation.js's marksetMode). */
+                    do. Present whenever a GPS actually is configured - base or basertk with GPS_PORT set. */
         }
 
         <button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
+        ${
+          '' /* "Set marks from": the mark setter carries a rover with no screen of its own; pick it here, the map
+                follows it, and each Set below sends that rover's newest position (resolved by the base at click time)
+                instead of the crosshair. */
+        }<div class="mark-assignment">
+        <label for="roverSelect" style="display:block;font-size:11px;color:#8b94a3;margin-bottom:4px;">Set marks from</label>
+        <select id="roverSelect" style="width:100%;background:#0f1216;color:#e6e9ef;border:1px solid #262c36;border-radius:6px;padding:7px 10px;font-size:13px;">
+          <option value="">Crosshair (map center)</option>
+          ${boatIds.map((id) => `<option value="${escapeHtml(id)}">Rover ${escapeHtml(id)}</option>`).join('')}
+        </select>
+        <div class="gps-readout" style="margin-top:6px;"><span>Rover</span><span class="value" id="roverReadout">—</span></div>
+      </div>
         ${markAssignmentHtml}
         ${markSetRowsHtml}
 
@@ -1914,6 +1877,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
     // also queries Redis for track counts the map has no use for, and
     // this loop shouldn't cost a Redis round trip every 5s just to throw
     // that away (see baseStation.js's getBoatPositions).
+    let latestPositions = {}; // last /api/positions response - the "Set marks from" rover picker reads it
     async function refreshBoats() {
       let positions;
       try {
@@ -1921,6 +1885,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       } catch (err) {
         return; // base unreachable for a moment - just try again next tick
       }
+      latestPositions = positions;
       const now = Date.now();
       for (const [id, b] of Object.entries(positions)) {
         const online = b.lastSeen && now - b.lastSeen < ${ONLINE_THRESHOLD_MS};
@@ -1934,6 +1899,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
             .bindTooltip('boat ' + id, { permanent: true, direction: 'bottom', offset: [0, 8], className: 'mark-label' });
         }
       }
+      onPositionsRefreshed();
     }
 
     (function () {
@@ -2115,6 +2081,50 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       map.fitBounds(markBounds, { padding: [60, 60], maxZoom: 18 });
     });
 
+    // "Set marks from" rover picker (see the edit-column HTML above): while a rover is picked and edit mode is open, the
+    // map follows it every second and its marker is ringed in amber, and each Set below sends { boatId } so the base uses
+    // that rover's newest position. The pick is remembered per browser like the toggles above.
+    const roverSelect = document.getElementById('roverSelect');
+    const roverReadout = document.getElementById('roverReadout');
+    const roverKey = 'raceTrackerMapSetRover';
+    function trackedRover() {
+      return roverSelect && editToggle.checked ? roverSelect.value : '';
+    }
+    function onPositionsRefreshed() {
+      if (!roverSelect) return;
+      Object.keys(latestPositions).forEach((id) => {
+        if (![...roverSelect.options].some((o) => o.value === id)) roverSelect.add(new Option('Rover ' + id, id));
+      });
+      const id = trackedRover();
+      Object.entries(boatMarkers).forEach(([bid, marker]) => {
+        marker.setStyle(bid === id ? { color: '#e3b341', weight: 4, radius: 10 } : { color: '#ffffff', weight: 2, radius: 7 });
+      });
+      const p = id ? latestPositions[id] : null;
+      if (!id) {
+        roverReadout.textContent = '—';
+      } else if (!p) {
+        roverReadout.textContent = 'no position yet';
+      } else {
+        const ageS = Math.round((Date.now() - p.lastSeen) / 1000);
+        roverReadout.textContent =
+          p.lastPosition.lat.toFixed(6) + ', ' + p.lastPosition.lon.toFixed(6) + ' (' + (p.lastFix ? fixQualityText(p.lastFix) : 'no fix info') + ', ' + ageS + 's ago)';
+        map.panTo([p.lastPosition.lat, p.lastPosition.lon]);
+      }
+    }
+    if (roverSelect) {
+      let saved = null;
+      try { saved = localStorage.getItem(roverKey); } catch (e) {}
+      if (saved && ![...roverSelect.options].some((o) => o.value === saved)) roverSelect.add(new Option('Rover ' + saved, saved));
+      if (saved) roverSelect.value = saved;
+      roverSelect.addEventListener('change', () => {
+        try { localStorage.setItem(roverKey, roverSelect.value); } catch (e) {}
+        refreshBoats();
+      });
+      editToggle.addEventListener('change', () => refreshBoats());
+      setInterval(() => { if (trackedRover()) refreshBoats(); }, 1000);
+      refreshBoats();
+    }
+
     // Sets a mark to wherever the crosshair currently points - i.e.
     // map.getCenter(), read fresh at click time, not wherever the map
     // happened to be when the page loaded. Confirms first since this
@@ -2130,15 +2140,24 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       btn.addEventListener('click', async () => {
         const name = btn.dataset.mark;
         const center = map.getCenter();
-        const latText = center.lat.toFixed(6);
-        const lonText = center.lng.toFixed(6);
+        const rover = trackedRover();
+        const roverPos = rover ? latestPositions[rover] : null;
+        if (rover && !roverPos) {
+          alert('No position heard from rover ' + rover + ' yet - wait for the readout to show one, or pick "Crosshair" instead.');
+          return;
+        }
+        const latText = (roverPos ? roverPos.lastPosition.lat : center.lat).toFixed(6);
+        const lonText = (roverPos ? roverPos.lastPosition.lon : center.lng).toFixed(6);
+        const source = roverPos
+          ? " rover " + rover + "'s newest position (" + (roverPos.lastFix ? fixQualityText(roverPos.lastFix) : 'no fix info') + ', ' + Math.round((Date.now() - roverPos.lastSeen) / 1000) + 's ago):'
+          : '';
         const assignedBoat = btn.dataset.assignedBoat;
         const warning = assignedBoat
           ? '\\n\\nWARNING: boat ' + assignedBoat + ' is currently in mark mode and actively auto-posting this mark\\'s position - your change will likely be overwritten the next time it moves, unless you disable or reassign that rover first.'
           : '';
         if (
           !confirm(
-            'Set ' + name + ' to ' + latText + ', ' + lonText + '?' + warning + '\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.'
+            'Set ' + name + ' to' + source + ' ' + latText + ', ' + lonText + '?' + warning + '\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.'
           )
         ) {
           return;
@@ -2148,7 +2167,7 @@ function renderMap(s, { mapOnly, markMode } = {}) {
           const res = await fetch('/api/marks/' + encodeURIComponent(name), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lat: center.lat, lon: center.lng })
+            body: JSON.stringify(rover ? { boatId: rover } : { lat: center.lat, lon: center.lng })
           });
           const body = await res.json();
           if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
@@ -2218,9 +2237,8 @@ function renderMap(s, { mapOnly, markMode } = {}) {
       }
     });
     ${
-      mapOnly
-        ? `${SELECT_REGATTA_JS}
-
+      markMode
+        ? `
     // Assigns (or clears) which mark this rover represents (see README's
     // "Mark mode") - the "This rover represents" dropdown above. Confirmed
     // only when actually assigning to a real mark, not when clearing back
@@ -2339,17 +2357,10 @@ function startAdminServer({
   setBaseGpsSurveyIn,
   setBaseGpsFixed,
   saveBaseGpsConfig,
-  // See baseStation.js's marksetMode - true under `npm run markset` OR
-  // `npm run mark` (mark always sets this too). Swaps GET / from the fleet
-  // dashboard to the course map, since a mark-setting run has no use for
-  // the fleet/radio/upload view as its default page. Every other route
-  // (including /map itself, so the two are just aliases of each other
-  // under this mode) is unchanged.
-  mapOnly,
-  // See baseStation.js's markMode - true only under `npm run mark`
-  // specifically (never markset). Passed through to renderMap so it can
-  // hide the manual "Set" button list even before anything's assigned -
-  // see renderMap's own comment.
+  // See baseStation.js's markMode (MARK_MODE=1 on the base). Passed
+  // through to renderMap so it can show the "this device represents"
+  // dropdown and hide the manual "Set" button list - see renderMap's own
+  // comment.
   markMode,
 }) {
   const rtkControlsEnabled = !!setBaseGpsSurveyIn;
@@ -2546,7 +2557,7 @@ function startAdminServer({
 
     // Assigns (or clears, with a falsy/absent name) which mark this device
     // represents (see README's "Mark mode") - the map's own "This rover
-    // is:" dropdown, under mapOnly. Base-only same as /api/pin-boundary
+    // is:" dropdown, under markMode. Base-only same as /api/pin-boundary
     // above - no rover-side equivalent needs to call this cross-origin.
     if (req.url === '/api/mark-assignment' && req.method === 'POST') {
       try {
@@ -2581,7 +2592,17 @@ function startAdminServer({
       const name = decodeURIComponent(marksMatch[1]);
       try {
         const body = await readJsonBody(req);
-        const marks = await setMark(name, Number(body.lat), Number(body.lon));
+        // { boatId } instead of { lat, lon }: the map's "Set from rover" picker - the mark goes to that rover's newest
+        // position as the base holds it right now, not whatever the page last polled.
+        let { lat, lon } = body;
+        if (body.boatId != null) {
+          const p = getPositions()[String(body.boatId)];
+          if (!p) throw new Error(`no position heard from boat ${body.boatId} this session`);
+          const ageMs = Date.now() - p.lastSeen;
+          if (ageMs > ROVER_SET_MAX_AGE_MS) throw new Error(`boat ${body.boatId} last heard ${Math.round(ageMs / 1000)}s ago - too old to set a mark from`);
+          ({ lat, lon } = p.lastPosition);
+        }
+        const marks = await setMark(name, Number(lat), Number(lon));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, marks }));
       } catch (err) {
@@ -2654,7 +2675,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(mapOnly ? renderMap(s, { mapOnly, markMode }) : renderDashboard(s, rtkControlsEnabled));
+        res.end(renderDashboard(s, rtkControlsEnabled));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);
@@ -2692,7 +2713,7 @@ function startAdminServer({
       try {
         const s = await getStats();
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(renderMap(s, { mapOnly, markMode }));
+        res.end(renderMap(s, { markMode }));
       } catch (err) {
         res.writeHead(500);
         res.end(`<pre>${err.message}</pre>`);
@@ -2702,14 +2723,10 @@ function startAdminServer({
 
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      // mapOnly (markset/mark mode - see baseStation.js's marksetMode) gets
-      // its own role so markName/markDistanceM only ever show there, not on
-      // a plain base/basertk that will never represent a mark - see
-      // configReport.js's own comment on the 'markset' role.
       res.end(
         renderConfigPage({
-          role: mapOnly ? 'markset' : rtkControlsEnabled ? 'basertk' : 'base',
-          navHtml: adminTabs('config', !!getCourseMarks(), mapOnly),
+          role: rtkControlsEnabled ? 'basertk' : 'base',
+          navHtml: adminTabs('config', !!getCourseMarks()),
           navCss: TABS_CSS,
         })
       );
@@ -2723,7 +2740,7 @@ function startAdminServer({
     // see logBuffer's own comment).
     if (req.url === '/console') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(renderConsoleLogPage('base station console', { navHtml: adminTabs('console', !!getCourseMarks(), mapOnly), navCss: TABS_CSS }));
+      res.end(renderConsoleLogPage('base station console', { navHtml: adminTabs('console', !!getCourseMarks()), navCss: TABS_CSS }));
       return;
     }
 

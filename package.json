@@ -11,7 +11,6 @@
     "base": "node src/baseStation.js",
     "rtk": "node src/rtkStation.js",
     "basertk": "node src/baseRtkStation.js",
-    "markset": "node src/markSetStation.js",
     "mark": "node src/markStation.js",
     "clear-base-logs": "node src/clearBaseLogs.js",
     "clear-boat-logs": "node src/clearBoatLogs.js",

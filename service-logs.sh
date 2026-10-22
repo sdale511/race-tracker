@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Shorthand for `journalctl -u <mode's unit> -f` (see install-service.sh) -
 # follows that systemd service's live console output. One script for all
-# six modes (see README's "Running" section) instead of a separate
+# five modes (see README's "Running" section) instead of a separate
 # boat-logs.sh/base-logs.sh pair.
 #
 # Usage:
@@ -25,10 +25,9 @@ case "$MODE" in
   base)     SERVICE_NAME="base-station" ;;
   rtk)      SERVICE_NAME="rtk-station" ;;
   basertk)  SERVICE_NAME="basertk-station" ;;
-  markset)  SERVICE_NAME="markset-station" ;;
   mark)     SERVICE_NAME="mark-station" ;;
   *)
-    echo "error: MODE must be one of: boat base rtk basertk markset mark (got \"$MODE\")" >&2
+    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
     echo "usage: $0 MODE [extra journalctl args...]" >&2
     exit 1
     ;;

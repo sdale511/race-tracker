@@ -111,9 +111,8 @@ function scanUploadDir(uploadDir) {
 // captured once at server start, so this keeps following whichever regatta
 // is actually selected even as it's picked/switched live from the admin
 // dashboard (this server starts well before regatta selection resolves -
-// see baseStation.js's own startup ordering). Omitted entirely by
-// markSetStation.js (this server never even starts under marksetMode), so
-// no default is needed here beyond falling back to 'none'.
+// see baseStation.js's own startup ordering). No default is needed here
+// beyond falling back to 'none'.
 function startUploadServer({ port, uploadDir, logSuccess = false, getCurrentRegattaId }) {
   fs.mkdirSync(uploadDir, { recursive: true });
 

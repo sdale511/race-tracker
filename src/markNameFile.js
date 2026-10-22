@@ -14,7 +14,7 @@ fs.mkdirSync(configDir, { recursive: true });
 const markNameFilePath = path.join(configDir, 'mark-name.txt');
 
 // Whichever mark name was last persisted here, or null if this device has
-// never had one assigned (a fresh checkout, plain base/markset never used
+// never had one assigned (a fresh checkout, plain base/boat never used
 // for mark-tracking, or MARK_NAME has simply never been set) - never
 // throws, same "missing means null, not an error" contract as
 // getPersistedRegattaId. Not validated against MARK_NAMES here - course.js

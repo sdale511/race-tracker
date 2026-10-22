@@ -231,7 +231,6 @@ startRoverAdminServer({
   getStats: () => ({
     ...roverStats.snapshot(),
     boatId: MARK_BOAT_ID,
-    marksetMode: false,
     markMode: false,
     currentMarkName: null,
     gpsMode: 'none',

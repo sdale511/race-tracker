@@ -6,8 +6,8 @@
 # closest active/future regatta to today the first time it starts (see
 # baseStation.js's pickClosestRegatta). Pass an id instead to pin one
 # deliberately, e.g. `sudo ./install-service.sh base 6a44a2531e401d60c28afcd8`.
-# The same script also installs `rtk`, `basertk`, `markset`, and `mark` -
-# see README's "Running" section for all six modes.
+# The same script also installs `rtk`, `basertk`, and `mark` -
+# see README's "Running" section for all five modes.
 #
 # User/WorkingDirectory below are placeholders - install-service.sh fills
 # these in with whoever ran it (via sudo) and wherever this checkout

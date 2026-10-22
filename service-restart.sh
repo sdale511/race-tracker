@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Shorthand for `sudo systemctl restart <mode's unit>` (see
 # install-service.sh) - e.g. after hand-editing the generated unit, or just
-# to pick up a fresh boot. One script for all six modes (see README's
+# to pick up a fresh boot. One script for all five modes (see README's
 # "Running" section) instead of a separate boat-restart.sh/base-restart.sh
 # pair.
 #
@@ -25,10 +25,9 @@ case "$MODE" in
   base)     SERVICE_NAME="base-station" ;;
   rtk)      SERVICE_NAME="rtk-station" ;;
   basertk)  SERVICE_NAME="basertk-station" ;;
-  markset)  SERVICE_NAME="markset-station" ;;
   mark)     SERVICE_NAME="mark-station" ;;
   *)
-    echo "error: MODE must be one of: boat base rtk basertk markset mark (got \"$MODE\")" >&2
+    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
     echo "usage: sudo $0 MODE" >&2
     exit 1
     ;;

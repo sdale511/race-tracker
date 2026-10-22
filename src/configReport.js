@@ -167,20 +167,15 @@ const sections = [
             : undefined,
         roles: ['boat'],
       },
-      // markName/markDistanceM only ever DO anything on a mark/markset-mode
-      // process (npm run mark/markset - see README's "Mark mode") - both are
-      // just baseStation.js itself run with MARK_MODE=1/MARKSET_MODE=1.
-      // Tagged 'markset', not 'base' - a plain base/basertk will never
-      // represent a mark, so these would just be confusing noise on that
-      // dashboard (see renderConfigPage's own comment on the 'markset' role
-      // above, which unions in the generic 'base' rows a markset device
-      // still needs - GPS/admin/Redis/etc - without inheriting these two).
+      // markName/markDistanceM only ever DO anything on a mark-mode rover
+      // (npm run mark - see README's "Mark mode"), which is boatAgent.js run
+      // with MARK_MODE=1, so they're tagged 'boat'.
       {
         label: 'markName',
         value: config.markName || '(not assigned)',
         envVar: 'MARK_NAME',
         note: 'which course mark THIS device auto-posts its own GPS position as, if any',
-        roles: ['markset'],
+        roles: ['boat'],
       },
       {
         label: 'markDistanceM',
@@ -188,7 +183,7 @@ const sections = [
         envVar: 'MARK_DISTANCE_M',
         unit: 'm',
         note: 'how far the assigned mark has to actually move before this device posts its new position to Redis, same distance-gated spirit as txDistanceM below but for a mark buoy instead of a boat',
-        roles: ['markset'],
+        roles: ['boat'],
       },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
@@ -426,30 +421,32 @@ function overrideTag(envVar, inverted) {
 // row to also carry a third label that would always just mirror the union
 // of the other two.
 //
-// 'markset' (npm run markset/mark - see baseStation.js's marksetMode) is
-// the same idea, one level narrower: it's baseStation.js too, so it still
-// wants every generic 'base'-tagged row (GPS, admin port, Redis, ...), but
-// it ALSO has its own extra settings (markName, markDistanceM - see their
-// own rows above) that only ever do anything in this mode and would just
-// be confusing noise on a plain base/basertk that will never represent a
-// mark - hence those two are tagged 'markset' only, not 'base', and
-// visibleTo unions 'markset' with 'base' here rather than the reverse.
-//
 // Omit role to show everything unfiltered - printConfig.js uses `sections`
 // directly instead of this function, so nothing currently relies on that
 // default, but it's the safe fallback for any future caller that isn't a
 // specific role.
+// The running mode's row, put at the top of the Mode section: the npm run script this process was started as. A
+// boat-role page is a plain boat or, with MARK_MODE=1 (npm run mark), a mark device.
+function modeRow(mode, note = 'which npm run script this process is (boat / mark / base / basertk / rtk)') {
+  return { label: 'mode', value: mode, note };
+}
+function modeForRole(role) {
+  if (role === 'boat') return config.markMode ? 'mark' : 'boat';
+  if (role === 'base' && config.markMode) return 'base (MARK_MODE=1)';
+  return role;
+}
+
 // navHtml/navCss (optional): the admin's tab bar, shown instead of the plain back link.
 function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
   const visibleTo = (item) => {
     if (!item.roles) return true;
     if (item.roles.includes(role)) return true;
     if (role === 'basertk') return item.roles.includes('base') || item.roles.includes('rtk');
-    if (role === 'markset') return item.roles.includes('base');
     return false;
   };
   const sectionsToRender = role
     ? sections
+        .map((section) => (section.title === 'Mode' ? { ...section, roles: undefined, rows: [modeRow(modeForRole(role)), ...section.rows] } : section))
         .filter(visibleTo)
         .map((section) => ({ ...section, rows: section.rows.filter(visibleTo) }))
         .filter((section) => section.rows.length > 0)
@@ -555,4 +552,4 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
 </html>`;
 }
 
-module.exports = { sections, formatValue, overrideTag, renderConfigPage };
+module.exports = { sections, formatValue, overrideTag, modeRow, renderConfigPage };

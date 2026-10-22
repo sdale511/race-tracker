@@ -91,9 +91,9 @@ const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate
 // unrelated setup code further down this file, which made them easy to
 // miss and hard to compare against each other at a glance.
 console.log(`[boatAgent] boatId=${config.boatId}`);
-// Boat mode only (not a mark or markset device): the XBee's node identifier (NI) is set to the boat id when the radio
+// Boat mode only (not a mark device): the XBee's node identifier (NI) is set to the boat id when the radio
 // port opens, so a radio taken out of a boat, or listed by XCTU, says which boat it is - see radioLink.js/xbeeAt.js.
-const xbeeNodeIdentifier = !config.simulate && config.radio.enabled && !config.markMode && !config.marksetMode ? config.boatId : null;
+const xbeeNodeIdentifier = !config.simulate && config.radio.enabled && !config.markMode ? config.boatId : null;
 if (xbeeNodeIdentifier !== null) {
   console.log(`[boatAgent] xbee node identifier (NI): setting to "${xbeeNodeIdentifier}" when ${config.radio.port} opens`);
 }
@@ -1530,7 +1530,6 @@ function getRoverStats() {
   return {
     ...snapshot,
     boatId: config.boatId,
-    marksetMode: config.marksetMode,
     markMode: config.markMode,
     currentMarkName,
     gpsMode,
@@ -1574,25 +1573,13 @@ function getPosition() {
 
 // Sends this boat's own current position as the new location for a course
 // mark, over the SAME radio a fix goes out on - see protocol.js's
-// encodeSetMark/roverAdminServer.js's own "Set mark here" card. Built for
-// exactly the field case this whole app exists for: an operator physically
-// places a mark, then sets it from the rover's own touchscreen with no
-// WiFi in reach at all - the existing WiFi-only cross-origin POST straight
-// to the base's /api/marks/:name (see adminServer.js) simply isn't
-// reachable there. Fire-and-forget, same as sendHello - there's no ack
-// frame type in this protocol; the base's own re-broadcast of the updated
-// course (triggered the instant it applies the change - see
-// baseStation.js's radio.on('set-mark', ...)) is what actually confirms it
-// landed, picked up the normal way by this boat's own radio.on('marks',
-// ...) handler and shown on the dashboard's own Course marks card. Throws
-// (caught by roverAdminServer.js's own POST handler) rather than returning
-// a status, matching updatePowerSchedule's own contract for this same
-// callback-injection pattern.
-// continuous=true (only ever passed by handlePvt's own markMode auto-set
-// block below, never by the manual markset button) marks this update as
-// coming from mark mode's own automatic gate rather than a one-off tap -
-// see protocol.js's own comment on the frame's continuous byte for what
-// the base does with it.
+// encodeSetMark. Mark mode's own auto-set block in handlePvt is the only
+// caller (continuous=true: see protocol.js's own comment on the frame's
+// continuous byte for what the base does with it). Fire-and-forget, same as
+// sendHello - there's no ack frame type in this protocol; the base's own
+// re-broadcast of the updated course (see baseStation.js's
+// radio.on('set-mark', ...)) is what confirms it landed. Throws rather than
+// returning a status.
 function sendSetMark(markName, { continuous } = {}) {
   if (!lastPvt || !hasValidFix(lastPvt)) {
     throw new Error('no valid GPS fix yet - nothing to set the mark to');
@@ -1658,7 +1645,6 @@ startRoverAdminServer({
   getPowerStatus: powerScheduler.getStatus,
   getWittyStatus: wittySchedule.boatStatus,
   getShutdownFromBase: fleetShutdown.boatStatus,
-  sendSetMark,
   setMarkName,
   sendMarkLog,
 });

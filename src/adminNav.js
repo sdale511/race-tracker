@@ -1,4 +1,4 @@
-// The tab bar every admin UI shares (base, markset/mark, RTK-only and the boat's own dashboard), so moving between a
+// The tab bar every admin UI shares (base, RTK-only and the boat's own dashboard), so moving between a
 // mode's pages is always one click on the same bar instead of a "back to dashboard" link. Each mode passes its own list
 // of tabs; the CSS and markup are the same everywhere.
 
@@ -25,15 +25,6 @@ function baseTabs(hasCourse) {
   ];
 }
 
-// Base station in markset / mark mode: the map is the home page and there is no dashboard to tab to.
-function markTabs() {
-  return [
-    { id: 'map', href: '/map', label: 'Map' },
-    { id: 'console', href: '/console', label: 'Console' },
-    { id: 'config', href: '/config', label: 'Config' },
-  ];
-}
-
 // The boat's own dashboard. The Map tab appears once the boat has marks or a GPS fix.
 function roverTabs(hasMap) {
   return [
@@ -53,4 +44,4 @@ function rtkTabs() {
   ];
 }
 
-module.exports = { TABS_CSS, renderTabs, baseTabs, markTabs, roverTabs, rtkTabs };
+module.exports = { TABS_CSS, renderTabs, baseTabs, roverTabs, rtkTabs };

@@ -5,10 +5,8 @@
 // radio (see protocol.js's encodeSetMark/boatAgent.js's handlePvt own
 // markMode block) whenever its own GPS drifts MARK_DISTANCE_M from the
 // last position it sent for that mark - no operator action needed once
-// assigned. The continuous counterpart to markset (npm run markset,
-// markSetStation.js), which is a manual, one-tap-per-update assist for an
-// operator walking between marks; the two are distinct workflows, not two
-// settings of the same mode - see config.js's own markMode comment.
+// assigned. (To set marks one at a time from a rover an operator carries,
+// use the base map's "Set marks from" rover picker instead.)
 //
 // MARK_NAME picks which mark this device represents (falls back to
 // whatever was last assigned and persisted - see markNameFile.js/config
@@ -17,7 +15,7 @@
 //   MARK_NAME=windwardBlack npm run mark
 //
 // A thin wrapper, not a second copy of boatAgent.js - same pattern as
-// markSetStation.js/baseRtkStation.js: set the flag config.js already
+// baseRtkStation.js: set the flag config.js already
 // checks (config.markMode), then require boatAgent.js.
 process.env.MARK_MODE = '1';
 require('./boatAgent');

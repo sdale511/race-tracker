@@ -579,7 +579,7 @@ function decodeBatch(buf) {
 //   [7]      continuous    uint8 (0/1) - whether this update came from mark
 //                           mode's own automatic movement gate (see config
 //                           .markMode/boatAgent.js's handlePvt), as opposed
-//                           to a manual one-off markset tap. Purely
+//                           to a manual one-off send. Purely
 //                           informational - the base applies either one
 //                           identically (setMarkLocation doesn't care) -
 //                           but it's what lets the base's own admin map

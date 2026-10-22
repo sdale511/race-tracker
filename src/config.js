@@ -58,9 +58,7 @@ function resolveDefaultRegattaId() {
 // MARK_NAME - which course mark this device physically represents (see
 // README's "Mark mode") - a rover permanently attached to a mark buoy that
 // auto-sends that mark's position over the radio as it drifts (see
-// config.markMode/boatAgent.js's handlePvt), instead of an operator
-// manually walking between marks and clicking "Set" (markset's own normal
-// workflow, see config.marksetMode). Same env-wins,
+// config.markMode/boatAgent.js's handlePvt). Same env-wins,
 // persist-immediately spirit as resolveDefaultRegattaId above - an
 // explicit MARK_NAME becomes the new remembered default from this point on,
 // so a later restart that omits it still remembers the assignment. Falls
@@ -626,31 +624,15 @@ module.exports = {
 
   // --- Identity & timing ---
   boatId: resolveBoatId(),
-  // Boat only (`npm run markset`/`npm run mark` - see markSetStation.js) -
-  // an ordinary boatAgent.js process in every other respect (still
-  // transmits its own position, still tracked as a regular boat), except
-  // its own roverAdminServer.js /map page also shows a "Set" button per
-  // course mark (see boatAgent.js's sendSetMark). Deliberately NOT shown
-  // on an ordinary boat's map - an accidental tap during racing shouldn't
-  // be able to move a live course mark, so this capability only appears on
-  // a device an operator explicitly launched for mark-setting duty. No
-  // continuous auto-post, no "this rover represents X" assignment - just
-  // the button, sent once, using whatever this device's own GPS says right
-  // now (see README's "Setting a mark over the radio").
-  marksetMode: process.env.MARKSET_MODE === '1',
-  // MARK_MODE=1 (npm run mark - see markStation.js) - the continuous
-  // counterpart to marksetMode above: this device IS one specific course
-  // mark (markName below), and boatAgent.js's handlePvt auto-sends a
-  // Set-Mark frame (see protocol.js's encodeSetMark) whenever its own GPS
-  // position drifts markDistanceM from the last position it sent for that
-  // mark - no operator action needed once assigned. markset, by contrast,
-  // is every mark's button sitting there until an operator taps one; the
-  // two are mutually distinct workflows, not different settings of the
-  // same mode.
+  // MARK_MODE=1 (npm run mark - see markStation.js) - this device IS one
+  // specific course mark (markName below), and boatAgent.js's handlePvt
+  // auto-sends a Set-Mark frame (see protocol.js's encodeSetMark) whenever
+  // its own GPS position drifts markDistanceM from the last position it sent
+  // for that mark - no operator action needed once assigned.
   markMode: process.env.MARK_MODE === '1',
   // Which mark this device represents under markMode above, if any (see
   // README's "Mark mode") - null is the overwhelmingly common case (plain
-  // base/boat/markset, or a markMode device not yet assigned one).
+  // base/boat, or a markMode device not yet assigned one).
   markName: resolveMarkName(),
   // How far the assigned mark has to actually move before this device
   // sends a fresh Set-Mark frame for it (see markMode above) - same

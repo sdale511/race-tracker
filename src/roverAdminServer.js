@@ -98,8 +98,7 @@ function renderPowerCard(power, fromBase) {
 
 // markMode's own assignment card (see config.js's markMode/boatAgent.js's
 // setMarkName) - only ever rendered when s.markMode is true (npm run mark),
-// same "capability only shown on a device explicitly launched for it"
-// spirit as the map's own markset Set buttons. Lets an operator pick (or
+// so only a device explicitly launched for it has it. Lets an operator pick (or
 // clear) which mark this device continuously represents without needing
 // MARK_NAME set on the command line, and shows whether it's currently
 // keeping up (a fresh auto-send is implied by currentMarkName being set -
@@ -127,10 +126,10 @@ function renderMarkCard(s) {
     </div>`;
 }
 
-// Shown on EVERY rover mode (plain boat, markset, mark) - unlike
-// renderMarkCard above, marking the base's own log with a note is just as
-// relevant to an ordinary boat as to either special mode, so this isn't
-// gated on s.marksetMode/s.markMode the way that card is. No GPS fix
+// Shown on EVERY rover mode (plain boat, mark) - unlike renderMarkCard
+// above, marking the base's own log with a note is just as relevant to an
+// ordinary boat as to a mark device, so this isn't gated on s.markMode the
+// way that card is. No GPS fix
 // needed (see boatAgent.js's sendMarkLog) and nothing on THIS dashboard
 // changes as a result - the whole point lands on the base's own log, not
 // here - so the button's own JS (see the <script> below) shows a brief
@@ -285,7 +284,7 @@ function renderDashboard(s, power, witty, shutdownFromBase) {
 </style>
 </head>
 <body>
-  <h1>boat ${s.boatId} - rover admin${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}${s.sleep && s.sleep.state !== 'awake' ? ` &middot; <span style="color:#58a6ff;">${s.sleep.gps && s.sleep.gps.asleep ? 'RADIO + GPS ASLEEP' : 'RADIO ASLEEP'}</span>` : ''}</h1>
+  <h1>boat ${s.boatId} - rover admin${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}${s.sleep && s.sleep.state !== 'awake' ? ` &middot; <span style="color:#58a6ff;">${s.sleep.gps && s.sleep.gps.asleep ? 'RADIO + GPS ASLEEP' : 'RADIO ASLEEP'}</span>` : ''}</h1>
   ${renderTabs(roverTabs(!!(s.currentMarks || fix)), 'home')}
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>
@@ -642,13 +641,12 @@ function renderMap(s) {
   const fixAgeMs = fix ? Date.now() - fix.receivedAt : null;
   const fixStale = fixAgeMs == null || fixAgeMs > 10000;
 
-  // Skipped entirely in markset or mark mode, even with neither marks nor
-  // a fix yet - either device's whole point is its own right-hand column
-  // (see canEditMarks/showMarkModeInfo below), which needs to render its
-  // own "waiting for GPS fix" (markset) or "auto-sends once assigned"
-  // (mark) explanation rather than this generic placeholder swallowing the
-  // page before it ever gets there.
-  if (!s.currentMarks && !fix && !s.marksetMode && !s.markMode) {
+  // Skipped entirely in mark mode, even with neither marks nor a fix yet -
+  // that device's whole point is its own right-hand column (see
+  // showMarkModeInfo below), which needs to render its own "auto-sends once
+  // assigned" explanation rather than this generic placeholder swallowing
+  // the page before it ever gets there.
+  if (!s.currentMarks && !fix && !s.markMode) {
     return `<!doctype html>
 <html>
 <head>
@@ -714,11 +712,8 @@ function renderMap(s) {
   // see initialViewJs's own comment.
   const markPoints = marks ? MARK_NAMES.map((name) => `[${marks[name].lat}, ${marks[name].lon}]`) : [];
   // The map should always come up centered on wherever THIS device
-  // actually is, not a bounds-fit that also drags in every course mark -
-  // markset mode in particular is often used to walk somewhere far from
-  // the existing marks to place a new one, where a combined fit would zoom
-  // out to show both instead of focusing on where the operator actually
-  // is. Falls back to fitting the known marks when there's no fix yet
+  // actually is, not a bounds-fit that also drags in every course mark,
+  // which could zoom out a long way to show both. Falls back to fitting the known marks when there's no fix yet
   // (nothing of this boat's own to center on), or does nothing at all if
   // there's neither - left for refreshBoat's own first-fix centering
   // (below) to take over the moment a position actually arrives.
@@ -728,61 +723,11 @@ function renderMap(s) {
     ? `map.fitBounds([${markPoints.join(', ')}], { padding: [60, 60], maxZoom: 18 });`
     : '';
 
-  // Deliberately NOT gated on `marks` (this boat having already received a
-  // course broadcast) - the whole point of markset mode is often setting
-  // marks up for the very first time, before the base has anything to
-  // broadcast yet. MARK_NAMES (the list of possible marks) and
-  // MARK_COLORS/markStroke (their dot colors below) are fixed constants
-  // from course.js, not derived from `marks` - nothing about listing which
-  // marks CAN be set needs to know where they currently are. Only needs a
-  // position to send - "Set" always sends this boat's own current GPS fix,
-  // over the same radio a position fix already goes out on, to the LOCAL
-  // /api/set-mark route below (see protocol.js's encodeSetMark/
-  // boatAgent.js's sendSetMark) - a real rover has no Redis access of its
-  // own (see baseStation.js's mark-broadcast comment), and no WiFi/base-
-  // address dependency either: this boat doesn't need to know where the
-  // base is, only that a radio link to it exists. (The base's own
-  // setMarkLocation still requires a course to already exist there before
-  // it'll accept an edit - see its own comment - so a genuinely from-
-  // scratch course still needs bootstrapping once, e.g. `npm run
-  // reset-course`, before the very first Set here will succeed; this gate
-  // is only about what THIS boat needs to know to send the request.)
-  //
-  // Gated on config.marksetMode (see markSetStation.js/npm run markset),
-  // NOT shown on an ordinary boat - an accidental tap during racing
-  // shouldn't be able to move a live course mark, so this only appears on
-  // a device an operator explicitly launched for mark-setting duty. No
-  // continuous auto-post, no "this device represents mark X" assignment -
-  // just the button, sent once.
-  //
-  // Deliberately NOT also gated on `fix` - the column itself (and its GPS
-  // readout, already showing "—" with nothing to recenter on) should still
-  // render while waiting for a fix, with the Set buttons replaced by an
-  // explicit "waiting for GPS" placeholder below - rather than the whole
-  // right-hand column just vanishing with no explanation, which reads as
-  // "the buttons are broken/missing" instead of "this device hasn't locked
-  // a position yet."
-  const canEditMarks = !!s.marksetMode;
-  const markSetRowsHtml = canEditMarks
-    ? fix
-      ? MARK_NAMES.map(
-          (name) =>
-            `<div class="mark-set-row">
-        <span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span>
-        <span class="name">${name}</span>
-        <button type="button" class="set-mark-btn" data-mark="${name}">Set</button>
-      </div>`
-        ).join('')
-      : `<div class="muted" style="font-size:12px;margin-top:8px;">Waiting for a GPS fix - the "Set" button for each mark appears here once this device has a position to send.</div>`
-    : '';
   // Mark mode's own right-hand column - never has Set buttons at all (see
   // markStation.js's own comment: it auto-sends, there's nothing to tap),
   // but still shows SOMETHING there rather than leaving the column just
-  // absent, same "explain why, don't just vanish" reasoning as markset's
-  // own "waiting for GPS fix" state above. Always rendered .visible - no
-  // crosshair, no edit toggle, nothing here needs hiding by default the
-  // way markset's own editing column does.
-  const showMarkModeInfo = !!s.markMode && !canEditMarks;
+  // absent. Always rendered .visible.
+  const showMarkModeInfo = !!s.markMode;
   const markModeInfoHtml = showMarkModeInfo
     ? `<div class="edit-column visible" id="markModeColumn">
       <div class="edit-column-inner">
@@ -805,7 +750,6 @@ function renderMap(s) {
       </div>
     </div>`
     : '';
-  const markBoundsJs = `[${markPoints.join(', ')}]`;
   const courseInfoHtml = marks ? buildCourseInfoHtml(marks) : '';
 
   return `<!doctype html>
@@ -838,7 +782,6 @@ function renderMap(s) {
   .topbar h1 { white-space: nowrap; }
   .refresh-toggle { display: flex; align-items: center; gap: 6px; color: #8b94a3; cursor: pointer; user-select: none; }
   .refresh-toggle input { accent-color: #3fb950; cursor: pointer; }
-  #editToggle { accent-color: #e3b341; }
   .mark-label {
     background: #161b22; border: 1px solid #262c36; color: #e6e9ef;
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
@@ -873,23 +816,10 @@ function renderMap(s) {
   .course-info-row.zoomable { cursor: pointer; border-radius: 6px; margin: 0 -6px; padding: 4px 6px; }
   .course-info-row.zoomable:hover { background: #f1f3f6; }
 
-  /* Edit mode - see the matching block in adminServer.js's renderMap for
-     the overall design (a map area that shrinks for a column of "set
-     this mark here" buttons, plus a crosshair fixed at its exact
-     center). */
+  /* A map area that shrinks for mark mode's right-hand column. */
   .main { position: absolute; inset: 0; display: flex; }
   .map-wrap { position: relative; flex: 1; min-width: 0; }
   #map { position: absolute; inset: 0; }
-  .crosshair {
-    position: absolute; top: 50%; left: 50%; z-index: 900;
-    width: 30px; height: 30px; margin: -15px 0 0 -15px;
-    pointer-events: none; display: none;
-  }
-  .crosshair.visible { display: block; }
-  .crosshair::before, .crosshair::after { content: ''; position: absolute; background: #e3b341; box-shadow: 0 0 3px #000a; }
-  .crosshair::before { left: 14px; top: 0; width: 2px; height: 30px; }
-  .crosshair::after { top: 14px; left: 0; width: 30px; height: 2px; }
-
   .edit-column {
     width: 0; flex-shrink: 0; overflow: hidden;
     background: #161b22; border-left: 1px solid #262c36;
@@ -911,33 +841,16 @@ function renderMap(s) {
   .recenter-btn:hover { background: #262c36; }
   .gps-readout { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: #8b94a3; margin: 2px 0 6px; gap: 6px; }
   .gps-readout .value { color: #e6e9ef; font-variant-numeric: tabular-nums; text-align: right; }
-  .mark-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1c222b; font-size: 12px; }
-  .mark-set-row:last-child { border-bottom: none; }
-  .mark-set-row .name { flex: 1; }
-  .mark-set-row button {
-    padding: 4px 10px; border-radius: 4px; border: 1px solid #262c36;
-    background: #1c222b; color: #e6e9ef; font-size: 11px; cursor: pointer;
-  }
-  .mark-set-row button:hover { background: #262c36; }
-  .mark-set-row button:disabled { opacity: 0.5; cursor: default; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 </style>
 </head>
 <body>
   <div class="topbar">
-    <h1>Boat ${s.boatId} map${s.marksetMode ? ' &middot; <span style="color:#e3b341;">MARKSET MODE</span>' : ''}${s.markMode ? ` &middot; <span style="color:#e3b341;">MARK MODE${s.currentMarkName ? ' (' + s.currentMarkName + ')' : ''}</span>` : ''}</h1>
+    <h1>Boat ${s.boatId} map${s.markMode ? ` &middot; <span style="color:#e3b341;">MARK MODE${s.currentMarkName ? ' (' + s.currentMarkName + ')' : ''}</span>` : ''}</h1>
     <span class="muted">Regatta: ${s.currentRegattaName || 'not set'}</span>
     <span class="muted" id="fixStatus">${fix ? `last fix ${fixStale ? 'stale, ' : ''}${formatAgo(fix.timestamp)}` : 'no GPS fix yet'}</span>
     ${renderTabs(roverTabs(true), 'map')}
     <div class="spacer"></div>
-    ${
-      canEditMarks
-        ? `<label class="refresh-toggle">
-      <input type="checkbox" id="editToggle">
-      edit marks
-    </label>`
-        : ''
-    }
     <label class="refresh-toggle">
       <input type="checkbox" id="autoRefresh">
       auto-refresh (5s)
@@ -946,44 +859,8 @@ function renderMap(s) {
   <div class="main">
     <div class="map-wrap">
       <div id="map"></div>
-      <div class="crosshair" id="crosshair"></div>
       ${courseInfoHtml}
     </div>
-    ${
-      canEditMarks
-        ? `<div class="edit-column" id="editColumn">
-      <div class="edit-column-inner">
-        <h2>Edit course marks</h2>
-        <div class="muted" style="font-size:11px;margin-bottom:10px;">"Set" sends this boat's own current GPS position over the telemetry radio - no WiFi needed.</div>
-
-        <div class="gps-readout"><span>Boat RTK GPS</span><span class="value" id="boatGpsReadout">${
-          fix
-            ? `${fix.lat.toFixed(6)}, ${fix.lon.toFixed(6)} (${
-                fix.carrSoln === 2 ? 'RTK fixed' : fix.carrSoln === 1 ? 'RTK float' : fix.gnssFixOk ? 'GPS' : 'no fix'
-              }, ±${(fix.hAccMm / 1000).toFixed(2)}m)`
-            : '—'
-        }</span></div>
-        <button type="button" class="recenter-btn" id="recenterBoatGps">Recenter on boat GPS</button>
-
-        ${
-          // Only useful when this boat has no real onboard GPS of its own
-          // (GPS_PORT unset - s.gpsMode isn't 'real') to recenter on
-          // instead - once real GPS_PORT hardware is actually driving
-          // "Recenter on boat GPS" above, the browser's own much coarser
-          // geolocation has nothing to add, just UI clutter and an extra
-          // permission prompt for no benefit.
-          s.gpsMode !== 'real'
-            ? `<div class="gps-readout"><span>Browser GPS</span><span class="value" id="browserGpsReadout">—</span></div>
-        <button type="button" class="recenter-btn" id="recenterGps">Recenter on my GPS</button>
-
-        `
-            : ''
-        }<button type="button" class="recenter-btn" id="recenterMarks">Recenter on marks</button>
-        ${markSetRowsHtml}
-      </div>
-    </div>`
-        : ''
-    }
     ${markModeInfoHtml}
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -1018,11 +895,6 @@ function renderMap(s) {
         }
       });
     });
-    // Kept live by refreshBoat() below, used by the edit column's
-    // "Recenter on boat GPS" button (see the canEditMarks block further
-    // down) - initialized from the server-rendered fix so it's usable
-    // immediately on page load, before the first refresh tick.
-    let lastKnownFix = ${fix ? `{ lat: ${fix.lat}, lon: ${fix.lon} }` : 'null'};
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 22,
       maxNativeZoom: 19,
@@ -1050,15 +922,9 @@ function renderMap(s) {
         return; // boat unreachable for a moment - just try again next tick
       }
       const fixStatusEl = document.getElementById('fixStatus');
-      const boatGpsReadout = document.getElementById('boatGpsReadout');
       if (!pos) {
         fixStatusEl.textContent = 'no GPS fix yet';
         return;
-      }
-      lastKnownFix = { lat: pos.lat, lon: pos.lon };
-      if (boatGpsReadout) {
-        boatGpsReadout.textContent =
-          pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6) + ' (' + fixQualityText(pos) + ', ±' + (pos.hAccMm / 1000).toFixed(2) + 'm)';
       }
       const ageMs = Date.now() - pos.receivedAt;
       const stale = ageMs > 10000;
@@ -1099,9 +965,7 @@ function renderMap(s) {
     })();
 
     // Mark mode's own assign control (see renderMap's markModeInfoHtml) -
-    // not gated on canEditMarks below, since this renders in the opposite
-    // case (markMode without marksetMode) - defensively checked instead
-    // (markModeAssignBtn only exists when showMarkModeInfo rendered it) so
+    // markModeAssignBtn only exists when showMarkModeInfo rendered it, so
     // this script works unmodified on every other page variant too.
     const markModeAssignBtn = document.getElementById('markModeAssignBtn');
     if (markModeAssignBtn) {
@@ -1123,171 +987,7 @@ function renderMap(s) {
         }
       });
     }
-    ${
-      canEditMarks
-        ? `
-    const editModeKey = 'raceTrackerMapEditMode';
-    const editColumn = document.getElementById('editColumn');
-    const crosshair = document.getElementById('crosshair');
-    const editToggle = document.getElementById('editToggle');
-    const browserGpsReadout = document.getElementById('browserGpsReadout');
-    let lastBrowserPos = null; // {lat, lon}, kept live by the watch below
-    let geoWatchId = null;
 
-    function fixQualityText(f) {
-      if (f.carrSoln === 2) return 'RTK fixed';
-      if (f.carrSoln === 1) return 'RTK float';
-      if (f.gnssFixOk) return 'GPS';
-      return 'no fix';
-    }
-
-    // A one-shot getCurrentPosition() call defaults to low accuracy with
-    // no timeout - it can silently hang for a long time (or forever) if
-    // the browser's location provider is struggling, and "Recenter on my
-    // GPS" would just look broken with no feedback either way.
-    // watchPosition with enableHighAccuracy instead keeps a continuous
-    // stream running the whole time edit mode is on - the readout shows
-    // whether it's actually gotten a fix yet, and by the time you go to
-    // click "Recenter" a fresh position is usually already sitting there.
-    function startBrowserGpsWatch() {
-      // Not rendered at all when this boat has real GPS_PORT hardware of
-      // its own (see this page's own server-side s.gpsMode check) -
-      // nothing to watch in that case.
-      if (!browserGpsReadout) return;
-      if (!navigator.geolocation) {
-        browserGpsReadout.textContent = 'not available';
-        return;
-      }
-      browserGpsReadout.textContent = 'waiting for fix…';
-      geoWatchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          lastBrowserPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-          browserGpsReadout.textContent =
-            lastBrowserPos.lat.toFixed(6) + ', ' + lastBrowserPos.lon.toFixed(6) + ' (±' + Math.round(pos.coords.accuracy) + 'm)';
-        },
-        (err) => {
-          browserGpsReadout.textContent = err.code === err.PERMISSION_DENIED ? 'permission denied' : 'unavailable (' + err.message + ')';
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
-      );
-    }
-    function stopBrowserGpsWatch() {
-      if (geoWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(geoWatchId);
-      geoWatchId = null;
-      lastBrowserPos = null;
-      if (browserGpsReadout) browserGpsReadout.textContent = '—';
-    }
-
-    function applyEditMode(checked) {
-      editColumn.classList.toggle('visible', checked);
-      crosshair.classList.toggle('visible', checked);
-      // Leaflet caches its container size - the column's width
-      // transitions via CSS, not instantly, so this has to wait for
-      // that to settle rather than measuring the pre-transition size.
-      setTimeout(() => map.invalidateSize(), 200);
-      if (checked) {
-        startBrowserGpsWatch();
-      } else {
-        // A continuous GPS watch has a real battery/permission-indicator
-        // cost - no reason to keep it running once the column showing
-        // the result isn't even visible.
-        stopBrowserGpsWatch();
-      }
-    }
-
-    // Persisted like auto-refresh above (localStorage), but opt-OUT rather
-    // than opt-in - on by default (crosshair + recenter buttons visible
-    // the moment this page loads, no manual toggle needed) unless
-    // explicitly turned off before, since setting a mark still requires
-    // its own explicit confirm() further down, so showing this by default
-    // doesn't risk an accidental edit, just saves a click on every visit.
-    editToggle.checked = localStorage.getItem(editModeKey) !== '0';
-    applyEditMode(editToggle.checked);
-    editToggle.addEventListener('change', () => {
-      localStorage.setItem(editModeKey, editToggle.checked ? '1' : '0');
-      applyEditMode(editToggle.checked);
-    });
-
-    // Not rendered at all when this boat has real GPS_PORT hardware (see
-    // this page's own server-side s.gpsMode check) - browserGpsReadout's
-    // own null check on the readout is enough to tell us the button's
-    // missing too, same server-side condition either way.
-    const recenterGpsBtn = document.getElementById('recenterGps');
-    if (recenterGpsBtn) {
-      recenterGpsBtn.addEventListener('click', () => {
-        if (!lastBrowserPos) {
-          alert('No browser GPS fix yet - wait for the readout above to show a position. This requires a secure context (https, or localhost), so it may be blocked entirely when viewing this dashboard over plain http on your LAN.');
-          return;
-        }
-        map.setView([lastBrowserPos.lat, lastBrowserPos.lon], map.getZoom());
-      });
-    }
-
-    // This boat's own GPS, kept live by refreshBoat() above - already
-    // flowing regardless of edit mode, so this just reuses whatever it
-    // last saw rather than needing its own separate polling.
-    document.getElementById('recenterBoatGps').addEventListener('click', () => {
-      if (!lastKnownFix) {
-        alert('No GPS fix from this boat yet.');
-        return;
-      }
-      map.setView([lastKnownFix.lat, lastKnownFix.lon], map.getZoom());
-    });
-
-    const markBounds = ${markBoundsJs};
-    document.getElementById('recenterMarks').addEventListener('click', () => {
-      // markBounds is empty when no course has been broadcast yet (markset
-      // mode's own Set buttons below don't need one - see canEditMarks'
-      // own comment) - fitBounds([]) throws, so just no-op instead of
-      // crashing the rest of this script's own event wiring below it.
-      if (!markBounds.length) {
-        alert('No course marks received yet - nothing to recenter on.');
-        return;
-      }
-      map.fitBounds(markBounds, { padding: [60, 60], maxZoom: 18 });
-    });
-
-    // Unlike the base's own edit column, this doesn't write anywhere
-    // locally - this boat has no Redis access of its own (see this
-    // function's module comment). This boat's own local server (same
-    // origin) sends this boat's current GPS position over the telemetry
-    // radio instead (see protocol.js's encodeSetMark/boatAgent.js's
-    // sendSetMark) and the base applies it there - no crosshair, no base
-    // address, no WiFi dependency. {ok:true} here only means the frame was
-    // handed to the radio, not that the base actually received/applied it
-    // - not reloading immediately for that reason; this boat's own
-    // currentMarks won't reflect the change until the next broadcast
-    // actually reaches it (course marks aren't a live-polled loop on this
-    // page, see refreshBoat above).
-    document.querySelectorAll('.set-mark-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const name = btn.dataset.mark;
-        if (!confirm('Set ' + name + ' to this boat\\'s current position?\\n\\nThis updates the live course and re-broadcasts it to every boat immediately.')) {
-          return;
-        }
-        btn.disabled = true;
-        const label = btn.textContent;
-        btn.textContent = 'Sending…';
-        try {
-          const res = await fetch('/api/set-mark', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ markName: name })
-          });
-          const body = await res.json();
-          if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
-          alert('Sent ' + name + ' over the radio. This boat will pick up the change once the next marks broadcast reaches it (usually within moments) - reload afterward to see it reflected here.');
-        } catch (err) {
-          alert('Failed to send ' + name + ' - ' + err.message);
-        } finally {
-          btn.textContent = label;
-          btn.disabled = false;
-        }
-      });
-    });
-    `
-        : ''
-    }
   </script>
 </body>
 </html>`;
@@ -1324,13 +1024,13 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, getShutdownFromBase, sendSetMark, setMarkName, sendMarkLog }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, getShutdownFromBase, setMarkName, sendMarkLog }) {
   const server = http.createServer(async (req, res) => {
     // Dashboard's "Mark log" card (see renderDashboard) - sends a short
     // free-text note to the base over the radio (see boatAgent.js's
     // sendMarkLog/protocol.js's encodeMarkLog), no GPS fix or WiFi needed
-    // at all. Available on every rover mode (plain boat, markset, mark),
-    // not just markset/mark-mode-specific - field testing (walking to a
+    // at all. Available on every rover mode (plain boat, mark), not just
+    // mark mode - field testing (walking to a
     // new distance, checking an antenna) is just as relevant to an
     // ordinary boat as to either of those.
     if (req.url === '/api/mark-log' && req.method === 'POST') {
@@ -1346,31 +1046,10 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, ge
       return;
     }
 
-    // The map page's own "Set" button (see renderMap's set-mark-btn) -
-    // sends this boat's own current position to the base over the radio
-    // (see boatAgent.js's sendSetMark/protocol.js's encodeSetMark), no
-    // WiFi/base address needed at all. Fire-and-forget, same as sendSetMark
-    // itself - {ok:true} here only means the frame was handed to the
-    // radio, not that the base actually received/applied it; the Course
-    // marks card on the main dashboard (and this map's own markers) update
-    // on their own once the base's re-broadcast arrives.
-    if (req.url === '/api/set-mark' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req);
-        const result = sendSetMark(body.markName);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, ...result }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-      return;
-    }
-
     // markMode's own dashboard control (see renderDashboard's mark-name
     // select) - assigns (or clears, markName: null) which mark this device
     // continuously represents (see boatAgent.js's setMarkName/handlePvt's
-    // own markMode block). Unlike /api/set-mark above this doesn't touch
+    // own markMode block). This doesn't touch
     // the radio at all - it just changes what the NEXT auto-send, if any,
     // will use.
     if (req.url === '/api/mark-name' && req.method === 'POST') {

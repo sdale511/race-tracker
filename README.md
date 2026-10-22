@@ -399,7 +399,7 @@ python3 xbee_configure_at.py --port /dev/ttyUSB0 --role rtcm  # an XBee-PRO 900H
 
 **Encryption (`EE`) is switched off** by the script (and `--dry-run` shows it as the `EE (Encryption)` row). With AES on, every RF packet loses 9 bytes of its 100-byte payload, so the marks frame (91 bytes) would still fit but the slot table (up to 97) and power (up to 95) frames would be split across two packets and lost if either half is. `EE` has to be the same on every radio in the network, so run the script on all of them (or check each with `--dry-run`).
 
-**The node identifier (`NI`) is the one setting a boat writes itself.** In boat mode (not mark or markset mode, and not
+**The node identifier (`NI`) is the one setting a boat writes itself.** In boat mode (not mark mode, and not
 `SIMULATE=1`) the boat sets its telemetry XBee's `NI` to its `BOAT_ID` when the radio port first opens, so a radio taken
 out of a boat, or listed by XCTU's network discovery, says which boat it belongs to. It enters AT command mode the same
 way this script does (`+++` with a 1.1 s guard time), reads `NI`, and writes and saves it (`ATNI`, `ATWR`) only when it
@@ -587,7 +587,7 @@ A real field test - walking/driving a rover to a new distance from the
 base, checking an antenna, anything worth timestamping - needs a way to
 say "right now" without cross-referencing two separate logs by wall-clock
 time afterward. Every rover's own dashboard (`roverAdminServer.js`, any
-mode - plain boat, markset, or mark) has a **Mark base log** card: type a
+mode - plain boat or mark) has a **Mark base log** card: type a
 short note (20 characters, truncated beyond that) and tap **Mark**. It
 sends over the same telemetry radio a position fix already goes out on
 (`protocol.js`'s `encodeMarkLog`/`0x88`) - no GPS fix or WiFi needed, works
@@ -859,7 +859,7 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
 - **Dashboard.** The base's admin has three pages and a map link, switched by the tabs under the title: **Regatta & boats** (the home page
   at `/`: a compact Transmit slots card with the count, the slot map and a **Ping fleet** button, the radio bandwidth and radio frames cards (also on the radio page; the frames card has a **Clear stats** button that restarts its totals, the sync-error count and the bandwidth graph from zero), the course marks, and the boat table),
   **Radio, GPS & system** (`/radio`: radio bandwidth and frames, the full transmit slots card,
-  link health, base GPS and its survey-in controls, and disk), **Data** (`/data`: fleet controls, uploads, the **Redis memory** card and the **Webhook retry queues**: a table of the four queues (lap, on-grid, mark rounding, foul) with how many are waiting and the oldest, then every event still waiting for RegattaUp to accept it, with its attempts, last try and when the next is due; anything waiting over 5 minutes is red; "Nothing waiting" is the healthy state), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config; markset and mark mode have Map, Console and Config, because the map is their home page. The header on every page holds the regatta
+  link health, base GPS and its survey-in controls, and disk), **Data** (`/data`: fleet controls, uploads, the **Redis memory** card and the **Webhook retry queues**: a table of the four queues (lap, on-grid, mark rounding, foul) with how many are waiting and the oldest, then every event still waiting for RegattaUp to accept it, with its attempts, last try and when the next is due; anything waiting over 5 minutes is red; "Nothing waiting" is the healthy state), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config. The header on every page holds the regatta
   select and webhook status, and a small mode card (**RACE MODE** or **PRACTICE MODE**, with
   radio buttons to change it). The full **Transmit slots** card (below) is on the radio page, and the boat table has a **Slot** column (hover for the
   slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;
@@ -1274,7 +1274,7 @@ looking identical.
 
 ## Running
 
-Six modes, each its own `npm run` script:
+Five modes, each its own `npm run` script:
 
 | Mode | Command | Runs on | What it does |
 |---|---|---|---|
@@ -1282,8 +1282,7 @@ Six modes, each its own `npm run` script:
 | Base | `npm run base` | Shore/committee machine | Receives telemetry, tracks course/fleet/laps, reports to RegattaUp, serves fleet dashboard. Optional own GPS for planting course marks at a surveyed position - not RTK control |
 | RTK-only | `npm run rtk` | Machine with just the RTK correction-source GPS | Monitors/configures TMODE3/survey-in, small dedicated dashboard - no telemetry, course, fleet, or RegattaUp |
 | Base + RTK combined | `npm run basertk` | One machine, both roles | Everything `base` does + RTK-only's TMODE3/survey-in controls, one process/dashboard |
-| Mark-set | `npm run markset` | Any boat's Pi, used for mark-setting duty | Identical to `boat` (real GPS, real radio, tracked as a normal boat) - only difference: its own rover dashboard's `/map` page shows a "Set" button per course mark, sending this device's own current position over the radio on each tap - see "Mark-set mode and Mark mode" below |
-| Mark | `npm run mark` | A device permanently attached to one course mark | Identical to `boat` otherwise - the difference: it auto-sends its assigned mark's position over the radio whenever it drifts, no operator action needed - see "Mark-set mode and Mark mode" below |
+| Mark | `npm run mark` | A device permanently attached to one course mark | Identical to `boat` otherwise - the difference: it auto-sends its assigned mark's position over the radio whenever it drifts, no operator action needed - see "Mark mode" below |
 
 Run `base` + `rtk` together on one machine (`basertk`) when simplest, or
 split them (plain `base` + separate `rtk`) when the telemetry base and
@@ -1322,9 +1321,9 @@ Run `ls /dev/cu.*` before/after plugging in each device to find its path.
 ```
 sudo ./install-service.sh MODE [EXTRA_ARG]
 ```
-`MODE` is one of `boat base rtk basertk markset mark` (Linux only). Named
+`MODE` is one of `boat base rtk basertk mark` (Linux only). Named
 units: `boat-agent`/`base-station` for those two,
-`rtk-station`/`basertk-station`/`markset-station`/`mark-station` for the
+`rtk-station`/`basertk-station`/`mark-station` for the
 rest.
 
 | Mode | `EXTRA_ARG` |
@@ -1332,7 +1331,7 @@ rest.
 | `boat` | `BOAT_ID` - omit to auto-generate/persist; a plain number (`7`) zero-pads to `00007` |
 | `base`, `basertk` | `REGATTAUP_REGATTA_ID` - omit to use `regatta-id.txt` or auto-pick the nearest active/future regatta |
 | `mark` | `MARK_NAME` - omit to start unassigned |
-| `rtk`, `markset` | none |
+| `rtk` | none |
 
 Also forces `GPS_LOG=0` for every mode (stdout isn't a TTY under systemd,
 so in-place overwrite doesn't apply and every fix would become a permanent
@@ -1346,6 +1345,10 @@ directly for other per-machine overrides. Safe to re-run any time
 | `sudo ./service-restart.sh MODE` | Restarts, prints status |
 | `sudo ./service-stop.sh MODE` / `service-start.sh MODE` | Stop/start without touching autostart |
 | `sudo ./service-autostart.sh MODE [on\|off]` | Controls autostart-on-boot separately; no arg shows status |
+
+**Which mode is this machine running?** Every admin dashboard's **Config** tab starts with a `mode` row (boat, mark,
+base, basertk or rtk). `npm run print-config` shows it too, worked out from whichever of the units above is running; it
+says "unknown" when none is (macOS, or the app started by hand in a terminal).
 
 ### RTK-only mode
 
@@ -1388,35 +1391,29 @@ TMODE3/survey-in cards, and `/api/gps/survey/mode`/`/api/gps/save-config`
 404. Use `basertk` when this machine's GPS should actually control RTCM
 broadcast to the fleet, not just supply a one-off reading.
 
-### Mark-set mode and Mark mode
+### Setting marks from a rover, on the base's map
 
-Both are ordinary `boatAgent.js` rovers (real GPS, real telemetry radio,
-transmit their own position, show up on the fleet table like any other
-boat) with one extra capability layered on top - but the two capabilities
-are opposite workflows, not two settings of the same thing:
+For a mark setter carrying a rover with no screen of its own (any mode, a plain `npm run boat` included): on the base's
+**Map** tab, turn on **edit marks** and pick the rover under **Set marks from**. The map follows that rover every second,
+its dot gets an amber ring, and the readout shows its position, fix quality (RTK fixed/float/GPS) and how long ago it was
+heard. Each mark's **Set** button then sets the mark to that rover's newest position, which the base looks up when you
+click (`POST /api/marks/:name` with `{ boatId }`). The confirm dialog shows the position, quality and age first. The base
+refuses a rover it hasn't heard from in more than one `TX_INTERVAL_S` heartbeat plus 30 s. **Crosshair (map center)**
+brings back the old behaviour. The choice is remembered per browser.
 
-|  | `npm run markset` | `npm run mark` |
-|---|---|---|
-| Entry point | `src/markSetStation.js` (`MARKSET_MODE=1`) | `src/markStation.js` (`MARK_MODE=1`) |
-| Workflow | Manual - an operator walks/sails to a mark, opens `/map`, taps "Set" for it | Continuous - this device permanently represents ONE mark and auto-reports as it drifts |
-| Which mark(s) | Any of them, one tap at a time, no assignment | Exactly one, picked from the dashboard's "This device represents" card (or `MARK_NAME`) |
-| How often it sends | Once per tap, using whatever position this device is at right now | Automatically, whenever the fix moves `MARK_DISTANCE_M` (default 1m) from the last position sent for that mark |
+### Mark mode
 
-Deliberately **not** available on a plain `npm run boat` - an accidental
-tap (or an unintended assignment) during racing shouldn't be able to move
-a live course mark, so either capability only appears on a device
-explicitly launched this way. The dashboard and map both show a
-**MARKSET MODE** or **MARK MODE (‹markName›)** badge so it's obvious at a
-glance which devices have which, and which mark a mark-mode device is
-currently acting as.
+`npm run mark` (`src/markStation.js`, `MARK_MODE=1`) is an ordinary `boatAgent.js` rover (real GPS, real telemetry
+radio, transmits its own position, shows up on the fleet table like any other boat) that permanently represents ONE
+course mark, picked from its dashboard's "This device represents" card (or `MARK_NAME`). It sends that mark's position
+automatically whenever its fix moves `MARK_DISTANCE_M` (default 1 m) from the last position it sent. Its dashboard and
+map show a **MARK MODE (‹markName›)** badge.
 
-Both send the exact same way: a Set-Mark radio frame (`protocol.js`'s
-`encodeSetMark`/`0xFF`) carrying this device's own current GPS fix - see
-"Setting a mark over the radio" above, under "Editing mark positions from
-the map". Neither writes to Redis directly or needs WiFi; the base applies
-the change (`setMarkLocation`) and its own next mark-broadcast is what
-confirms it landed, picked up the normal way by every rover's `Course
-marks` card.
+It sends a Set-Mark radio frame (`protocol.js`'s `encodeSetMark`/`0xFF`) carrying its current GPS fix. It never writes
+to Redis directly or needs WiFi; the base applies the change (`setMarkLocation`) and its own next mark-broadcast is what
+confirms it landed, picked up the normal way by every rover's `Course marks` card. Not available on a plain `npm run
+boat`, so an unintended assignment during racing can't move a live course mark. To set marks one at a time from a rover
+someone carries, use the base map's rover picker instead (see "Setting marks from a rover, on the base's map" above).
 
 **Mark mode assignment** persists to `race-config/mark-name.txt` (same
 "survives a restart, MARK_NAME env var wins if set" pattern as `BOAT_ID`/

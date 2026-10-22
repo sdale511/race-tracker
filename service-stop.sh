@@ -5,7 +5,7 @@ set -euo pipefail
 # install-service.sh) - stops the service without touching whether it
 # auto-starts on boot (see service-autostart.sh for that) - it'll come back
 # on the next boot, or the next `Restart=always` respawn is moot since a
-# clean stop doesn't count as a crash. One script for all six modes (see
+# clean stop doesn't count as a crash. One script for all five modes (see
 # README's "Running" section) instead of a separate boat-stop.sh/
 # base-stop.sh pair.
 #
@@ -27,10 +27,9 @@ case "$MODE" in
   base)     SERVICE_NAME="base-station" ;;
   rtk)      SERVICE_NAME="rtk-station" ;;
   basertk)  SERVICE_NAME="basertk-station" ;;
-  markset)  SERVICE_NAME="markset-station" ;;
   mark)     SERVICE_NAME="mark-station" ;;
   *)
-    echo "error: MODE must be one of: boat base rtk basertk markset mark (got \"$MODE\")" >&2
+    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
     echo "usage: sudo $0 MODE" >&2
     exit 1
     ;;

@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Installs (or updates) a race-tracker mode as a systemd service - one
-# script for all six modes (see README's "Running" section), instead of a
+# script for all five modes (see README's "Running" section), instead of a
 # separate near-identical install-*-service.sh per mode.
 #
 # Usage:
 #   sudo ./install-service.sh MODE [EXTRA_ARG]
 #
-# MODE is one of: boat base rtk basertk markset mark
+# MODE is one of: boat base rtk basertk mark
 #
 # EXTRA_ARG's meaning depends on MODE - every mode besides these two takes
 # no extra argument, reading config.js's own defaults for everything
@@ -28,7 +28,6 @@ set -euo pipefail
 #   sudo ./install-service.sh base
 #   sudo ./install-service.sh basertk abc123
 #   sudo ./install-service.sh rtk
-#   sudo ./install-service.sh markset
 #   sudo ./install-service.sh mark windwardBlack
 #
 # Safe to re-run: a second run (same or different EXTRA_ARG) regenerates
@@ -45,7 +44,7 @@ EXTRA_ARG="${2:-}"
 
 # Mode -> systemd unit name, entry file (must match package.json's own npm
 # scripts), and a friendly label for the unit's Description= - the one
-# place all six modes' install differences actually live; every control
+# place all five modes' install differences actually live; every control
 # script below (service-start.sh and friends) shares this exact same
 # mapping so `MODE` always resolves to the same unit everywhere.
 case "$MODE" in
@@ -53,10 +52,9 @@ case "$MODE" in
   base)     SERVICE_NAME="base-station";    ENTRY="src/baseStation.js";    LABEL="Base Station" ;;
   rtk)      SERVICE_NAME="rtk-station";     ENTRY="src/rtkStation.js";     LABEL="RTK-Only" ;;
   basertk)  SERVICE_NAME="basertk-station"; ENTRY="src/baseRtkStation.js"; LABEL="Base + RTK Combined" ;;
-  markset)  SERVICE_NAME="markset-station"; ENTRY="src/markSetStation.js"; LABEL="Mark-Set" ;;
   mark)     SERVICE_NAME="mark-station";    ENTRY="src/markStation.js";    LABEL="Mark" ;;
   *)
-    echo "error: MODE must be one of: boat base rtk basertk markset mark (got \"$MODE\")" >&2
+    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
     echo "usage: sudo $0 MODE [EXTRA_ARG]" >&2
     exit 1
     ;;
@@ -76,7 +74,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Runs as whoever actually invoked sudo, so anything the app writes
 # (base-logs/, boat-logs/, race-config/, node_modules/) doesn't end up root-owned. Insisted on explicitly (not guessed/defaulted
 # to some fixed account) since there's no single fallback user that makes
-# sense across every machine any of these six modes might run on.
+# sense across every machine any of these five modes might run on.
 SERVICE_USER="${SUDO_USER:-}"
 if [ -z "$SERVICE_USER" ] || [ "$SERVICE_USER" = "root" ]; then
   echo "error: run this via sudo as the user who should own the service (not directly as root) - e.g. \`sudo $0 $MODE\`" >&2
@@ -142,7 +140,7 @@ case "$MODE" in
       DESCRIPTION_SUFFIX=" (MARK_NAME=$EXTRA_ARG)"
     fi
     ;;
-  rtk|markset)
+  rtk)
     if [ -n "$EXTRA_ARG" ]; then
       echo "error: $MODE takes no extra argument (got \"$EXTRA_ARG\")" >&2
       exit 1
