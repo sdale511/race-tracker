@@ -7,9 +7,11 @@ const { MAP_MARK_ORDER, COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH
 // `npm run print-config` (printConfig.js, console output) and the admin
 // dashboards' `GET /config` page (adminServer.js, roverAdminServer.js,
 // HTML), so the two presentations can never drift out of sync with each
-// other. Rows are objects (label, value, envVar, inverted, unit) rather
-// than positional arrays - with five optional fields per row, named keys
-// stay readable where array-position magic wouldn't.
+// other. Rows are objects (label, desc, value, envVar, inverted, unit, note)
+// rather than positional arrays - named keys stay readable where
+// array-position magic wouldn't. desc is a short "what this controls" line,
+// shown under the setting's name on the /config page; note is a remark about
+// the value itself, shown under it.
 //
 // config.js resolves the exact same object structure regardless of which
 // process reads it (`npm run base`/`boat`/`rtk`/`basertk`), but each
@@ -28,41 +30,42 @@ const sections = [
   {
     title: 'Testing switches',
     rows: [
-      { label: 'simulate', value: config.simulate, envVar: 'SIMULATE', roles: ['base', 'boat'] },
-      { label: 'simulateGps', value: config.simulateGps, envVar: 'SIMULATE_GPS', roles: ['boat'] },
-      { label: 'noGps', value: config.noGps, envVar: 'NO_GPS', roles: ['boat'] },
+      { label: 'simulate', desc: 'Run with no hardware: a fake GPS and a UDP stand-in for the radio', value: config.simulate, envVar: 'SIMULATE', roles: ['base', 'boat'] },
+      { label: 'simulateGps', desc: 'Fake GPS track with the real radio, for bench-testing radios indoors', value: config.simulateGps, envVar: 'SIMULATE_GPS', roles: ['boat'] },
+      { label: 'noGps', desc: 'Start no GPS at all, real or simulated; the radio still runs', value: config.noGps, envVar: 'NO_GPS', roles: ['boat'] },
       // testLapNumber doubles as the on/off switch for this test mode (0 =
       // off) and the lap number to report - see config.js's own comment.
-      { label: 'testLapBoatId', value: config.testLapBoatId, envVar: 'TEST_LAP_BOAT_ID', roles: ['base'] },
-      { label: 'testLapNumber', value: config.testLapNumber, envVar: 'TEST_LAP_NUMBER', roles: ['base'] },
+      { label: 'testLapBoatId', desc: 'Boat id the TEST_LAP_NUMBER test lap is sent as', value: config.testLapBoatId, envVar: 'TEST_LAP_BOAT_ID', roles: ['base'] },
+      { label: 'testLapNumber', desc: 'Send one fake lap with this number to RegattaUp, then exit; 0 = off', value: config.testLapNumber, envVar: 'TEST_LAP_NUMBER', roles: ['base'] },
     ],
   },
   {
-    title: 'Simulation (sim.*, only used when simulate=true)',
+    title: 'Simulation settings, used only with simulate=true',
     // Only `port` is read on the base side too (SimRadioLink listens on it
     // for sim frames) - every other sim.* field is specifically about
     // simGps.js's fake race track, boat-only.
     roles: ['base', 'boat'],
     rows: [
-      { label: 'port', value: config.sim.port, envVar: 'SIM_PORT', roles: ['base', 'boat'] },
-      { label: 'gpsHz', value: config.sim.gpsHz, envVar: 'SIM_GPS_HZ', unit: 'Hz', roles: ['boat'] },
-      { label: 'upwindSpeedKn', value: config.sim.upwindSpeedKn, envVar: 'SIM_UPWIND_SPEED_KN', unit: 'kn', roles: ['boat'] },
-      { label: 'downwindSpeedKn', value: config.sim.downwindSpeedKn, envVar: 'SIM_DOWNWIND_SPEED_KN', unit: 'kn', roles: ['boat'] },
-      { label: 'lapCount', value: config.sim.lapCount, envVar: 'SIM_LAP_COUNT', unit: 'laps', roles: ['boat'] },
-      { label: 'centerLat', value: config.sim.centerLat, envVar: 'SIM_CENTER_LAT', unit: '°', roles: ['boat'] },
-      { label: 'centerLon', value: config.sim.centerLon, envVar: 'SIM_CENTER_LON', unit: '°', roles: ['boat'] },
-      { label: 'packetLossPct', value: config.sim.packetLossPct, envVar: 'SIM_PACKET_LOSS', unit: '%', roles: ['boat'] },
-      { label: 'startOnly', value: config.sim.startOnly, envVar: 'SIM_START_ONLY', roles: ['boat'] },
-      { label: 'prestartDwellS', value: config.sim.prestartDwellS, envVar: 'SIM_PRESTART_DWELL_S', unit: 's', roles: ['boat'] },
-      { label: 'holdForStart', value: config.sim.holdForStart, envVar: 'SIM_HOLD_FOR_START', roles: ['boat'] },
-      { label: 'foulTest', value: config.sim.foulTest, envVar: 'SIM_FOUL', roles: ['boat'] },
-      { label: 'foulWindwardM', value: config.sim.foulWindwardM, envVar: 'SIM_FOUL_WINDWARD_M', unit: 'm', roles: ['boat'] },
+      { label: 'port', desc: 'UDP port the simulated radio link uses between boats and base', value: config.sim.port, envVar: 'SIM_PORT', roles: ['base', 'boat'] },
+      { label: 'gpsHz', desc: 'Fixes per second from the simulated GPS', value: config.sim.gpsHz, envVar: 'SIM_GPS_HZ', unit: 'Hz', roles: ['boat'] },
+      { label: 'upwindSpeedKn', desc: 'Simulated boat speed sailing upwind', value: config.sim.upwindSpeedKn, envVar: 'SIM_UPWIND_SPEED_KN', unit: 'kn', roles: ['boat'] },
+      { label: 'downwindSpeedKn', desc: 'Simulated boat speed sailing downwind', value: config.sim.downwindSpeedKn, envVar: 'SIM_DOWNWIND_SPEED_KN', unit: 'kn', roles: ['boat'] },
+      { label: 'lapCount', desc: 'Laps each simulated boat sails before stopping', value: config.sim.lapCount, envVar: 'SIM_LAP_COUNT', unit: 'laps', roles: ['boat'] },
+      { label: 'centerLat', desc: "Latitude of the simulated course's centre", value: config.sim.centerLat, envVar: 'SIM_CENTER_LAT', unit: '°', roles: ['boat'] },
+      { label: 'centerLon', desc: "Longitude of the simulated course's centre", value: config.sim.centerLon, envVar: 'SIM_CENTER_LON', unit: '°', roles: ['boat'] },
+      { label: 'packetLossPct', desc: 'Percent of simulated radio frames dropped, to mimic range dropouts', value: config.sim.packetLossPct, envVar: 'SIM_PACKET_LOSS', unit: '%', roles: ['boat'] },
+      { label: 'startOnly', desc: 'Keep simulated boats parked at their start position instead of racing', value: config.sim.startOnly, envVar: 'SIM_START_ONLY', roles: ['boat'] },
+      { label: 'prestartDwellS', desc: 'Seconds a simulated boat waits on the start grid before setting off', value: config.sim.prestartDwellS, envVar: 'SIM_PRESTART_DWELL_S', unit: 's', roles: ['boat'] },
+      { label: 'holdForStart', desc: 'Hold simulated boats on the grid until you press Space', value: config.sim.holdForStart, envVar: 'SIM_HOLD_FOR_START', roles: ['boat'] },
+      { label: 'foulTest', desc: 'Sail one simulated boat back through the lines the wrong way, to test fouls', value: config.sim.foulTest, envVar: 'SIM_FOUL', roles: ['boat'] },
+      { label: 'foulWindwardM', desc: 'How far upwind the foul-test boat goes before turning back', value: config.sim.foulWindwardM, envVar: 'SIM_FOUL_WINDWARD_M', unit: 'm', roles: ['boat'] },
       // These live in course.js, not config.sim - only take effect on a
       // fresh course (see "Changing the course" in the README); a published
       // course already in Redis keeps whatever it was created with
       // regardless of what these currently resolve to.
       {
         label: 'courseMarks',
+        desc: 'Which pair of marks the simulated boats race around',
         value: config.sim.courseMarks,
         envVar: 'SIM_COURSE_MARKS',
         note: 'which mark pair the simulated boats race: 2 letters, windward first, G = green and B = black each (GG, BB, BG, GB)',
@@ -70,24 +73,25 @@ const sections = [
       },
       {
         label: 'courseLengthNm',
+        desc: 'Length of the simulated course, leeward to windward black mark',
         value: COURSE_LENGTH_NM,
         envVar: 'SIM_COURSE_LENGTH_NM',
         unit: 'nm',
         roles: ['boat'],
       },
-      { label: 'startLinePosition', value: START_LINE_POSITION, envVar: 'SIM_START_LINE_POSITION', unit: '%', roles: ['boat'] },
-      { label: 'startLineLengthM', value: START_SIDE_LENGTH_M, unit: 'm', roles: ['boat'] },
-      { label: 'finishLineLengthM', value: FINISH_SIDE_LENGTH_M, unit: 'm', roles: ['boat'] },
-      { label: 'committeeGapM', value: COMMITTEE_GAP_M, envVar: 'SIM_COMMITTEE_GAP_M', unit: 'm', roles: ['boat'] },
+      { label: 'startLinePosition', desc: 'Where the start/finish lines sit along the simulated course (0 = leeward, 100 = windward)', value: START_LINE_POSITION, envVar: 'SIM_START_LINE_POSITION', unit: '%', roles: ['boat'] },
+      { label: 'startLineLengthM', desc: 'Length of the simulated start line (pin to start committee boat)', value: START_SIDE_LENGTH_M, unit: 'm', roles: ['boat'] },
+      { label: 'finishLineLengthM', desc: 'Length of the simulated finish line (finish committee boat to finish mark)', value: FINISH_SIDE_LENGTH_M, unit: 'm', roles: ['boat'] },
+      { label: 'committeeGapM', desc: 'Gap between the start and finish committee boats on the simulated course', value: COMMITTEE_GAP_M, envVar: 'SIM_COMMITTEE_GAP_M', unit: 'm', roles: ['boat'] },
     ],
   },
   {
     title: 'Local UDP broadcast',
     roles: ['base', 'boat'],
     rows: [
-      { label: 'format', value: config.localBroadcast.format, envVar: 'GPS_OUTPUT_FORMAT' },
-      { label: 'address', value: config.localBroadcast.address, envVar: 'UDP_BROADCAST_ADDR' },
-      { label: 'port', value: config.localBroadcast.port, envVar: 'UDP_PORT' },
+      { label: 'format', desc: 'Format of the local UDP position re-broadcast: ubx or nmea', value: config.localBroadcast.format, envVar: 'GPS_OUTPUT_FORMAT' },
+      { label: 'address', desc: 'Address the local UDP position re-broadcast is sent to', value: config.localBroadcast.address, envVar: 'UDP_BROADCAST_ADDR' },
+      { label: 'port', desc: 'Port the local UDP position re-broadcast is sent on', value: config.localBroadcast.port, envVar: 'UDP_PORT' },
     ],
   },
   {
@@ -96,55 +100,55 @@ const sections = [
       // Shared by all three modes: the boat's own GPS, an optional GPS
       // wired directly to the base, and rtkStation.js's entire reason to
       // exist - see config.js's own comment on this section.
-      { label: 'port', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX', roles: ['base', 'boat', 'rtk'] },
-      { label: 'baud', value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud', roles: ['base', 'boat', 'rtk'] },
-      { label: 'logConsole', value: config.gps.logConsole, envVar: 'GPS_LOG', roles: ['base', 'boat', 'rtk'] },
-      { label: 'logReplace', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE', roles: ['base', 'boat', 'rtk'] },
+      { label: 'port', desc: 'Serial port the GPS receiver is connected to', value: config.gps.port, envVar: 'GPS_PORT', note: 'macOS: /dev/cu.usbmodemXXXX', roles: ['base', 'boat', 'rtk'] },
+      { label: 'baud', desc: "Serial speed of the GPS link; must match the receiver's UART setting", value: config.gps.baud, envVar: 'GPS_BAUD', unit: 'baud', roles: ['base', 'boat', 'rtk'] },
+      { label: 'logConsole', desc: 'Print each GPS fix to the console', value: config.gps.logConsole, envVar: 'GPS_LOG', roles: ['base', 'boat', 'rtk'] },
+      { label: 'logReplace', desc: 'Overwrite the printed fix on one line instead of scrolling', value: config.gps.logReplace, envVar: 'GPS_LOG_REPLACE', roles: ['base', 'boat', 'rtk'] },
       // rtk only - plain `npm run base` opens the same GPS_PORT but never
       // wires the TMODE3/survey-in controls that actually read these (see
       // baseStation.js's rtkControlsEnabled); `basertk` sees them via the
       // rtk half of renderConfigPage's base∪rtk union, not this tag.
-      { label: 'svinMinDurS', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's', roles: ['rtk'] },
-      { label: 'svinAccLimitMm', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm', roles: ['rtk'] },
+      { label: 'svinMinDurS', desc: 'Shortest survey-in before the RTK base accepts its own position', value: config.gps.svinMinDurS, envVar: 'GPS_SVIN_MIN_DUR_S', unit: 's', roles: ['rtk'] },
+      { label: 'svinAccLimitMm', desc: 'Accuracy the survey-in position must reach before it is accepted', value: config.gps.svinAccLimitMm, envVar: 'GPS_SVIN_ACC_LIMIT_MM', unit: 'mm', roles: ['rtk'] },
     ],
   },
   {
     title: 'RTCM corrections',
     roles: ['boat'],
     rows: [
-      { label: 'log', value: config.rtcm.log, envVar: 'RTCM_LOG', note: 'old name GPS_LOG_RTCM still works' },
-      { label: 'forward', value: config.rtcm.forward, envVar: 'RTCM_FORWARD' },
+      { label: 'log', desc: 'Print RTK correction messages: 1 = a line per second, 2 = every message', value: config.rtcm.log, envVar: 'RTCM_LOG', note: 'old name GPS_LOG_RTCM still works' },
+      { label: 'forward', desc: 'Pass RTK corrections heard on the telemetry radio on to the GPS receiver', value: config.rtcm.forward, envVar: 'RTCM_FORWARD' },
     ],
   },
   {
     title: 'Shared-radio transmit scheduling',
     roles: ['base', 'boat'],
     rows: [
-      { label: 'enabled', value: config.txGate.enabled, envVar: 'TX_GATE' },
-      { label: 'blockBeforeMs', value: config.txGate.blockBeforeMs, envVar: 'TX_GATE_BEFORE_MS', unit: 'ms' },
-      { label: 'blockAfterMs', value: config.txGate.blockAfterMs, envVar: 'TX_GATE_AFTER_MS', unit: 'ms' },
-      { label: 'guardMs', value: config.txGate.guardMs, envVar: 'TX_GATE_GUARD_MS', unit: 'ms' },
-      { label: 'maxQueue', value: config.txGate.maxQueue, envVar: 'TX_GATE_MAX_QUEUE' },
-      { label: 'maxAgeMs', value: config.txGate.maxAgeMs, envVar: 'TX_GATE_MAX_AGE_MS', unit: 'ms' },
-      { label: 'slotMode', value: config.txGate.slot.enabled, envVar: 'TX_SLOT_MODE', roles: ['boat', 'base'] },
-      { label: 'rtcmWatchdog', value: config.txGate.rtcmWatch.enabled, envVar: 'RTCM_WATCHDOG', roles: ['boat'] },
-      { label: 'rtcmWatchdogWarnS', value: config.txGate.rtcmWatch.warnS, envVar: 'RTCM_WATCHDOG_WARN_S', unit: 's', roles: ['boat'] },
-      { label: 'slot', value: config.txGate.slot.index === null ? '(from boat id)' : config.txGate.slot.index, envVar: 'TX_SLOT', roles: ['boat'] },
-      { label: 'slotCount', value: config.txGate.slot.count, envVar: 'TX_SLOT_COUNT', roles: ['boat'] },
-      { label: 'parkedFirstS', value: config.txGate.slot.parkedFirstS, envVar: 'TX_PARKED_FIRST_S', unit: 's', roles: ['boat'] },
-      { label: 'parkDwellS', value: config.txGate.slot.parkDwellS, envVar: 'TX_SLOT_PARK_DWELL_S', unit: 's', roles: ['boat', 'base'] },
-      { label: 'parkedRepeatS', value: config.txGate.slot.parkedRepeatS, envVar: 'TX_PARKED_REPEAT_S', unit: 's', roles: ['boat'] },
-      { label: 'slotWidthMs', value: config.txGate.slot.widthMs, envVar: 'TX_SLOT_MS', unit: 'ms', roles: ['boat'] },
+      { label: 'enabled', desc: "Hold telemetry sends clear of the base's RTK correction bursts", value: config.txGate.enabled, envVar: 'TX_GATE' },
+      { label: 'blockBeforeMs', desc: 'How long before a correction burst sends are held off', value: config.txGate.blockBeforeMs, envVar: 'TX_GATE_BEFORE_MS', unit: 'ms' },
+      { label: 'blockAfterMs', desc: 'How long after a correction burst starts sends stay held off', value: config.txGate.blockAfterMs, envVar: 'TX_GATE_AFTER_MS', unit: 'ms' },
+      { label: 'guardMs', desc: 'Extra margin either side of the hold, for timing jitter', value: config.txGate.guardMs, envVar: 'TX_GATE_GUARD_MS', unit: 'ms' },
+      { label: 'maxQueue', desc: 'Most frames held at once; beyond this the oldest is dropped', value: config.txGate.maxQueue, envVar: 'TX_GATE_MAX_QUEUE' },
+      { label: 'maxAgeMs', desc: 'A held frame older than this is dropped rather than sent stale', value: config.txGate.maxAgeMs, envVar: 'TX_GATE_MAX_AGE_MS', unit: 'ms' },
+      { label: 'slotMode', desc: 'Give each boat its own time slot in the radio cycle', value: config.txGate.slot.enabled, envVar: 'TX_SLOT_MODE', roles: ['boat', 'base'] },
+      { label: 'rtcmWatchdog', desc: "Warn on the console when the base's correction bursts aren't heard", value: config.txGate.rtcmWatch.enabled, envVar: 'RTCM_WATCHDOG', roles: ['boat'] },
+      { label: 'rtcmWatchdogWarnS', desc: 'Seconds without correction bursts before that warning', value: config.txGate.rtcmWatch.warnS, envVar: 'RTCM_WATCHDOG_WARN_S', unit: 's', roles: ['boat'] },
+      { label: 'slot', desc: 'Pin this boat to a fixed slot instead of one the base assigns', value: config.txGate.slot.index === null ? '(from boat id)' : config.txGate.slot.index, envVar: 'TX_SLOT', roles: ['boat'] },
+      { label: 'slotCount', desc: 'Number of boat slots per cycle; unset = worked out from the correction interval', value: config.txGate.slot.count, envVar: 'TX_SLOT_COUNT', roles: ['boat'] },
+      { label: 'parkedFirstS', desc: 'Longest random wait before a boat parked on the grid first reports', value: config.txGate.slot.parkedFirstS, envVar: 'TX_PARKED_FIRST_S', unit: 's', roles: ['boat'] },
+      { label: 'parkDwellS', desc: 'Seconds inside the start zone before a boat counts as parked', value: config.txGate.slot.parkDwellS, envVar: 'TX_SLOT_PARK_DWELL_S', unit: 's', roles: ['boat', 'base'] },
+      { label: 'parkedRepeatS', desc: "Re-send a parked boat's first report after about this long; 0 = no repeat", value: config.txGate.slot.parkedRepeatS, envVar: 'TX_PARKED_REPEAT_S', unit: 's', roles: ['boat'] },
+      { label: 'slotWidthMs', desc: 'Width of each time slot', value: config.txGate.slot.widthMs, envVar: 'TX_SLOT_MS', unit: 'ms', roles: ['boat'] },
     ],
   },
   {
-    title: 'Radio (telemetry)',
+    title: 'Telemetry radio',
     // Not rtk - that mode never opens the telemetry radio at all.
     roles: ['base', 'boat'],
     rows: [
-      { label: 'enabled', value: config.radio.enabled, envVar: 'RADIO_ENABLED' },
-      { label: 'port', value: config.radio.port, envVar: 'RADIO_PORT', note: 'macOS: /dev/cu.usbserial-XXXX' },
-      { label: 'baud', value: config.radio.baud, envVar: 'RADIO_BAUD', unit: 'baud' },
+      { label: 'enabled', desc: 'Open the telemetry radio; off runs without one (fixes still log)', value: config.radio.enabled, envVar: 'RADIO_ENABLED' },
+      { label: 'port', desc: 'Serial port the telemetry radio (XBee) is connected to', value: config.radio.port, envVar: 'RADIO_PORT', note: 'macOS: /dev/cu.usbserial-XXXX' },
+      { label: 'baud', desc: "Serial speed of the radio link; must match the XBee's setting", value: config.radio.baud, envVar: 'RADIO_BAUD', unit: 'baud' },
     ],
   },
   {
@@ -155,6 +159,7 @@ const sections = [
     rows: [
       {
         label: 'boatId',
+        desc: "This rover's 5-character id, on the radio and in RegattaUp",
         value: config.boatId,
         envVar: 'BOAT_ID',
         // BOAT_ID unset means this value came from this device's own
@@ -173,30 +178,33 @@ const sections = [
       // boat doesn't see them.
       {
         label: 'markName',
+        desc: 'The course mark this mark rover stands for',
         value: config.markName || '(not assigned)',
         envVar: 'MARK_NAME',
-        note: `which course mark THIS device auto-posts its own GPS position as, if any - one of: ${MAP_MARK_ORDER.join(', ')}`,
+        note: `one of: ${MAP_MARK_ORDER.join(', ')}`,
         roles: ['mark'],
       },
       {
         label: 'markDistanceM',
+        desc: 'How far the mark must move before its new position is sent',
         value: config.markDistanceM,
         envVar: 'MARK_DISTANCE_M',
         unit: 'm',
-        note: 'how far the assigned mark has to actually move before this device posts its new position to Redis, same distance-gated spirit as txDistanceM below but for a mark buoy instead of a boat',
         roles: ['mark'],
       },
       {
         label: 'markHeartbeatS',
+        desc: "Re-send the mark's position this often even when it hasn't moved",
         value: config.markHeartbeatMs / 1000,
         envVar: 'MARK_HEARTBEAT_S',
         unit: 's',
-        note: "re-sends the mark's position this often even when it hasn't moved, so the base's map doesn't show a still mark as stale; 0 turns it off",
+        note: "so the base's map doesn't show a still mark as stale; 0 turns it off",
         roles: ['mark'],
       },
-      { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
+      { label: 'txDistanceM', desc: 'How far the boat must move before a new position is sent', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
         label: 'txFinishApproachZoneM',
+        desc: 'Within this distance of the finish, the tighter finish gate below applies',
         value: config.txFinishApproachZoneM,
         envVar: 'TX_FINISH_APPROACH_ZONE_M',
         unit: 'm',
@@ -205,14 +213,15 @@ const sections = [
       },
       {
         label: 'txFinishDistanceM',
+        desc: 'How far the boat must move between sends while approaching the finish',
         value: config.txFinishDistanceM,
         envVar: 'TX_FINISH_DISTANCE_M',
         unit: 'm',
-        note: 'replaces txDistanceM while closing on the finish upwind, within txFinishApproachZoneM',
         roles: ['boat'],
       },
       {
         label: 'txIntervalMs',
+        desc: 'Send a position at least this often, even when not moving',
         value: config.txIntervalMs,
         envVar: 'TX_INTERVAL_S',
         unit: 'ms',
@@ -221,6 +230,7 @@ const sections = [
       },
       {
         label: 'txDelta',
+        desc: 'Pack batched fixes into compact delta-coded radio frames',
         value: config.txDelta,
         envVar: 'TX_DELTA',
         note: 'on (default) = batches go out as delta-coded frames (up to 8 fixes in 83 bytes); off = the older batch frame (4 fixes in 84) - update the base first',
@@ -228,6 +238,7 @@ const sections = [
       },
       {
         label: 'txBatchSize',
+        desc: 'Most fixes sent together in one radio frame',
         value: config.txBatchSize,
         envVar: 'TX_BATCH_SIZE',
         note: '8 (default) = the most one delta frame carries (83 bytes; 4 with TX_DELTA=0); 1 = one frame per fix, unchanged from before batching existed - see README\'s "Batching multiple fixes per send"',
@@ -235,29 +246,30 @@ const sections = [
       },
       {
         label: 'pingResponseJitterMs',
+        desc: 'Longest random delay before answering the base\'s "Ping fleet"',
         value: config.pingResponseJitterMs,
         envVar: 'PING_RESPONSE_JITTER_MS',
         unit: 'ms',
-        note: 'max random delay before replying to "Ping fleet"',
         roles: ['boat'],
       },
       {
         label: 'helloStartupJitterMs',
+        desc: 'Longest random delay before the startup hello (and each retry)',
         value: config.helloStartupJitterMs,
         envVar: 'HELLO_STARTUP_JITTER_MS',
         unit: 'ms',
-        note: 'max random delay before the first hello announcement (and every retry after it)',
         roles: ['boat'],
       },
       {
         label: 'marksBroadcastIntervalMs',
+        desc: 'How often the base re-sends the course marks to every boat',
         value: config.marksBroadcastIntervalMs,
         envVar: 'MARKS_BROADCAST_INTERVAL_MS',
         unit: 'ms',
         roles: ['base'],
       },
-      { label: 'logMarksBroadcast', value: config.logMarksBroadcast, envVar: 'LOG_MARKS_BROADCAST', roles: ['base'] },
-      { label: 'logReceivedFrames', value: config.logReceivedFrames, envVar: 'LOG_RECEIVED_FIXES', roles: ['base'] },
+      { label: 'logMarksBroadcast', desc: 'Print each course-marks broadcast to the console', value: config.logMarksBroadcast, envVar: 'LOG_MARKS_BROADCAST', roles: ['base'] },
+      { label: 'logReceivedFrames', desc: 'Print every fix the base receives to the console', value: config.logReceivedFrames, envVar: 'LOG_RECEIVED_FIXES', roles: ['base'] },
     ],
   },
   {
@@ -266,9 +278,10 @@ const sections = [
     // course, nothing to log).
     roles: ['base', 'boat'],
     rows: [
-      { label: 'logDir', value: config.logDir, envVar: 'LOG_DIR' },
-      { label: 'logRetentionDays', value: config.logRetentionDays, envVar: 'LOG_RETENTION_DAYS', unit: 'days' },
-      { label: 'logChunkMinutes', value: config.logChunkMinutes, envVar: 'LOG_CHUNK_MINUTES', unit: 'min', roles: ['boat'] },
+      { label: 'logDir', desc: "Folder for the base's CSV log of received fixes", value: config.logDir, envVar: 'BASE_LOG_DIR', roles: ['base'] },
+      { label: 'boatLogDir', desc: "Folder for the boat's own CSV log (point it at the SD card)", value: config.boatLogDir, envVar: 'BOAT_LOG_DIR', roles: ['boat'] },
+      { label: 'logRetentionDays', desc: 'CSV logs older than this are deleted automatically', value: config.logRetentionDays, envVar: 'LOG_RETENTION_DAYS', unit: 'days' },
+      { label: 'logChunkMinutes', desc: 'Minutes of fixes per boat log file; a finished file can be uploaded', value: config.logChunkMinutes, envVar: 'LOG_CHUNK_MINUTES', unit: 'min', roles: ['boat'] },
     ],
   },
   {
@@ -276,96 +289,104 @@ const sections = [
     // Not rtk - it has no SD-card logs to upload and doesn't serve uploads.
     roles: ['base', 'boat'],
     rows: [
-      { label: 'enabled', value: config.upload.enabled, envVar: 'UPLOAD_ENABLED', roles: ['boat'] },
-      { label: 'logSuccess', value: config.upload.logSuccess, envVar: 'UPLOAD_LOG' },
-      { label: 'port', value: config.upload.port, envVar: 'UPLOAD_PORT', roles: ['base'] },
-      { label: 'dir', value: config.upload.dir, envVar: 'UPLOAD_DIR', roles: ['base'] },
-      { label: 'baseIp', value: config.upload.baseIp || '(auto-detect)', envVar: 'BASE_IP', roles: ['base'] },
-      { label: 'checkIntervalMs', value: config.upload.checkIntervalMs, envVar: 'UPLOAD_CHECK_INTERVAL_MS', unit: 'ms', roles: ['boat'] },
-      { label: 'timeoutMs', value: config.upload.timeoutMs, envVar: 'UPLOAD_TIMEOUT_MS', unit: 'ms', roles: ['boat'] },
+      { label: 'enabled', desc: 'Upload finished log files to the base when in WiFi range', value: config.upload.enabled, envVar: 'UPLOAD_ENABLED', roles: ['boat'] },
+      { label: 'logSuccess', desc: 'Print a console line for each successful upload', value: config.upload.logSuccess, envVar: 'UPLOAD_LOG' },
+      { label: 'port', desc: 'Port the base receives log uploads on', value: config.upload.port, envVar: 'UPLOAD_PORT', roles: ['base'] },
+      { label: 'dir', desc: "Folder the base saves the boats' uploaded logs in", value: config.upload.dir, envVar: 'BASE_UPLOAD_DIR', roles: ['base'] },
+      { label: 'baseIp', desc: "Override the base's LAN address that boats are told to upload to", value: config.upload.baseIp || '(auto-detect)', envVar: 'BASE_IP', roles: ['base'] },
+      { label: 'checkIntervalMs', desc: 'How often a boat checks whether the base is reachable to upload', value: config.upload.checkIntervalMs, envVar: 'UPLOAD_CHECK_INTERVAL_MS', unit: 'ms', roles: ['boat'] },
+      { label: 'timeoutMs', desc: 'How long a boat waits on the base before giving up an upload attempt', value: config.upload.timeoutMs, envVar: 'UPLOAD_TIMEOUT_MS', unit: 'ms', roles: ['boat'] },
     ],
   },
   {
     title: 'Admin dashboard',
     // Shared by all three - each mode has its own dashboard on this port.
     roles: ['base', 'boat', 'rtk'],
-    rows: [{ label: 'port', value: config.admin.port, envVar: 'ADMIN_PORT' }],
+    rows: [{ label: 'port', desc: "Port this machine's admin dashboard is served on", value: config.admin.port, envVar: 'ADMIN_PORT' }],
   },
   {
     title: 'Redis',
     roles: ['base'],
     rows: [
-      { label: 'url', value: config.redis.url || '(unset)', envVar: 'REDIS_URL' },
-      { label: 'env preset', value: process.env.REDIS_ENV || 'local', envVar: 'REDIS_ENV' },
-      { label: 'connection.host', value: config.redis.connection.host },
-      { label: 'connection.port', value: config.redis.connection.port },
-      { label: 'connection.username', value: config.redis.connection.username || '(none)', envVar: 'REDIS_USERNAME' },
+      { label: 'url', desc: 'Full Redis connection URL; overrides the preset and settings below', value: config.redis.url || '(unset)', envVar: 'REDIS_URL' },
+      { label: 'env preset', desc: 'Named Redis connection preset (local or production)', value: process.env.REDIS_ENV || 'local', envVar: 'REDIS_ENV' },
+      { label: 'connection.host', desc: 'Redis server host, from the preset', value: config.redis.connection.host },
+      { label: 'connection.port', desc: 'Redis server port, from the preset', value: config.redis.connection.port },
+      { label: 'connection.username', desc: 'Redis username', value: config.redis.connection.username || '(none)', envVar: 'REDIS_USERNAME' },
       {
         label: 'connection.password',
+        desc: 'Redis password (never shown)',
         value: config.redis.connection.password ? '***REDACTED***' : '(none)',
         envVar: 'REDIS_PASSWORD',
       },
-      { label: 'connection.tls', value: !!config.redis.connection.tls, envVar: 'REDIS_TLS' },
-      { label: 'minMovementM', value: config.redis.minMovementM, envVar: 'REDIS_MIN_MOVEMENT_M', unit: 'm' },
+      { label: 'connection.tls', desc: 'Connect to Redis over TLS', value: !!config.redis.connection.tls, envVar: 'REDIS_TLS' },
+      { label: 'minMovementM', desc: 'Skip storing a fix unless the boat moved at least this far', value: config.redis.minMovementM, envVar: 'REDIS_MIN_MOVEMENT_M', unit: 'm' },
       {
         label: 'trackRetentionHours',
+        desc: 'How long fixes are kept in Redis',
         value: config.redis.trackRetentionHours,
         envVar: 'REDIS_TRACK_RETENTION_HOURS',
         unit: 'h',
       },
-      { label: 'boatTrackMinutes', value: config.redis.boatTrackMinutes, envVar: 'REDIS_BOAT_TRACK_MINUTES', unit: 'min' },
-      { label: 'memoryLimitMb', value: config.redis.memoryLimitMb, envVar: 'REDIS_MEMORY_LIMIT_MB', unit: 'MB' },
+      { label: 'boatTrackMinutes', desc: "Minutes of each boat's own recent track kept; 0 = all of it", value: config.redis.boatTrackMinutes, envVar: 'REDIS_BOAT_TRACK_MINUTES', unit: 'min' },
+      { label: 'memoryLimitMb', desc: "Redis memory size the Data page's memory card measures against", value: config.redis.memoryLimitMb, envVar: 'REDIS_MEMORY_LIMIT_MB', unit: 'MB' },
     ],
   },
   {
     title: 'RegattaUp webhooks',
     roles: ['base'],
     rows: [
-      { label: 'webhookUrl', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
-      { label: 'enabled', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_ENABLED' },
-      { label: 'activeRegattasUrl', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_ACTIVE_REGATTAS_URL' },
+      { label: 'webhookUrl', desc: 'RegattaUp address race events (laps, on-grid, roundings, fouls) are posted to', value: config.regattaup.webhookUrl, envVar: 'REGATTAUP_WEBHOOK_URL' },
+      { label: 'enabled', desc: 'Post race events to RegattaUp at all', value: config.regattaup.enabled, envVar: 'REGATTAUP_WEBHOOK_ENABLED' },
+      { label: 'activeRegattasUrl', desc: 'Where the list of active regattas is fetched from', value: config.regattaup.activeRegattasUrl, envVar: 'REGATTAUP_ACTIVE_REGATTAS_URL' },
       {
         label: 'defaultRegatta',
+        desc: 'The regatta this base reports for',
         value: config.regattaup.defaultRegatta ? `${config.regattaup.defaultRegatta.id}${config.regattaup.defaultRegatta.name ? ` (${config.regattaup.defaultRegatta.name})` : ''}` : '(none)',
         envVar: 'REGATTAUP_REGATTA_ID',
         note: 'also persisted to regatta-id.txt by this env var or by picking a regatta from the admin dashboard/startup prompt',
       },
       {
         label: 'activeRegattasRefreshIntervalMs',
+        desc: 'How often the regatta list is refreshed',
         value: config.regattaup.activeRegattasRefreshIntervalMs,
         envVar: 'REGATTAUP_REGATTAS_REFRESH_INTERVAL_MS',
         unit: 'ms',
       },
       {
         label: 'logActiveRegattas',
+        desc: 'Print each successful regatta-list refresh',
         value: config.regattaup.logActiveRegattas,
         envVar: 'REGATTAUP_LOG_ACTIVE_REGATTAS',
       },
-      { label: 'queueDbPath', value: config.regattaup.queueDbPath, envVar: 'REGATTAUP_QUEUE_DB' },
-      { label: 'postIntervalMs', value: config.regattaup.postIntervalMs, envVar: 'REGATTAUP_POST_INTERVAL_MS', unit: 'ms' },
-      { label: 'maxInFlight', value: config.regattaup.maxInFlight, envVar: 'REGATTAUP_MAX_IN_FLIGHT' },
-      { label: 'requestTimeoutMs', value: config.regattaup.requestTimeoutMs, envVar: 'REGATTAUP_REQUEST_TIMEOUT_MS', unit: 'ms' },
-      { label: 'maxBackoffMs', value: config.regattaup.maxBackoffMs, envVar: 'REGATTAUP_MAX_BACKOFF_MS', unit: 'ms' },
-      { label: 'onGridZoneM', value: config.regattaup.onGridZoneM, envVar: 'REGATTAUP_ONGRID_ZONE_M', unit: 'm' },
-      { label: 'onGridQueueDbPath', value: config.regattaup.onGridQueueDbPath, envVar: 'REGATTAUP_ONGRID_QUEUE_DB' },
+      { label: 'queueDbPath', desc: 'File lap events wait in until RegattaUp accepts them', value: config.regattaup.queueDbPath, envVar: 'REGATTAUP_QUEUE_DB' },
+      { label: 'postIntervalMs', desc: 'Shortest gap between webhook posts', value: config.regattaup.postIntervalMs, envVar: 'REGATTAUP_POST_INTERVAL_MS', unit: 'ms' },
+      { label: 'maxInFlight', desc: 'Most webhook requests waiting on RegattaUp at once', value: config.regattaup.maxInFlight, envVar: 'REGATTAUP_MAX_IN_FLIGHT' },
+      { label: 'requestTimeoutMs', desc: 'Give up on an unanswered webhook request after this long, then retry', value: config.regattaup.requestTimeoutMs, envVar: 'REGATTAUP_REQUEST_TIMEOUT_MS', unit: 'ms' },
+      { label: 'maxBackoffMs', desc: 'Longest wait between retries of a failing webhook event', value: config.regattaup.maxBackoffMs, envVar: 'REGATTAUP_MAX_BACKOFF_MS', unit: 'ms' },
+      { label: 'onGridZoneM', desc: 'How close to the start line a boat must be to count as on-grid', value: config.regattaup.onGridZoneM, envVar: 'REGATTAUP_ONGRID_ZONE_M', unit: 'm' },
+      { label: 'onGridQueueDbPath', desc: 'File on-grid events wait in until RegattaUp accepts them', value: config.regattaup.onGridQueueDbPath, envVar: 'REGATTAUP_ONGRID_QUEUE_DB' },
       {
         label: 'markRoundingEnabled',
+        desc: 'Report mark roundings to RegattaUp',
         value: config.regattaup.markRoundingEnabled,
         envVar: 'REGATTAUP_MARK_ROUNDING_ENABLED',
       },
       {
         label: 'markRoundingExtensionM',
+        desc: 'How far out past a mark the rounding gate reaches',
         value: config.regattaup.markRoundingExtensionM,
         envVar: 'REGATTAUP_MARK_ROUNDING_EXTENSION_M',
         unit: 'm',
       },
       {
         label: 'markRoundingQueueDbPath',
+        desc: 'File mark-rounding events wait in until RegattaUp accepts them',
         value: config.regattaup.markRoundingQueueDbPath,
         envVar: 'REGATTAUP_MARK_ROUNDING_QUEUE_DB',
       },
-      { label: 'foulEnabled', value: config.regattaup.foulEnabled, envVar: 'REGATTAUP_FOUL_ENABLED' },
-      { label: 'foulQueueDbPath', value: config.regattaup.foulQueueDbPath, envVar: 'REGATTAUP_FOUL_QUEUE_DB' },
+      { label: 'foulEnabled', desc: 'Report fouls (wrong-way line crossings) to RegattaUp', value: config.regattaup.foulEnabled, envVar: 'REGATTAUP_FOUL_ENABLED' },
+      { label: 'foulQueueDbPath', desc: 'File foul events wait in until RegattaUp accepts them', value: config.regattaup.foulQueueDbPath, envVar: 'REGATTAUP_FOUL_QUEUE_DB' },
     ],
   },
 ];
@@ -448,6 +469,28 @@ function modesFor(row, section) {
   return MODES.map((m) => m.mode).filter((mode) => visibleTo(section, mode) && visibleTo(row, mode));
 }
 
+// "all modes", or the modes listed ("base, basertk"). mark formats each mode name - the callers use it to bold the
+// active mode.
+function modesText(modes, mark = (mode) => mode) {
+  return modes.length === MODES.length ? 'all modes' : modes.map(mark).join(', ');
+}
+
+// The modes that read anything in a section: the union of its rows' modes.
+function sectionModes(section) {
+  return MODES.map((m) => m.mode).filter((mode) => section.rows.some((row) => modesFor(row, section).includes(mode)));
+}
+
+// A section's heading with the modes it applies to, worked out from its rows' tags: "Redis (base, basertk)".
+function sectionHeading(section, mark) {
+  return `${section.title} (${modesText(sectionModes(section), mark)})`;
+}
+
+// A row's own modes when fewer modes read it than its section as a whole, else null (the heading already says).
+function rowModesText(row, section, mark) {
+  const modes = modesFor(row, section);
+  return modes.length === sectionModes(section).length ? null : modesText(modes, mark);
+}
+
 // The sections and rows one mode reads; a section left with no rows is dropped.
 function sectionsFor(mode, list = sections) {
   return list
@@ -463,25 +506,27 @@ function sectionsFor(mode, list = sections) {
 // startup from env vars, not something that changes while the process
 // runs, so there's nothing to poll/refresh.
 //
-// role (one of MODES' modes), when given, keeps only the sections/rows that
-// mode reads (see visibleTo below) - a section that ends up with zero
-// visible rows is dropped entirely rather than shown empty. Each dashboard
-// passes its own role so an operator only ever sees settings that process
-// actually reads, not the other modes' unrelated knobs (radio/course for
-// rtk, Redis/RegattaUp for boat, sim-race tuning for base, ...).
-//
-// Omit role to show everything unfiltered - the safe fallback for any
-// caller that isn't a specific mode.
+// role (one of MODES' modes) is the dashboard's own mode: it is marked as
+// running, and the settings it reads come first. Every setting is still
+// listed - the ones only other modes read follow, dimmed - so one page shows
+// what each mode would use. Omit role for a plain list with no mode marked.
 // navHtml/navCss (optional): the admin's tab bar, shown instead of the plain back link.
 function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
   const modes = role
     ? modesSections(role === 'base' && config.markMode ? 'base (MARK_MODE=1)' : role, [role], 'the npm run script this process was started as')
     : [];
-  const sectionsToRender = role ? [...modes, ...sectionsFor(role)] : sections;
-  const sectionsHtml = sectionsToRender
-    .map((section) => {
+  // Every setting is listed: the sections this mode reads first, then the ones only other modes read, dimmed. Headings
+  // say which modes read each section; a row read by fewer modes than its section says so itself, and a row this mode
+  // doesn't read (in a section it otherwise does) is dimmed.
+  const used = (section) => !role || sectionModes(section).includes(role);
+  const mark = (mode) => (mode === role ? `<strong class="active-mode">${mode}</strong>` : mode);
+  const renderSection = (section, { isModes = false } = {}) => {
       const rows = section.rows
-        .map(({ label, value, envVar, inverted, unit, note }) => {
+        .map((row) => {
+          const { label, desc, value, envVar, inverted, unit, note } = row;
+          const rowModes = isModes ? null : rowModesText(row, section, mark);
+          // A section this mode doesn't read is dimmed as a whole, so its rows aren't dimmed again.
+          const rowUsed = isModes || !role || !used(section) || modesFor(row, section).includes(role);
           // Env Var is shown unconditionally (not just once overridden) -
           // this is the actual command-line/`.env` knob for this setting,
           // so it should be visible right next to its current value even
@@ -500,6 +545,7 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
           // resolved value itself.
           const extraLines = [];
           if (note) extraLines.push(note);
+          if (rowModes) extraLines.push(`only ${rowModes}${rowUsed ? '' : ` - not used in ${role} mode`}`);
           // An inverted flag names the env var the OPPOSITE of the resolved
           // setting shown here - "enabled: true" sitting next to a bare
           // `_DISABLED`-style var name reads like that flag itself is true.
@@ -517,23 +563,30 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
             extraLines.length > 0
               ? `${formatValue(value, unit)}${extraLines.map((line) => `<div class="muted" style="font-size:11px;">${line}</div>`).join('')}`
               : formatValue(value, unit);
-          return `<tr>
-            <td>${label}</td>
+          return `<tr${rowUsed ? '' : ' class="other-mode"'}>
+            <td>${label}${desc ? `<div class="desc">${desc}</div>` : ''}</td>
             <td>${envVarHtml}</td>
             <td>${valueHtml}</td>
             <td>${statusHtml}</td>
           </tr>`;
         })
         .join('');
-      return `<section>
-        <h2>${section.title}</h2>
+      return `<section${used(section) || isModes ? '' : ' class="other-mode"'}>
+        <h2>${isModes ? section.title : sectionHeading(section, mark)}</h2>
         <table>
           <thead><tr><th>Setting</th><th>Env Var</th><th>Value</th><th>Status</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </section>`;
-    })
-    .join('');
+  };
+  const otherModes = sections.filter((section) => !used(section));
+  const sectionsHtml = [
+    ...modes.map((section) => renderSection(section, { isModes: true })),
+    ...sections.filter(used).map((section) => renderSection(section)),
+    ...(otherModes.length
+      ? [`<div class="other-heading">Settings only other modes use - not used in ${role} mode</div>`, ...otherModes.map((section) => renderSection(section))]
+      : []),
+  ].join('');
 
   return `<!doctype html>
 <html>
@@ -562,6 +615,10 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
   tr:not(:last-child) td { border-bottom: 1px solid #1c222b; }
   .muted { color: #8b94a3; }
   .overridden { color: #e3b341; font-weight: 600; }
+  .other-mode { opacity: 0.45; }
+  .active-mode { color: #e6e9ef; font-weight: 700; }
+  .desc { color: #8b94a3; font-size: 11px; margin-top: 2px; max-width: 340px; }
+  .other-heading { margin: 36px 0 14px; padding-top: 14px; border-top: 1px solid #262c36; color: #8b94a3; font-size: 13px; }
   code { background: #1c222b; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
@@ -573,10 +630,11 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
   <div class="subtitle">
     ${navHtml ? '' : '<a href="/">&larr; back to dashboard</a> &nbsp;·&nbsp; '}every default plus whatever's actually been overridden via environment variables or .env - same data as <code>npm run print-config</code>
     &nbsp;·&nbsp; "Env Var" is the command-line/.env variable that sets each value; yellow "Status" means it's been overridden from its default
+    ${role ? `<br>The modes in brackets after each heading are the ones that read those settings; <strong class="active-mode">${role}</strong> in bold is the mode this dashboard is running. Dimmed settings aren't used in ${role} mode - they're listed so one page shows every mode's settings.` : ''}
   </div>
   ${sectionsHtml}
 </body>
 </html>`;
 }
 
-module.exports = { sections, MODES, formatValue, overrideTag, modesSections, modesFor, sectionsFor, renderConfigPage };
+module.exports = { sections, MODES, formatValue, overrideTag, modesSections, modesFor, sectionHeading, rowModesText, sectionsFor, renderConfigPage };

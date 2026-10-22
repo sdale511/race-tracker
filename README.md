@@ -1356,9 +1356,12 @@ then **Available modes**: all five modes (boat, mark, base, basertk, rtk) with t
 the running one marked. `npm run print-config` starts with the same list, working out the running mode from whichever
 of the units above is active; it says "unknown" when none is (macOS, or the app started by hand in a terminal).
 
-Each mode's Config tab shows only the settings that mode reads. `npm run print-config` prints every setting, each
-labelled with the modes that read it (`[boat, mark]`, `[base, basertk]`, `[all modes]`, ...); add `--mode <mode>` to print
-just one mode's settings, exactly as its Config tab shows them:
+Every setting is listed on each Config tab and in `npm run print-config`; on the Config tab each one has a short
+description of what it controls under its name. Each section heading ends with the modes that
+read it, worked out from the settings' own tags - `Redis (base, basertk)`, `GPS receiver (all modes)` - and a setting
+read by fewer modes than its section says so itself (`only boat, mark` on the page, `[boat, mark]` in print-config). On a
+Config tab the sections that mode reads come first, and settings it doesn't read are dimmed, with the sections only
+other modes use at the bottom. Add `--mode <mode>` to print-config to print just the settings one mode reads:
 ```
 npm run print-config -- --mode mark
 ```

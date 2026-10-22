@@ -1,13 +1,13 @@
 const { execFileSync } = require('child_process');
-const { sections, MODES, formatValue, overrideTag, modesSections, modesFor, sectionsFor } = require('./configReport');
+const { sections, MODES, formatValue, overrideTag, modesSections, sectionHeading, rowModesText, sectionsFor } = require('./configReport');
 
 // Prints the fully-resolved configuration - see configReport.js for the
 // section/row data shared with the admin dashboards' GET /config page.
 // Secrets (the Redis password) are redacted, never printed even in a
 // debug tool.
 //
-// npm run print-config                    every setting, each labelled with the modes that read it
-// npm run print-config -- --mode <mode>   just the settings that mode reads, as its own /config page shows them
+// npm run print-config                    every setting; each heading says which modes read the section
+// npm run print-config -- --mode <mode>   just the settings that mode reads
 
 const MODE_NAMES = MODES.map((m) => m.mode);
 // --mode boat or --mode=boat; null when not given.
@@ -27,7 +27,7 @@ console.log('race-tracker resolved configuration');
 console.log(
   onlyMode
     ? `settings read in ${onlyMode} mode (drop --mode to see every setting)\n`
-    : 'every setting, labelled [with the modes that read it]; --mode <mode> shows just one mode\n'
+    : 'every setting: (modes) after a heading = the modes that read it, [modes] on a row = fewer do\n'
 );
 
 // This script runs as its own process, so it can't ask the app which mode it is. On a Pi set up with
@@ -53,6 +53,12 @@ const modes = modesSections(
   'from the race-tracker systemd service running on this machine'
 );
 
+// The active mode - the --mode given, else the one running service - is bolded wherever modes are listed, on a
+// terminal only (piped to a file it would be raw escape codes). visibleLength skips those codes when fitting 100 columns.
+const activeMode = onlyMode || (running.length === 1 ? running[0] : null);
+const mark = (mode) => (mode === activeMode && process.stdout.isTTY ? `\x1b[1m${mode}\x1b[22m` : mode);
+const visibleLength = (text) => text.replace(/\x1b\[\d+m/g, '').length;
+
 // Kept to 100 columns: notes wrap at the value column, a value too long to sit beside its label (a file path, a URL)
 // drops to its own line, and the "(ENV_VAR, default)" tag moves under the value when the two don't fit on one line.
 const WIDTH = 100;
@@ -75,24 +81,20 @@ function wrap(text, indent) {
   return lines;
 }
 
-// "[boat, mark]", or "[all modes]" for a setting every mode reads.
-function modesLabel(row, section) {
-  const modes = modesFor(row, section);
-  return `[${modes.length === MODE_NAMES.length ? 'all modes' : modes.join(', ')}]`;
-}
-
 for (const section of [...modes, ...(onlyMode ? sectionsFor(onlyMode) : sections)]) {
-  console.log(section.title);
+  // The mode sections describe modes rather than being settings.
+  const isModes = modes.includes(section);
+  console.log(isModes ? section.title : sectionHeading(section, mark));
   const labelWidth = Math.max(...section.rows.map((row) => row.label.length));
   const valueIndent = ' '.repeat(2 + labelWidth + 2);
-  // The mode sections describe modes rather than being settings, and with --mode every row printed is that mode's.
-  const labelled = !onlyMode && !modes.includes(section);
   for (const row of section.rows) {
     const { label, value, envVar, inverted, unit, note } = row;
-    const tagParts = [overrideTag(envVar, inverted), labelled ? modesLabel(row, section) : ''].filter(Boolean);
+    // A row read by fewer modes than its section says which; with --mode every row printed is that mode's.
+    const rowModes = isModes || onlyMode ? null : rowModesText(row, section, mark);
+    const tagParts = [overrideTag(envVar, inverted), rowModes ? `[${rowModes}]` : ''].filter(Boolean);
     const tag = tagParts.join('  ');
     // Under the value: the env-var tag and modes label together, or on a line each when even that is too wide.
-    const tagLines = () => (valueIndent.length + tag.length <= WIDTH ? [tag] : tagParts).map((t) => valueIndent + t);
+    const tagLines = () => (valueIndent.length + visibleLength(tag) <= WIDTH ? [tag] : tagParts).map((t) => valueIndent + t);
     const formatted = formatValue(value, unit);
     const head = `  ${label.padEnd(labelWidth)}  `;
     if (head.length + formatted.length <= WIDTH) {
@@ -101,7 +103,7 @@ for (const section of [...modes, ...(onlyMode ? sectionsFor(onlyMode) : sections
       // same column.
       const line = head + formatted;
       if (!tag) console.log(line);
-      else if (line.length + 2 + tag.length <= WIDTH) console.log(`${line}  ${tag}`);
+      else if (line.length + 2 + visibleLength(tag) <= WIDTH) console.log(`${line}  ${tag}`);
       else [line, ...tagLines()].forEach((l) => console.log(l));
     } else {
       console.log(`  ${label}${tag ? '  ' + tag : ''}`);
