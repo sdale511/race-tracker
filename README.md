@@ -21,7 +21,7 @@ browser).
 | Component | Notes |
 |---|---|
 | GPS | ZED-F9P, `UBX-NAV-PVT` binary messages (position, speed, heading, fix type, RTK carrier solution, satellite count) - no NMEA needed |
-| Radio | Transparent-serial telemetry radio (RFD900x, SiK, etc). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 8 at a time by default (delta-coded, 83 bytes), see `TX_BATCH_SIZE` below |
+| Radio | Digi XBee 900 MHz in transparent serial mode (any transparent-serial radio works, e.g. RFD900x/SiK). A compact 26-byte binary frame (`src/protocol.js`) minimizes airtime - batched 8 at a time by default (delta-coded, 83 bytes), see `TX_BATCH_SIZE` below |
 | SD log | Logged exactly when a fix clears the `TX_DISTANCE_M`/`TX_INTERVAL_S` gate - same gate as the radio send, so the SD record mirrors what actually transmitted rather than a separate full-rate trace |
 
 
@@ -209,32 +209,22 @@ Configuring TMODE3 itself for survey-in (vs. just reading it) is a
 separate one-time step, typically done via u-center at setup - see
 u-blox's ZED-F9P integration manual for survey-in parameters.
 
-### Checking everything at once (gps_config_report.sh)
+### Checking everything at once (ubx_config_report.py)
 
-`gps_config_report.sh` (repo root) polls every setting the sections above
-depend on - fix rate, UART baud, `UBX-NAV-PVT`/NMEA/`UBX-NAV-SVIN`/
-`UBX-RXM-RTCM` output, TMODE3 mode, RTCM3 output types - in one pass,
-instead of re-typing each `ubxtool -g` poll by hand or assuming a board's
-still configured the way it was last time. Read-only (`-g`/poll only,
-never `-z`/set):
-```
-./gps_config_report.sh -f /dev/ttyAMA0 -s 115200
-```
-A board acting as a rover should show the RTK-base rows (TMODE3, RTCM3
-output) at 0/off; a board acting as the RTK base should show its own rows
-enabled and `CFG-TMODE-MODE` non-zero.
-
-No `gpsd`/`ubxtool` available (or can't install it)? `ubx_config_report.py`
-reports the exact same settings, talking the UBX binary protocol directly
-over `pyserial` instead - same reasoning as `xbee_configure_at.py`'s own
-"why not a library" comment, no external CLI tool needed:
+`ubx_config_report.py` polls every setting the sections above depend on - fix rate, UART baud,
+`UBX-NAV-PVT`/NMEA/`UBX-NAV-SVIN`/`UBX-RXM-RTCM` output, TMODE3 mode, RTCM3 output types - in one pass, instead of
+polling each by hand or assuming a board's still configured the way it was last time. It talks the UBX binary protocol
+directly over `pyserial` (no `gpsd`/`ubxtool` needed - same reasoning as `xbee_configure_at.py`'s own "why not a
+library" comment) and is read-only:
 ```
 pip install pyserial
 python3 ubx_config_report.py --port /dev/ttyAMA0 --baud 115200
 ```
-Every key ID it polls is cross-checked against two independent open-source
-references (SparkFun's u-blox GNSS library and pyubx2), not typed from
-memory - see its own module comment.
+A board acting as a rover should show the RTK-base rows (TMODE3, RTCM3 output) at 0/off; a board acting as the RTK base
+should show its own rows enabled and `CFG-TMODE-MODE` non-zero. `--comms` instead measures the bytes sent and received
+on each port over a few seconds (`--comms-seconds`, default 5). Every key ID it polls is cross-checked against two
+independent open-source references (SparkFun's u-blox GNSS library and pyubx2), not typed from memory - see its own
+module comment.
 
 `ubx_config_set.py` applies the fix, same no-`ubxtool`-needed approach:
 ```
@@ -300,7 +290,7 @@ constellations are on by default, not gated behind opt-in flags - this fleet
 operates in the US, where all four have real satellites in view (including
 BeiDou-3's global coverage, not just the old Asia-Pacific-only BeiDou-2), and more
 satellites means better RTK fix reliability under real-world sky obstruction;
-edit `BASE_SETTINGS` directly if you want fewer.
+pass `--constellations` (below) if you want fewer.
 `--role rover` enables `UBX-NAV-PVT`
 (required, or this app sees nothing from it), disables TMODE3 (a rover
 isn't a stationary reference station), enables `UBX-RXM-RTCM` (for
@@ -1316,6 +1306,21 @@ RADIO_PORT=/dev/cu.usbserial-0001 GPS_PORT=/dev/cu.usbmodem1101 npm run base
 ```
 Run `ls /dev/cu.*` before/after plugging in each device to find its path.
 
+### Selecting a regatta at startup
+
+Everything the base records lives under the selected regatta, and nothing (radio, course, base GPS) starts until one is
+selected. At startup the base picks one in this order:
+1. `REGATTAUP_REGATTA_ID`, or else the id saved in `race-config/regatta-id.txt` from an earlier run or pick - if
+   RegattaUp lists it as active or upcoming. If RegattaUp can't be reached at all (no signal at the venue), it keeps
+   using the saved regatta unless that regatta has already ended.
+2. Otherwise it asks on the terminal, when there is one.
+3. Otherwise (under systemd) it picks the active or upcoming regatta closest to today.
+
+Change it any time from the regatta select at the top of every base dashboard page; that applies at once and is saved
+to `regatta-id.txt`. `npm run reset-regatta` picks one from the command line without a running base; it only changes
+the saved default, which a running base picks up at its next start. `NO_REGATTA=1` skips selection for a radio bench
+test. Which regatta is selected is never stored in Redis.
+
 ### Auto-start on boot (systemd)
 
 ```
@@ -1350,6 +1355,13 @@ directly for other per-machine overrides. Safe to re-run any time
 then **Available modes**: all five modes (boat, mark, base, basertk, rtk) with their `npm run` command and what each is for,
 the running one marked. `npm run print-config` starts with the same list, working out the running mode from whichever
 of the units above is active; it says "unknown" when none is (macOS, or the app started by hand in a terminal).
+
+Each mode's Config tab shows only the settings that mode reads. `npm run print-config` prints every setting, each
+labelled with the modes that read it (`[boat, mark]`, `[base, basertk]`, `[all modes]`, ...); add `--mode <mode>` to print
+just one mode's settings, exactly as its Config tab shows them:
+```
+npm run print-config -- --mode mark
+```
 
 ### RTK-only mode
 
@@ -1392,37 +1404,49 @@ TMODE3/survey-in cards, and `/api/gps/survey/mode`/`/api/gps/save-config`
 404. Use `basertk` when this machine's GPS should actually control RTCM
 broadcast to the fleet, not just supply a one-off reading.
 
-### Setting marks from a rover, on the base's map
+### Setting marks from the base's map
 
-For a mark setter carrying a rover with no screen of its own (any mode, a plain `npm run boat` included): on the base's
+On the base's **Map** tab, **edit marks** opens a column with a **Set** button per mark (listed windward to leeward).
+By default Set moves the mark to the crosshair at the map's centre: pan the map (or use **Recenter on base GPS** /
+**Recenter on my GPS**) until the crosshair is on the spot, then tap Set and confirm. The change is stored in Redis and
+re-broadcast to every boat straight away. The same column has the **Pin boundary gate** switch and **Reset to default
+course**.
+
+**From a rover.** For a mark setter carrying a rover with no screen of its own (any mode, a plain `npm run boat` included): on the base's
 **Map** tab, turn on **edit marks** and pick the rover under **Set marks from**. The map follows that rover every second,
 its dot gets an amber ring, and the readout shows its position, fix quality (RTK fixed/float/GPS) and how long ago it was
 heard. Each mark's **Set** button then sets the mark to that rover's newest position, which the base looks up when you
 click (`POST /api/marks/:name` with `{ boatId }`). The confirm dialog shows the position, quality and age first. The base
-refuses a rover it hasn't heard from in more than one `TX_INTERVAL_S` heartbeat plus 30 s. **Crosshair (map center)**
-brings back the old behaviour. The choice is remembered per browser.
+refuses a rover it hasn't heard from in more than one `TX_INTERVAL_S` heartbeat plus 30 s. Picking **Crosshair (map
+center)** goes back to setting marks at the crosshair. The choice is remembered per browser.
 
 ### Mark mode
 
 `npm run mark` (`src/markStation.js`, `MARK_MODE=1`) is an ordinary `boatAgent.js` rover (real GPS, real telemetry
 radio, transmits its own position, shows up on the fleet table like any other boat) that permanently represents ONE
-course mark, picked from its dashboard's "This device represents" card (or `MARK_NAME`). It sends that mark's position
-automatically whenever its fix moves `MARK_DISTANCE_M` (default 1 m) from the last position it sent. Its dashboard and
-map show a **MARK MODE (‹markName›)** badge.
+course mark. It sends that mark's position automatically whenever its fix moves `MARK_DISTANCE_M` (default 1 m) from the
+last position it sent, and every `MARK_HEARTBEAT_S` (default 20 s) even when it hasn't moved, so the base's map doesn't
+show a still mark as stale. Its dashboard and map show a **MARK MODE (‹markName›)** badge.
+
+**Choosing the mark** (one of `windwardBlack`, `windwardGreen`, `pin`, `committeeStart`, `committeeFinish`, `finish`,
+`leewardGreen`, `leewardBlack` - also listed under `markName` in `npm run print-config` and the rover's Config tab):
+- `sudo ./install-service.sh mark windwardBlack` sets `MARK_NAME` in the service (run it again to change it), or
+  `MARK_NAME=windwardBlack npm run mark` for a one-off run. A misspelled name stops the rover at startup.
+- Over WiFi, the rover's own dashboard (`http://<rover-ip>:8092`): the **This device represents** card, or the
+  **Represents** dropdown on its Map tab, then **Assign**. Takes effect on the next fix.
+- The base can't assign a rover's mark over the radio.
 
 It sends a Set-Mark radio frame (`protocol.js`'s `encodeSetMark`/`0xFF`) carrying its current GPS fix. It never writes
 to Redis directly or needs WiFi; the base applies the change (`setMarkLocation`) and its own next mark-broadcast is what
 confirms it landed, picked up the normal way by every rover's `Course marks` card. Not available on a plain `npm run
 boat`, so an unintended assignment during racing can't move a live course mark. To set marks one at a time from a rover
-someone carries, use the base map's rover picker instead (see "Setting marks from a rover, on the base's map" above).
+someone carries, use the base map's rover picker instead (see "Setting marks from the base's map" above).
 
-**Mark mode assignment** persists to `race-config/mark-name.txt` (same
-"survives a restart, MARK_NAME env var wins if set" pattern as `BOAT_ID`/
-the selected regatta) - set it once via `MARK_NAME=windwardBlack npm run
-mark`, or leave it unset and pick one from the device's own dashboard
-after it starts. Reassigning always resets the movement gate, so the very
-next fix sends a fresh position rather than waiting out
-`MARK_DISTANCE_M` from wherever the previous mark happened to be.
+**Mark mode assignment** persists to `race-config/mark-name.txt` (same "survives a restart, MARK_NAME env var wins if
+set" pattern as `BOAT_ID`/the selected regatta). The rover reads that file only at startup, so after editing it by hand
+restart the service (`sudo ./service-restart.sh mark`). With no mark assigned the rover still reports its own position
+like a boat but sends nothing for any mark. Reassigning always resets the movement gate, so the very next fix sends a
+fresh position rather than waiting out `MARK_DISTANCE_M` from wherever the previous mark happened to be.
 
 ### Boat shutdown (battery-saving)
 
@@ -1632,18 +1656,17 @@ Ctrl+C to stop.
 
 ## Connecting to your race committee software
 
-`src/baseStation.js` currently:
+The race software is RegattaUp. `src/baseStation.js`:
 1. Logs every decoded fix to console + CSV
-2. Records every fix to Redis (see below)
-3. Re-broadcasts locally over UDP (port 10110, NMEA-over-UDP convention) -
+2. Records every fix to Redis (see "Redis track storage" below), which is where RegattaUp reads live positions and
+   tracks from
+3. Posts race events (laps, on-grid, mark roundings, fouls) to RegattaUp's webhooks (see the sections below)
+4. Re-broadcasts locally over UDP (port 10110, NMEA-over-UDP convention) -
    synthetic `UBX-NAV-PVT` by default (`GPS_OUTPUT_FORMAT=nmea` for
    `$GPGGA` instead). `boatAgent.js` does the same independently, on the
    same port, unthrottled, for onboard instruments.
 
-Once you pick your race software (TracTrac, YB Tracking, RaceQs, Predict
-Wind, in-house), `outputFrame()` is the one place to change - swap it for
-whatever that software expects (usually an HTTP POST with a per-boat auth
-token).
+To feed other software as well, `outputFrame()` in `baseStation.js` is the place to add it (it sees every decoded fix).
 
 ## Lap events -> RegattaUp
 
@@ -1893,6 +1916,10 @@ race-config/                                 - small per-device identity/state (
   regatta-id.txt                               this base's default regatta selection
   power-schedule.txt                           this boat's scheduled-shutdown settings
   course_marks.json                            a boat's local cache of the last-broadcast course
+  slot_mode.json                               the base's race/practice mode switch
+  slot_racing.json                             the base's record of who is racing, kept over a restart
+  witty-schedule.json, fleet-shutdown.json     the base's Witty Pi and fleet-shutdown settings for the boats
+  witty-applied.json, fleet-shutdown-applied.json  a boat's record of the base's settings it last applied
   lap_webhook_queue.sqlite                      RegattaUp webhook retry queues
   ongrid_webhook_queue.sqlite
   mark_rounding_webhook_queue.sqlite
@@ -2011,12 +2038,14 @@ npm run clean-bad-fixes -- --regatta <id>    # another regatta
   wiring change
 - UBX checksum/frame-sync robustness over a long noisy USB-serial run (the
   parser resyncs on bad frames, but untested against real RF noise)
-- The actual ingestion format for whichever race software you land on
 - Slots on real radios: the 45 ms default and the air-time figures behind it are estimates and were only
   measured with one sender radio - two boats on separate radios in neighbouring slots, and the
   `[txgate-stats]` expired/dropped counts at a full 30-boat fleet, have not been tested
 - RTK holding at speed with 2 s corrections (`RTCM_INTERVAL_S=2`, the default): rovers work from corrections up to 2 s
   old; watch `carr_soln` and the Link health RTK share
+- Setting marks from a carried rover on the base's map ("Set marks from"): tested only against a stub server with fake
+  positions - not yet with a real rover walking the course
+- `print-config`'s running-mode detection (`systemctl is-active` on the race-tracker units) - not yet run on a Pi
 - The "Base GPS survey-in" dashboard card (`UBX-NAV-SVIN`/`UBX-CFG-TMODE3`
   parsing, ECEF-to-lat/lon conversion, TMODE3 poll) - verified against
   synthetic UBX frames only, never a real ZED-F9P running survey-in

@@ -1,21 +1,12 @@
 const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT } = require('./dashboardFormat');
-const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
+const { MARK_NAMES, MAP_MARK_ORDER, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
 const { TABS_CSS, renderTabs, baseTabs } = require('./adminNav');
 const { zonePolygon } = require('./onGridWatcher');
 const config = require('./config');
 
-// Display order for the map's own mark list (the "Set" button rows and the
-// mark-assignment dropdown) - the physical order marks actually sit along
-// the course, windward to leeward (top to bottom, as on the map): windwardBlack,
-// windwardGreen, the start/finish complex, leewardGreen, leewardBlack (see course.js's START_LINE_POSITION
-// comment - green marks sit halfway between the start/finish complex and
-// their own black mark). Deliberately separate from MARK_NAMES' own order,
-// which is fixed by Redis key names and the radio protocol and has nothing
-// to do with how the list should read in a UI.
-const MAP_MARK_ORDER = ['windwardBlack', 'windwardGreen', 'pin', 'committeeStart', 'committeeFinish', 'finish', 'leewardGreen', 'leewardBlack'];
 const {
   fixQualityText,
   connectionDot,

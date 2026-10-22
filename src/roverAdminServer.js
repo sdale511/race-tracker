@@ -1098,7 +1098,7 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, ge
     if (req.url === '/config') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       const st = getStats();
-      res.end(renderConfigPage({ role: 'boat', navHtml: renderTabs(roverTabs(!!(st.currentMarks || st.lastFix)), 'config'), navCss: TABS_CSS }));
+      res.end(renderConfigPage({ role: config.markMode ? 'mark' : 'boat', navHtml: renderTabs(roverTabs(!!(st.currentMarks || st.lastFix)), 'config'), navCss: TABS_CSS }));
       return;
     }
 

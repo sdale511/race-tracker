@@ -1,5 +1,5 @@
 const config = require('./config');
-const { COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH_M, FINISH_SIDE_LENGTH_M, COMMITTEE_GAP_M } = require('./course');
+const { MAP_MARK_ORDER, COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH_M, FINISH_SIDE_LENGTH_M, COMMITTEE_GAP_M } = require('./course');
 
 // The fully-resolved configuration - every default plus whatever's been
 // overridden via environment variables or a .env file - grouped/labeled to
@@ -167,15 +167,16 @@ const sections = [
             : undefined,
         roles: ['boat'],
       },
-      // markName/markDistanceM only ever DO anything on a mark-mode rover
-      // (npm run mark - see README's "Mark mode"), which is boatAgent.js run
-      // with MARK_MODE=1, so they're tagged 'boat'.
+      // markName/markDistanceM/markHeartbeatS only ever DO anything on a
+      // mark-mode rover (npm run mark - see README's "Mark mode"), so they're
+      // tagged 'mark': a mark rover sees every 'boat' row plus these, a plain
+      // boat doesn't see them.
       {
         label: 'markName',
         value: config.markName || '(not assigned)',
         envVar: 'MARK_NAME',
-        note: 'which course mark THIS device auto-posts its own GPS position as, if any',
-        roles: ['boat'],
+        note: `which course mark THIS device auto-posts its own GPS position as, if any - one of: ${MAP_MARK_ORDER.join(', ')}`,
+        roles: ['mark'],
       },
       {
         label: 'markDistanceM',
@@ -183,7 +184,15 @@ const sections = [
         envVar: 'MARK_DISTANCE_M',
         unit: 'm',
         note: 'how far the assigned mark has to actually move before this device posts its new position to Redis, same distance-gated spirit as txDistanceM below but for a mark buoy instead of a boat',
-        roles: ['boat'],
+        roles: ['mark'],
+      },
+      {
+        label: 'markHeartbeatS',
+        value: config.markHeartbeatMs / 1000,
+        envVar: 'MARK_HEARTBEAT_S',
+        unit: 's',
+        note: "re-sends the mark's position this often even when it hasn't moved, so the base's map doesn't show a still mark as stale; 0 turns it off",
+        roles: ['mark'],
       },
       { label: 'txDistanceM', value: config.txDistanceM, envVar: 'TX_DISTANCE_M', unit: 'm', roles: ['boat'] },
       {
@@ -398,33 +407,6 @@ function overrideTag(envVar, inverted) {
   return `(${rawState}, ${isSet ? 'overridden' : 'default'})`;
 }
 
-// HTML rendering shared by all three admin dashboards' GET /config (see
-// adminServer.js, roverAdminServer.js, rtkAdminServer.js) - same dark theme
-// as the rest of the admin UI. No stats snapshot needed here (unlike
-// renderDashboard/renderMap elsewhere) - config is resolved once at process
-// startup from env vars, not something that changes while the process
-// runs, so there's nothing to poll/refresh.
-//
-// role ('base' | 'boat' | 'rtk' | 'basertk'), when given, keeps only the
-// sections/rows tagged for it (see each row/section's own `roles` above;
-// untagged means every role sees it) - a section that ends up with zero
-// visible rows is dropped entirely rather than shown empty. Each dashboard
-// passes its own role so an operator only ever sees settings that process
-// actually reads, not the other modes' unrelated knobs (radio/course for
-// rtk, Redis/RegattaUp for boat, sim-race tuning for base, ...).
-//
-// 'basertk' (npm run basertk - see baseStation.js's rtkControlsEnabled) is
-// deliberately NOT its own tag scattered across rows below: it's exactly
-// "everything 'base' reads, plus everything 'rtk' reads" (the same base
-// station, with the TMODE3/survey-in controls additionally wired in), so
-// visibleTo treats it as matching either tag rather than requiring every
-// row to also carry a third label that would always just mirror the union
-// of the other two.
-//
-// Omit role to show everything unfiltered - printConfig.js uses `sections`
-// directly instead of this function, so nothing currently relies on that
-// default, but it's the safe fallback for any future caller that isn't a
-// specific role.
 // Every mode this app runs as (one npm run script each - see README's "Running"), listed first on both the /config
 // page and print-config, with the one running marked.
 const MODES = [
@@ -451,30 +433,51 @@ function modesSections(running, runningModes, source) {
   ];
 }
 
-// A boat-role page is a plain boat or, with MARK_MODE=1 (npm run mark), a mark device.
-function modeForRole(role) {
-  if (role === 'boat') return config.markMode ? 'mark' : 'boat';
-  return role;
+// Which roles (row/section `roles` tags) each mode reads. Two modes are unions rather than tags of their own: a mark
+// rover is boatAgent.js, so it reads every 'boat' row plus the 'mark' ones; basertk is the base with the RTK controls
+// wired in, so it reads every 'base' and 'rtk' row.
+const MODE_ROLES = { boat: ['boat'], mark: ['boat', 'mark'], base: ['base'], basertk: ['base', 'rtk'], rtk: ['rtk'] };
+
+// Whether a row or section is read in this mode - untagged means every mode.
+function visibleTo(item, mode) {
+  return !item.roles || item.roles.some((role) => MODE_ROLES[mode].includes(role));
 }
 
+// The modes that read a row (inside its section), in MODES order.
+function modesFor(row, section) {
+  return MODES.map((m) => m.mode).filter((mode) => visibleTo(section, mode) && visibleTo(row, mode));
+}
+
+// The sections and rows one mode reads; a section left with no rows is dropped.
+function sectionsFor(mode, list = sections) {
+  return list
+    .filter((section) => visibleTo(section, mode))
+    .map((section) => ({ ...section, rows: section.rows.filter((row) => visibleTo(row, mode)) }))
+    .filter((section) => section.rows.length > 0);
+}
+
+// HTML rendering shared by all three admin dashboards' GET /config (see
+// adminServer.js, roverAdminServer.js, rtkAdminServer.js) - same dark theme
+// as the rest of the admin UI. No stats snapshot needed here (unlike
+// renderDashboard/renderMap elsewhere) - config is resolved once at process
+// startup from env vars, not something that changes while the process
+// runs, so there's nothing to poll/refresh.
+//
+// role (one of MODES' modes), when given, keeps only the sections/rows that
+// mode reads (see visibleTo below) - a section that ends up with zero
+// visible rows is dropped entirely rather than shown empty. Each dashboard
+// passes its own role so an operator only ever sees settings that process
+// actually reads, not the other modes' unrelated knobs (radio/course for
+// rtk, Redis/RegattaUp for boat, sim-race tuning for base, ...).
+//
+// Omit role to show everything unfiltered - the safe fallback for any
+// caller that isn't a specific mode.
 // navHtml/navCss (optional): the admin's tab bar, shown instead of the plain back link.
 function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
-  const visibleTo = (item) => {
-    if (!item.roles) return true;
-    if (item.roles.includes(role)) return true;
-    if (role === 'basertk') return item.roles.includes('base') || item.roles.includes('rtk');
-    return false;
-  };
-  const mode = modeForRole(role);
   const modes = role
-    ? modesSections(role === 'base' && config.markMode ? 'base (MARK_MODE=1)' : mode, [mode], 'the npm run script this process was started as')
+    ? modesSections(role === 'base' && config.markMode ? 'base (MARK_MODE=1)' : role, [role], 'the npm run script this process was started as')
     : [];
-  const sectionsToRender = role
-    ? [...modes, ...sections]
-        .filter(visibleTo)
-        .map((section) => ({ ...section, rows: section.rows.filter(visibleTo) }))
-        .filter((section) => section.rows.length > 0)
-    : sections;
+  const sectionsToRender = role ? [...modes, ...sectionsFor(role)] : sections;
   const sectionsHtml = sectionsToRender
     .map((section) => {
       const rows = section.rows
@@ -576,4 +579,4 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
 </html>`;
 }
 
-module.exports = { sections, formatValue, overrideTag, modesSections, renderConfigPage };
+module.exports = { sections, MODES, formatValue, overrideTag, modesSections, modesFor, sectionsFor, renderConfigPage };

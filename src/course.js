@@ -68,6 +68,17 @@ const MARK_NAMES = [
   'finish',
 ];
 
+// Display order for mark lists people read (the base map's "Set" button rows
+// and mark-assignment dropdown, the markName config note) - the physical
+// order marks actually sit along the course, windward to leeward (top to
+// bottom, as on the map): windwardBlack, windwardGreen, the start/finish
+// complex, leewardGreen, leewardBlack (see START_LINE_POSITION's comment -
+// green marks sit halfway between the start/finish complex and their own
+// black mark). Deliberately separate from MARK_NAMES' own order,
+// which is fixed by Redis key names and the radio protocol and has nothing
+// to do with how the list should read in a UI.
+const MAP_MARK_ORDER = ['windwardBlack', 'windwardGreen', 'pin', 'committeeStart', 'committeeFinish', 'finish', 'leewardGreen', 'leewardBlack'];
+
 // Redis key name for the pin boundary gate's computed, published endpoint -
 // see getPinBoundaryFarPoint below. Not one of the real MARK_NAMES: nothing
 // ever sets this by dragging it on the map, it's derived automatically
@@ -441,6 +452,7 @@ module.exports = {
   FINISH_SIDE_LENGTH_M,
   BOAT_START_SPACING_M,
   MARK_NAMES,
+  MAP_MARK_ORDER,
   PIN_BOUNDARY_MARK,
   MARK_COLORS,
   markStroke,
