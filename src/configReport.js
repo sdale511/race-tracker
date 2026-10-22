@@ -26,7 +26,7 @@ const { COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH_M, FINISH_SIDE_
 // diagnostic dump, not run "as" any particular role.
 const sections = [
   {
-    title: 'Mode',
+    title: 'Testing switches',
     rows: [
       { label: 'simulate', value: config.simulate, envVar: 'SIMULATE', roles: ['base', 'boat'] },
       { label: 'simulateGps', value: config.simulateGps, envVar: 'SIMULATE_GPS', roles: ['boat'] },
@@ -425,14 +425,35 @@ function overrideTag(envVar, inverted) {
 // directly instead of this function, so nothing currently relies on that
 // default, but it's the safe fallback for any future caller that isn't a
 // specific role.
-// The running mode's row, put at the top of the Mode section: the npm run script this process was started as. A
-// boat-role page is a plain boat or, with MARK_MODE=1 (npm run mark), a mark device.
-function modeRow(mode, note = 'which npm run script this process is (boat / mark / base / basertk / rtk)') {
-  return { label: 'mode', value: mode, note };
+// Every mode this app runs as (one npm run script each - see README's "Running"), listed first on both the /config
+// page and print-config, with the one running marked.
+const MODES = [
+  { mode: 'boat', command: 'npm run boat', what: "a boat's Pi: reads GPS, sends fixes over the radio, logs to SD" },
+  { mode: 'mark', command: 'npm run mark', what: "a rover left on one course mark: re-sends that mark's position as it drifts" },
+  { mode: 'base', command: 'npm run base', what: 'shore/committee base: receives the fleet, tracks the course, reports to RegattaUp' },
+  { mode: 'basertk', command: 'npm run basertk', what: 'base plus the RTK correction GPS controls, on one machine' },
+  { mode: 'rtk', command: 'npm run rtk', what: 'the RTK correction GPS on its own (survey-in / fixed position), no fleet' },
+];
+
+// Two sections: the mode running, then every mode with the running one marked. running: what to show as the running
+// mode; runningModes: which MODES entries to mark; source: how it was worked out.
+function modesSections(running, runningModes, source) {
+  return [
+    { title: 'Running mode', rows: [{ label: 'mode', value: running, note: source }] },
+    {
+      title: 'Available modes',
+      rows: MODES.map(({ mode, command, what }) => ({
+        label: mode,
+        value: command + (runningModes.includes(mode) ? '  ← running' : ''),
+        note: what,
+      })),
+    },
+  ];
 }
+
+// A boat-role page is a plain boat or, with MARK_MODE=1 (npm run mark), a mark device.
 function modeForRole(role) {
   if (role === 'boat') return config.markMode ? 'mark' : 'boat';
-  if (role === 'base' && config.markMode) return 'base (MARK_MODE=1)';
   return role;
 }
 
@@ -444,9 +465,12 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
     if (role === 'basertk') return item.roles.includes('base') || item.roles.includes('rtk');
     return false;
   };
+  const mode = modeForRole(role);
+  const modes = role
+    ? modesSections(role === 'base' && config.markMode ? 'base (MARK_MODE=1)' : mode, [mode], 'the npm run script this process was started as')
+    : [];
   const sectionsToRender = role
-    ? sections
-        .map((section) => (section.title === 'Mode' ? { ...section, roles: undefined, rows: [modeRow(modeForRole(role)), ...section.rows] } : section))
+    ? [...modes, ...sections]
         .filter(visibleTo)
         .map((section) => ({ ...section, rows: section.rows.filter(visibleTo) }))
         .filter((section) => section.rows.length > 0)
@@ -552,4 +576,4 @@ function renderConfigPage({ role, navHtml = '', navCss = '' } = {}) {
 </html>`;
 }
 
-module.exports = { sections, formatValue, overrideTag, modeRow, renderConfigPage };
+module.exports = { sections, formatValue, overrideTag, modesSections, renderConfigPage };

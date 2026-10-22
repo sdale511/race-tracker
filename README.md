@@ -1346,9 +1346,10 @@ directly for other per-machine overrides. Safe to re-run any time
 | `sudo ./service-stop.sh MODE` / `service-start.sh MODE` | Stop/start without touching autostart |
 | `sudo ./service-autostart.sh MODE [on\|off]` | Controls autostart-on-boot separately; no arg shows status |
 
-**Which mode is this machine running?** Every admin dashboard's **Config** tab starts with a `mode` row (boat, mark,
-base, basertk or rtk). `npm run print-config` shows it too, worked out from whichever of the units above is running; it
-says "unknown" when none is (macOS, or the app started by hand in a terminal).
+**Which mode is this machine running?** Every admin dashboard's **Config** tab starts with a **Running mode** section,
+then **Available modes**: all five modes (boat, mark, base, basertk, rtk) with their `npm run` command and what each is for,
+the running one marked. `npm run print-config` starts with the same list, working out the running mode from whichever
+of the units above is active; it says "unknown" when none is (macOS, or the app started by hand in a terminal).
 
 ### RTK-only mode
 
