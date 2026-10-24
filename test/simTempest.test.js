@@ -54,7 +54,7 @@ test('starting does not read the course axis (it resolves after the base starts)
   sim.stop();
 });
 
-test('its messages reach the real listener over UDP and become one wind sample a minute', async () => {
+test('its messages reach the real listener over UDP, and every reading becomes a wind sample', async () => {
   const port = 50297;
   const listener = new TempestListener({ port }).start();
   const samples = [];
@@ -67,9 +67,7 @@ test('its messages reach the real listener over UDP and become one wind sample a
   await new Promise((r) => setTimeout(r, 200));
   sim.stop();
   listener.close();
-  assert.strictEqual(samples.length, 1);
-  assert.strictEqual(samples[0].dir, 180);
-  assert.strictEqual(samples[0].avg, 6.5);
-  assert.strictEqual(samples[0].station, 'ST-SIM00001');
+  assert.strictEqual(samples.length, 4); // three 3-second readings and the minute's observation
+  for (const x of samples) assert.deepStrictEqual([x.dir, x.avg, x.gust, x.lull, x.station], [180, 6.5, 6.5, 6.5, 'ST-SIM00001']);
   assert.strictEqual(listener.status().lastRapid.dir, 180);
 });

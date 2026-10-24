@@ -1685,14 +1685,16 @@ the wind into the selected regatta's Redis wind data, `regattas:<id>:wind` - the
 needs no internet, so wind is recorded at a venue with no connection, as long as the Tempest hub is on the same network
 (the same subnet - it broadcasts) as the base.
 
-- Each one-minute `obs_st` observation becomes one sample: `{t, dir, avg, gust, lull, station, units: 'mph'}`, with the
-  speeds converted from the station's m/s to mph (the units RegattaUp's map reads) and `t` the time the base received it.
-  Kept for the same rolling `REDIS_TRACK_RETENTION_HOURS` (48 h) as the track.
-- The 3-second `rapid_wind` readings only feed the dashboard; everything else the hub sends is ignored.
+- Every wind reading is stored as soon as it arrives, as `{t, dir, avg, gust, lull, station, units: 'mph'}`: each
+  3-second `rapid_wind` (its speed as `avg`, and as `gust`/`lull` the highest and lowest 3-second speed of the last
+  minute - how the station works them out for its own one-minute observation) and each one-minute `obs_st` (with the
+  station's own gust and lull). Speeds are converted from the station's m/s to mph (the units RegattaUp's map reads) and `t` is the
+  time the base received it. Kept for the same rolling `REDIS_TRACK_RETENTION_HOURS` (48 h) as the track - about 1,260
+  samples an hour, roughly 7 MB for the full 48 h. Everything else the hub sends is ignored.
 - Nothing is written while no regatta is selected (counted as "not written" instead).
-- The **Tempest weather station** card on the base's home page (Regatta & boats) shows the newest observation, the live
-  3-second reading, the station(s) heard and how many readings were written. It turns red when no observation has
-  arrived for 3 minutes.
+- The **Tempest weather station** card on the base's home page (Regatta & boats) shows the newest reading with its
+  gust and lull, the station(s) heard and how many readings were written. It turns red when nothing has arrived
+  for 3 minutes, and is greyed out with "No data received" until the first reading.
 
 On by default; settings: `TEMPEST_ENABLED=0` turns it off, `TEMPEST_PORT` (default 50222, the hub's own port),
 `TEMPEST_SERIAL` keeps one station's readings when more than one Tempest is on the network (its `ST-...` serial number),
@@ -2010,7 +2012,7 @@ to run without one, so there should be no `regattas:none:` keys.
 | `regattas:<id>:track` | Sorted set, every boat's fixes for the regatta, scored by fix timestamp - what RegattaUp's map and archives read. `getTrack(fromMs, toMs, regattaId)`. Formerly `regattas:<id>:all:track` |
 | `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position. Expires with the track |
 | `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed at most every 10 s per boat (not on every fix), so it refills within 10 s if cleared. Expires with the track `knownBoatIds()` |
-| `regattas:<id>:wind` | Sorted set, one wind sample a minute (`{t, dir, avg, gust, lull, station, units}`), scored by `t`. Written by the base from a Tempest's local UDP broadcast (`recordWind`) and by RegattaUp's `recordRaceWind`; rolling 48 h |
+| `regattas:<id>:wind` | Sorted set of wind samples (`{t, dir, avg, gust, lull, station, units}`): every 3 s from the base's Tempest listener, once a minute from RegattaUp; scored by `t`. Written by the base from a Tempest's local UDP broadcast (`recordWind`) and by RegattaUp's `recordRaceWind`; rolling 48 h |
 
 **Memory.** A stored fix costs roughly 230 bytes in a sorted set. The base used to keep a second copy of every fix in a
 per-boat key (`regattas:<id>:boat:<boatId>:track`), which doubled what Redis held (about 100 MB for a 30-boat, 30-minute

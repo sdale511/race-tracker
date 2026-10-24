@@ -452,10 +452,10 @@ function renderSlotsCard(slots, info, compact = false) {
     </div>`;
 }
 
-// Tempest weather station card (home page, "Regatta & boats"), always shown: whether the listener is on, and once anything has arrived the
-// newest one-minute observation (what goes to Redis), the newest 3-second rapid-wind reading, and whether readings are
-// being written - they are only written while a regatta is selected. A reading older than 3 minutes is shown red: the hub
-// has stopped broadcasting or left the network.
+// Tempest weather station card (home page, "Regatta & boats"), always shown: whether the listener is on, and once anything
+// has arrived the newest wind sample (with the last minute's gust and lull), and whether readings are being written - they are
+// only written while a regatta is selected. No reading for 3 minutes is shown red: the hub has stopped broadcasting or
+// left the network.
 function renderTempestCard(t) {
   // Off, or on with nothing received yet: a quiet, greyed-out card rather than a big status line.
   if (!t.enabled) {
@@ -465,33 +465,29 @@ function renderTempestCard(t) {
       <div class="sub">Turned off with TEMPEST_ENABLED=0</div>
     </div>`;
   }
-  if (!t.lastObs && !t.lastRapid && !t.error) {
+  if (!t.lastSample && !t.error) {
     return `<div class="card card-idle">
       <div class="label">Tempest weather station</div>
       <div class="idle-text">No data received</div>
       <div class="sub">Listening on UDP ${t.port}</div>
     </div>`;
   }
-  const obs = t.lastObs;
-  const stale = !obs || Date.now() - obs.at > 180000;
+  // The newest sample (a 3-second reading or the one-minute observation, each with the last minute's gust and lull) -
+  // exactly what was last written to Redis.
+  const latest = t.lastSample;
+  const stale = latest && Date.now() - latest.t > 180000;
   const wind = (dir, speed) => (dir == null || speed == null ? '—' : `${dir}° at ${speed} mph`);
-  // Anything at all from the hub (an observation, or only the 3-second readings so far).
-  const heard = !!(obs || t.lastRapid);
-  const value = obs ? wind(obs.dir, obs.avg) : heard ? 'waiting for the first observation' : 'not listening';
   const stations = t.stationsHeard.length ? t.stationsHeard.map((sn) => escapeHtml(sn)).join(', ') : '—';
   return `<div class="card">
       <div class="label">Tempest weather station</div>
-      <div class="value"><span class="dot ${t.error || (obs && stale) ? 'dot-red' : obs ? 'dot-green' : heard ? 'dot-orange' : 'dot-gray'}"></span>${value}</div>
+      <div class="value"><span class="dot ${t.error || stale ? 'dot-red' : latest ? 'dot-green' : 'dot-gray'}"></span>${latest ? wind(latest.dir, latest.avg) : 'not listening'}</div>
       <div class="sub">${
-        obs
-          ? `gust ${obs.gust ?? '—'} &middot; lull ${obs.lull ?? '—'} mph &middot; ${formatAgo(obs.at)}`
-          : heard
-          ? 'Observations come once a minute'
+        latest
+          ? `gust ${latest.gust ?? '—'} &middot; lull ${latest.lull ?? '—'} mph (last minute) &middot; ${formatAgo(latest.t)}`
           : `On, but can't listen on UDP ${t.port}: <span style="color:#f85149;">${escapeHtml(t.error)}</span>`
       }</div>
-      ${t.error && heard ? `<div class="sub" style="color:#f85149;">${escapeHtml(t.error)}</div>` : ''}
+      ${t.error && latest ? `<div class="sub" style="color:#f85149;">${escapeHtml(t.error)}</div>` : ''}
       <div class="stat-rows">
-        <div class="stat-row"><span class="name">Live (3 s)</span><span class="val">${t.lastRapid ? `${wind(t.lastRapid.dir, t.lastRapid.speed)}, ${formatAgo(t.lastRapid.at)}` : '—'}</span></div>
         <div class="stat-row"><span class="name">Station${t.serial ? ` (only ${escapeHtml(t.serial)})` : ''}</span><span class="val">${stations}</span></div>
         <div class="stat-row"><span class="name">Written to Redis</span><span class="val">${t.written.toLocaleString()}${t.failed ? ` <span style="color:#f85149;">(${t.failed} failed)</span>` : ''}</span></div>
         ${t.skipped ? `<div class="stat-row"><span class="name">Not written</span><span class="val">${t.skipped.toLocaleString()} <span class="muted">(no regatta selected)</span></span></div>` : ''}

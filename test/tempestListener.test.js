@@ -44,18 +44,47 @@ test('a sample needs a direction and an average speed', () => {
   assert.strictEqual(windSampleFromObs({ dir: 225, avg: null }, 1000, 'Playa'), null);
 });
 
-test('the listener emits a sample per obs_st, keeps rapid_wind for status, and filters by serial', () => {
+test('the listener emits a sample for every reading - 3-second and one-minute - and filters by serial', () => {
   const samples = [];
   const listener = new TempestListener({ serial: 'ST-00000512', now: () => 5000 });
   listener.on('sample', (s) => samples.push(s));
   listener.handleMessage(rapidWind());
   listener.handleMessage(obsSt());
   listener.handleMessage(obsSt(undefined, 'ST-99999999')); // another station on the network
-  assert.deepStrictEqual(samples, [{ t: 5000, dir: 225, avg: 10, gust: 15, lull: 0.6, station: 'ST-00000512', units: 'mph' }]);
+  assert.deepStrictEqual(samples, [
+    { t: 5000, dir: 128, avg: 5.1, gust: 5.1, lull: 5.1, station: 'ST-00000512', units: 'mph' },
+    { t: 5000, dir: 225, avg: 10, gust: 15, lull: 0.6, station: 'ST-00000512', units: 'mph' },
+  ]);
   const status = listener.status();
-  assert.deepStrictEqual([status.packets, status.ignored, status.samples], [3, 1, 1]);
+  assert.deepStrictEqual([status.packets, status.ignored, status.samples], [3, 1, 2]);
   assert.deepStrictEqual(status.stationsHeard, ['ST-00000512', 'ST-99999999']);
   assert.strictEqual(status.lastRapid.speed, 5.1);
+});
+
+test('a 3-second reading with no speed or direction (a sensor fault) is not stored', () => {
+  const samples = [];
+  const listener = new TempestListener({ now: () => 1 });
+  listener.on('sample', (s) => samples.push(s));
+  listener.handleMessage(rapidWind(null, null));
+  assert.deepStrictEqual(samples, []);
+});
+
+test('a 3-second sample\'s gust and lull are the highest and lowest speed of the last minute, per station', () => {
+  let t = 0;
+  const samples = [];
+  const listener = new TempestListener({ now: () => t });
+  listener.on('sample', (s) => samples.push(s));
+  const ms = (mph) => mph / 2.2369362920544; // the station sends m/s
+  t = 0; listener.handleMessage(rapidWind(ms(9), 0)); // 9 mph
+  t = 30000; listener.handleMessage(rapidWind(ms(4), 0)); // 4 mph
+  t = 30000; listener.handleMessage(rapidWind(ms(20), 0, 'ST-OTHER')); // another station: its own window
+  t = 59000; listener.handleMessage(rapidWind(ms(6), 0)); // all three of this station's readings are within a minute
+  const at59 = samples.at(-1);
+  assert.deepStrictEqual([at59.avg, at59.gust, at59.lull], [6, 9, 4]);
+  t = 61000; listener.handleMessage(rapidWind(ms(5), 0)); // the 9 mph reading is now over a minute old
+  const at61 = samples.at(-1);
+  assert.deepStrictEqual([at61.avg, at61.gust, at61.lull], [5, 6, 4]);
+  assert.strictEqual(listener.status().lastSample, at61);
 });
 
 test('a configured station name is used in the samples', () => {

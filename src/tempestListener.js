@@ -10,13 +10,18 @@ const { EventEmitter } = require('events');
 //   - obs_st, once a minute: obs[0] = [epoch s, wind lull, wind avg, wind gust, wind direction, wind sample interval s,
 //     pressure, temperature, humidity, ...], wind speeds in m/s, direction in degrees.
 //   - rapid_wind, every 3 s: ob = [epoch s, wind speed m/s, wind direction].
-// Each obs_st becomes one sample (one a minute, like RegattaUp's); rapid_wind only feeds the dashboard card, so Redis
-// holds one sample a minute rather than twenty. Everything else (hub_status, device_status, evt_*) is ignored.
+// Every wind reading becomes a sample as soon as it arrives: each rapid_wind (speed and direction, every 3 s) and each
+// obs_st (the minute's lull, average and gust too). A rapid_wind carries no gust or lull, so its sample gets them the way
+// the station works them out for an obs_st: the highest and lowest of the 3-second speeds over the last minute (this one
+// included; shorter until a minute of readings has been heard). Everything else (hub_status, device_status, evt_*) is
+// ignored.
 //
 // Samples are stored the way RegattaUp's map reads them: speeds in mph (it understands mph and kph only), the time the
 // base received the observation as `t` (the hub's own clock comes from the internet and may be wrong without it).
 
 const MS_TO_MPH = 2.2369362920544;
+// The window a 3-second sample's gust and lull cover, as the station's own one-minute observation does.
+const GUST_WINDOW_MS = 60000;
 
 const round1 = (v) => Math.round(v * 10) / 10;
 const speedMph = (ms) => (Number.isFinite(ms) && ms >= 0 ? round1(ms * MS_TO_MPH) : null);
@@ -60,6 +65,13 @@ function windSampleFromObs(obs, t, station) {
   return { t, dir: obs.dir, avg: obs.avg, gust: obs.gust, lull: obs.lull, station, units: 'mph' };
 }
 
+// The wind sample for a rapid_wind: its speed is the average, and gust and lull are the highest and lowest of
+// recentSpeeds (the last minute's 3-second speeds, this one included).
+function windSampleFromRapid(rapid, t, station, recentSpeeds = [rapid && rapid.speed]) {
+  if (!rapid || rapid.dir == null || rapid.speed == null) return null;
+  return { t, dir: rapid.dir, avg: rapid.speed, gust: Math.max(...recentSpeeds), lull: Math.min(...recentSpeeds), station, units: 'mph' };
+}
+
 // Emits 'sample' with each wind sample (see windSampleFromObs). serial, when set, keeps only that station's messages (for a
 // network with more than one Tempest); stationName names the station in the samples, defaulting to its serial number.
 class TempestListener extends EventEmitter {
@@ -77,6 +89,17 @@ class TempestListener extends EventEmitter {
     this.stationsHeard = new Set();
     this.lastObs = null; // { ...parsed, at }
     this.lastRapid = null; // { ...parsed, at }
+    this.lastSample = null; // the newest sample emitted, of either kind
+    this.recentRapid = new Map(); // station serial -> [{ at, speed }] of its 3-second speeds in the last GUST_WINDOW_MS
+  }
+
+  // Adds a 3-second speed to the station's window, drops readings older than a minute, and returns the window's speeds.
+  recentSpeeds(serial, at, speed) {
+    const key = serial || '';
+    const kept = (this.recentRapid.get(key) || []).filter((r) => at - r.at < GUST_WINDOW_MS);
+    kept.push({ at, speed });
+    this.recentRapid.set(key, kept);
+    return kept.map((r) => r.speed);
   }
 
   start() {
@@ -101,14 +124,18 @@ class TempestListener extends EventEmitter {
       return;
     }
     const at = this.now();
+    const station = this.stationName || msg.serial || 'Tempest';
+    let sample;
     if (msg.type === 'rapid') {
       this.lastRapid = { ...msg, at };
-      return;
+      sample = msg.speed == null ? null : windSampleFromRapid(msg, at, station, this.recentSpeeds(msg.serial, at, msg.speed));
+    } else {
+      this.lastObs = { ...msg, at };
+      sample = windSampleFromObs(msg, at, station);
     }
-    this.lastObs = { ...msg, at };
-    const sample = windSampleFromObs(msg, at, this.stationName || msg.serial || 'Tempest');
     if (sample) {
       this.samples++;
+      this.lastSample = sample;
       this.emit('sample', sample);
     }
   }
@@ -124,6 +151,7 @@ class TempestListener extends EventEmitter {
       stationsHeard: [...this.stationsHeard],
       lastObs: this.lastObs,
       lastRapid: this.lastRapid,
+      lastSample: this.lastSample,
     };
   }
 
@@ -133,4 +161,4 @@ class TempestListener extends EventEmitter {
   }
 }
 
-module.exports = { TempestListener, parseTempestMessage, windSampleFromObs, MS_TO_MPH };
+module.exports = { TempestListener, parseTempestMessage, windSampleFromObs, windSampleFromRapid, MS_TO_MPH, GUST_WINDOW_MS };

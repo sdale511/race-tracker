@@ -1059,8 +1059,8 @@ function main() {
   let activeRegattas = [];
   let selectedRegatta = null;
 
-  // Tempest weather station (see tempestListener.js): each one-minute observation heard on its local UDP broadcast goes
-  // into the selected regatta's wind series in Redis. With no regatta selected it is counted, not written - there is no
+  // Tempest weather station (see tempestListener.js): every wind reading heard on its local UDP broadcast (each 3-second
+  // rapid_wind and each one-minute observation) goes into the selected regatta's wind series in Redis. With no regatta selected it is counted, not written - there is no
   // regatta to file it under, the same rule boat fixes follow.
   const tempest = config.tempest.enabled
     ? new TempestListener({ port: config.tempest.port, serial: config.tempest.serial, stationName: config.tempest.stationName }).start()
