@@ -352,6 +352,34 @@ function renderSlotsCard(slots, info, compact = false) {
     </div>`;
 }
 
+// Tempest weather station card (radio page): the newest one-minute observation (what goes to Redis), the newest 3-second
+// rapid-wind reading, and whether readings are being written - they are only written while a regatta is selected. A
+// reading older than 3 minutes is shown red: the hub has stopped broadcasting or left the network.
+function renderTempestCard(t) {
+  const obs = t.lastObs;
+  const stale = !obs || Date.now() - obs.at > 180000;
+  const wind = (dir, speed) => (dir == null || speed == null ? '—' : `${dir}° at ${speed} mph`);
+  const value = obs ? wind(obs.dir, obs.avg) : 'nothing heard';
+  const stations = t.stationsHeard.length ? t.stationsHeard.map((sn) => escapeHtml(sn)).join(', ') : '—';
+  return `<div class="card">
+      <div class="label">Tempest weather station</div>
+      <div class="value"><span class="dot ${t.error || (obs && stale) ? 'dot-red' : obs ? 'dot-green' : 'dot-gray'}"></span>${value}</div>
+      <div class="sub">${
+        obs
+          ? `gust ${obs.gust ?? '—'} &middot; lull ${obs.lull ?? '—'} mph &middot; ${formatAgo(obs.at)}`
+          : `Listening on UDP ${t.port}${t.error ? ` - ${escapeHtml(t.error)}` : ''}`
+      }</div>
+      <div class="stat-rows">
+        <div class="stat-row"><span class="name">Live (3 s)</span><span class="val">${t.lastRapid ? `${wind(t.lastRapid.dir, t.lastRapid.speed)}, ${formatAgo(t.lastRapid.at)}` : '—'}</span></div>
+        <div class="stat-row"><span class="name">Station${t.serial ? ` (only ${escapeHtml(t.serial)})` : ''}</span><span class="val">${stations}</span></div>
+        <div class="stat-row"><span class="name">Written to Redis</span><span class="val">${t.written.toLocaleString()}${t.failed ? ` <span style="color:#f85149;">(${t.failed} failed)</span>` : ''}</span></div>
+        ${t.skipped ? `<div class="stat-row"><span class="name">Not written</span><span class="val">${t.skipped.toLocaleString()} <span class="muted">(no regatta selected)</span></span></div>` : ''}
+        ${t.ignored ? `<div class="stat-row"><span class="name">Other stations' messages</span><span class="val">${t.ignored.toLocaleString()}</span></div>` : ''}
+      </div>
+      ${!t.regattaSelected ? '<div class="sub" style="margin-top:4px;color:#e3b341;">No regatta selected - readings are not being recorded</div>' : ''}
+    </div>`;
+}
+
 function renderLinkHealthCard(h, slots) {
   const dot = (level) => (level === 'bad' ? 'dot-red' : level === 'warn' ? 'dot-orange' : level === 'quiet' ? 'dot-gray' : 'dot-green');
   const seen = h.boats.length;
@@ -968,6 +996,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     ${renderRadioFramesCard(s)}
     ${renderSlotsCard(s.slots, s.slotInfo)}
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
+    ${s.tempest ? renderTempestCard(s.tempest) : ''}
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${rtkControlsEnabled ? renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${rtkControlsEnabled ? renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix) : ''}

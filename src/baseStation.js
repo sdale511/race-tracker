@@ -3,6 +3,7 @@ const config = require('./config');
 const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
+const { TempestListener } = require('./tempestListener');
 const { implausibleReason } = require('./fixSanity');
 const { getPersistedPractice, persistPractice } = require('./slotModeFile');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
@@ -1054,6 +1055,39 @@ function main() {
   // same base, but never visible to, or shared with, any other process.
   let activeRegattas = [];
   let selectedRegatta = null;
+
+  // Tempest weather station (see tempestListener.js): each one-minute observation heard on its local UDP broadcast goes
+  // into the selected regatta's wind series in Redis. With no regatta selected it is counted, not written - there is no
+  // regatta to file it under, the same rule boat fixes follow.
+  const tempest = config.tempest.enabled
+    ? new TempestListener({ port: config.tempest.port, serial: config.tempest.serial, stationName: config.tempest.stationName }).start()
+    : null;
+  const windWrites = { written: 0, skipped: 0, failed: 0, lastError: null };
+  let lastWindErrorLogAt = 0;
+  if (tempest) {
+    console.log(
+      `[baseStation] Tempest weather station: listening on UDP ${config.tempest.port}${config.tempest.serial ? ` for ${config.tempest.serial}` : ''} - wind goes to the selected regatta's Redis wind data`
+    );
+    tempest.on('sample', (sample) => {
+      if (!selectedRegatta) {
+        windWrites.skipped++;
+        return;
+      }
+      redisStore
+        .recordWind(sample)
+        .then(() => {
+          windWrites.written++;
+        })
+        .catch((err) => {
+          windWrites.failed++;
+          windWrites.lastError = err.message;
+          if (Date.now() - lastWindErrorLogAt > 60000) {
+            lastWindErrorLogAt = Date.now();
+            console.error('[tempest] failed to write wind to Redis:', err.message);
+          }
+        });
+    });
+  }
 
   // Neither the real radio (connectRealRadio above) nor the base GPS
   // (baseGps.open above) actually opens anything until a regatta is picked
@@ -2684,6 +2718,7 @@ function main() {
           }
         : null,
       linkHealth: linkHealth.status(),
+      tempest: tempest ? { ...tempest.status(), ...windWrites, regattaSelected: !!selectedRegatta } : null,
       redis: redisStats,
       // maxmemoryBytes falls back to the operator-configured
       // REDIS_MEMORY_LIMIT_MB whenever Redis itself won't report its own

@@ -305,6 +305,16 @@ const sections = [
     rows: [{ label: 'port', desc: "Port this machine's admin dashboard is served on", value: config.admin.port, envVar: 'ADMIN_PORT' }],
   },
   {
+    title: 'Tempest weather station',
+    roles: ['base'],
+    rows: [
+      { label: 'enabled', desc: "Record the Tempest's local UDP wind readings into the regatta's wind data", value: config.tempest.enabled, envVar: 'TEMPEST_ENABLED' },
+      { label: 'port', desc: 'UDP port the Tempest hub broadcasts on', value: config.tempest.port, envVar: 'TEMPEST_PORT' },
+      { label: 'serial', desc: "Only use this station's readings (its ST-... serial number); unset = any station", value: config.tempest.serial || '(any station)', envVar: 'TEMPEST_SERIAL' },
+      { label: 'stationName', desc: 'Station name stored with each reading (shown on the map)', value: config.tempest.stationName || '(its serial number)', envVar: 'TEMPEST_STATION_NAME' },
+    ],
+  },
+  {
     title: 'Redis',
     roles: ['base'],
     rows: [

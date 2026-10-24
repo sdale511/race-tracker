@@ -12,7 +12,7 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 }
 
 // Everything this app stores in Redis - course marks, the on-grid zone, the
-// pin boundary flag, boat tracks, known boats - lives under
+// pin boundary flag, boat tracks, known boats, wind - lives under
 // `regattas:<regattaId>:...`, one complete, self-contained namespace per
 // regatta. There is NO "which regatta is selected" key anywhere in Redis -
 // that choice is entirely local to each base station process (see
@@ -428,6 +428,20 @@ class RedisStore {
     await this.ready;
     const withScores = await this.client.zrangebyscore(`${this._prefix(regattaId)}track`, fromMs ?? '-inf', toMs ?? '+inf', 'WITHSCORES');
     return unpackWithScores(withScores);
+  }
+
+  // One wind sample ({t, dir, avg, gust, lull, station, units} - see tempestListener.js) into the current regatta's wind
+  // series, regattas:<id>:wind: a sorted set scored by t, the same key and shape RegattaUp's recordRaceWind writes and its
+  // map and archives read. The same rolling retention as the track: older samples are dropped and the expiry pushed out
+  // on each write (one a minute, so no batching is needed).
+  async recordWind(sample) {
+    await this.ready;
+    const key = `${this._prefix()}wind`;
+    await Promise.all([
+      this.client.zadd(key, sample.t, JSON.stringify(sample)),
+      this.client.zremrangebyscore(key, '-inf', sample.t - this.trackRetentionSeconds * 1000),
+      this.client.expire(key, this.trackRetentionSeconds),
+    ]);
   }
 
   async knownBoatIds() {

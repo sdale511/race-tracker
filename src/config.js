@@ -1051,4 +1051,18 @@ module.exports = {
     address: process.env.UDP_BROADCAST_ADDR || '255.255.255.255',
     port: parseInt(process.env.UDP_PORT || '10110', 10), // 10110 is the conventional NMEA-over-UDP port
   },
+
+  // Base station only - a Tempest (WeatherFlow) weather station's local UDP
+  // broadcast, recorded as the selected regatta's wind series in Redis (see
+  // tempestListener.js). On by default: with no Tempest on the network it
+  // just never hears anything. TEMPEST_SERIAL (e.g. ST-00012345) keeps one
+  // station's messages when more than one is on the network;
+  // TEMPEST_STATION_NAME is the station name stored with each sample (what
+  // RegattaUp's map shows), defaulting to the serial number.
+  tempest: {
+    enabled: process.env.TEMPEST_ENABLED !== '0' && process.env.TEMPEST_ENABLED !== 'false',
+    port: parseInt(process.env.TEMPEST_PORT || '50222', 10),
+    serial: process.env.TEMPEST_SERIAL || null,
+    stationName: process.env.TEMPEST_STATION_NAME || null,
+  },
 };
