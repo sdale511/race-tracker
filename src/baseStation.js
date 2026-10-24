@@ -4,6 +4,7 @@ const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { TempestListener } = require('./tempestListener');
+const { SimTempest } = require('./simTempest');
 const { implausibleReason } = require('./fixSanity');
 const { getPersistedPractice, persistPractice } = require('./slotModeFile');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
@@ -17,6 +18,8 @@ const {
   PIN_BOUNDARY_MARK,
   getPinBoundaryFarPoint,
   resolveCourseCenter,
+  bearingDeg,
+  WIND_FROM_DEG,
 } = require('./course');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
@@ -1087,6 +1090,24 @@ function main() {
           }
         });
     });
+  }
+  // SIMULATE=1: a pretend Tempest (see simTempest.js) sending wind down the current course to the listener above - from
+  // the leeward black -> windward black bearing (the direction the wind comes from), or course.js's default before a
+  // course has resolved. Uses TEMPEST_SERIAL when set, so the listener's station filter lets it through.
+  if (tempest && config.simulate && config.sim.tempest) {
+    new SimTempest({
+      port: config.tempest.port,
+      serial: config.tempest.serial || 'ST-SIM00001',
+      getAxisDeg: () =>
+        raceMarks && raceMarks.leewardBlack && raceMarks.windwardBlack ? bearingDeg(raceMarks.leewardBlack, raceMarks.windwardBlack) : WIND_FROM_DEG,
+      changeS: config.sim.windChangeS,
+      minMph: config.sim.windMinMph,
+      maxMph: config.sim.windMaxMph,
+      dirSwingDeg: config.sim.windSwingDeg,
+    }).start();
+    console.log(
+      `[baseStation] SIMULATE=1 - simulated Tempest sending ${config.sim.windMinMph}-${config.sim.windMaxMph} mph wind down the course (±${config.sim.windSwingDeg}°, new wind every ${config.sim.windChangeS}s) - SIM_TEMPEST=0 turns it off`
+    );
   }
 
   // Neither the real radio (connectRealRadio above) nor the base GPS

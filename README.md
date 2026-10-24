@@ -1700,6 +1700,14 @@ and `TEMPEST_STATION_NAME` is the name stored with each reading and shown on the
 card stays at "nothing heard", check the base and hub are on the same subnet and that the machine's firewall lets
 incoming UDP 50222 through.
 
+**Simulated wind.** A `SIMULATE=1` base also runs a pretend Tempest (`src/simTempest.js`) that sends the base's own
+listener the same messages a real hub would: a `rapid_wind` every 3 s and an `obs_st` every minute (lull, average and
+gust are the lowest, mean and highest of that minute's 3-second speeds). The wind blows down the course - from the
+leeward black -> windward black bearing of the current marks - and every `SIM_WIND_CHANGE_S` (30 s) it picks a new speed
+between `SIM_WIND_MIN_MPH` and `SIM_WIND_MAX_MPH` (5-8 mph) and a direction within `SIM_WIND_SWING_DEG` (10°) either
+side of that axis. Its station is `ST-SIM00001` (or `TEMPEST_SERIAL`, if set). `SIM_TEMPEST=0` turns it off. Like real
+readings, it is only written to Redis while a regatta is selected.
+
 When RegattaUp can also reach the Tempest cloud during a race, both write to the same series; RegattaUp's
 `recordRaceWind` skips a minute whose newest sample is under 55 s old, so the two mostly don't double up.
 

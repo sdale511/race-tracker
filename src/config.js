@@ -248,6 +248,16 @@ module.exports = {
     // off the line seconds after simulation start, or fighting the sim's
     // own movement to keep it near the line.
     startOnly: process.env.SIM_START_ONLY === '1' || process.env.SIM_START_ONLY === 'true',
+    // Base only, SIMULATE=1: a pretend Tempest weather station (see
+    // simTempest.js) sending the base's own Tempest listener wind down the
+    // course - SIM_TEMPEST=0 turns it off. Every SIM_WIND_CHANGE_S it picks a
+    // new wind between SIM_WIND_MIN_MPH and SIM_WIND_MAX_MPH, from within
+    // SIM_WIND_SWING_DEG either side of the leeward->windward axis.
+    tempest: process.env.SIM_TEMPEST !== '0' && process.env.SIM_TEMPEST !== 'false',
+    windChangeS: parseFloat(process.env.SIM_WIND_CHANGE_S || '30'),
+    windMinMph: parseFloat(process.env.SIM_WIND_MIN_MPH || '5'),
+    windMaxMph: parseFloat(process.env.SIM_WIND_MAX_MPH || '8'),
+    windSwingDeg: parseFloat(process.env.SIM_WIND_SWING_DEG || '10'),
     // Off by default - diagnostic override for foulWatcher.js (base station
     // side) and RegattaUp's own foul handling: instead of racing normally,
     // the boat holds at its start position exactly like any other boat
