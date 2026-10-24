@@ -2391,6 +2391,8 @@ function startAdminServer({
   // () => { listening, sample }: whether the Tempest listener is on and its newest wind sample (see windWidget.js) -
   // cheap, no Redis, since the /wind widget polls it every 3 s.
   getWind,
+  // (fn) => unsubscribe: calls fn with each wind sample as it arrives - the live stream behind /api/wind/stream.
+  subscribeWind,
   getCourseMarks,
   setMark,
   setPinBoundaryEnabled,
@@ -2690,6 +2692,28 @@ function startAdminServer({
       const theme = new URL(req.url, 'http://base').searchParams.get('theme') === 'light' ? 'light' : 'dark';
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderWindWidget({ theme }));
+      return;
+    }
+    // The same, pushed live: a Server-Sent Events stream sending the current payload at once and again with every new sample
+    // as the Tempest listener receives it, plus a comment line every 15 s so idle proxies keep the connection open.
+    if (req.url === '/api/wind/stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-store',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+      const send = () => {
+        const { listening, sample } = getWind ? getWind() : { listening: false, sample: null };
+        res.write(`data: ${JSON.stringify(windApiPayload(listening, sample))}\n\n`);
+      };
+      send();
+      const unsubscribe = subscribeWind ? subscribeWind(send) : () => {};
+      const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
+      req.on('close', () => {
+        unsubscribe();
+        clearInterval(keepalive);
+      });
       return;
     }
     if (req.url === '/api/wind') {

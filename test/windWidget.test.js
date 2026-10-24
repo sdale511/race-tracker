@@ -41,3 +41,52 @@ test('the base serves /wind and /api/wind (any origin may read it)', async () =>
     server.close();
   }
 });
+
+test('the live stream sends the current wind at once, pushes each new sample, and unsubscribes on disconnect', async () => {
+  let sample = null;
+  const subscribers = new Set();
+  const server = startAdminServer({
+    port: 0,
+    getStats: async () => ({}),
+    getWind: () => ({ listening: true, sample }),
+    subscribeWind: (fn) => {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+  });
+  await new Promise((r) => server.once('listening', r));
+  const events = [];
+  let gotEvent;
+  const req = http.get({ port: server.address().port, path: '/api/wind/stream' }, (res) => {
+    assert.strictEqual(res.headers['content-type'], 'text/event-stream');
+    let buf = '';
+    res.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        if (block.startsWith('data: ')) {
+          events.push(JSON.parse(block.slice(6)));
+          if (gotEvent) gotEvent();
+        }
+      }
+    });
+  });
+  const nextEvent = () => new Promise((r) => (gotEvent = r));
+  try {
+    await nextEvent();
+    assert.strictEqual(events[0].sample, null); // nothing heard yet
+    assert.strictEqual(subscribers.size, 1);
+    sample = { t: 2, dir: 90, avg: 7, gust: 8, lull: 6, station: 'ST-1', units: 'mph' };
+    const pushed = nextEvent();
+    for (const fn of subscribers) fn(sample);
+    await pushed;
+    assert.deepStrictEqual(events[1].sample, sample);
+  } finally {
+    req.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.strictEqual(subscribers.size, 0);
+    server.close();
+  }
+});

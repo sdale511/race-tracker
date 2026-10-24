@@ -1066,12 +1066,20 @@ function main() {
     ? new TempestListener({ port: config.tempest.port, serial: config.tempest.serial, stationName: config.tempest.stationName }).start()
     : null;
   const windWrites = { written: 0, skipped: 0, failed: 0, lastError: null };
+  // Whoever wants each sample the moment it arrives - the /wind widget's live stream (see adminServer.js's
+  // subscribeWind). One Set, not a listener on `tempest` per viewer, so many open widgets don't pile up listeners.
+  const windSubscribers = new Set();
+  const subscribeWind = (fn) => {
+    windSubscribers.add(fn);
+    return () => windSubscribers.delete(fn);
+  };
   let lastWindErrorLogAt = 0;
   if (tempest) {
     console.log(
       `[baseStation] Tempest weather station: listening on UDP ${config.tempest.port}${config.tempest.serial ? ` for ${config.tempest.serial}` : ''} - wind goes to the selected regatta's Redis wind data`
     );
     tempest.on('sample', (sample) => {
+      for (const fn of windSubscribers) fn(sample);
       if (!selectedRegatta) {
         windWrites.skipped++;
         return;
@@ -2851,6 +2859,7 @@ function main() {
     getStats: getFullStats,
     getPositions: getBoatPositions,
     getWind: () => ({ listening: !!tempest, sample: tempest ? tempest.lastSample : null }),
+    subscribeWind,
     getCourseMarks,
     setMark: setMarkLocation,
     setPinBoundaryEnabled,

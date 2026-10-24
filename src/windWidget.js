@@ -5,9 +5,11 @@
 //
 // It shows the newest Tempest wind sample (see tempestListener.js): a compass with an arrow pointing downwind - the way
 // the wind is blowing - and the numbers: speed, the direction it is coming FROM (the way a race committee reads it, and
-// the same convention as RegattaUp's map), and the last minute's gust and lull. mph only for now. It polls
-// GET /api/wind every 3 s, scales to whatever size the iframe is, greys out once the reading is over 3 minutes old and
-// says "No wind data" until there is any. ?theme=light for a light background (the default is dark).
+// the same convention as RegattaUp's map), and the last minute's gust and lull. mph only for now. It updates the moment
+// each reading reaches the base, over the GET /api/wind/stream Server-Sent Events stream (falling back to polling
+// GET /api/wind every 3 s where that can't be used), scales to whatever size the iframe is, greys out once the reading
+// is over 3 minutes old and says "No wind data" until there is any. ?theme=light for a light background (the default is
+// dark).
 
 const STALE_MS = 180000;
 
@@ -97,15 +99,35 @@ function renderWindWidget({ theme = 'dark' } = {}) {
         '<div class="from">from ' + Math.round(s.dir) + '° ' + compass(s.dir) + '</div>' +
         '<div class="detail">gust ' + fmt(s.gust) + ' · lull ' + fmt(s.lull) + (stale ? ' · ' + ago(s.t) : '') + '</div>';
     }
+    // Live: each reading is pushed the moment the base receives it. EventSource reconnects on its own after a dropped
+    // connection; if the stream can't be used at all (no EventSource, or it fails repeatedly) poll instead.
+    let last = null;
+    const show = (data) => { last = data; render(data); };
+    let pollTimer = null;
     async function poll() {
       try {
-        render(await (await fetch('/api/wind', { cache: 'no-store' })).json());
+        show(await (await fetch('/api/wind', { cache: 'no-store' })).json());
       } catch (err) {
         // base unreachable for a moment - keep showing the last reading, try again next tick
       }
     }
-    poll();
-    setInterval(poll, 3000);
+    function startPolling() {
+      if (pollTimer) return;
+      poll();
+      pollTimer = setInterval(poll, 3000);
+    }
+    if (window.EventSource) {
+      let failures = 0;
+      const stream = new EventSource('/api/wind/stream');
+      stream.onmessage = (e) => { failures = 0; show(JSON.parse(e.data)); };
+      stream.onerror = () => {
+        if (++failures >= 3) { stream.close(); startPolling(); }
+      };
+    } else {
+      startPolling();
+    }
+    // Re-drawn every 10 s without new data too, so a reading that stops arriving greys out and shows its age.
+    setInterval(() => { if (last) render(last); }, 10000);
   </script>
 </body>
 </html>`;
