@@ -65,6 +65,16 @@ if (!Number.isInteger(FLEET_SIZE) || FLEET_SIZE < 1) {
   process.exit(1);
 }
 
+// The regatta whose course the fleet races - the same one the base station has selected, as saved in regatta-id.txt (or
+// REGATTAUP_REGATTA_ID). Required: without it the fleet would race a course under regattas:none that the base never
+// checks laps, roundings or fouls against. Not needed with RF_BRIDGE, whose boats get the course from the base over the
+// real radio and never touch Redis.
+const regattaId = config.regattaup.defaultRegatta && config.regattaup.defaultRegatta.id;
+if (!regattaId && !RF_BRIDGE) {
+  console.error("[fleetSim] no regatta - set REGATTAUP_REGATTA_ID, or select one first (the base's admin dashboard or npm run reset-regatta, saved in race-config/regatta-id.txt)");
+  process.exit(1);
+}
+
 // Sequential (00001, 00002, ...) rather than boatIdFile.js's random
 // generateBoatId - this process assigns every id in the fleet itself, so
 // there's nothing to coordinate against and no reason to draw randomly;
@@ -111,6 +121,7 @@ const marksFilePath = path.join(config.configDir, 'course_marks.json');
 // radio broadcast for information this process already has in hand.
 async function ensureFreshMarksCached() {
   const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
+  redisStore.setCurrentRegatta(regattaId);
   try {
     const marks = await redisStore.getOrCreateMarks(config.sim.centerLat, config.sim.centerLon);
     // getOrCreateMarks only ever returns the MARK_NAMES set - the pin
@@ -128,7 +139,7 @@ async function ensureFreshMarksCached() {
     // real dependency on startup order for this particular file.
     fs.mkdirSync(config.logDir, { recursive: true });
     fs.writeFileSync(marksFilePath, JSON.stringify(marks));
-    console.log(`[fleetSim] fetched current course marks from Redis: ${Object.keys(marks).join(', ')}`);
+    console.log(`[fleetSim] fetched regatta ${regattaId}'s course marks from Redis: ${Object.keys(marks).join(', ')}`);
   } finally {
     await redisStore.close();
   }

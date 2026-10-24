@@ -4,8 +4,8 @@ const config = require('./config');
 const { RedisStore } = require('./redisStore');
 const { VALID_FILENAME } = require('./uploadServer');
 
-// Clears every boat-related key in Redis (tracks, boats:known, start slot
-// assignments) so a fresh fleet can race the same course without stale
+// Clears every boat-related key in Redis (the track, boats:last, boats:known)
+// so a fresh fleet can race the same course without stale
 // boats/tracks left over from earlier runs - deliberately leaves the course
 // marks alone. Also clears this base's own local boat-related files for the
 // active regatta: its received-fix CSV logs
@@ -31,13 +31,15 @@ const { VALID_FILENAME } = require('./uploadServer');
   // like this one is REGATTAUP_REGATTA_ID/regatta-id.txt
   // (config.regattaup.defaultRegatta) - pass REGATTAUP_REGATTA_ID explicitly
   // to target a different regatta. Computed once, up front, so every
-  // section below agrees on the same regatta context. regattaKey ('none'
-  // when nothing's selected) is the literal directory-name form - matches
-  // baseStation.js's own `currentRegattaId || 'none'` convention exactly.
-  const regattaKey = config.regattaup.defaultRegatta ? config.regattaup.defaultRegatta.id : 'none';
-  const regattaLabel = config.regattaup.defaultRegatta
-    ? `${config.regattaup.defaultRegatta.id}${config.regattaup.defaultRegatta.name ? ` (${config.regattaup.defaultRegatta.name})` : ''}`
-    : 'none (no regatta selected - see REGATTAUP_REGATTA_ID or the admin dashboard)';
+  // section below agrees on the same regatta context. Required, so this
+  // can never clear regattas:none or a regatta nobody meant. regattaKey is
+  // also the regatta's directory name under base-logs/ and base-uploads/.
+  if (!(config.regattaup.defaultRegatta && config.regattaup.defaultRegatta.id)) {
+    console.error("[clearBaseLogs] no regatta - set REGATTAUP_REGATTA_ID, or select one first (the base's admin dashboard or npm run reset-regatta, saved in race-config/regatta-id.txt)");
+    process.exit(1);
+  }
+  const regattaKey = config.regattaup.defaultRegatta.id;
+  const regattaLabel = `${regattaKey}${config.regattaup.defaultRegatta.name ? ` (${config.regattaup.defaultRegatta.name})` : ''}`;
   console.log(`[clearBaseLogs] regatta: ${regattaLabel}`);
 
   const target = config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`;
@@ -45,13 +47,8 @@ const { VALID_FILENAME } = require('./uploadServer');
   const redisStore = new RedisStore({ url: config.redis.url, connection: config.redis.connection });
   try {
     // Every boat key lives under regattas:<id>:... (see redisStore.js's own
-    // module comment) - without this, clearBoatData falls back to the
-    // regattas:none: namespace instead of whichever regatta is actually
-    // selected, which is almost always empty and clears nothing real. Same
-    // fix resetCourse.js already applies for the same reason.
-    if (config.regattaup.defaultRegatta) {
-      redisStore.setCurrentRegatta(config.regattaup.defaultRegatta.id);
-    }
+    // module comment), so clearBoatData needs the regatta set first.
+    redisStore.setCurrentRegatta(regattaKey);
     const cleared = await redisStore.clearBoatData();
     if (cleared.length === 0) {
       console.log('[clearBaseLogs] no boat keys found in Redis - nothing to clear (marks left untouched)');

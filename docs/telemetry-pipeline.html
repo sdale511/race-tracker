@@ -689,8 +689,6 @@ sequenceDiagram
           <tr><td class="field"><code>boats:known</code></td><td class="type">set</td><td>base station</td><td>every boatId ever recorded</td></tr>
           <tr><td class="field"><code>mark:&lt;name&gt;</code></td><td class="type">hash</td><td>base station</td><td>one course mark's <code>{lat, lon}</code>, one key per <code>MARK_NAMES</code> entry</td></tr>
           <tr><td class="field"><code>course:on_grid_zone</code></td><td class="type">string (JSON)</td><td>base station</td><td>the on-grid detection polygon, for drawing without re-deriving it</td></tr>
-          <tr><td class="field"><code>regatta:selected</code></td><td class="type">string (JSON)</td><td>base station</td><td>which RegattaUp regatta this base reports events for</td></tr>
-          <tr><td class="field"><code>boats:start_slots</code></td><td class="type">hash</td><td>base station</td><td>boatId → assigned start-grid slot</td></tr>
           <tr><td class="field"><code>ongrid:&lt;raceId&gt;</code></td><td class="type">set</td><td>mylapsWebhook</td><td>racer ids currently on-grid for that race</td></tr>
           <tr><td class="field"><code>boatmap</code></td><td class="type">hash</td><td>getRaceTracks</td><td>transponder code → <code>{boat_number, name, class, racer_id}</code>, 1hr TTL</td></tr>
         </table>

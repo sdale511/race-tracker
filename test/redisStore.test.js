@@ -119,7 +119,7 @@ test('a failed batch is counted once and every boat in it posts its next fix aga
   assert.strictEqual(calls.filter((c) => c[0] === 'sadd').length, 0); // no upkeep after a failed write
 });
 
-test('the rolling window trims the track to the retention period and refreshes its expiry, once a minute', () => {
+test('the rolling window trims the track to the retention period and refreshes its, boats:last\'s and boats:known\'s expiry, once a minute', () => {
   const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
     trackRetentionSeconds: 48 * 3600,
@@ -130,13 +130,13 @@ test('the rolling window trims the track to the retention period and refreshes i
     },
   });
   const before = Date.now();
-  store._keepRollingWindow('track');
-  store._keepRollingWindow('track'); // inside the same minute: nothing
-  assert.strictEqual(calls.length, 2);
+  store._keepRollingWindow('track', ['last', 'known']);
+  store._keepRollingWindow('track', ['last', 'known']); // inside the same minute: nothing
+  assert.strictEqual(calls.length, 4);
   assert.strictEqual(calls[0][0], 'zrem');
   assert.strictEqual(calls[0][2], '-inf');
   assert.ok(calls[0][3] >= before - 48 * 3600 * 1000 && calls[0][3] <= Date.now() - 48 * 3600 * 1000);
-  assert.deepStrictEqual(calls[1], ['expire', 'track', 172800]);
+  assert.deepStrictEqual(calls.slice(1), [['expire', 'track', 172800], ['expire', 'last', 172800], ['expire', 'known', 172800]]);
 });
 
 test('marks:index follows every mark write and delete, and getMarks indexes the marks already there', async () => {

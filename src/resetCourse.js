@@ -26,6 +26,12 @@ const {
 // as boatAgent/baseStation, see README's "Redis track storage"). Boat
 // tracks are left untouched - see `npm run clear-base-logs` for those.
 (async () => {
+  // The regatta whose course to reset - the one saved in regatta-id.txt (or REGATTAUP_REGATTA_ID). Required, so a reset can
+  // never land on regattas:none or a regatta nobody meant.
+  if (!(config.regattaup.defaultRegatta && config.regattaup.defaultRegatta.id)) {
+    console.error("[resetCourse] no regatta - set REGATTAUP_REGATTA_ID, or select one first (the base's admin dashboard or npm run reset-regatta, saved in race-config/regatta-id.txt)");
+    process.exit(1);
+  }
   const target = config.redis.url || `${config.redis.connection.host}:${config.redis.connection.port}`;
   console.log(`[resetCourse] connecting to Redis at ${target}`);
   // The regatta's venue coordinates are only a copy, saved in regatta-id.txt when the regatta was last selected - so a
@@ -97,19 +103,16 @@ const {
     // Every mark/on-grid-zone/pin-boundary key now lives under
     // `regattas:<id>:...` (see redisStore.js's own module comment) - this
     // has to pick the same regatta the base station would, before touching
-    // anything, or it could silently reset a DIFFERENT regatta's course (or
-    // the empty "none" namespace) instead of the one an operator actually
-    // means. Regatta selection is never stored in Redis (see redisStore.js's
+    // anything, or it could silently reset a DIFFERENT regatta's course
+    // instead of the one an operator actually means. Regatta selection is never stored in Redis (see redisStore.js's
     // own comment on why - it's local to each base station process), so the
     // only source available to a standalone script like this one is
     // REGATTAUP_REGATTA_ID/regatta-id.txt (config.regattaup.defaultRegatta) -
     // pass REGATTAUP_REGATTA_ID explicitly if this needs to target a
     // regatta other than whatever's currently persisted locally.
-    if (config.regattaup.defaultRegatta) {
-      redisStore.setCurrentRegatta(config.regattaup.defaultRegatta.id);
-    }
+    redisStore.setCurrentRegatta(config.regattaup.defaultRegatta.id);
     console.log(
-      `[resetCourse] resetting course for regatta: ${redisStore.currentRegattaId || 'none (no regatta selected - see REGATTAUP_REGATTA_ID or the admin dashboard)'}`
+      `[resetCourse] resetting course for regatta: ${redisStore.currentRegattaId}`
     );
 
     const cleared = await redisStore.clearCourseMarks();

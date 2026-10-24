@@ -12,7 +12,7 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 }
 
 // Everything this app stores in Redis - course marks, the on-grid zone, the
-// pin boundary flag, boat tracks, known boats, start slots - lives under
+// pin boundary flag, boat tracks, known boats - lives under
 // `regattas:<regattaId>:...`, one complete, self-contained namespace per
 // regatta. There is NO "which regatta is selected" key anywhere in Redis -
 // that choice is entirely local to each base station process (see
@@ -33,11 +33,10 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 // brand new Redis, and an already-configured regatta picks up exactly where
 // its own namespace left off.
 //
-// `none` is used as the regatta id whenever nothing is currently selected
-// (see currentRegattaId below) - deliberately not blocking course
-// creation/testing on having a real regatta chosen first, since SIMULATE=1
-// testing without ever touching the regatta selector is a normal, common
-// workflow this app needs to keep supporting.
+// `none` is the fallback regatta id when nothing is selected (see
+// currentRegattaId below). Nothing should write there: the base writes
+// nothing until a regatta is selected, and the command-line tools (fleet,
+// reset-course, clear-base-logs, clean-bad-fixes) refuse to run without one.
 //
 // Records every decoded boat fix into Redis:
 //
@@ -349,7 +348,9 @@ class RedisStore {
     // first time), not on every write. A failure isn't tracked as a write failure above - the fixes already landed; the next
     // interval retries.
     for (const [boatKey, { boatId, prefix }] of newestByBoat) this._keepBoatKnown(boatKey, boatId, `${prefix}boats:known`);
-    for (const prefix of argsByPrefix.keys()) this._keepRollingWindow(`${prefix}track`, `${prefix}boats:last`);
+    for (const prefix of argsByPrefix.keys()) {
+      this._keepRollingWindow(`${prefix}track`, [`${prefix}boats:last`, `${prefix}boats:known`]);
+    }
   }
 
   // A rolling retention window for the track. An expiry set once, when a key is created, would delete the whole key (every
@@ -357,14 +358,14 @@ class RedisStore {
   // once a minute this (1) drops the fixes older than the retention window and (2) pushes the key's expiry out again: it
   // holds the last trackRetentionHours of fixes and only expires that long after its last write. The first write of a key
   // does it at once, so a key never goes without an expiry. Best effort; a failure is retried at the next interval.
-  // boats:last (lastKey) gets the same expiry, so it goes with the track it summarises.
-  _keepRollingWindow(trackKey, lastKey) {
+  // boats:last and boats:known (alongKeys) get the same expiry, so they go with the track they summarise.
+  _keepRollingWindow(trackKey, alongKeys = []) {
     const now = Date.now();
     if (now - (this.lastWindowAt.get(trackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
     this.lastWindowAt.set(trackKey, now);
     this.client.zremrangebyscore(trackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
     this.client.expire(trackKey, this.trackRetentionSeconds).catch(() => {});
-    if (lastKey) this.client.expire(lastKey, this.trackRetentionSeconds).catch(() => {});
+    for (const key of alongKeys) this.client.expire(key, this.trackRetentionSeconds).catch(() => {});
   }
 
   // Adds the boat to boats:known, which RegattaUp's getRaceTracks reads on every poll for its boat list: on the boat's first
@@ -559,7 +560,7 @@ class RedisStore {
   // reusing whatever's already there - needed any time the course geometry
   // itself changes (e.g. SIM_COURSE_LENGTH_NM), since getOrCreateMarks
   // otherwise has no way to tell "marks exist" from "marks exist but are
-  // stale". Leaves boat tracks/start slots untouched (see clearBoatData for
+  // stale". Leaves boat tracks untouched (see clearBoatData for
   // those) and never touches any OTHER regatta's own namespace.
   async clearCourseMarks() {
     await this.ready;
@@ -617,33 +618,8 @@ class RedisStore {
     return raw ? JSON.parse(raw) : null;
   }
 
-  // Assigns each boat a 0-based start-line slot by registration order (the
-  // first boat to ask gets slot 0, the next gets slot 1, etc.) - NOT derived
-  // from the boat's own ID/sail number, which could be any value (51, 52,
-  // ...) and isn't a small sequential count, so using it directly would
-  // place boats however far off the line their ID happens to imply. The
-  // mapping is persisted (a hash of boatId -> slot, scoped to the currently
-  // selected regatta) so a boat that reconnects gets the same slot back
-  // rather than a new one. The increment + HSETNX pair makes this safe if
-  // two boats register at the same instant: whichever loses the HSETNX race
-  // re-reads the slot the winner actually got, rather than both ending up
-  // on the same slot.
-  async getOrAssignStartSlot(boatId) {
-    await this.ready;
-    const prefix = this._prefix();
-    const slotsKey = `${prefix}boats:start_slots`;
-    const key = String(boatId);
-    const existing = await this.client.hget(slotsKey, key);
-    if (existing !== null) return parseInt(existing, 10);
-    const slot = (await this.client.incr(`${prefix}boats:start_slot_counter`)) - 1;
-    const added = await this.client.hsetnx(slotsKey, key, slot);
-    if (added) return slot;
-    const assigned = await this.client.hget(slotsKey, key);
-    return parseInt(assigned, 10);
-  }
-
   // Deletes every boat-related key for the CURRENTLY SELECTED regatta only
-  // (the track, boats:last, the known-boats set, and start slot assignments) - deliberately
+  // (the track, boats:last and the known-boats set) - deliberately
   // leaves the course marks untouched, so the same course can keep being
   // raced by a fresh fleet without recomputing/republishing marks, and
   // deliberately leaves every OTHER regatta's own namespace completely
@@ -656,8 +632,6 @@ class RedisStore {
       `${prefix}track`,
       `${prefix}boats:known`,
       `${prefix}boats:last`,
-      `${prefix}boats:start_slots`,
-      `${prefix}boats:start_slot_counter`,
     ];
     const existingKeys = [];
     for (const key of keys) {
