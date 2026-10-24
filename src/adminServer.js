@@ -289,6 +289,106 @@ function adminTabs(active, hasCourse) {
   return renderTabs(baseTabs(hasCourse), active);
 }
 
+// The header every base admin page shares - dashboard pages and the course map: the title, the race/practice mode card,
+// the regatta select with webhook status, the no-regatta warning and the tab bar. Its CSS and scripts are
+// BASE_HEADER_CSS, SELECT_REGATTA_JS and PRACTICE_MODE_JS.
+function renderBaseHeader(s, page) {
+  return `  <div class="topbar">
+    <h1>race-tracker admin</h1>
+    <div class="hdr-right">
+    ${
+      s.slots
+        ? `<div class="mode-card ${s.slots.practice ? 'practice' : 'race'}" title="${
+            s.slots.practice
+              ? 'Any moving boat gets a transmit slot - no start-grid parking, no need to start a race.'
+              : 'Transmit slots go to boats that start from the grid; boats parked on the grid have none.'
+          } Switching releases every transmit slot; boats get theirs again within a cycle or two. The choice is remembered over a restart.">
+      <div class="mode-title">${s.slots.practice ? 'PRACTICE MODE' : 'RACE MODE'}</div>
+      <div class="mode-radios">
+        <label><input type="radio" name="slotMode" value="race" ${s.slots.practice ? '' : 'checked'} onchange="setPracticeMode(false, this)"> Race</label>
+        <label><input type="radio" name="slotMode" value="practice" ${s.slots.practice ? 'checked' : ''} onchange="setPracticeMode(true, this)"> Practice</label>
+      </div>
+    </div>`
+        : ''
+    }
+    <div class="regatta-bar">
+      <label for="regatta-select">Regatta</label>
+      <select class="regatta-select" id="regatta-select" onchange="selectRegatta(this)" title="${s.regatta.selected ? escapeHtml(s.regatta.selected.venue) + ' (through ' + escapeHtml(s.regatta.selected.end_date) + ')' : 'Pick the event this base reports for'}">
+        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
+        ${s.regatta.regattas
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)} (${escapeHtml(r.start_date)} to ${escapeHtml(r.end_date)})</option>`
+          )
+          .join('')}
+      </select>
+      <span class="muted" title="Whether results are being sent to RegattaUp">webhook <strong>${s.webhook.enabled ? 'on' : 'off'}</strong> (${s.webhook.queueReady ? 'queue ready' : 'queue initializing'})</span>
+    </div>
+    </div>
+  </div>
+  ${
+    s.regatta.selected
+      ? ''
+      : `<div class="regatta-warning">No regatta selected - pick one above before racing, so laps/on-grid/mark events report against the right event.${
+          s.radio.mode === 'real' ? ' The radio connection is paused until then.' : ''
+        }</div>`
+  }
+  ${adminTabs(page, !!s.course)}`;
+}
+
+const BASE_HEADER_CSS = `
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; }
+  .regatta-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; color: #8b94a3; }
+  .regatta-bar label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .regatta-bar .regatta-select { width: auto; min-width: 280px; max-width: 100%; margin-top: 0; }
+  /* The mode card in the header: practice mode must still be hard to miss, but it no longer spans the page. */
+  .hdr-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
+  .mode-card { display: flex; align-items: center; gap: 8px 16px; padding: 6px 14px; border-radius: 10px; border: 2px solid; }
+  .mode-card.practice { background: #3a2a0f; border-color: #f2b84b; color: #f2b84b; }
+  .mode-card.race { background: #0f2a1a; border-color: #2ea043; color: #56d364; }
+  .mode-title { font-size: 16px; font-weight: 800; letter-spacing: 0.05em; line-height: 1.1; white-space: nowrap; }
+  .mode-radios { display: flex; gap: 14px; font-size: 13px; font-weight: 600; color: #e6e9ef; }
+  .mode-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .mode-radios input { width: 15px; height: 15px; accent-color: #f2b84b; cursor: pointer; }
+  .regatta-select {
+    width: 100%; margin-top: 10px; padding: 7px 10px; border-radius: 6px; border: 1px solid #262c36;
+    background: #0f1216; color: #e6e9ef; font-size: 13px;
+  }
+  .regatta-warning {
+    margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+    background: #3a2a0f; border: 1px solid #6b4a12; color: #f2b84b;
+  }
+`;
+
+const PRACTICE_MODE_JS = `
+    async function setPracticeMode(on, radio) {
+      const revert = () => {
+        const back = document.querySelector('input[name=slotMode][value=' + (on ? 'race' : 'practice') + ']');
+        if (back) back.checked = true;
+      };
+      if (!confirm(on ? 'Switch to PRACTICE mode? Every slot is released; any boat that is moving gets one again within a cycle or two.' : 'Switch to RACE mode? Every slot is released; slots then go only to boats that start from the grid.')) {
+        revert();
+        return;
+      }
+      document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = true));
+      try {
+        const res = await fetch('/api/practice-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ practice: on }),
+        });
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error || 'request failed');
+        location.reload();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+        document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = false));
+        revert();
+      }
+    }
+`;
+
 // Renders the whole dashboard server-side from one stats snapshot (see
 // baseStation.js's getFullStats) - simpler than shipping a client-side
 // templating setup for what's fundamentally a page that reloads its data
@@ -352,7 +452,7 @@ function renderSlotsCard(slots, info, compact = false) {
     </div>`;
 }
 
-// Tempest weather station card (radio page), always shown: whether the listener is on, and once anything has arrived the
+// Tempest weather station card (home page, "Regatta & boats"), always shown: whether the listener is on, and once anything has arrived the
 // newest one-minute observation (what goes to Redis), the newest 3-second rapid-wind reading, and whether readings are
 // being written - they are only written while a regatta is selected. A reading older than 3 minutes is shown red: the hub
 // has stopped broadcasting or left the network.
@@ -768,15 +868,11 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     color: #e6e9ef;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
-  h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: #8b94a3; font-size: 13px; margin-bottom: 24px; }
   .refresh-control { cursor: pointer; user-select: none; color: #c3cad5; }
   .refresh-control input { vertical-align: middle; accent-color: #f2b84b; cursor: pointer; }
   ${TABS_CSS}
-  .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; }
-  .regatta-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; color: #8b94a3; }
-  .regatta-bar label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
-  .regatta-bar .regatta-select { width: auto; min-width: 280px; max-width: 100%; margin-top: 0; }
+  ${BASE_HEADER_CSS}
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .card {
     background: #161b22;
@@ -799,15 +895,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   .fc-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8b94a3; }
   .fc-field { display: flex; align-items: center; gap: 8px; color: #8b94a3; font-size: 12px; }
   .fc-field input[type=number] { width: 4.5em; }
-  /* The mode card in the header: practice mode must still be hard to miss, but it no longer spans the page. */
-  .hdr-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
-  .mode-card { display: flex; align-items: center; gap: 8px 16px; padding: 6px 14px; border-radius: 10px; border: 2px solid; }
-  .mode-card.practice { background: #3a2a0f; border-color: #f2b84b; color: #f2b84b; }
-  .mode-card.race { background: #0f2a1a; border-color: #2ea043; color: #56d364; }
-  .mode-title { font-size: 16px; font-weight: 800; letter-spacing: 0.05em; line-height: 1.1; white-space: nowrap; }
-  .mode-radios { display: flex; gap: 14px; font-size: 13px; font-weight: 600; color: #e6e9ef; }
-  .mode-radios label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-  .mode-radios input { width: 15px; height: 15px; accent-color: #f2b84b; cursor: pointer; }
   .slots-card { grid-column: span 2; }
   .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
   .card-head .label { margin-bottom: 0; }
@@ -874,14 +961,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   }
   .manual-input::placeholder { color: #5a6270; }
   .regatta-card { grid-column: span 2; }
-  .regatta-select {
-    width: 100%; margin-top: 10px; padding: 7px 10px; border-radius: 6px; border: 1px solid #262c36;
-    background: #0f1216; color: #e6e9ef; font-size: 13px;
-  }
-  .regatta-warning {
-    margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
-    background: #3a2a0f; border: 1px solid #6b4a12; color: #f2b84b;
-  }
   .bandwidth-card .value { font-size: 20px; line-height: 1.3; }
   .bw-dir { font-size: 11px; font-weight: 500; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.03em; }
   .bw-rx { color: #58a6ff; }
@@ -891,47 +970,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
 </style>
 </head>
 <body>
-  <div class="topbar">
-    <h1>race-tracker admin</h1>
-    <div class="hdr-right">
-    ${
-      s.slots
-        ? `<div class="mode-card ${s.slots.practice ? 'practice' : 'race'}" title="${
-            s.slots.practice
-              ? 'Any moving boat gets a transmit slot - no start-grid parking, no need to start a race.'
-              : 'Transmit slots go to boats that start from the grid; boats parked on the grid have none.'
-          } Switching releases every transmit slot; boats get theirs again within a cycle or two. The choice is remembered over a restart.">
-      <div class="mode-title">${s.slots.practice ? 'PRACTICE MODE' : 'RACE MODE'}</div>
-      <div class="mode-radios">
-        <label><input type="radio" name="slotMode" value="race" ${s.slots.practice ? '' : 'checked'} onchange="setPracticeMode(false, this)"> Race</label>
-        <label><input type="radio" name="slotMode" value="practice" ${s.slots.practice ? 'checked' : ''} onchange="setPracticeMode(true, this)"> Practice</label>
-      </div>
-    </div>`
-        : ''
-    }
-    <div class="regatta-bar">
-      <label for="regatta-select">Regatta</label>
-      <select class="regatta-select" id="regatta-select" onchange="selectRegatta(this)" title="${s.regatta.selected ? escapeHtml(s.regatta.selected.venue) + ' (through ' + escapeHtml(s.regatta.selected.end_date) + ')' : 'Pick the event this base reports for'}">
-        <option value="" ${!s.regatta.selected ? 'selected' : ''}>Select a regatta&hellip;</option>
-        ${s.regatta.regattas
-          .map(
-            (r) =>
-              `<option value="${escapeHtml(r.id)}" ${s.regatta.selected && s.regatta.selected.id === r.id ? 'selected' : ''}>${escapeHtml(r.name)} - ${escapeHtml(r.venue)} (${escapeHtml(r.start_date)} to ${escapeHtml(r.end_date)})</option>`
-          )
-          .join('')}
-      </select>
-      <span class="muted" title="Whether results are being sent to RegattaUp">webhook <strong>${s.webhook.enabled ? 'on' : 'off'}</strong> (${s.webhook.queueReady ? 'queue ready' : 'queue initializing'})</span>
-    </div>
-    </div>
-  </div>
-  ${
-    s.regatta.selected
-      ? ''
-      : `<div class="regatta-warning">No regatta selected - pick one above before racing, so laps/on-grid/mark events report against the right event.${
-          s.radio.mode === 'real' ? ' The radio connection is paused until then.' : ''
-        }</div>`
-  }
-  ${adminTabs(page, !!s.course, false)}
+  ${renderBaseHeader(s, page)}
   <div class="subtitle">
     <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
@@ -945,20 +984,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     ${renderSlotsCard(s.slots, s.slotInfo, true)}
     ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
     ${renderRadioFramesCard(s)}
-    ${
-      s.course
-        ? `<div class="card marks-card">
-      <div class="label">Course marks</div>
-      <div class="marks-mini">
-        ${MARK_NAMES.map((name) => {
-          const m = s.course.marks[name];
-          return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span>${markAssignmentBadge(m)}</div>`;
-        }).join('')}
-        <div class="mark-row"><span class="dot" style="background:${MARK_COLORS.pinBoundary}"></span><span class="name">pin boundary gate</span><span class="coords">${s.course.marks.pinBoundaryEnabled ? 'ON' : 'off'}</span></div>
-      </div>
-    </div>`
-        : ''
-    }
+    ${renderTempestCard(s.tempest || { enabled: false, port: config.tempest.port })}
   </div>`
       : ''
   }
@@ -1000,6 +1026,20 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       </div>
     </div>
     ${renderWebhookQueuesCard(s.webhook)}
+    ${
+      s.course
+        ? `<div class="card marks-card">
+      <div class="label">Course marks</div>
+      <div class="marks-mini">
+        ${MAP_MARK_ORDER.map((name) => {
+          const m = s.course.marks[name];
+          return `<div class="mark-row"><span class="dot" style="background:${MARK_COLORS[name]}; box-shadow: inset 0 0 0 1.5px ${markStroke(name)}"></span><span class="name">${name}</span><span class="coords">${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}</span>${markAssignmentBadge(m)}</div>`;
+        }).join('')}
+        <div class="mark-row"><span class="dot" style="background:${MARK_COLORS.pinBoundary}"></span><span class="name">pin boundary gate</span><span class="coords">${s.course.marks.pinBoundaryEnabled ? 'ON' : 'off'}</span></div>
+      </div>
+    </div>`
+        : ''
+    }
     ${renderRedisMemoryCard(s.redisMemory, s.redis && s.redis.writeHealth, config.redis.trackRetentionHours)}
   </div>`
       : ''
@@ -1011,7 +1051,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     ${renderRadioFramesCard(s)}
     ${renderSlotsCard(s.slots, s.slotInfo)}
     ${s.linkHealth ? renderLinkHealthCard(s.linkHealth, s.slots) : ''}
-    ${renderTempestCard(s.tempest || { enabled: false, port: config.tempest.port })}
     ${renderBaseGpsCard(s.baseGpsFix, s.baseGpsPort, s.baseGpsConnected)}
     ${rtkControlsEnabled ? renderBaseGpsSurveyCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
     ${rtkControlsEnabled ? renderManualFixedPositionCard(s.baseGpsSurvey, s.baseGpsFix) : ''}
@@ -1065,6 +1104,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     // functions to.
     ${rtkControlsEnabled ? RTK_CLIENT_JS : ''}
     ${SELECT_REGATTA_JS}
+    ${PRACTICE_MODE_JS}
 
     // Broadcasts a ping (see baseStation.js's pingFleet) - no confirm()
     // needed, unlike setTmode3Mode above: this has no destructive
@@ -1097,31 +1137,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       }
     }
 
-    async function setPracticeMode(on, radio) {
-      const revert = () => {
-        const back = document.querySelector('input[name=slotMode][value=' + (on ? 'race' : 'practice') + ']');
-        if (back) back.checked = true;
-      };
-      if (!confirm(on ? 'Switch to PRACTICE mode? Every slot is released; any boat that is moving gets one again within a cycle or two.' : 'Switch to RACE mode? Every slot is released; slots then go only to boats that start from the grid.')) {
-        revert();
-        return;
-      }
-      document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = true));
-      try {
-        const res = await fetch('/api/practice-mode', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ practice: on }),
-        });
-        const result = await res.json();
-        if (!result.ok) throw new Error(result.error || 'request failed');
-        location.reload();
-      } catch (err) {
-        alert('Failed: ' + err.message);
-        document.querySelectorAll('input[name=slotMode]').forEach((r) => (r.disabled = false));
-        revert();
-      }
-    }
 
     // The two power cards (see renderWittyScheduleCard / renderShutdownScheduleCard): show only the fields of the chosen mode, and send.
     function wittyModeChanged() {
@@ -1348,7 +1363,6 @@ function buildCourseInfoHtml(marks) {
 // markMode (see baseStation.js's markMode): this base's own GPS stands in for
 // one course mark - see markAssignmentHtml below.
 function renderMap(s, { markMode } = {}) {
-  const backToDashboardLink = '<a href="/">&larr; back to dashboard</a>';
   if (!s.course) {
     return `<!doctype html>
 <html>
@@ -1357,17 +1371,22 @@ function renderMap(s, { markMode } = {}) {
 <title>race-tracker course map</title>
 <style>
   :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
   body {
-    margin: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-    background: #0f1216; color: #8b94a3;
+    margin: 0; padding: 24px;
+    background: #0f1216; color: #e6e9ef;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
-  a { color: #58a6ff; text-decoration: none; margin-left: 8px; }
-  a:hover { text-decoration: underline; }
+  .muted { color: #8b94a3; }
+  a { color: #58a6ff; text-decoration: none; }
+  ${TABS_CSS}
+  ${BASE_HEADER_CSS}
 </style>
 </head>
 <body>
-  <div>No course marks published yet.${backToDashboardLink}</div>
+  ${renderBaseHeader(s, 'map')}
+  <div class="muted">No course marks published yet${s.regatta.selected ? '' : ' - pick a regatta above'}.</div>
+  <script>${SELECT_REGATTA_JS}${PRACTICE_MODE_JS}</script>
 </body>
 </html>`;
   }
@@ -1491,27 +1510,21 @@ function renderMap(s, { markMode } = {}) {
 <title>race-tracker course map</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <style>
-  html, body { height: 100%; margin: 0; background: #0f1216; }
-  .topbar {
-    position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
-    display: flex; align-items: center; gap: 14px;
-    padding: 10px 16px;
-    background: #161b22ee;
-    border-bottom: 1px solid #262c36;
-    color: #e6e9ef;
+  * { box-sizing: border-box; }
+  /* The shared admin header on top (renderBaseHeader), the map filling the rest of the window below it. */
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: #0f1216; color: #e6e9ef;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    font-size: 13px;
   }
-  .topbar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .page-head { padding: 24px 24px 0; }
+  .page-head .tabs { margin-bottom: 10px; }
+  .muted { color: #8b94a3; }
+  a { color: #58a6ff; text-decoration: none; }
   ${TABS_CSS}
-  .topbar .tabs { margin: 0; flex-wrap: nowrap; }
-  .topbar .tabs a { padding: 4px 12px; font-size: 12px; white-space: nowrap; }
-  .topbar h1 { white-space: nowrap; }
-  @media (max-width: 1150px) { .topbar .map-regatta { display: none; } }
-  .topbar .tabs a:hover { text-decoration: none; }
-  .topbar a { color: #58a6ff; text-decoration: none; }
-  .topbar a:hover { text-decoration: underline; }
-  .topbar .spacer { flex: 1; }
+  ${BASE_HEADER_CSS}
+  .map-controls { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-bottom: 12px; font-size: 13px; }
   .refresh-toggle { display: flex; align-items: center; gap: 6px; color: #8b94a3; cursor: pointer; user-select: none; }
   .refresh-toggle input { accent-color: #3fb950; cursor: pointer; }
   #editToggle { accent-color: #e3b341; }
@@ -1522,19 +1535,17 @@ function renderMap(s, { markMode } = {}) {
   }
   .leaflet-tooltip.mark-label::before { display: none; }
 
-  /* Zoom control moved to the top-right (Leaflet's own default is
-     top-left, set via zoomControl:false + a manual L.control.zoom below)
-     - offset down past the topbar the same way .edit-column-inner already
-     does (56px), so it doesn't sit underneath/behind it. */
-  .leaflet-top.leaflet-right { top: 56px; }
+  /* Zoom control in the top-right (Leaflet's own default is top-left, set
+     via zoomControl:false + a manual L.control.zoom below), clear of the
+     course-info card. */
 
-  /* Course-info card, top-left, offset past the topbar the same way -
+  /* Course-info card, top-left over the map -
      deliberately a light card (not this page's usual dark chrome) so it
      reads clearly over satellite imagery of any brightness, the same
      reasoning real paper course cards on a committee boat use a plain
      white background regardless of the water/sky behind them. */
   .course-info-card {
-    position: absolute; top: 66px; left: 16px; z-index: 800;
+    position: absolute; top: 16px; left: 16px; z-index: 800;
     background: #ffffff; color: #1b2430;
     border-radius: 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
     padding: 14px 18px; min-width: 230px;
@@ -1561,7 +1572,7 @@ function renderMap(s, { markMode } = {}) {
      "set this mark here" buttons, plus a crosshair fixed at the exact
      center of whatever's left of the map - see the class comment on
      renderMap() in adminServer.js for the overall design. */
-  .main { position: absolute; inset: 0; display: flex; }
+  .main { position: relative; flex: 1; min-height: 0; display: flex; border-top: 1px solid #262c36; }
   .map-wrap { position: relative; flex: 1; min-width: 0; }
   #map { position: absolute; inset: 0; }
   .crosshair {
@@ -1582,7 +1593,7 @@ function renderMap(s, { markMode } = {}) {
   .edit-column.visible { width: 240px; }
   .edit-column-inner {
     width: 240px; box-sizing: border-box; height: 100%; overflow-y: auto;
-    padding: 56px 14px 14px;
+    padding: 14px;
     color: #e6e9ef;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
@@ -1620,19 +1631,18 @@ function renderMap(s, { markMode } = {}) {
 </style>
 </head>
 <body>
-  <div class="topbar">
-    <h1>Course map</h1>
-    <span class="map-regatta" style="margin-left:16px; font-size:12px; color:#8b94a3;">Regatta: ${s.regatta.selected ? escapeHtml(s.regatta.selected.name) : 'not set'}</span>
-    ${adminTabs('map', true)}
-    <div class="spacer"></div>
-    <label class="refresh-toggle">
-      <input type="checkbox" id="editToggle">
-      edit marks
-    </label>
-    <label class="refresh-toggle">
-      <input type="checkbox" id="autoRefresh">
-      auto-refresh boats (5s)
-    </label>
+  <div class="page-head">
+    ${renderBaseHeader(s, 'map')}
+    <div class="map-controls">
+      <label class="refresh-toggle">
+        <input type="checkbox" id="editToggle">
+        edit marks
+      </label>
+      <label class="refresh-toggle">
+        <input type="checkbox" id="autoRefresh">
+        auto-refresh boats (5s)
+      </label>
+    </div>
   </div>
   <div class="main">
     <div class="map-wrap">
@@ -2303,6 +2313,8 @@ function renderMap(s, { markMode } = {}) {
     }`
         : ''
     }
+    ${SELECT_REGATTA_JS}
+    ${PRACTICE_MODE_JS}
   </script>
 </body>
 </html>`;

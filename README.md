@@ -847,9 +847,9 @@ boat with `TX_SLOT` set is pinned to that slot and ignores the table.
   meanwhile and no other is free, the boat shares the join slots until one opens. (A boat stopped for longer than `TX_SLOT_RACING_S` is no longer racing and must come off the grid across the line
   again to get a slot.)
 - **Dashboard.** The base's admin has three pages and a map link, switched by the tabs under the title: **Regatta & boats** (the home page
-  at `/`: a compact Transmit slots card with the count, the slot map and a **Ping fleet** button, the radio bandwidth and radio frames cards (also on the radio page; the frames card has a **Clear stats** button that restarts its totals, the sync-error count and the bandwidth graph from zero), the course marks, and the boat table),
+  at `/`: a compact Transmit slots card with the count, the slot map and a **Ping fleet** button, the radio bandwidth and radio frames cards (also on the radio page; the frames card has a **Clear stats** button that restarts its totals, the sync-error count and the bandwidth graph from zero), the **Tempest weather station** card, and the boat table),
   **Radio, GPS & system** (`/radio`: radio bandwidth and frames, the full transmit slots card,
-  link health, base GPS and its survey-in controls, and disk), **Data** (`/data`: fleet controls, uploads, the **Redis memory** card and the **Webhook retry queues**: a table of the four queues (lap, on-grid, mark rounding, foul) with how many are waiting and the oldest, then every event still waiting for RegattaUp to accept it, with its attempts, last try and when the next is due; anything waiting over 5 minutes is red; "Nothing waiting" is the healthy state), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config. The header on every page holds the regatta
+  link health, base GPS and its survey-in controls, and disk), **Data** (`/data`: fleet controls, uploads, the **Course marks** card, the **Redis memory** card and the **Webhook retry queues**: a table of the four queues (lap, on-grid, mark rounding, foul) with how many are waiting and the oldest, then every event still waiting for RegattaUp to accept it, with its attempts, last try and when the next is due; anything waiting over 5 minutes is red; "Nothing waiting" is the healthy state), a **Map** tab (the course map, once a course exists) a **Console** tab (the base's recent console output) and a **Config** tab (the resolved settings). The base's course map has the same header as its other pages (title, mode card, regatta select, tabs). Every mode's admin pages share this tab bar: the boat's own dashboard has Boat, Map, Console and Config; RTK-only mode has Base GPS, Map and Config. The header on every page holds the regatta
   select and webhook status, and a small mode card (**RACE MODE** or **PRACTICE MODE**, with
   radio buttons to change it). The full **Transmit slots** card (below) is on the radio page, and the boat table has a **Slot** column (hover for the
   slot count and width; "parked" for a boat on the start grid; "not racing" for a boat that has not started from the grid;
@@ -1690,7 +1690,7 @@ needs no internet, so wind is recorded at a venue with no connection, as long as
   Kept for the same rolling `REDIS_TRACK_RETENTION_HOURS` (48 h) as the track.
 - The 3-second `rapid_wind` readings only feed the dashboard; everything else the hub sends is ignored.
 - Nothing is written while no regatta is selected (counted as "not written" instead).
-- The **Tempest weather station** card on the base's Radio, GPS & system page shows the newest observation, the live
+- The **Tempest weather station** card on the base's home page (Regatta & boats) shows the newest observation, the live
   3-second reading, the station(s) heard and how many readings were written. It turns red when no observation has
   arrived for 3 minutes.
 
