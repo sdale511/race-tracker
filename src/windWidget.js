@@ -1,0 +1,114 @@
+// A tiny standalone wind display served by the base at GET /wind, meant to be embedded in an iframe (a RegattaUp page, a
+// club website, a screen in the committee boat):
+//
+//   <iframe src="http://<base>:8092/wind" width="320" height="140" style="border:0"></iframe>
+//
+// It shows the newest Tempest wind sample (see tempestListener.js): a compass with an arrow pointing downwind - the way
+// the wind is blowing - and the numbers: speed, the direction it is coming FROM (the way a race committee reads it, and
+// the same convention as RegattaUp's map), and the last minute's gust and lull. mph only for now. It polls
+// GET /api/wind every 3 s, scales to whatever size the iframe is, greys out once the reading is over 3 minutes old and
+// says "No wind data" until there is any. ?theme=light for a light background (the default is dark).
+
+const STALE_MS = 180000;
+
+// The JSON behind the widget: the newest sample (or null) plus whether the base is listening at all.
+function windApiPayload(listening, sample) {
+  return { listening, sample: sample || null, staleAfterMs: STALE_MS };
+}
+
+function renderWindWidget({ theme = 'dark' } = {}) {
+  const light = theme === 'light';
+  const c = light
+    ? { bg: '#ffffff', fg: '#1b2430', muted: '#6b7685', ring: '#d5dae1', arrow: '#0284c7', tick: '#1b2430' }
+    : { bg: '#161b22', fg: '#e6e9ef', muted: '#8b94a3', ring: '#2d3542', arrow: '#58a6ff', tick: '#e6e9ef' };
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wind</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: ${c.bg}; color: ${c.fg};
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  /* Everything sized from the frame's own height and width, so it fits any iframe. */
+  .wind { display: flex; align-items: center; gap: 6vmin; padding: 4vmin; width: 100%; height: 100%; justify-content: center; }
+  .wind.stale { opacity: 0.5; }
+  .compass { height: min(86vh, 45vw); aspect-ratio: 1; flex-shrink: 0; }
+  .compass svg { width: 100%; height: 100%; display: block; }
+  .numbers { display: flex; flex-direction: column; gap: 1.5vmin; min-width: 0; }
+  .speed { font-size: min(26vh, 13vw); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .speed .unit { font-size: 0.4em; font-weight: 600; color: ${c.muted}; margin-left: 0.15em; }
+  .from { font-size: min(11vh, 5.5vw); font-weight: 600; white-space: nowrap; }
+  .detail { font-size: min(8.5vh, 4.2vw); color: ${c.muted}; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .none { font-size: min(11vh, 6vw); color: ${c.muted}; }
+</style>
+</head>
+<body>
+  <div class="wind" id="wind">
+    <div class="compass">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="50" r="44" fill="none" stroke="${c.ring}" stroke-width="3"/>
+        ${[0, 90, 180, 270]
+          .map((d) => `<line x1="50" y1="6" x2="50" y2="${d === 0 ? 15 : 11}" stroke="${d === 0 ? c.tick : c.ring}" stroke-width="${d === 0 ? 3 : 2}" transform="rotate(${d} 50 50)"/>`)
+          .join('')}
+        <text x="50" y="25" text-anchor="middle" font-size="9" font-weight="700" fill="${c.muted}">N</text>
+        <g id="arrow" style="display:none">
+          <line x1="50" y1="68" x2="50" y2="40" stroke="${c.arrow}" stroke-width="7" stroke-linecap="round"/>
+          <polygon points="50,26 37,44 63,44" fill="${c.arrow}"/>
+        </g>
+      </svg>
+    </div>
+    <div class="numbers" id="numbers"><div class="none">No wind data</div></div>
+  </div>
+  <script>
+    const POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    const compass = (deg) => POINTS[Math.round(deg / 22.5) % 16];
+    const ago = (ms) => {
+      const s = Math.floor((Date.now() - ms) / 1000);
+      return s < 5 ? 'just now' : s < 60 ? s + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago' : Math.floor(s / 3600) + 'h ago';
+    };
+    const fmt = (v) => (v == null ? '—' : Number(v).toFixed(1));
+    function render(data) {
+      const box = document.getElementById('wind');
+      const numbers = document.getElementById('numbers');
+      const arrow = document.getElementById('arrow');
+      const s = data && data.sample;
+      if (!s || s.dir == null || s.avg == null) {
+        arrow.style.display = 'none';
+        box.classList.remove('stale');
+        numbers.innerHTML = '<div class="none">' + (data && !data.listening ? 'Wind not available' : 'No wind data') + '</div>';
+        return;
+      }
+      const stale = Date.now() - s.t > data.staleAfterMs;
+      box.classList.toggle('stale', stale);
+      arrow.style.display = '';
+      // The arrow points downwind: the reading is where the wind comes FROM, so turn it round.
+      // Set as the SVG attribute, not a CSS transition: a transition is paused while the page is hidden (a background tab
+      // or an off-screen iframe), which left the arrow pointing the wrong way, and it would swing the long way round
+      // when the wind crosses north.
+      arrow.setAttribute('transform', 'rotate(' + ((s.dir + 180) % 360) + ' 50 50)');
+      numbers.innerHTML =
+        '<div class="speed">' + fmt(s.avg) + '<span class="unit">mph</span></div>' +
+        '<div class="from">from ' + Math.round(s.dir) + '° ' + compass(s.dir) + '</div>' +
+        '<div class="detail">gust ' + fmt(s.gust) + ' · lull ' + fmt(s.lull) + (stale ? ' · ' + ago(s.t) : '') + '</div>';
+    }
+    async function poll() {
+      try {
+        render(await (await fetch('/api/wind', { cache: 'no-store' })).json());
+      } catch (err) {
+        // base unreachable for a moment - keep showing the last reading, try again next tick
+      }
+    }
+    poll();
+    setInterval(poll, 3000);
+  </script>
+</body>
+</html>`;
+}
+
+module.exports = { renderWindWidget, windApiPayload, STALE_MS };

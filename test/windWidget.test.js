@@ -1,0 +1,43 @@
+const test = require('node:test');
+const assert = require('node:assert');
+const http = require('http');
+const { renderWindWidget, windApiPayload, STALE_MS } = require('../src/windWidget');
+const { startAdminServer } = require('../src/adminServer');
+
+test('the API payload carries the newest sample, or null, and whether the base is listening', () => {
+  const sample = { t: 1, dir: 200, avg: 6.5, gust: 8, lull: 5, station: 'ST-1', units: 'mph' };
+  assert.deepStrictEqual(windApiPayload(true, sample), { listening: true, sample, staleAfterMs: STALE_MS });
+  assert.deepStrictEqual(windApiPayload(false, undefined), { listening: false, sample: null, staleAfterMs: STALE_MS });
+});
+
+test('the widget page has the compass and polls /api/wind; ?theme=light swaps the colours', () => {
+  const dark = renderWindWidget();
+  assert.ok(dark.includes('id="arrow"') && dark.includes("fetch('/api/wind'"));
+  assert.ok(dark.includes('#161b22') && !dark.includes('#ffffff'));
+  assert.ok(renderWindWidget({ theme: 'light' }).includes('background: #ffffff'));
+});
+
+test('the base serves /wind and /api/wind (any origin may read it)', async () => {
+  const sample = { t: 1, dir: 200, avg: 6.5, gust: 8, lull: 5, station: 'ST-1', units: 'mph' };
+  const server = startAdminServer({ port: 0, getStats: async () => ({}), getWind: () => ({ listening: true, sample }) });
+  await new Promise((r) => server.once('listening', r));
+  const { port } = server.address();
+  const get = (path) =>
+    new Promise((resolve, reject) => {
+      http.get({ port, path }, (res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () => resolve({ res, body }));
+      }).on('error', reject);
+    });
+  try {
+    const page = await get('/wind?theme=light');
+    assert.strictEqual(page.res.statusCode, 200);
+    assert.ok(page.body.includes('background: #ffffff'));
+    const api = await get('/api/wind');
+    assert.strictEqual(api.res.headers['access-control-allow-origin'], '*');
+    assert.deepStrictEqual(JSON.parse(api.body).sample, sample);
+  } finally {
+    server.close();
+  }
+});

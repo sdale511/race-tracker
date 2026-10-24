@@ -1702,6 +1702,19 @@ and `TEMPEST_STATION_NAME` is the name stored with each reading and shown on the
 card stays at "nothing heard", check the base and hub are on the same subnet and that the machine's firewall lets
 incoming UDP 50222 through.
 
+**Wind widget for an iframe.** The base serves a tiny standalone wind display at `/wind` (no header or tabs), for
+embedding anywhere - a RegattaUp page, a club site, a screen on the committee boat:
+
+```html
+<iframe src="http://<base-ip>:8092/wind" width="320" height="140" style="border:0"></iframe>
+```
+
+It shows a compass with an arrow pointing downwind, the speed in mph, the direction the wind comes **from** (e.g.
+"from 225° SW", the way a race committee reads it and the same as RegattaUp's map) and the last minute's gust and lull.
+It updates every 3 s, scales to the iframe's size, greys out with the reading's age once it is over 3 minutes old, and
+says "No wind data" until there is any. Add `?theme=light` for a light background. The JSON behind it is
+`GET /api/wind` (`{listening, sample, staleAfterMs}`; readable from any origin).
+
 **Simulated wind.** A `SIMULATE=1` base also runs a pretend Tempest (`src/simTempest.js`) that sends the base's own
 listener the same messages a real hub would: a `rapid_wind` every 3 s and an `obs_st` every minute (lull, average and
 gust are the lowest, mean and highest of that minute's 3-second speeds). The wind blows down the course - from the

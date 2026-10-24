@@ -2,6 +2,7 @@ const http = require('http');
 const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT } = require('./dashboardFormat');
 const { MARK_NAMES, MAP_MARK_ORDER, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
+const { renderWindWidget, windApiPayload } = require('./windWidget');
 const { renderConsoleLogPage } = require('./consoleLogPage');
 const { TABS_CSS, renderTabs, baseTabs } = require('./adminNav');
 const { zonePolygon } = require('./onGridWatcher');
@@ -2387,6 +2388,9 @@ function startAdminServer({
   port,
   getStats,
   getPositions,
+  // () => { listening, sample }: whether the Tempest listener is on and its newest wind sample (see windWidget.js) -
+  // cheap, no Redis, since the /wind widget polls it every 3 s.
+  getWind,
   getCourseMarks,
   setMark,
   setPinBoundaryEnabled,
@@ -2676,6 +2680,22 @@ function startAdminServer({
         res.writeHead(500);
         res.end(JSON.stringify({ error: err.message }));
       }
+      return;
+    }
+
+    // The embeddable wind widget (see windWidget.js) and the JSON it polls. The widget may sit in an iframe on another
+    // site, so the JSON allows any origin too (it is only the current wind).
+    const pathOnly = req.url.split('?')[0];
+    if (pathOnly === '/wind') {
+      const theme = new URL(req.url, 'http://base').searchParams.get('theme') === 'light' ? 'light' : 'dark';
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderWindWidget({ theme }));
+      return;
+    }
+    if (req.url === '/api/wind') {
+      const { listening, sample } = getWind ? getWind() : { listening: false, sample: null };
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(windApiPayload(listening, sample)));
       return;
     }
 

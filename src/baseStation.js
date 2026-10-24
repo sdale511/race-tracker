@@ -2850,6 +2850,7 @@ function main() {
     port: config.admin.port,
     getStats: getFullStats,
     getPositions: getBoatPositions,
+    getWind: () => ({ listening: !!tempest, sample: tempest ? tempest.lastSample : null }),
     getCourseMarks,
     setMark: setMarkLocation,
     setPinBoundaryEnabled,
