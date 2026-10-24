@@ -1321,6 +1321,10 @@ to `regatta-id.txt`. `npm run reset-regatta` picks one from the command line wit
 the saved default, which a running base picks up at its next start. `NO_REGATTA=1` skips selection for a radio bench
 test. Which regatta is selected is never stored in Redis.
 
+The command-line tools that touch a regatta's Redis data - `npm run fleet`, `npm run reset-course`,
+`npm run clear-base-logs` and `npm run clean-bad-fixes` - use the saved regatta (or `REGATTAUP_REGATTA_ID`) and stop
+with an error when there isn't one, so none of them can act on the wrong regatta or on `regattas:none`.
+
 ### Auto-start on boot (systemd)
 
 ```
@@ -1563,7 +1567,9 @@ For multiple boats, run more instances with different `BOAT_ID`s, or:
 ```
 FLEET_SIZE=5 npm run fleet
 ```
-Spawns `FLEET_SIZE` (default 3) boats as one command, each with a unique
+The fleet races the regatta the base has selected, as saved in `race-config/regatta-id.txt` (or `REGATTAUP_REGATTA_ID`),
+and refuses to start without one, so the simulated boats race the same course the base checks laps, roundings and fouls
+against. Spawns `FLEET_SIZE` (default 3) boats as one command, each with a unique
 auto-generated `BOAT_ID` and its own dashboard port, output prefixed per
 boat. Each exits on its own once it finishes laps
 (`SIM_EXIT_ON_FINISH=1`, auto-set); `fleetSim` reports done once the last
@@ -1945,7 +1951,7 @@ base-uploads/<regattaId>/<boatId>/           - BASE ONLY: each boat's uploaded S
 | `base-logs/` | `BASE_LOG_DIR` | Yes (`none` if unselected) | Switching regattas starts fresh local history |
 | `base-uploads/` | `BASE_UPLOAD_DIR` | Yes | Base-only even though uploaded *from* boats |
 
-`npm run clear-base-logs` clears the active regatta's `base-logs/` +
+`npm run clear-base-logs` clears the saved regatta's `base-logs/` +
 `base-uploads/` only, never `boat-logs/`. `npm run clear-boat-logs` clears
 `boat-logs/` only. `npm run boat` never writes `base-logs/` or
 `base-uploads/`.
@@ -1957,8 +1963,9 @@ Every fix the base decodes is recorded via `src/redisStore.js`
 `regattas:<regattaId>:...`** - one self-contained namespace per regatta,
 no exceptions, so multiple regattas (or base stations) can share one
 Redis instance without collisions. Which regatta is selected is never
-itself stored in Redis (see "Selecting a regatta at startup"). `<regattaId>`
-is `none` for anything recorded with no regatta selected.
+itself stored in Redis (see "Selecting a regatta at startup"). The base
+writes nothing without a regatta selected, and the command-line tools refuse
+to run without one, so there should be no `regattas:none:` keys.
 
 | Key | Contents |
 |---|---|
@@ -1968,8 +1975,7 @@ is `none` for anything recorded with no regatta selected.
 | `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
 | `regattas:<id>:track` | Sorted set, every boat's fixes for the regatta, scored by fix timestamp - what RegattaUp's map and archives read. `getTrack(fromMs, toMs, regattaId)`. Formerly `regattas:<id>:all:track` |
 | `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position. Expires with the track |
-| `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed at most every 10 s per boat (not on every fix), so it refills within 10 s if cleared. `knownBoatIds()` |
-| `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
+| `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed at most every 10 s per boat (not on every fix), so it refills within 10 s if cleared. Expires with the track `knownBoatIds()` |
 
 **Memory.** A stored fix costs roughly 230 bytes in a sorted set. The base used to keep a second copy of every fix in a
 per-boat key (`regattas:<id>:boat:<boatId>:track`), which doubled what Redis held (about 100 MB for a 30-boat, 30-minute
