@@ -457,11 +457,19 @@ function renderSlotsCard(slots, info, compact = false) {
 // being written - they are only written while a regatta is selected. A reading older than 3 minutes is shown red: the hub
 // has stopped broadcasting or left the network.
 function renderTempestCard(t) {
+  // Off, or on with nothing received yet: a quiet, greyed-out card rather than a big status line.
   if (!t.enabled) {
-    return `<div class="card">
+    return `<div class="card card-idle">
       <div class="label">Tempest weather station</div>
-      <div class="value"><span class="dot dot-gray"></span>Off</div>
-      <div class="sub">Not listening for a Tempest - turned off with TEMPEST_ENABLED=0</div>
+      <div class="idle-text">Off</div>
+      <div class="sub">Turned off with TEMPEST_ENABLED=0</div>
+    </div>`;
+  }
+  if (!t.lastObs && !t.lastRapid && !t.error) {
+    return `<div class="card card-idle">
+      <div class="label">Tempest weather station</div>
+      <div class="idle-text">No data received</div>
+      <div class="sub">Listening on UDP ${t.port}</div>
     </div>`;
   }
   const obs = t.lastObs;
@@ -469,7 +477,7 @@ function renderTempestCard(t) {
   const wind = (dir, speed) => (dir == null || speed == null ? '—' : `${dir}° at ${speed} mph`);
   // Anything at all from the hub (an observation, or only the 3-second readings so far).
   const heard = !!(obs || t.lastRapid);
-  const value = obs ? wind(obs.dir, obs.avg) : heard ? 'waiting for the first observation' : t.error ? 'not listening' : 'no UDP received yet';
+  const value = obs ? wind(obs.dir, obs.avg) : heard ? 'waiting for the first observation' : 'not listening';
   const stations = t.stationsHeard.length ? t.stationsHeard.map((sn) => escapeHtml(sn)).join(', ') : '—';
   return `<div class="card">
       <div class="label">Tempest weather station</div>
@@ -479,9 +487,7 @@ function renderTempestCard(t) {
           ? `gust ${obs.gust ?? '—'} &middot; lull ${obs.lull ?? '—'} mph &middot; ${formatAgo(obs.at)}`
           : heard
           ? 'Observations come once a minute'
-          : t.error
-          ? `On, but can't listen on UDP ${t.port}: <span style="color:#f85149;">${escapeHtml(t.error)}</span>`
-          : `On - listening on UDP ${t.port}, nothing received from a Tempest yet`
+          : `On, but can't listen on UDP ${t.port}: <span style="color:#f85149;">${escapeHtml(t.error)}</span>`
       }</div>
       ${t.error && heard ? `<div class="sub" style="color:#f85149;">${escapeHtml(t.error)}</div>` : ''}
       <div class="stat-rows">
@@ -883,6 +889,9 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   .card .label { color: #8b94a3; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
   .card .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .card .sub { color: #8b94a3; font-size: 12px; margin-top: 4px; }
+  /* A card with nothing to show yet (e.g. no weather station heard): greyed out, small text instead of a big value. */
+  .card-idle { opacity: 0.55; }
+  .card-idle .idle-text { color: #8b94a3; font-size: 14px; font-weight: 500; }
   .marks-card { grid-column: span 2; }
   /* The Link health card carries a table, so it spans two (wide screens: three) cards' width - one card's width is too
      narrow for it and the table ran underneath its neighbour; the table scrolls sideways if it still doesn't fit. */
