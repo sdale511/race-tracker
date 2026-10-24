@@ -868,20 +868,13 @@ module.exports = {
     // write (SD/console logging is unaffected) unless the boat has moved at
     // least this far since the last one that was actually recorded.
     minMovementM: parseFloat(process.env.REDIS_MIN_MOVEMENT_M || '1'),
-    // How long a boat:<id>:track/all:track:<regattaId> key sticks around
-    // before Redis drops it on its own - set once, the first time that key
-    // is written on a given day (see redisStore.js's recordFix), not
-    // refreshed on every later write, so a full day's worth of races all
-    // still expire together roughly a day after the FIRST fix of the day,
-    // not a rolling day after the last one. 48h by default - covers
-    // reviewing a race day into the next, without tracks piling up in Redis
-    // forever (there's no other cleanup for these besides `npm run
-    // clear-base-logs`, which is manual).
+    // How long fixes are kept in a regatta's track: a rolling window -
+    // once a minute the base drops fixes older than this and pushes the
+    // key's (and boats:last's) expiry out again (see redisStore.js's
+    // _keepRollingWindow), so the key holds the last 48 h of fixes and
+    // never vanishes all at once mid-race. 48h by default - covers
+    // reviewing a race day into the next.
     trackRetentionHours: parseFloat(process.env.REDIS_TRACK_RETENTION_HOURS || '48'),
-    // How much of each boat's own boat:<id>:track key is kept, in minutes (0 = all of it). The whole race stays in all:track,
-    // so this only bounds the second copy, which exists to answer "where was this boat last" (RegattaUp's getRaceTracks
-    // lastPositions - the one reader). The trim runs on that boat's own writes, so its newest fix is always kept.
-    boatTrackMinutes: parseFloat(process.env.REDIS_BOAT_TRACK_MINUTES || '2'),
     // The admin dashboard's "Redis memory" card divides usedBytes by this to
     // show a percentage/ALERT status, the same way the disk-space card does
     // for the filesystem - but unlike disk space, Redis has no OS syscall to

@@ -641,7 +641,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       // in that combined column; this one can't be fooled that way, since
       // it's exactly b.lastSeen with nothing else mixed in.
       const lastSeenRadio = b.lastSeen != null ? formatAgo(b.lastSeen) : '<span class="muted">—</span>';
-      const tracks = (s.redis && s.redis.tracksByBoat && s.redis.tracksByBoat[id]) || 0;
       const laps = s.lapCounts[id] || 0;
       // The boat's own rover dashboard (see roverAdminServer.js) - IP and
       // admin port are both learned passively/self-reported from its
@@ -701,7 +700,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
           <td>${fixRate}</td>
           <td>${maxFixRate}</td>
           <td>${fixCell}</td>
-          <td>${tracks.toLocaleString()}</td>
           <td>${laps}</td>
           <td>${b.upload.successes} / ${b.upload.attempts} <span class="muted">(${pct(b.upload.successes, b.upload.attempts)})</span></td>
           <td>${b.pending ?? '—'}</td>
@@ -995,7 +993,6 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
           <th title="How often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Fix rate</th>
           <th title="Highest Fix rate this boat has sustained (measured over a rolling 10s window, sampled only once at least 5s of frames are in it) since this base started - resets on restart">Max rate</th>
           <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count in parentheses">Fix</th>
-          <th title="Number of position points stored in Redis for this boat this session">Tracks</th>
           <th title="Completed lap count for this boat this race">Laps</th>
           <th title="Successful vs. attempted SD-card log uploads since this base station started">Uploads this session</th>
           <th title="Log files this boat says are still waiting to upload, self-reported on its own last health-check ping">Pending</th>

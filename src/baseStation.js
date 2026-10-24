@@ -821,7 +821,6 @@ function main() {
     connection: config.redis.connection,
     minMovementM: config.redis.minMovementM,
     trackRetentionHours: config.redis.trackRetentionHours,
-    boatTrackMinutes: config.redis.boatTrackMinutes,
     keepaliveIntervalMs: config.redis.keepaliveIntervalMs,
   });
 

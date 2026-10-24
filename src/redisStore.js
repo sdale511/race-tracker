@@ -39,18 +39,21 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 // testing without ever touching the regatta selector is a normal, common
 // workflow this app needs to keep supporting.
 //
-// Records every decoded boat fix into Redis, indexed two ways so both
-// query patterns the race committee needs are a single range read rather
-// than a fan-out scan:
+// Records every decoded boat fix into Redis:
 //
-//   - `regattas:<id>:boat:<boatId>:track` - one sorted set per boat, for
-//     "give me this boat's track" (optionally within a timeframe).
-//   - `regattas:<id>:all:track` - one sorted set holding every boat's fixes
+//   - `regattas:<id>:track` - one sorted set holding every boat's fixes
 //     for that regatta, for "give me all boats' positions within this
 //     timeframe" (e.g. replaying the whole fleet at a point in the race)
-//     without knowing boat IDs up front.
+//     without knowing boat IDs up front. What RegattaUp's map and archives read.
+//   - `regattas:<id>:boats:last` - a hash of each boat's newest fix, for
+//     "where is every boat now" in one read.
 //
-// Both are scored by the fix's own GPS timestamp (ms since epoch) rather
+// The track used to be called `regattas:<id>:all:track`, and there used to be
+// a per-boat copy as well (`regattas:<id>:boat:<boatId>:track`). The base
+// writes neither any more; clearBoatData still deletes any left from before.
+// (RegattaUp also reads the old track name until the live key is renamed.)
+//
+// The track is scored by the fix's own GPS timestamp (ms since epoch) rather
 // than when the base station happened to receive it, so a track reflects
 // when the boat was actually there even if frames arrive slightly late or
 // out of order over the radio.
@@ -61,7 +64,7 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 // `headingDeg`, `gnssFixOk`, `carrSoln`, ...) would otherwise account for
 // close to half of every stored record. `timestamp` is the sorted-set score and is
 // recovered via WITHSCORES on read (the payload's `t` copy only keeps members unique, see packFix). Callers still get back
-// full, friendly field names from getBoatTrack/getAllTrack - the shortening
+// full, friendly field names from getTrack - the shortening
 // is purely a storage-format detail.
 // No arrival-time field is stored (an `r: receivedAt` key used to be): a fix's
 // time is its own GPS timestamp, which is already the sorted-set score. The
@@ -122,12 +125,9 @@ class RedisStore {
   // to be worth recording - see recordFix. `trackRetentionHours` (default
   // 48) is how long a track key lives before Redis expires it on its own -
   // see recordFix's own comment on why this is set once, not refreshed on
-  // every write. `boatTrackMinutes` (default 2, 0 = keep it all) is how much of each boat's own track key is kept: the
-  // whole race is in all:track, which is what the archives and the map read, so a full copy per boat would double what
-  // Redis holds for nothing - the only reader of the per-boat key is RegattaUp's getRaceTracks, for each boat's newest
-  // fix (lastPositions). The trim runs when the boat writes, so its newest fix is always kept however old it is. `keepaliveIntervalMs` (default 60000) is how often an
+  // every write. `keepaliveIntervalMs` (default 60000) is how often an
   // idle-connection keepalive PING is sent - see its own comment below.
-  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, boatTrackMinutes = 2, keepaliveIntervalMs = 60000 }) {
+  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, keepaliveIntervalMs = 60000 }) {
     // Fixed 3s retry backoff, matching the reconnect cadence used elsewhere
     // in this app (radioLink.js, boatAgent.js's GPS reopen) instead of
     // ioredis's default rapid-fire retry.
@@ -190,9 +190,8 @@ class RedisStore {
     }, keepaliveIntervalMs);
     this.minMovementM = minMovementM;
     this.trackRetentionSeconds = Math.round(trackRetentionHours * 3600);
-    this.boatTrackWindowMs = Math.round(boatTrackMinutes * 60000);
-    this.lastBoatTrimAt = new Map(); // boat track key -> when it was last trimmed (per key, so a regatta switch starts fresh)
-    this.lastWindowAt = new Map(); // all:track key -> when its rolling window was last applied
+    this.lastKnownAt = new Map(); // `${prefix}${boatId}` -> when the boat was last added to that regatta's boats:known
+    this.lastWindowAt = new Map(); // track key -> when its rolling window was last applied
     // Fixes waiting for this tick's flush (see writeFix), and the promise that flush resolves.
     this._pendingFixes = [];
     this._flushing = null;
@@ -240,7 +239,7 @@ class RedisStore {
 
   // Builds the `regattas:<id>:` namespace prefix every key in this class is
   // built from - `regattaId`, when passed explicitly, overrides
-  // this.currentRegattaId for one call (used by getBoatTrack/getAllTrack,
+  // this.currentRegattaId for one call (used by getTrack,
   // where asking for a DIFFERENT regatta's history than whatever's
   // currently selected is a normal, expected use). Everything else always
   // operates on the current regatta implicitly, same as recordFix already
@@ -307,16 +306,14 @@ class RedisStore {
     const batch = this._pendingFixes;
     this._pendingFixes = [];
     this._flushing = null; // a fix queued from here on goes in the next flush
-    const argsByKey = new Map(); // key -> [score, member, score, member, ...]
-    const newestByBoatKey = new Map(); // boat track key -> { boatId, prefix, score, member } of its newest fix in this batch
+    const argsByPrefix = new Map(); // regatta prefix -> its track's [score, member, score, member, ...]
+    const newestByBoat = new Map(); // `${prefix}${boatId}` -> { boatId, prefix, score, member } of its newest fix in this batch
     for (const { decoded, prefix, score, member } of batch) {
-      const boatTrackKey = `${prefix}boat:${decoded.boatId}:track`;
-      for (const key of [boatTrackKey, `${prefix}all:track`]) {
-        if (!argsByKey.has(key)) argsByKey.set(key, []);
-        argsByKey.get(key).push(score, member);
-      }
-      const newest = newestByBoatKey.get(boatTrackKey);
-      if (!newest || score > newest.score) newestByBoatKey.set(boatTrackKey, { boatId: decoded.boatId, prefix, score, member });
+      if (!argsByPrefix.has(prefix)) argsByPrefix.set(prefix, []);
+      argsByPrefix.get(prefix).push(score, member);
+      const boatKey = `${prefix}${decoded.boatId}`;
+      const newest = newestByBoat.get(boatKey);
+      if (!newest || score > newest.score) newestByBoat.set(boatKey, { boatId: decoded.boatId, prefix, score, member });
     }
     // boats:last: each boat's newest fix, one hash field per boat, which RegattaUp's getRaceTracks reads (one HGETALL)
     // for every boat's last position instead of one read per boat's own key. One HSET per regatta in the batch, with each
@@ -326,7 +323,7 @@ class RedisStore {
     const lastArgsByKey = new Map(); // boats:last key -> [boatId, member, boatId, member, ...]
     const lastWrites = []; // [lastPositionAt key, score] to remember once written
     const maxValidTs = Date.now() + 60_000;
-    for (const { boatId, prefix, score, member } of newestByBoatKey.values()) {
+    for (const { boatId, prefix, score, member } of newestByBoat.values()) {
       const seenKey = `${prefix}${boatId}`;
       if (score > maxValidTs || score <= (this.lastPositionAt.get(seenKey) ?? -Infinity)) continue;
       const lastKey = `${prefix}boats:last`;
@@ -336,7 +333,7 @@ class RedisStore {
     }
     try {
       await Promise.all([
-        ...[...argsByKey].map(([key, args]) => this.client.zadd(key, ...args)),
+        ...[...argsByPrefix].map(([prefix, args]) => this.client.zadd(`${prefix}track`, ...args)),
         ...[...lastArgsByKey].map(([key, args]) => this.client.hset(key, ...args)),
       ]);
     } catch (err) {
@@ -348,48 +345,37 @@ class RedisStore {
     this._recordTrackWriteSuccess();
     for (const [seenKey, score] of lastWrites) this.lastPositionAt.set(seenKey, score);
 
-    // Best-effort, and no per-fix commands: each track key's expiry (and the boat's boats:known entry) is set and kept fresh
-    // by the periodic maintenance below (a boat's own key every TRIM_EVERY_MS, all:track once a minute, both on a key's first
-    // write), not on every write. A failure isn't tracked as a write failure above - the fixes already landed; the next
+    // Best-effort, and no per-fix commands: the track's expiry and each boat's boats:known entry are set and kept fresh by
+    // the periodic maintenance below (boats:known every TRIM_EVERY_MS per boat, the track once a minute, both at once the
+    // first time), not on every write. A failure isn't tracked as a write failure above - the fixes already landed; the next
     // interval retries.
-    for (const [boatTrackKey, { boatId, prefix, score }] of newestByBoatKey) {
-      this._trimBoatTrack(boatId, boatTrackKey, score, `${prefix}boats:known`);
-    }
-    for (const key of argsByKey.keys()) {
-      if (key.endsWith(':all:track')) this._keepRollingWindow(key, key.replace(/all:track$/, 'boats:last'));
-    }
+    for (const [boatKey, { boatId, prefix }] of newestByBoat) this._keepBoatKnown(boatKey, boatId, `${prefix}boats:known`);
+    for (const prefix of argsByPrefix.keys()) this._keepRollingWindow(`${prefix}track`, `${prefix}boats:last`);
   }
 
-  // A rolling retention window for all:track. An expiry set once, when a key is created, would delete the whole key (every
+  // A rolling retention window for the track. An expiry set once, when a key is created, would delete the whole key (every
   // race's fixes, a race in progress included) trackRetentionHours after its FIRST write, whatever was written since. So
   // once a minute this (1) drops the fixes older than the retention window and (2) pushes the key's expiry out again: it
   // holds the last trackRetentionHours of fixes and only expires that long after its last write. The first write of a key
   // does it at once, so a key never goes without an expiry. Best effort; a failure is retried at the next interval.
   // boats:last (lastKey) gets the same expiry, so it goes with the track it summarises.
-  _keepRollingWindow(allTrackKey, lastKey) {
+  _keepRollingWindow(trackKey, lastKey) {
     const now = Date.now();
-    if (now - (this.lastWindowAt.get(allTrackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
-    this.lastWindowAt.set(allTrackKey, now);
-    this.client.zremrangebyscore(allTrackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
-    this.client.expire(allTrackKey, this.trackRetentionSeconds).catch(() => {});
+    if (now - (this.lastWindowAt.get(trackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
+    this.lastWindowAt.set(trackKey, now);
+    this.client.zremrangebyscore(trackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
+    this.client.expire(trackKey, this.trackRetentionSeconds).catch(() => {});
     if (lastKey) this.client.expire(lastKey, this.trackRetentionSeconds).catch(() => {});
   }
 
-  // Maintenance of the boat's own key, at most every TRIM_EVERY_MS per boat (the sorted set is ordered by time, so the trim
-  // is cheap): drop fixes older than the window (boatTrackMinutes; 0 keeps all of them) and refresh the key's expiry, which
-  // also gives a key its expiry on its first write. It also adds the boat to boats:known, which RegattaUp's getRaceTracks
-  // reads on every poll for its boat list and each boat's last position: once on the boat's first write, then again each
-  // interval so the set refills within TRIM_EVERY_MS if it is cleared or Redis is flushed (adding it on every fix was a
-  // third of all write commands, every one after the first a no-op). Best effort: all:track still has every fix.
-  _trimBoatTrack(boatId, boatTrackKey, score, knownKey) {
+  // Adds the boat to boats:known, which RegattaUp's getRaceTracks reads on every poll for its boat list: on the boat's first
+  // write in a regatta, then again at most every TRIM_EVERY_MS so the set refills if it is cleared or Redis is flushed
+  // (adding it on every fix was a third of all write commands, every one after the first a no-op). Best effort.
+  _keepBoatKnown(boatKey, boatId, knownKey) {
     const now = Date.now();
-    if (now - (this.lastBoatTrimAt.get(boatTrackKey) || 0) < RedisStore.TRIM_EVERY_MS) return;
-    this.lastBoatTrimAt.set(boatTrackKey, now);
+    if (now - (this.lastKnownAt.get(boatKey) || 0) < RedisStore.TRIM_EVERY_MS) return;
+    this.lastKnownAt.set(boatKey, now);
     this.client.sadd(knownKey, String(boatId)).catch(() => {});
-    if (this.boatTrackWindowMs > 0) {
-      this.client.zremrangebyscore(boatTrackKey, '-inf', score - this.boatTrackWindowMs).catch(() => {});
-    }
-    this.client.expire(boatTrackKey, this.trackRetentionSeconds).catch(() => {});
   }
 
   _recordTrackWriteFailure(err) {
@@ -434,28 +420,13 @@ class RedisStore {
     };
   }
 
-  // fromMs/toMs are inclusive; omit either for an open-ended range.
-  // regattaId scopes this to one regatta's own namespace (see the module
-  // comment above) - pass null/omit for whatever's currently selected, not
-  // "every regatta this boat's ever raced."
-  async getBoatTrack(boatId, fromMs, toMs, regattaId) {
-    await this.ready;
-    const withScores = await this.client.zrangebyscore(
-      `${this._prefix(regattaId)}boat:${boatId}:track`,
-      fromMs ?? '-inf',
-      toMs ?? '+inf',
-      'WITHSCORES'
-    );
-    return unpackWithScores(withScores);
-  }
-
   // regattaId scopes this to one regatta's own namespace (see the module
   // comment above on why this can't be one shared key across every regatta
   // ever raced) - pass null/omit for whatever's currently selected, not
   // "every regatta at once."
-  async getAllTrack(fromMs, toMs, regattaId) {
+  async getTrack(fromMs, toMs, regattaId) {
     await this.ready;
-    const withScores = await this.client.zrangebyscore(`${this._prefix(regattaId)}all:track`, fromMs ?? '-inf', toMs ?? '+inf', 'WITHSCORES');
+    const withScores = await this.client.zrangebyscore(`${this._prefix(regattaId)}track`, fromMs ?? '-inf', toMs ?? '+inf', 'WITHSCORES');
     return unpackWithScores(withScores);
   }
 
@@ -673,7 +644,8 @@ class RedisStore {
   }
 
   // Deletes every boat-related key for the CURRENTLY SELECTED regatta only
-  // (tracks, the known-boats set, and start slot assignments) - deliberately
+  // (tracks, the known-boats set, and start slot assignments, plus any
+  // per-boat track keys left from before the base stopped writing them) - deliberately
   // leaves the course marks untouched, so the same course can keep being
   // raced by a fresh fleet without recomputing/republishing marks, and
   // deliberately leaves every OTHER regatta's own namespace completely
@@ -685,7 +657,8 @@ class RedisStore {
     const boatIds = await this.client.smembers(`${prefix}boats:known`);
     const keys = [
       ...boatIds.map((id) => `${prefix}boat:${id}:track`),
-      `${prefix}all:track`,
+      `${prefix}track`,
+      `${prefix}all:track`, // the track's old name
       `${prefix}boats:known`,
       `${prefix}boats:last`,
       `${prefix}boats:start_slots`,
@@ -755,8 +728,8 @@ class RedisStore {
     return { usedBytes, maxmemoryBytes };
   }
 
-  // Cheap counts for the admin dashboard (adminServer.js) - ZCARD instead
-  // of fetching full tracks (getBoatTrack/getAllTrack), so this stays fast
+  // Cheap counts for the admin dashboard (adminServer.js) - ZCARD/SCARD instead
+  // of fetching full tracks (getTrack), so this stays fast
   // regardless of how much data has accumulated over a race day. Scoped to
   // the CURRENTLY SELECTED regatta's own namespace - the admin dashboard's
   // "Total tracks" card is meant to answer "what's happening right now,"
@@ -764,13 +737,8 @@ class RedisStore {
   async getStats() {
     await this.ready;
     const prefix = this._prefix();
-    const boatIds = await this.client.smembers(`${prefix}boats:known`);
-    const [totalTracks, perBoatCounts] = await Promise.all([
-      this.client.zcard(`${prefix}all:track`),
-      Promise.all(boatIds.map((id) => this.client.zcard(`${prefix}boat:${id}:track`))),
-    ]);
-    const tracksByBoat = Object.fromEntries(boatIds.map((id, i) => [id, perBoatCounts[i]]));
-    return { totalTracks, boatsKnown: boatIds.length, tracksByBoat, writeHealth: this.getWriteHealth() };
+    const [totalTracks, boatsKnown] = await Promise.all([this.client.zcard(`${prefix}track`), this.client.scard(`${prefix}boats:known`)]);
+    return { totalTracks, boatsKnown, writeHealth: this.getWriteHealth() };
   }
 
   async close() {

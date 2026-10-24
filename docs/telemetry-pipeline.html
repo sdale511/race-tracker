@@ -469,7 +469,7 @@ sequenceDiagram
 <pre class="mermaid">
 flowchart LR
   F["decoded frame"] --> C1[("CSV log")]
-  F --> C2[("Redis: recordFix<br/>boat:&lt;id&gt;:track, all:track")]
+  F --> C2[("Redis: recordFix<br/>track, boats:last")]
   F --> C3["UDP broadcast<br/>(local dashboards)"]
   F --> W1["FinishLineWatcher<br/>.check(lat, lon, t)"]
   F --> W2["OnGridWatcher<br/>.check(lat, lon)"]
@@ -657,7 +657,7 @@ sequenceDiagram
   GA-->>M: { regattas: [...] }
   loop polling
     M->>GT: POST { boat_id?, after }
-    GT->>RD: zrangebyscore boat:*:track / all:track
+    GT->>RD: zrangebyscore track, hgetall boats:last
     GT->>RD: SCAN mark:*, GET course
     GT-->>M: { points, marks, course, boatMap, lastPositions }
   end
@@ -684,8 +684,8 @@ sequenceDiagram
       <div class="tbl-scroll">
         <table class="data">
           <tr><th>Key</th><th>Type</th><th>Written by</th><th>Purpose</th></tr>
-          <tr><td class="field"><code>boat:&lt;id&gt;:track</code></td><td class="type">zset</td><td>base station</td><td>one boat's fix history, scored by GPS timestamp</td></tr>
-          <tr><td class="field"><code>all:track</code></td><td class="type">zset</td><td>base station</td><td>every boat's fixes, for a fleet-wide time-window replay</td></tr>
+          <tr><td class="field"><code>boats:last</code></td><td class="type">hash</td><td>base station</td><td>each boat's newest fix (boat id -> packed fix), for every boat's last position in one read</td></tr>
+          <tr><td class="field"><code>track</code></td><td class="type">zset</td><td>base station</td><td>every boat's fixes, for a fleet-wide time-window replay (formerly <code>all:track</code>)</td></tr>
           <tr><td class="field"><code>boats:known</code></td><td class="type">set</td><td>base station</td><td>every boatId ever recorded</td></tr>
           <tr><td class="field"><code>mark:&lt;name&gt;</code></td><td class="type">hash</td><td>base station</td><td>one course mark's <code>{lat, lon}</code>, one key per <code>MARK_NAMES</code> entry</td></tr>
           <tr><td class="field"><code>course:on_grid_zone</code></td><td class="type">string (JSON)</td><td>base station</td><td>the on-grid detection polygon, for drawing without re-deriving it</td></tr>

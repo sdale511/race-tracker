@@ -43,33 +43,23 @@ test('an implausible fix is never posted and does not become the reference', () 
   assert.strictEqual(store.decideRecord(fix(T + 1000)), 'post');
 });
 
-test('a boat\'s own track key is trimmed to the window, its expiry refreshed and the boat added to boats:known, at most once per trim interval', () => {
+test('a boat is added to boats:known at most once per upkeep interval, each boat on its own interval', () => {
   const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
-    boatTrackWindowMs: 2 * 60000,
-    trackRetentionSeconds: 172800,
-    lastBoatTrimAt: new Map(),
-    client: {
-      sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); },
-      zremrangebyscore: (key, min, max) => { calls.push(['zrem', key, min, max]); return Promise.resolve(0); },
-      expire: (key, seconds) => { calls.push(['expire', key, seconds]); return Promise.resolve(1); },
-    },
+    lastKnownAt: new Map(),
+    client: { sadd: (key, member) => { calls.push(['sadd', key, member]); return Promise.resolve(1); } },
   });
-  store._trimBoatTrack('00001', 'k:00001', 2_000_000, 'known');
-  store._trimBoatTrack('00001', 'k:00001', 2_001_000, 'known'); // too soon after the first
-  store._trimBoatTrack('00002', 'k:00002', 2_000_000, 'known'); // another boat has its own interval
-  assert.deepStrictEqual(calls, [
-    ['sadd', 'known', '00001'], ['zrem', 'k:00001', '-inf', 2_000_000 - 120000], ['expire', 'k:00001', 172800],
-    ['sadd', 'known', '00002'], ['zrem', 'k:00002', '-inf', 2_000_000 - 120000], ['expire', 'k:00002', 172800],
-  ]);
+  store._keepBoatKnown('r1:00001', '00001', 'known');
+  store._keepBoatKnown('r1:00001', '00001', 'known'); // too soon after the first
+  store._keepBoatKnown('r1:00002', '00002', 'known'); // another boat has its own interval
+  assert.deepStrictEqual(calls, [['sadd', 'known', '00001'], ['sadd', 'known', '00002']]);
 });
 
 const writeStore = (calls, extra = {}) => Object.assign(Object.create(RedisStore.prototype), {
   ready: Promise.resolve(),
   currentRegattaId: 'r1',
-  boatTrackWindowMs: 0,
   trackRetentionSeconds: 172800,
-  lastBoatTrimAt: new Map(),
+  lastKnownAt: new Map(),
   lastWindowAt: new Map(),
   lastRecordedPosition: new Map(),
   trackWriteHealthy: true,
@@ -87,16 +77,15 @@ const writeStore = (calls, extra = {}) => Object.assign(Object.create(RedisStore
   ...extra,
 });
 
-test('a frame\'s fixes, arriving in one tick, are written as one ZADD per key', async () => {
+test('a frame\'s fixes, arriving in one tick, are written as one ZADD to the track and no per-boat key', async () => {
   const calls = [];
   const store = writeStore(calls);
   const boat2 = (t) => ({ ...fix(t), boatId: '00002' });
   await Promise.all([...[0, 1, 2, 3, 4].map((i) => store.writeFix(fix(T + i * 100))), store.writeFix(boat2(T))]);
-  assert.deepStrictEqual(calls.filter((c) => c[0] === 'zadd'), [
-    ['zadd', 'regattas:r1:boat:00001:track', 5],
-    ['zadd', 'regattas:r1:all:track', 6],
-    ['zadd', 'regattas:r1:boat:00002:track', 1],
-  ]);
+  assert.deepStrictEqual(calls.filter((c) => c[0] === 'zadd'), [['zadd', 'regattas:r1:track', 6]]);
+  // boats:last: each boat's newest fix in one HSET
+  const hset = calls.find((c) => c[0] === 'hset');
+  assert.deepStrictEqual([hset[1], hset[2], hset[4]], ['regattas:r1:boats:last', '00001', '00002']);
   // boats:known: each boat once, on its first fix
   assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd').map((c) => c[2]), ['00001', '00002']);
 });
@@ -105,9 +94,9 @@ test('boats:known is added on a boat\'s first fix in each regatta, not on every 
   const calls = [];
   const store = writeStore(calls);
   for (let i = 0; i < 5; i++) await store.writeFix(fix(T + i * 100)); // separate ticks: separate flushes
-  assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 10);
+  assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 5);
   assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd'), [['sadd', 'regattas:r1:boats:known', '00001']]);
-  store.currentRegattaId = 'r2'; // a regatta switch inside the trim interval still lists the boat in the new regatta at once
+  store.currentRegattaId = 'r2'; // a regatta switch inside the upkeep interval still lists the boat in the new regatta at once
   await store.writeFix(fix(T + 600));
   assert.deepStrictEqual(calls.filter((c) => c[0] === 'sadd').at(-1), ['sadd', 'regattas:r2:boats:known', '00001']);
 });
@@ -130,23 +119,7 @@ test('a failed batch is counted once and every boat in it posts its next fix aga
   assert.strictEqual(calls.filter((c) => c[0] === 'sadd').length, 0); // no upkeep after a failed write
 });
 
-test('a window of 0 keeps the whole per-boat track but still sets its expiry', () => {
-  const calls = [];
-  const store = Object.assign(Object.create(RedisStore.prototype), {
-    boatTrackWindowMs: 0,
-    trackRetentionSeconds: 172800,
-    lastBoatTrimAt: new Map(),
-    client: {
-      sadd: () => Promise.resolve(1),
-      zremrangebyscore: () => assert.fail('must not trim'),
-      expire: (key, seconds) => { calls.push([key, seconds]); return Promise.resolve(1); },
-    },
-  });
-  store._trimBoatTrack('00001', 'k', 1, 'known');
-  assert.deepStrictEqual(calls, [['k', 172800]]);
-});
-
-test('the rolling window trims all:track to the retention period and refreshes its expiry, once a minute', () => {
+test('the rolling window trims the track to the retention period and refreshes its expiry, once a minute', () => {
   const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
     trackRetentionSeconds: 48 * 3600,
@@ -157,13 +130,13 @@ test('the rolling window trims all:track to the retention period and refreshes i
     },
   });
   const before = Date.now();
-  store._keepRollingWindow('all');
-  store._keepRollingWindow('all'); // inside the same minute: nothing
+  store._keepRollingWindow('track');
+  store._keepRollingWindow('track'); // inside the same minute: nothing
   assert.strictEqual(calls.length, 2);
   assert.strictEqual(calls[0][0], 'zrem');
   assert.strictEqual(calls[0][2], '-inf');
   assert.ok(calls[0][3] >= before - 48 * 3600 * 1000 && calls[0][3] <= Date.now() - 48 * 3600 * 1000);
-  assert.deepStrictEqual(calls[1], ['expire', 'all', 172800]);
+  assert.deepStrictEqual(calls[1], ['expire', 'track', 172800]);
 });
 
 test('marks:index follows every mark write and delete, and getMarks indexes the marks already there', async () => {
@@ -202,7 +175,7 @@ test('boats:last gets each boat\'s newest fix once per batch, never a late or fu
   calls.length = 0;
   await store.writeFix(fix(T + 150));
   assert.deepStrictEqual(hsets(), []);
-  assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 2);
+  assert.strictEqual(calls.filter((c) => c[0] === 'zadd').length, 1); // the track only
   // more than a minute in the future: never in boats:last
   await store.writeFix(fix(Date.now() + 120_000));
   assert.deepStrictEqual(hsets(), []);

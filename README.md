@@ -1966,18 +1966,18 @@ is `none` for anything recorded with no regatta selected.
 | `regattas:<id>:marks:index` | Set of the mark names above, kept with every mark write and delete (and filled in from the marks already there at startup), so RegattaUp's `getRaceTracks` reads each mark by name instead of scanning the whole keyspace on every poll |
 | `regattas:<id>:course:pin_boundary_enabled` | On/off flag; when on, also publishes `mark:pinBoundary` (computed) for RegattaUp's generic scan |
 | `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
-| `regattas:<id>:boat:<boatId>:track` | Sorted set per boat, scored by fix timestamp, **only the last `REDIS_BOAT_TRACK_MINUTES` (2; 0 keeps everything)**. The one reader is RegattaUp's `getRaceTracks`, for each boat's newest fix. `getBoatTrack(boatId, fromMs, toMs, regattaId)` |
-| `regattas:<id>:all:track` | Sorted set, every boat's fixes for the regatta. `getAllTrack(fromMs, toMs, regattaId)` |
-| `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position, instead of one read per boat's own key. Expires with `all:track` |
-| `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed with the boat's own key every 10 s (not on every fix), so it refills within 10 s if cleared. `knownBoatIds()` |
+| `regattas:<id>:track` | Sorted set, every boat's fixes for the regatta, scored by fix timestamp - what RegattaUp's map and archives read. `getTrack(fromMs, toMs, regattaId)`. Formerly `regattas:<id>:all:track`; RegattaUp reads both names (and merges them) until the old key is renamed with `RENAME regattas:<id>:all:track regattas:<id>:track` |
+| `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position. Expires with the track |
+| `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed at most every 10 s per boat (not on every fix), so it refills within 10 s if cleared. `knownBoatIds()` |
 | `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
 
-**Memory.** A stored fix costs roughly 230 bytes in each sorted set it is in, so keeping the whole race in both `all:track` and
-every boat's own key doubled what Redis held (about 100 MB for a 30-boat, 30-minute race; the 48 h expiry meant a day of racing
-did not fit in 256 MB). The per-boat key is now trimmed to the last `REDIS_BOAT_TRACK_MINUTES` minutes whenever that boat
-writes (at most every 10 s, and its newest fix is always kept). RegattaUp's `generateRaceTrackArchive` removes a race's
-fixes from `all:track` and the boats' own keys once the archive is saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
-`REDIS_TRACK_RETENTION_HOURS` (48) is a rolling window: once a minute the base drops fixes older than that from `all:track` and pushes both keys' expiry out again, so the key holds the last 48 hours of fixes and never vanishes in one go (an expiry set only once, on a key's first write, deleted every race's fixes together 48 h after the first fix of all). The Redis memory card is on the Data page.
+**Memory.** A stored fix costs roughly 230 bytes in a sorted set. The base used to keep a second copy of every fix in a
+per-boat key (`regattas:<id>:boat:<boatId>:track`), which doubled what Redis held (about 100 MB for a 30-boat, 30-minute
+race). Nothing read those keys any more - RegattaUp gets the whole race from the track and each boat's last position from
+`boats:last` - so the base no longer writes them; clearing boat data still deletes any left from before, and otherwise they
+expire on their own. RegattaUp's `generateRaceTrackArchive` removes a race's fixes from the track once the archive is
+saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
+`REDIS_TRACK_RETENTION_HOURS` (48) is a rolling window: once a minute the base drops fixes older than that from the track and pushes its (and `boats:last`'s) expiry out again, so the key holds the last 48 hours of fixes and never vanishes in one go (an expiry set only once, on a key's first write, deleted every race's fixes together 48 h after the first fix of all). The Redis memory card is on the Data page.
 
 Each stored fix: the decoded frame (`boatId, lat, lon, speedKnots, headingDeg,
 gnssFixOk, carrSoln, numSV`, plus the fix time `t` so members stay unique) as a compact JSON member, with the fix's own GPS
@@ -1987,8 +1987,8 @@ unaffected.
 
 **Writes are batched per tick.** A radio frame's fixes (up to 8, 16 a slot) all reach the base in the same tick, so
 `writeFix` queues them and writes them together at the end of the tick: one `ZADD` per key with every fix's score/member
-pair, so a full frame is 2 commands (the boat's key and `all:track`), not 16. For 25 boats at 8 Hz that is about 50
-writes a second instead of 400. A failed batch counts as one write failure on the Redis card.
+pair, so a full frame is 2 commands (a `ZADD` to the track and an `HSET` to `boats:last`), not 16. For 25 boats at 8 Hz
+that is about 50 writes a second instead of 400. A failed batch counts as one write failure on the Redis card.
 
 **Reading tracks live.** Fixes reach Redis late and in bursts: a boat's slot
 delivers its last cycle of fixes at once (about 1 s old on average at a 2 s

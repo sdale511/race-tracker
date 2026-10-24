@@ -328,7 +328,6 @@ const sections = [
         envVar: 'REDIS_TRACK_RETENTION_HOURS',
         unit: 'h',
       },
-      { label: 'boatTrackMinutes', desc: "Minutes of each boat's own recent track kept; 0 = all of it", value: config.redis.boatTrackMinutes, envVar: 'REDIS_BOAT_TRACK_MINUTES', unit: 'min' },
       { label: 'memoryLimitMb', desc: "Redis memory size the Data page's memory card measures against", value: config.redis.memoryLimitMb, envVar: 'REDIS_MEMORY_LIMIT_MB', unit: 'MB' },
     ],
   },
