@@ -1709,8 +1709,9 @@ embedding anywhere - a RegattaUp page, a club site, a screen on the committee bo
 <iframe src="http://<base-ip>:8092/wind" width="320" height="140" style="border:0"></iframe>
 ```
 
-It shows a compass with an arrow pointing to where the wind comes **from**, the speed in mph, that direction (e.g.
-"from 225° SW", the way a race committee reads it) and the last minute's gust and lull. (RegattaUp's own map arrow points
+It shows a blue compass ring with a blue arrow pointing to where the wind comes **from**, the speed in mph, that direction (e.g.
+`225° SW`, the way a race committee reads it - shown as large as the speed) and the last minute's range, lull to gust (`4.8 – 7.9`). All text is plain white (black with
+`?theme=light`). (RegattaUp's own map arrow points
 the other way, downwind.)
 
 In a short frame - 70 px tall or less, or any size with `?size=compact` - it becomes a single line like RegattaUp's

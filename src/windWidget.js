@@ -3,9 +3,9 @@
 //
 //   <iframe src="http://<base>:8092/wind" width="320" height="140" style="border:0"></iframe>
 //
-// It shows the newest Tempest wind sample (see tempestListener.js): a compass with an arrow pointing to where the wind is
-// coming FROM, and the numbers: speed, that direction (the way a race committee reads it), and the last minute's gust and
-// lull. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
+// It shows the newest Tempest wind sample (see tempestListener.js): a blue compass ring with a blue arrow pointing to where
+// the wind is coming FROM, and the numbers, all in plain white: speed, that direction (the way a race committee reads it),
+// and the last minute's range, lull - gust. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
 //
 // In a short iframe (70 px tall or less), or with ?size=compact, it becomes one line like RegattaUp's wind pill - a small
 // arrow, the speed and the direction:
@@ -26,8 +26,8 @@ function windApiPayload(listening, sample) {
 function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   const light = theme === 'light';
   const c = light
-    ? { bg: '#ffffff', fg: '#1b2430', muted: '#6b7685', ring: '#d5dae1', arrow: '#0284c7', tick: '#1b2430' }
-    : { bg: '#161b22', fg: '#e6e9ef', muted: '#8b94a3', ring: '#2d3542', arrow: '#58a6ff', tick: '#e6e9ef' };
+    ? { bg: '#ffffff', fg: '#000000', arrow: '#0284c7' }
+    : { bg: '#161b22', fg: '#ffffff', arrow: '#58a6ff' };
   return `<!doctype html>
 <html>
 <head>
@@ -49,11 +49,13 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   .compass svg { width: 100%; height: 100%; display: block; }
   .numbers { display: flex; flex-direction: column; gap: 1.5vmin; min-width: 0; }
   .speed { font-size: min(26vh, 13vw); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .speed .unit { font-size: 0.4em; font-weight: 600; color: ${c.muted}; margin-left: 0.15em; }
-  .from { font-size: min(11vh, 5.5vw); font-weight: 600; white-space: nowrap; }
-  .detail { font-size: min(8.5vh, 4.2vw); color: ${c.muted}; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .none { font-size: min(11vh, 6vw); color: ${c.muted}; }
-  .from .word { margin-right: 0.25em; }
+  .speed .unit { font-size: 0.4em; font-weight: 600; margin-left: 0.15em; }
+  /* The direction, styled like the speed: a big number, the compass point small and muted like "mph". */
+  .dir { font-size: min(20vh, 10vw); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dir .unit { font-size: 0.55em; font-weight: 600; margin-left: 0.2em; }
+  /* The last minute's lull - gust, low to high. */
+  .detail { font-size: min(12vh, 6vw); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .none { font-size: min(11vh, 6vw); }
   /* Compact: one line - an arrow without the compass ring, the speed and the direction - sized from the frame's height,
      capped by its width. */
   @media (max-height: 70px) {
@@ -62,10 +64,10 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
     .ring { display: none; }
     .arrow-size { transform: scale(1.7); transform-origin: 50px 50px; }
     .numbers { flex-direction: row; align-items: baseline; gap: min(16vh, 3.5vw); }
-    .speed { font-size: min(50vh, 12vw); }
+    .speed { font-size: min(50vh, 10vw); }
     .speed .unit { font-size: 0.75em; }
-    .from { font-size: min(44vh, 10.5vw); }
-    .from .word, .detail { display: none; }
+    .dir { font-size: min(50vh, 10vw); }
+    .detail { display: none; }
     .none { font-size: min(44vh, 10vw); }
   }
   body.compact .wind { gap: min(14vh, 3vw); padding: 0 min(22vh, 4vw); justify-content: flex-start; }
@@ -73,10 +75,10 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   body.compact .ring { display: none; }
   body.compact .arrow-size { transform: scale(1.7); transform-origin: 50px 50px; }
   body.compact .numbers { flex-direction: row; align-items: baseline; gap: min(16vh, 3.5vw); }
-  body.compact .speed { font-size: min(50vh, 12vw); }
+  body.compact .speed { font-size: min(50vh, 10vw); }
   body.compact .speed .unit { font-size: 0.75em; }
-  body.compact .from { font-size: min(44vh, 10.5vw); }
-  body.compact .from .word, body.compact .detail { display: none; }
+  body.compact .dir { font-size: min(50vh, 10vw); }
+  body.compact .detail { display: none; }
   body.compact .none { font-size: min(44vh, 10vw); }
 </style>
 </head>
@@ -84,11 +86,11 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   <div class="wind" id="wind">
     <div class="compass">
       <svg viewBox="0 0 100 100" aria-hidden="true">
-        <circle class="ring" cx="50" cy="50" r="44" fill="none" stroke="${c.ring}" stroke-width="3"/>
+        <circle class="ring" cx="50" cy="50" r="44" fill="none" stroke="${c.arrow}" stroke-width="3"/>
         ${[90, 180, 270]
-          .map((d) => `<line class="ring" x1="50" y1="6" x2="50" y2="11" stroke="${c.ring}" stroke-width="2" transform="rotate(${d} 50 50)"/>`)
+          .map((d) => `<line class="ring" x1="50" y1="6" x2="50" y2="11" stroke="${c.arrow}" stroke-width="2" transform="rotate(${d} 50 50)"/>`)
           .join('')}
-        <text class="ring" x="50" y="17" text-anchor="middle" font-size="11" font-weight="800" fill="${c.tick}">N</text>
+        <text class="ring" x="50" y="17" text-anchor="middle" font-size="11" font-weight="800" fill="${c.fg}">N</text>
         <g class="arrow-size"><g id="arrow" style="display:none">
           <line x1="50" y1="68" x2="50" y2="40" stroke="${c.arrow}" stroke-width="7" stroke-linecap="round"/>
           <polygon points="50,26 37,44 63,44" fill="${c.arrow}"/>
@@ -125,8 +127,8 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
       arrow.setAttribute('transform', 'rotate(' + (s.dir % 360) + ' 50 50)');
       numbers.innerHTML =
         '<div class="speed">' + fmt(s.avg) + '<span class="unit">mph</span></div>' +
-        '<div class="from"><span class="word">from</span>' + Math.round(s.dir) + '° ' + compass(s.dir) + '</div>' +
-        '<div class="detail">gust ' + fmt(s.gust) + ' · lull ' + fmt(s.lull) + (stale ? ' · ' + ago(s.t) : '') + '</div>';
+        '<div class="dir">' + Math.round(s.dir) + '°<span class="unit">' + compass(s.dir) + '</span></div>' +
+        '<div class="detail">' + fmt(s.lull) + ' – ' + fmt(s.gust) + (stale ? ' · ' + ago(s.t) : '') + '</div>';
     }
     // Live: each reading is pushed the moment the base receives it. EventSource reconnects on its own after a dropped
     // connection; if the stream can't be used at all (no EventSource, or it fails repeatedly) poll instead.

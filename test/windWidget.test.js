@@ -23,8 +23,9 @@ test('the widget has a compact one-line layout for short frames, and ?size=compa
 test('the widget page has the compass and polls /api/wind; ?theme=light swaps the colours', () => {
   const dark = renderWindWidget();
   assert.ok(dark.includes('id="arrow"') && dark.includes("fetch('/api/wind'") && dark.includes("new EventSource('/api/wind/stream')"));
-  assert.ok(dark.includes('#161b22') && !dark.includes('#ffffff'));
-  assert.ok(renderWindWidget({ theme: 'light' }).includes('background: #ffffff'));
+  assert.ok(dark.includes('background: #161b22') && dark.includes('color: #ffffff'));
+  const light = renderWindWidget({ theme: 'light' });
+  assert.ok(light.includes('background: #ffffff') && light.includes('color: #000000'));
 });
 
 test('the base serves /wind and /api/wind (any origin may read it)', async () => {
