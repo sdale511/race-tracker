@@ -2718,7 +2718,9 @@ function main() {
           }
         : null,
       linkHealth: linkHealth.status(),
-      tempest: tempest ? { ...tempest.status(), ...windWrites, regattaSelected: !!selectedRegatta } : null,
+      tempest: tempest
+        ? { enabled: true, ...tempest.status(), ...windWrites, regattaSelected: !!selectedRegatta }
+        : { enabled: false, port: config.tempest.port },
       redis: redisStats,
       // maxmemoryBytes falls back to the operator-configured
       // REDIS_MEMORY_LIMIT_MB whenever Redis itself won't report its own
