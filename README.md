@@ -1713,7 +1713,7 @@ It shows a blue compass ring with a blue arrow pointing to where the wind comes 
 `?theme=light`):
 - the speed in mph, with the last minute's range under it, lull to gust (`4.8 – 7.9`);
 - the direction it comes from, as large as the speed (`225° SW`, the way a race committee reads it), with how far it has
-  swung over the last 10 minutes under it (`205° – 245°`). The swing is also drawn as a shaded band just inside the ring,
+  swung over the last 10 minutes under it (`205° – 245°`). The swing is also drawn as a yellow band just inside the ring,
   either side of the arrow. The base works it out (the smallest arc holding every direction heard in the last 10 minutes,
   so wind wandering either side of north reads `350° – 15°`), so a widget opened mid-race shows it at once.
 

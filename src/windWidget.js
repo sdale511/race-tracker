@@ -6,7 +6,7 @@
 // It shows the newest Tempest wind sample (see tempestListener.js): a blue compass ring with a blue arrow pointing to where
 // the wind is coming FROM, and the numbers, all in plain white: speed with the last minute's range under it (lull - gust),
 // and the direction (the way a race committee reads it) with its swing over the last 10 minutes under it - also drawn as
-// a band on the compass ring. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
+// a yellow band inside the compass ring. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
 //
 // In a short iframe (70 px tall or less), or with ?size=compact, it becomes one line like RegattaUp's wind pill - a small
 // arrow, the speed and the direction:
@@ -28,8 +28,8 @@ function windApiPayload(listening, sample, swing = null) {
 function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   const light = theme === 'light';
   const c = light
-    ? { bg: '#ffffff', fg: '#000000', arrow: '#0284c7' }
-    : { bg: '#161b22', fg: '#ffffff', arrow: '#58a6ff' };
+    ? { bg: '#ffffff', fg: '#000000', arrow: '#0284c7', swing: '#d4a106' }
+    : { bg: '#161b22', fg: '#ffffff', arrow: '#0088ff', swing: '#ffff00' }; // fully saturated: they stand out on an LED board
   return `<!doctype html>
 <html>
 <head>
@@ -94,8 +94,10 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
         ${[90, 180, 270]
           .map((d) => `<line class="ring" x1="50" y1="6" x2="50" y2="11" stroke="${c.arrow}" stroke-width="2" transform="rotate(${d} 50 50)"/>`)
           .join('')}
-        <text class="ring" x="50" y="17" text-anchor="middle" font-size="11" font-weight="800" fill="${c.fg}">N</text>
-        <path id="swing" class="ring" d="" fill="none" stroke="${c.arrow}" stroke-width="8" stroke-opacity="0.6" style="display:none"/>
+        <!-- N sits on the ring itself, in a gap cut out of it, clear of the swing band's track inside the ring. -->
+        <circle class="ring" cx="50" cy="6" r="7" fill="${c.bg}"/>
+        <text class="ring" x="50" y="9.9" text-anchor="middle" font-size="11" font-weight="800" fill="${c.fg}">N</text>
+        <path id="swing" class="ring" d="" fill="none" stroke="${c.swing}" stroke-width="8" style="display:none"/>
         <g class="arrow-size"><g id="arrow" style="display:none">
           <line x1="50" y1="68" x2="50" y2="40" stroke="${c.arrow}" stroke-width="7" stroke-linecap="round"/>
           <polygon points="50,26 37,44 63,44" fill="${c.arrow}"/>
@@ -112,9 +114,9 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
       return s < 5 ? 'just now' : s < 60 ? s + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago' : Math.floor(s / 3600) + 'h ago';
     };
     const fmt = (v) => (v == null ? '—' : Number(v).toFixed(1));
-    // The swing band runs on its own track just inside the ring (radius 37). A point on that track at a compass bearing,
+    // The swing band runs on its own track inside the ring (radius 35), clear of the N on the ring. A point on that track at a compass bearing,
     // and the clockwise arc from 'from' spanning 'width' degrees.
-    const SWING_R = 37;
+    const SWING_R = 35;
     const ringPoint = (deg) => {
       const r = (deg * Math.PI) / 180;
       return (50 + SWING_R * Math.sin(r)).toFixed(2) + ' ' + (50 - SWING_R * Math.cos(r)).toFixed(2);
@@ -146,7 +148,7 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
       const sw = data.swing;
       if (sw && sw.width > 0) {
         swing.style.display = '';
-        swing.setAttribute('d', sw.width >= 359 ? 'M 50 13 A 37 37 0 1 1 49.99 13' : arcPath(sw.from, sw.width));
+        swing.setAttribute('d', sw.width >= 359 ? 'M 50 15 A 35 35 0 1 1 49.99 15' : arcPath(sw.from, sw.width));
       } else {
         swing.style.display = 'none';
       }
