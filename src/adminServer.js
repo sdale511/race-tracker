@@ -2689,9 +2689,9 @@ function startAdminServer({
     // site, so the JSON allows any origin too (it is only the current wind).
     const pathOnly = req.url.split('?')[0];
     if (pathOnly === '/wind') {
-      const theme = new URL(req.url, 'http://base').searchParams.get('theme') === 'light' ? 'light' : 'dark';
+      const params = new URL(req.url, 'http://base').searchParams;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(renderWindWidget({ theme }));
+      res.end(renderWindWidget({ theme: params.get('theme') === 'light' ? 'light' : 'dark', compact: params.get('size') === 'compact' }));
       return;
     }
     // The same, pushed live: a Server-Sent Events stream sending the current payload at once and again with every new sample

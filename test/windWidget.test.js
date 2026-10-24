@@ -10,9 +10,19 @@ test('the API payload carries the newest sample, or null, and whether the base i
   assert.deepStrictEqual(windApiPayload(false, undefined), { listening: false, sample: null, staleAfterMs: STALE_MS });
 });
 
+test('the arrow is turned to the reading\'s own direction - it points to where the wind comes from', () => {
+  assert.ok(renderWindWidget().includes("'rotate(' + (s.dir % 360) + ' 50 50)'"));
+});
+
+test('the widget has a compact one-line layout for short frames, and ?size=compact forces it', () => {
+  const page = renderWindWidget({ compact: true });
+  assert.ok(page.includes('@media (max-height: 70px)'));
+  assert.ok(page.includes('<body class="compact">'));
+});
+
 test('the widget page has the compass and polls /api/wind; ?theme=light swaps the colours', () => {
   const dark = renderWindWidget();
-  assert.ok(dark.includes('id="arrow"') && dark.includes("fetch('/api/wind'"));
+  assert.ok(dark.includes('id="arrow"') && dark.includes("fetch('/api/wind'") && dark.includes("new EventSource('/api/wind/stream')"));
   assert.ok(dark.includes('#161b22') && !dark.includes('#ffffff'));
   assert.ok(renderWindWidget({ theme: 'light' }).includes('background: #ffffff'));
 });
@@ -34,6 +44,8 @@ test('the base serves /wind and /api/wind (any origin may read it)', async () =>
     const page = await get('/wind?theme=light');
     assert.strictEqual(page.res.statusCode, 200);
     assert.ok(page.body.includes('background: #ffffff'));
+    assert.ok(!page.body.includes('<body class="compact">'));
+    assert.ok((await get('/wind?size=compact')).body.includes('<body class="compact">'));
     const api = await get('/api/wind');
     assert.strictEqual(api.res.headers['access-control-allow-origin'], '*');
     assert.deepStrictEqual(JSON.parse(api.body).sample, sample);

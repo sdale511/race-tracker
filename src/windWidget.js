@@ -3,9 +3,14 @@
 //
 //   <iframe src="http://<base>:8092/wind" width="320" height="140" style="border:0"></iframe>
 //
-// It shows the newest Tempest wind sample (see tempestListener.js): a compass with an arrow pointing downwind - the way
-// the wind is blowing - and the numbers: speed, the direction it is coming FROM (the way a race committee reads it, and
-// the same convention as RegattaUp's map), and the last minute's gust and lull. mph only for now. It updates the moment
+// It shows the newest Tempest wind sample (see tempestListener.js): a compass with an arrow pointing to where the wind is
+// coming FROM, and the numbers: speed, that direction (the way a race committee reads it), and the last minute's gust and
+// lull. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
+//
+// In a short iframe (70 px tall or less), or with ?size=compact, it becomes one line like RegattaUp's wind pill - a small
+// arrow, the speed and the direction:
+//
+//   <iframe src="http://<base>:8092/wind?size=compact" width="150" height="28" style="border:0"></iframe> It updates the moment
 // each reading reaches the base, over the GET /api/wind/stream Server-Sent Events stream (falling back to polling
 // GET /api/wind every 3 s where that can't be used), scales to whatever size the iframe is, greys out once the reading
 // is over 3 minutes old and says "No wind data" until there is any. ?theme=light for a light background (the default is
@@ -18,7 +23,7 @@ function windApiPayload(listening, sample) {
   return { listening, sample: sample || null, staleAfterMs: STALE_MS };
 }
 
-function renderWindWidget({ theme = 'dark' } = {}) {
+function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   const light = theme === 'light';
   const c = light
     ? { bg: '#ffffff', fg: '#1b2430', muted: '#6b7685', ring: '#d5dae1', arrow: '#0284c7', tick: '#1b2430' }
@@ -48,21 +53,46 @@ function renderWindWidget({ theme = 'dark' } = {}) {
   .from { font-size: min(11vh, 5.5vw); font-weight: 600; white-space: nowrap; }
   .detail { font-size: min(8.5vh, 4.2vw); color: ${c.muted}; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .none { font-size: min(11vh, 6vw); color: ${c.muted}; }
+  .from .word { margin-right: 0.25em; }
+  /* Compact: one line - an arrow without the compass ring, the speed and the direction - sized from the frame's height,
+     capped by its width. */
+  @media (max-height: 70px) {
+    .wind { gap: min(14vh, 3vw); padding: 0 min(22vh, 4vw); justify-content: flex-start; }
+    .compass { height: 80vh; }
+    .ring { display: none; }
+    .arrow-size { transform: scale(1.7); transform-origin: 50px 50px; }
+    .numbers { flex-direction: row; align-items: baseline; gap: min(16vh, 3.5vw); }
+    .speed { font-size: min(50vh, 12vw); }
+    .speed .unit { font-size: 0.75em; }
+    .from { font-size: min(44vh, 10.5vw); }
+    .from .word, .detail { display: none; }
+    .none { font-size: min(44vh, 10vw); }
+  }
+  body.compact .wind { gap: min(14vh, 3vw); padding: 0 min(22vh, 4vw); justify-content: flex-start; }
+  body.compact .compass { height: 80vh; }
+  body.compact .ring { display: none; }
+  body.compact .arrow-size { transform: scale(1.7); transform-origin: 50px 50px; }
+  body.compact .numbers { flex-direction: row; align-items: baseline; gap: min(16vh, 3.5vw); }
+  body.compact .speed { font-size: min(50vh, 12vw); }
+  body.compact .speed .unit { font-size: 0.75em; }
+  body.compact .from { font-size: min(44vh, 10.5vw); }
+  body.compact .from .word, body.compact .detail { display: none; }
+  body.compact .none { font-size: min(44vh, 10vw); }
 </style>
 </head>
-<body>
+<body${compact ? ' class="compact"' : ''}>
   <div class="wind" id="wind">
     <div class="compass">
       <svg viewBox="0 0 100 100" aria-hidden="true">
-        <circle cx="50" cy="50" r="44" fill="none" stroke="${c.ring}" stroke-width="3"/>
-        ${[0, 90, 180, 270]
-          .map((d) => `<line x1="50" y1="6" x2="50" y2="${d === 0 ? 15 : 11}" stroke="${d === 0 ? c.tick : c.ring}" stroke-width="${d === 0 ? 3 : 2}" transform="rotate(${d} 50 50)"/>`)
+        <circle class="ring" cx="50" cy="50" r="44" fill="none" stroke="${c.ring}" stroke-width="3"/>
+        ${[90, 180, 270]
+          .map((d) => `<line class="ring" x1="50" y1="6" x2="50" y2="11" stroke="${c.ring}" stroke-width="2" transform="rotate(${d} 50 50)"/>`)
           .join('')}
-        <text x="50" y="25" text-anchor="middle" font-size="9" font-weight="700" fill="${c.muted}">N</text>
-        <g id="arrow" style="display:none">
+        <text class="ring" x="50" y="17" text-anchor="middle" font-size="11" font-weight="800" fill="${c.tick}">N</text>
+        <g class="arrow-size"><g id="arrow" style="display:none">
           <line x1="50" y1="68" x2="50" y2="40" stroke="${c.arrow}" stroke-width="7" stroke-linecap="round"/>
           <polygon points="50,26 37,44 63,44" fill="${c.arrow}"/>
-        </g>
+        </g></g>
       </svg>
     </div>
     <div class="numbers" id="numbers"><div class="none">No wind data</div></div>
@@ -89,14 +119,13 @@ function renderWindWidget({ theme = 'dark' } = {}) {
       const stale = Date.now() - s.t > data.staleAfterMs;
       box.classList.toggle('stale', stale);
       arrow.style.display = '';
-      // The arrow points downwind: the reading is where the wind comes FROM, so turn it round.
-      // Set as the SVG attribute, not a CSS transition: a transition is paused while the page is hidden (a background tab
-      // or an off-screen iframe), which left the arrow pointing the wrong way, and it would swing the long way round
-      // when the wind crosses north.
-      arrow.setAttribute('transform', 'rotate(' + ((s.dir + 180) % 360) + ' 50 50)');
+      // The arrow points to where the wind comes FROM - the reading's own direction. Set as the SVG attribute, not a CSS
+      // transition: a transition is paused while the page is hidden (a background tab or an off-screen iframe), which
+      // left the arrow pointing the wrong way, and it would swing the long way round when the wind crosses north.
+      arrow.setAttribute('transform', 'rotate(' + (s.dir % 360) + ' 50 50)');
       numbers.innerHTML =
         '<div class="speed">' + fmt(s.avg) + '<span class="unit">mph</span></div>' +
-        '<div class="from">from ' + Math.round(s.dir) + '° ' + compass(s.dir) + '</div>' +
+        '<div class="from"><span class="word">from</span>' + Math.round(s.dir) + '° ' + compass(s.dir) + '</div>' +
         '<div class="detail">gust ' + fmt(s.gust) + ' · lull ' + fmt(s.lull) + (stale ? ' · ' + ago(s.t) : '') + '</div>';
     }
     // Live: each reading is pushed the moment the base receives it. EventSource reconnects on its own after a dropped

@@ -1709,8 +1709,17 @@ embedding anywhere - a RegattaUp page, a club site, a screen on the committee bo
 <iframe src="http://<base-ip>:8092/wind" width="320" height="140" style="border:0"></iframe>
 ```
 
-It shows a compass with an arrow pointing downwind, the speed in mph, the direction the wind comes **from** (e.g.
-"from 225° SW", the way a race committee reads it and the same as RegattaUp's map) and the last minute's gust and lull.
+It shows a compass with an arrow pointing to where the wind comes **from**, the speed in mph, that direction (e.g.
+"from 225° SW", the way a race committee reads it) and the last minute's gust and lull. (RegattaUp's own map arrow points
+the other way, downwind.)
+
+In a short frame - 70 px tall or less, or any size with `?size=compact` - it becomes a single line like RegattaUp's
+wind pill: an arrow, the speed and the direction (`↙ 6.2 mph 225° SW`), no gust or lull:
+
+```html
+<iframe src="http://<base-ip>:8092/wind" width="150" height="28" style="border:0;border-radius:14px"></iframe>
+```
+
 It updates the moment each reading reaches the base - pushed over a Server-Sent Events stream, `GET /api/wind/stream`,
 falling back to polling `GET /api/wind` every 3 s where the stream can't be used - scales to the iframe's size, greys
 out with the reading's age once it is over 3 minutes old, and says "No wind data" until there is any. Add `?theme=light`
