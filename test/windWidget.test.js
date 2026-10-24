@@ -4,10 +4,11 @@ const http = require('http');
 const { renderWindWidget, windApiPayload, STALE_MS } = require('../src/windWidget');
 const { startAdminServer } = require('../src/adminServer');
 
-test('the API payload carries the newest sample, or null, and whether the base is listening', () => {
+test('the API payload carries the newest sample, the direction swing, and whether the base is listening', () => {
   const sample = { t: 1, dir: 200, avg: 6.5, gust: 8, lull: 5, station: 'ST-1', units: 'mph' };
-  assert.deepStrictEqual(windApiPayload(true, sample), { listening: true, sample, staleAfterMs: STALE_MS });
-  assert.deepStrictEqual(windApiPayload(false, undefined), { listening: false, sample: null, staleAfterMs: STALE_MS });
+  const swing = { from: 190, to: 215, width: 25 };
+  assert.deepStrictEqual(windApiPayload(true, sample, swing), { listening: true, sample, swing, staleAfterMs: STALE_MS });
+  assert.deepStrictEqual(windApiPayload(false, undefined), { listening: false, sample: null, swing: null, staleAfterMs: STALE_MS });
 });
 
 test('the arrow is turned to the reading\'s own direction - it points to where the wind comes from', () => {

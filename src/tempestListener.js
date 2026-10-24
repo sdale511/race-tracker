@@ -22,6 +22,8 @@ const { EventEmitter } = require('events');
 const MS_TO_MPH = 2.2369362920544;
 // The window a 3-second sample's gust and lull cover, as the station's own one-minute observation does.
 const GUST_WINDOW_MS = 60000;
+// The window the direction swing covers (see directionSwing).
+const SWING_WINDOW_MS = 600000;
 
 const round1 = (v) => Math.round(v * 10) / 10;
 const speedMph = (ms) => (Number.isFinite(ms) && ms >= 0 ? round1(ms * MS_TO_MPH) : null);
@@ -67,6 +69,27 @@ function windSampleFromObs(obs, t, station) {
 
 // The wind sample for a rapid_wind: its speed is the average, and gust and lull are the highest and lowest of
 // recentSpeeds (the last minute's 3-second speeds, this one included).
+// The smallest arc of the compass that contains every direction in dirs: { from, to, width } in degrees, going clockwise
+// from `from` to `to` (so wind wandering either side of north is 350 -> 15, width 25, not 15 -> 350 the long way round).
+// The arc is the circle minus the biggest gap between neighbouring directions. null with no directions.
+function directionRange(dirs) {
+  if (!dirs.length) return null;
+  const sorted = [...new Set(dirs.map((d) => ((d % 360) + 360) % 360))].sort((a, b) => a - b);
+  if (sorted.length === 1) return { from: sorted[0], to: sorted[0], width: 0 };
+  let gapAfter = sorted.length - 1; // the gap from the last direction round to the first, across north
+  let biggest = sorted[0] + 360 - sorted[sorted.length - 1];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const gap = sorted[i + 1] - sorted[i];
+    if (gap > biggest) {
+      biggest = gap;
+      gapAfter = i;
+    }
+  }
+  const from = sorted[(gapAfter + 1) % sorted.length];
+  const to = sorted[gapAfter];
+  return { from, to, width: 360 - biggest };
+}
+
 function windSampleFromRapid(rapid, t, station, recentSpeeds = [rapid && rapid.speed]) {
   if (!rapid || rapid.dir == null || rapid.speed == null) return null;
   return { t, dir: rapid.dir, avg: rapid.speed, gust: Math.max(...recentSpeeds), lull: Math.min(...recentSpeeds), station, units: 'mph' };
@@ -91,6 +114,7 @@ class TempestListener extends EventEmitter {
     this.lastRapid = null; // { ...parsed, at }
     this.lastSample = null; // the newest sample emitted, of either kind
     this.recentRapid = new Map(); // station serial -> [{ at, speed }] of its 3-second speeds in the last GUST_WINDOW_MS
+    this.recentDirs = new Map(); // station serial -> [{ at, dir }] of its sample directions in the last SWING_WINDOW_MS
   }
 
   // Adds a 3-second speed to the station's window, drops readings older than a minute, and returns the window's speeds.
@@ -136,8 +160,21 @@ class TempestListener extends EventEmitter {
     if (sample) {
       this.samples++;
       this.lastSample = sample;
+      this.lastSampleSerial = msg.serial || '';
+      const dirs = (this.recentDirs.get(this.lastSampleSerial) || []).filter((r) => at - r.at < SWING_WINDOW_MS);
+      dirs.push({ at, dir: sample.dir });
+      this.recentDirs.set(this.lastSampleSerial, dirs);
       this.emit('sample', sample);
     }
+  }
+
+  // How far the wind direction has swung over the last 10 minutes, for the station of the newest sample: the smallest arc
+  // holding every direction it reported in that time (see directionRange), or null before any sample.
+  directionSwing() {
+    if (!this.lastSample) return null;
+    const now = this.now();
+    const dirs = (this.recentDirs.get(this.lastSampleSerial) || []).filter((r) => now - r.at < SWING_WINDOW_MS);
+    return directionRange(dirs.map((r) => r.dir));
   }
 
   status() {
@@ -161,4 +198,4 @@ class TempestListener extends EventEmitter {
   }
 }
 
-module.exports = { TempestListener, parseTempestMessage, windSampleFromObs, windSampleFromRapid, MS_TO_MPH, GUST_WINDOW_MS };
+module.exports = { TempestListener, parseTempestMessage, windSampleFromObs, windSampleFromRapid, directionRange, MS_TO_MPH, GUST_WINDOW_MS, SWING_WINDOW_MS };

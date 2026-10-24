@@ -1709,10 +1709,15 @@ embedding anywhere - a RegattaUp page, a club site, a screen on the committee bo
 <iframe src="http://<base-ip>:8092/wind" width="320" height="140" style="border:0"></iframe>
 ```
 
-It shows a blue compass ring with a blue arrow pointing to where the wind comes **from**, the speed in mph, that direction (e.g.
-`225° SW`, the way a race committee reads it - shown as large as the speed) and the last minute's range, lull to gust (`4.8 – 7.9`). All text is plain white (black with
-`?theme=light`). (RegattaUp's own map arrow points
-the other way, downwind.)
+It shows a blue compass ring with a blue arrow pointing to where the wind comes **from**, and in plain white (black with
+`?theme=light`):
+- the speed in mph, with the last minute's range under it, lull to gust (`4.8 – 7.9`);
+- the direction it comes from, as large as the speed (`225° SW`, the way a race committee reads it), with how far it has
+  swung over the last 10 minutes under it (`205° – 245°`). The swing is also drawn as a shaded band just inside the ring,
+  either side of the arrow. The base works it out (the smallest arc holding every direction heard in the last 10 minutes,
+  so wind wandering either side of north reads `350° – 15°`), so a widget opened mid-race shows it at once.
+
+(RegattaUp's own map arrow points the other way, downwind.)
 
 In a short frame - 70 px tall or less, or any size with `?size=compact` - it becomes a single line like RegattaUp's
 wind pill: an arrow, the speed and the direction (`↙ 6.2 mph 225° SW`), no gust or lull:
@@ -1724,7 +1729,7 @@ wind pill: an arrow, the speed and the direction (`↙ 6.2 mph 225° SW`), no gu
 It updates the moment each reading reaches the base - pushed over a Server-Sent Events stream, `GET /api/wind/stream`,
 falling back to polling `GET /api/wind` every 3 s where the stream can't be used - scales to the iframe's size, greys
 out with the reading's age once it is over 3 minutes old, and says "No wind data" until there is any. Add `?theme=light`
-for a light background. Both endpoints carry `{listening, sample, staleAfterMs}` and are readable from any origin, so
+for a light background. Both endpoints carry `{listening, sample, swing, staleAfterMs}` and are readable from any origin, so
 another page can show the live wind too (`new EventSource('http://<base-ip>:8092/api/wind/stream')`).
 
 **Simulated wind.** A `SIMULATE=1` base also runs a pretend Tempest (`src/simTempest.js`) that sends the base's own

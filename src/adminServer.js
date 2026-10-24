@@ -2388,7 +2388,8 @@ function startAdminServer({
   port,
   getStats,
   getPositions,
-  // () => { listening, sample }: whether the Tempest listener is on and its newest wind sample (see windWidget.js) -
+  // () => { listening, sample, swing }: whether the Tempest listener is on, its newest wind sample and the last 10 minutes'
+  // direction swing (see windWidget.js) -
   // cheap, no Redis, since the /wind widget polls it every 3 s.
   getWind,
   // (fn) => unsubscribe: calls fn with each wind sample as it arrives - the live stream behind /api/wind/stream.
@@ -2704,8 +2705,8 @@ function startAdminServer({
         'Access-Control-Allow-Origin': '*',
       });
       const send = () => {
-        const { listening, sample } = getWind ? getWind() : { listening: false, sample: null };
-        res.write(`data: ${JSON.stringify(windApiPayload(listening, sample))}\n\n`);
+        const { listening, sample, swing } = getWind ? getWind() : { listening: false, sample: null };
+        res.write(`data: ${JSON.stringify(windApiPayload(listening, sample, swing))}\n\n`);
       };
       send();
       const unsubscribe = subscribeWind ? subscribeWind(send) : () => {};
@@ -2717,9 +2718,9 @@ function startAdminServer({
       return;
     }
     if (req.url === '/api/wind') {
-      const { listening, sample } = getWind ? getWind() : { listening: false, sample: null };
+      const { listening, sample, swing } = getWind ? getWind() : { listening: false, sample: null };
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify(windApiPayload(listening, sample)));
+      res.end(JSON.stringify(windApiPayload(listening, sample, swing)));
       return;
     }
 

@@ -4,8 +4,9 @@
 //   <iframe src="http://<base>:8092/wind" width="320" height="140" style="border:0"></iframe>
 //
 // It shows the newest Tempest wind sample (see tempestListener.js): a blue compass ring with a blue arrow pointing to where
-// the wind is coming FROM, and the numbers, all in plain white: speed, that direction (the way a race committee reads it),
-// and the last minute's range, lull - gust. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
+// the wind is coming FROM, and the numbers, all in plain white: speed with the last minute's range under it (lull - gust),
+// and the direction (the way a race committee reads it) with its swing over the last 10 minutes under it - also drawn as
+// a band on the compass ring. mph only for now. (RegattaUp's own map arrow points the other way, downwind.)
 //
 // In a short iframe (70 px tall or less), or with ?size=compact, it becomes one line like RegattaUp's wind pill - a small
 // arrow, the speed and the direction:
@@ -18,9 +19,10 @@
 
 const STALE_MS = 180000;
 
-// The JSON behind the widget: the newest sample (or null) plus whether the base is listening at all.
-function windApiPayload(listening, sample) {
-  return { listening, sample: sample || null, staleAfterMs: STALE_MS };
+// The JSON behind the widget: the newest sample (or null), the last 10 minutes' direction swing ({from, to, width} or
+// null - see tempestListener.js's directionSwing) and whether the base is listening at all.
+function windApiPayload(listening, sample, swing = null) {
+  return { listening, sample: sample || null, swing: swing || null, staleAfterMs: STALE_MS };
 }
 
 function renderWindWidget({ theme = 'dark', compact = false } = {}) {
@@ -56,6 +58,8 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   /* The last minute's lull - gust, low to high. */
   .detail { font-size: min(12vh, 6vw); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .none { font-size: min(11vh, 6vw); }
+  /* The direction's swing over the last 10 minutes, under the direction - the same style as the speed's range. */
+  .swing { font-size: min(12vh, 6vw); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* Compact: one line - an arrow without the compass ring, the speed and the direction - sized from the frame's height,
      capped by its width. */
   @media (max-height: 70px) {
@@ -67,7 +71,7 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
     .speed { font-size: min(50vh, 10vw); }
     .speed .unit { font-size: 0.75em; }
     .dir { font-size: min(50vh, 10vw); }
-    .detail { display: none; }
+    .detail, .swing { display: none; }
     .none { font-size: min(44vh, 10vw); }
   }
   body.compact .wind { gap: min(14vh, 3vw); padding: 0 min(22vh, 4vw); justify-content: flex-start; }
@@ -78,7 +82,7 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
   body.compact .speed { font-size: min(50vh, 10vw); }
   body.compact .speed .unit { font-size: 0.75em; }
   body.compact .dir { font-size: min(50vh, 10vw); }
-  body.compact .detail { display: none; }
+  body.compact .detail, body.compact .swing { display: none; }
   body.compact .none { font-size: min(44vh, 10vw); }
 </style>
 </head>
@@ -91,6 +95,7 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
           .map((d) => `<line class="ring" x1="50" y1="6" x2="50" y2="11" stroke="${c.arrow}" stroke-width="2" transform="rotate(${d} 50 50)"/>`)
           .join('')}
         <text class="ring" x="50" y="17" text-anchor="middle" font-size="11" font-weight="800" fill="${c.fg}">N</text>
+        <path id="swing" class="ring" d="" fill="none" stroke="${c.arrow}" stroke-width="8" stroke-opacity="0.6" style="display:none"/>
         <g class="arrow-size"><g id="arrow" style="display:none">
           <line x1="50" y1="68" x2="50" y2="40" stroke="${c.arrow}" stroke-width="7" stroke-linecap="round"/>
           <polygon points="50,26 37,44 63,44" fill="${c.arrow}"/>
@@ -107,13 +112,24 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
       return s < 5 ? 'just now' : s < 60 ? s + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago' : Math.floor(s / 3600) + 'h ago';
     };
     const fmt = (v) => (v == null ? '—' : Number(v).toFixed(1));
+    // The swing band runs on its own track just inside the ring (radius 37). A point on that track at a compass bearing,
+    // and the clockwise arc from 'from' spanning 'width' degrees.
+    const SWING_R = 37;
+    const ringPoint = (deg) => {
+      const r = (deg * Math.PI) / 180;
+      return (50 + SWING_R * Math.sin(r)).toFixed(2) + ' ' + (50 - SWING_R * Math.cos(r)).toFixed(2);
+    };
+    const arcPath = (from, width) =>
+      'M ' + ringPoint(from) + ' A ' + SWING_R + ' ' + SWING_R + ' 0 ' + (width > 180 ? 1 : 0) + ' 1 ' + ringPoint(from + width);
     function render(data) {
       const box = document.getElementById('wind');
       const numbers = document.getElementById('numbers');
       const arrow = document.getElementById('arrow');
       const s = data && data.sample;
+      const swing = document.getElementById('swing');
       if (!s || s.dir == null || s.avg == null) {
         arrow.style.display = 'none';
+        swing.style.display = 'none';
         box.classList.remove('stale');
         numbers.innerHTML = '<div class="none">' + (data && !data.listening ? 'Wind not available' : 'No wind data') + '</div>';
         return;
@@ -125,10 +141,21 @@ function renderWindWidget({ theme = 'dark', compact = false } = {}) {
       // transition: a transition is paused while the page is hidden (a background tab or an off-screen iframe), which
       // left the arrow pointing the wrong way, and it would swing the long way round when the wind crosses north.
       arrow.setAttribute('transform', 'rotate(' + (s.dir % 360) + ' 50 50)');
+      // The last 10 minutes' direction swing: a band along the ring from 'from' clockwise to 'to' (a full circle once the
+      // wind has been all the way round), and the same as numbers under the direction.
+      const sw = data.swing;
+      if (sw && sw.width > 0) {
+        swing.style.display = '';
+        swing.setAttribute('d', sw.width >= 359 ? 'M 50 13 A 37 37 0 1 1 49.99 13' : arcPath(sw.from, sw.width));
+      } else {
+        swing.style.display = 'none';
+      }
       numbers.innerHTML =
         '<div class="speed">' + fmt(s.avg) + '<span class="unit">mph</span></div>' +
+        '<div class="detail">' + fmt(s.lull) + ' – ' + fmt(s.gust) + '</div>' +
         '<div class="dir">' + Math.round(s.dir) + '°<span class="unit">' + compass(s.dir) + '</span></div>' +
-        '<div class="detail">' + fmt(s.lull) + ' – ' + fmt(s.gust) + (stale ? ' · ' + ago(s.t) : '') + '</div>';
+        (sw && sw.width > 0 ? '<div class="swing">' + Math.round(sw.from) + '° – ' + Math.round(sw.to) + '°</div>' : '') +
+        (stale ? '<div class="detail">' + ago(s.t) + '</div>' : '');
     }
     // Live: each reading is pushed the moment the base receives it. EventSource reconnects on its own after a dropped
     // connection; if the stream can't be used at all (no EventSource, or it fails repeatedly) poll instead.

@@ -2858,7 +2858,7 @@ function main() {
     port: config.admin.port,
     getStats: getFullStats,
     getPositions: getBoatPositions,
-    getWind: () => ({ listening: !!tempest, sample: tempest ? tempest.lastSample : null }),
+    getWind: () => ({ listening: !!tempest, sample: tempest ? tempest.lastSample : null, swing: tempest ? tempest.directionSwing() : null }),
     subscribeWind,
     getCourseMarks,
     setMark: setMarkLocation,

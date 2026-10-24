@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { TempestListener, parseTempestMessage, windSampleFromObs } = require('../src/tempestListener');
+const { TempestListener, parseTempestMessage, windSampleFromObs, directionRange } = require('../src/tempestListener');
 const { RedisStore } = require('../src/redisStore');
 
 // The shapes the Tempest hub broadcasts (WeatherFlow UDP API v171): wind in m/s, direction in degrees.
@@ -114,4 +114,23 @@ test('recordWind adds the sample to the regatta\'s wind key and keeps the rollin
     ['zrem', 'regattas:r1:wind', '-inf', 200_000_000 - 172800 * 1000],
     ['expire', 'regattas:r1:wind', 172800],
   ]);
+});
+
+test('the direction range is the smallest arc holding every direction, across north too', () => {
+  assert.deepStrictEqual(directionRange([200, 240, 215]), { from: 200, to: 240, width: 40 });
+  assert.deepStrictEqual(directionRange([350, 5, 15, 355]), { from: 350, to: 15, width: 25 });
+  assert.deepStrictEqual(directionRange([10, 10]), { from: 10, to: 10, width: 0 });
+  assert.strictEqual(directionRange([]), null);
+});
+
+test('the swing covers the last 10 minutes of the newest station\'s readings', () => {
+  let t = 0;
+  const listener = new TempestListener({ now: () => t });
+  assert.strictEqual(listener.directionSwing(), null);
+  t = 0; listener.handleMessage(rapidWind(3, 300));
+  t = 400000; listener.handleMessage(rapidWind(3, 340));
+  t = 500000; listener.handleMessage(rapidWind(3, 10));
+  assert.deepStrictEqual(listener.directionSwing(), { from: 300, to: 10, width: 70 });
+  t = 650000; // the 300 reading is now over 10 minutes old
+  assert.deepStrictEqual(listener.directionSwing(), { from: 340, to: 10, width: 30 });
 });
