@@ -48,10 +48,9 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
 //   - `regattas:<id>:boats:last` - a hash of each boat's newest fix, for
 //     "where is every boat now" in one read.
 //
-// The track used to be called `regattas:<id>:all:track`, and there used to be
-// a per-boat copy as well (`regattas:<id>:boat:<boatId>:track`). The base
-// writes neither any more; clearBoatData still deletes any left from before.
-// (RegattaUp also reads the old track name until the live key is renamed.)
+// (The track used to be called `regattas:<id>:all:track`, and there used to
+// be a per-boat copy, `regattas:<id>:boat:<boatId>:track`; neither exists any
+// more.)
 //
 // The track is scored by the fix's own GPS timestamp (ms since epoch) rather
 // than when the base station happened to receive it, so a track reflects
@@ -644,8 +643,7 @@ class RedisStore {
   }
 
   // Deletes every boat-related key for the CURRENTLY SELECTED regatta only
-  // (tracks, the known-boats set, and start slot assignments, plus any
-  // per-boat track keys left from before the base stopped writing them) - deliberately
+  // (the track, boats:last, the known-boats set, and start slot assignments) - deliberately
   // leaves the course marks untouched, so the same course can keep being
   // raced by a fresh fleet without recomputing/republishing marks, and
   // deliberately leaves every OTHER regatta's own namespace completely
@@ -654,11 +652,8 @@ class RedisStore {
   async clearBoatData() {
     await this.ready;
     const prefix = this._prefix();
-    const boatIds = await this.client.smembers(`${prefix}boats:known`);
     const keys = [
-      ...boatIds.map((id) => `${prefix}boat:${id}:track`),
       `${prefix}track`,
-      `${prefix}all:track`, // the track's old name
       `${prefix}boats:known`,
       `${prefix}boats:last`,
       `${prefix}boats:start_slots`,

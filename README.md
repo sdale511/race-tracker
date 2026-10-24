@@ -1966,7 +1966,7 @@ is `none` for anything recorded with no regatta selected.
 | `regattas:<id>:marks:index` | Set of the mark names above, kept with every mark write and delete (and filled in from the marks already there at startup), so RegattaUp's `getRaceTracks` reads each mark by name instead of scanning the whole keyspace on every poll |
 | `regattas:<id>:course:pin_boundary_enabled` | On/off flag; when on, also publishes `mark:pinBoundary` (computed) for RegattaUp's generic scan |
 | `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
-| `regattas:<id>:track` | Sorted set, every boat's fixes for the regatta, scored by fix timestamp - what RegattaUp's map and archives read. `getTrack(fromMs, toMs, regattaId)`. Formerly `regattas:<id>:all:track`; RegattaUp reads both names (and merges them) until the old key is renamed with `RENAME regattas:<id>:all:track regattas:<id>:track` |
+| `regattas:<id>:track` | Sorted set, every boat's fixes for the regatta, scored by fix timestamp - what RegattaUp's map and archives read. `getTrack(fromMs, toMs, regattaId)`. Formerly `regattas:<id>:all:track` |
 | `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position. Expires with the track |
 | `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed at most every 10 s per boat (not on every fix), so it refills within 10 s if cleared. `knownBoatIds()` |
 | `regattas:<id>:boats:start_slots` / `:start_slot_counter` | Assigned start-line slots. `getOrAssignStartSlot` |
@@ -1974,8 +1974,7 @@ is `none` for anything recorded with no regatta selected.
 **Memory.** A stored fix costs roughly 230 bytes in a sorted set. The base used to keep a second copy of every fix in a
 per-boat key (`regattas:<id>:boat:<boatId>:track`), which doubled what Redis held (about 100 MB for a 30-boat, 30-minute
 race). Nothing read those keys any more - RegattaUp gets the whole race from the track and each boat's last position from
-`boats:last` - so the base no longer writes them; clearing boat data still deletes any left from before, and otherwise they
-expire on their own. RegattaUp's `generateRaceTrackArchive` removes a race's fixes from the track once the archive is
+`boats:last` - so neither the base nor RegattaUp writes them any more. RegattaUp's `generateRaceTrackArchive` removes a race's fixes from the track once the archive is
 saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
 `REDIS_TRACK_RETENTION_HOURS` (48) is a rolling window: once a minute the base drops fixes older than that from the track and pushes its (and `boats:last`'s) expiry out again, so the key holds the last 48 hours of fixes and never vanishes in one go (an expiry set only once, on a key's first write, deleted every race's fixes together 48 h after the first fix of all). The Redis memory card is on the Data page.
 
