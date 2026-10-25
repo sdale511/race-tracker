@@ -914,15 +914,18 @@ the table's version and when it was last sent, and how the base's own frames are
 
 **Sending in the slot.** With the bursts heard, a boat holds its fixes and, just after its slot opens each
 cycle, sends everything gathered in as few, full frames as it can (up to 8 fixes = one 83-byte delta frame),
-instead of sending a batch whenever it happens to fill. A cycle's fixes are capped at `TX_SLOT_MAX_HZ` (default 8)
+instead of sending a batch whenever it happens to fill. A cycle's fixes are capped at `TX_SLOT_MAX_HZ` (default 4)
 per second over the cycle **and at what the slot can carry**: a 45 ms slot passes three 83-byte frames, and one is
-kept in reserve (`TX_SLOT_RESERVE_FRAMES`, default 1) for the extra frames a GPS jump or gap causes. That is 16 fixes
-per cycle - **8 Hz at the default 2 s correction interval** (a 35 ms slot passes two frames, so 8 fixes per cycle:
-8 Hz at 1 s, 4 Hz at 2 s). The fixes arrive in one burst per cycle, so the live map moves in 2 s steps. Fixes beyond the cap are thinned to keep the
+kept in reserve (`TX_SLOT_RESERVE_FRAMES`, default 1) for the extra frames a GPS jump or gap causes - room for 16 fixes
+per cycle. **The default 4 Hz is 8 fixes per 2 s cycle, one frame**: the legs between the marks run at 4 fixes a second
+(half the fixes over the radio, in Redis and to the live map), the turn-aware thinning below keeps their tacks and gybes,
+and the full-rate zone (below) covers the roundings and the finish (the start crossing is sent by `eventBoost.js`). `TX_SLOT_MAX_HZ=8` (the old default) sends
+16 fixes per cycle on the legs too (a 35 ms slot passes two frames, so 8 fixes per cycle: 8 Hz at 1 s, 4 Hz at 2 s). The fixes arrive in one burst per cycle, so the live map moves in 2 s steps. Fixes beyond the cap are thinned to keep the
 shape of the track: the fix that lies closest to the line between its neighbours is dropped first, so straight legs
 lose the most and a turn (a mark rounding, a tack, a gybe) keeps its fixes; among equals the gaps stay even, no
 kept fix is more than 480 ms after the one before it, and the newest is always kept. They stay on the SD card.
-**Near a mark the cap is lifted:** within `TX_SLOT_MARK_ZONE_M` (default 80 m) of a windward or leeward mark, a cycle
+**Near a mark or the finish line the cap is lifted:** within `TX_SLOT_MARK_ZONE_M` (default 80 m) of a windward or
+leeward mark or the finish line (committeeFinish - finish), a cycle
 uses the whole slot (no reserve, no `TX_SLOT_MAX_HZ` cap) and the fixes in the zone are the last to be thinned, so
 the base gets every fix of a mark rounding (the rounding check needs about 100 degrees of accumulated turn inside the
 50 m radius, and sparse fixes there under-measure it). A boat is inside the zone for a cycle or two, so the spare frame

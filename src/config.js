@@ -220,7 +220,7 @@ module.exports = {
     // shared RF channel - no per-boat host/address to configure.
     port: parseInt(process.env.SIM_PORT || '41234', 10),
     // Matches the rover profile's 10 Hz (ubx_config_set.py sets the real receiver's measurement rate to 100 ms), so a simulated boat
-    // exercises the same radio path as a real one: the boat sends at most TX_SLOT_MAX_HZ (8) of those over the air, thinning
+    // exercises the same radio path as a real one: the boat sends at most TX_SLOT_MAX_HZ (4) of those over the air, thinning
     // around turns, and logs all of them. A lower rate (2 Hz, the old default) never fills a frame or reaches the thinning.
     gpsHz: parseFloat(process.env.SIM_GPS_HZ || '10'),
     // Landsailers, unlike water boats, go much faster downwind than up -
@@ -508,10 +508,12 @@ module.exports = {
       // base's value is broadcast; a boat uses its own until it hears a table.
       joinSlots: Math.max(0, parseInt(process.env.TX_SLOT_JOIN || '2', 10) || 0),
       // Boat only, slot mode: the most fixes per second a boat sends in its slot (the rest stay on its SD
-      // card). 8 over the default 2 s cycle is 16 fixes, two delta frames (83 bytes), which the 45 ms slot
-      // passes with one frame in reserve; with TX_DELTA=0 use 4 (one 84-byte batch frame). 0 = no cap. Scales with the
-      // cycle (8 Hz over 2 s is 16 fixes, and so is 16 Hz over 1 s).
-      maxHz: Math.max(0, parseFloat(process.env.TX_SLOT_MAX_HZ || '8') || 0),
+      // card), outside the full-rate zone around the marks and the finish line (markZoneM below), where
+      // there is no cap. 4 over the default 2 s cycle is 8 fixes, one delta frame (83 bytes), so the 45 ms slot has
+      // two frames spare; 8 (the old default) is two frames. Halves the fixes on the legs - radio, Redis and the live
+      // map's data - while the turn-aware thinning keeps tacks and gybes. With TX_DELTA=0 use 4 (one 84-byte batch
+      // frame). 0 = no cap. Scales with the cycle (4 Hz over 2 s is 8 fixes, and so is 8 Hz over 1 s).
+      maxHz: Math.max(0, parseFloat(process.env.TX_SLOT_MAX_HZ || '4') || 0),
       // Base only: the RTK correction interval the base's GPS is set to (see ubx_config_set.py
       // --rtcm-interval). With TX_SLOT_COUNT unset the base works the slot count out from it once, at
       // startup: a 2 s interval has room for about twice as many slots as a 1 s one.
@@ -540,8 +542,9 @@ module.exports = {
       // Boat: frames per slot kept free when capping a cycle's fixes to what the slot can carry (see boatAgent.js).
       // 1 leaves a spare frame for a cycle that needs more than its fix count suggests; 0 uses the whole slot.
       reserveFrames: Math.max(0, parseInt(process.env.TX_SLOT_RESERVE_FRAMES || '1', 10) || 0),
-      // Boat: within this many metres of a windward/leeward mark the whole slot is used (no reserve, no TX_SLOT_MAX_HZ cap)
-      // and fixes there are the last to be thinned, so the base sees every mark rounding. 0 turns it off.
+      // Boat: within this many metres of a windward/leeward mark or the finish line the whole slot is used (no reserve,
+      // no TX_SLOT_MAX_HZ cap) and fixes there are the last to be thinned, so the base sees every mark rounding and the
+      // finish at full rate. 0 turns it off.
       markZoneM: Math.max(0, parseFloat(process.env.TX_SLOT_MARK_ZONE_M || '80') || 0),
       // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
       // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing
