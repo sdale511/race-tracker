@@ -699,7 +699,7 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   received that straddle a line - one fix on each side is all it needs - so the boat makes sure that pair is sent:
   - it watches its own full-rate (10 Hz) fixes for the same crossings (`eventBoost.js`); when it sees one it sends the two fixes just
     before it, which its gates had dropped, and every fix for the next 0.6 s, whatever state it is in (parked, no slot, backing off);
-  - near a windward or leeward mark or the finish line (`TX_SLOT_MARK_ZONE_M`, 80 m) it uses its whole slot, nothing is thinned
+  - near a windward or leeward mark, or near the finish line heading upwind (`TX_SLOT_MARK_ZONE_M`, 80 m), it uses its whole slot, nothing is thinned
     away, and a boat under way is not paced (the mark roundings need several fixes inside the zone, so they rely on this);
   - a boat under way without a slot reports every 2 to 4 s, not every 15 s;
   - the distance gate counts a fix as reported only when its frame was actually written to the radio: if the scheduler drops it (queue
@@ -925,7 +925,8 @@ shape of the track: the fix that lies closest to the line between its neighbours
 lose the most and a turn (a mark rounding, a tack, a gybe) keeps its fixes; among equals the gaps stay even, no
 kept fix is more than 480 ms after the one before it, and the newest is always kept. They stay on the SD card.
 **Near a mark or the finish line the cap is lifted:** within `TX_SLOT_MARK_ZONE_M` (default 80 m) of a windward or
-leeward mark or the finish line (committeeFinish - finish), a cycle
+leeward mark or the finish line (committeeFinish - finish) - the finish line only for a boat heading upwind, the way
+a lap is finished, not one coming down the run past it - a cycle
 uses the whole slot (no reserve, no `TX_SLOT_MAX_HZ` cap) and the fixes in the zone are the last to be thinned, so
 the base gets every fix of a mark rounding (the rounding check needs about 100 degrees of accumulated turn inside the
 50 m radius, and sparse fixes there under-measure it). A boat is inside the zone for a cycle or two, so the spare frame

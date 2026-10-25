@@ -18,7 +18,7 @@ const { DistanceGate } = require('./distanceGate');
 const { RtcmWatchdog } = require('./rtcmWatchdog');
 const { EventBoost } = require('./eventBoost');
 const { orange } = require('./consoleColor');
-const { FinishApproachWatcher } = require('./finishApproach');
+const { FinishApproachWatcher, headingUpwind } = require('./finishApproach');
 const { startUploadClient, countPending } = require('./uploadClient');
 const { startRoverAdminServer } = require('./roverAdminServer');
 const { RoverSleep } = require('./roverSleep');
@@ -938,13 +938,15 @@ function queueFixForTx(pvt) {
 }
 
 // True within config.txGate.slot.markZoneM of a windward/leeward mark or of the finish line, where the base needs every fix to see a
-// rounding or a crossing: the whole slot is used and nothing is thinned away there.
+// rounding or a crossing: the whole slot is used and nothing is thinned away there. Near the finish line only for a boat heading
+// upwind - the way a lap is finished (finishApproach.js's headingUpwind): one coming down the run past the line has nothing to cross there, and
+// any crossing it does make the wrong way is sent by eventBoost.
 function isNearRoundingMark(fix) {
   const zone = config.txGate.slot.markZoneM;
   if (!zone || !currentMarks) return false;
   if (ROUNDING_MARKS.some((name) => currentMarks[name] && distanceMeters(currentMarks[name], fix) <= zone)) return true;
   const { committeeFinish, finish } = currentMarks;
-  return !!(committeeFinish && finish && distanceToSegmentM(fix, committeeFinish, finish) <= zone);
+  return !!(committeeFinish && finish && distanceToSegmentM(fix, committeeFinish, finish) <= zone && headingUpwind(fix, committeeFinish, finish));
 }
 const ROUNDING_MARKS = ['windwardGreen', 'windwardBlack', 'leewardGreen', 'leewardBlack'];
 

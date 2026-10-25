@@ -544,7 +544,8 @@ module.exports = {
       reserveFrames: Math.max(0, parseInt(process.env.TX_SLOT_RESERVE_FRAMES || '1', 10) || 0),
       // Boat: within this many metres of a windward/leeward mark or the finish line the whole slot is used (no reserve,
       // no TX_SLOT_MAX_HZ cap) and fixes there are the last to be thinned, so the base sees every mark rounding and the
-      // finish at full rate. 0 turns it off.
+      // finish at full rate. The finish line counts only for a boat heading upwind (finishApproach.js's headingUpwind), not
+      // one running down past it. 0 turns it off.
       markZoneM: Math.max(0, parseFloat(process.env.TX_SLOT_MARK_ZONE_M || '80') || 0),
       // Boats inside the on-grid zone (the area behind the start line) are "parked": they take no slot and
       // report in the shared join slots at most once every parkedReportS seconds (+-25%), so a fleet queueing

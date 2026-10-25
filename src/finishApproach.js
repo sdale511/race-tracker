@@ -56,4 +56,16 @@ class FinishApproachWatcher {
   }
 }
 
-module.exports = { FinishApproachWatcher };
+// Whether a moving boat's heading has any upwind component across the finish line - for boatAgent.js's full-rate zone, which
+// covers the finish line only for a boat heading upwind (one coming down the run past the line has nothing to cross there).
+// Stateless, unlike the watcher above, as it is asked about any fix, not just the newest. Upwind is 90 degrees counter-clockwise
+// from committeeFinish -> finish, the same convention, so a beat on either tack counts and a run or a broad reach doesn't. A boat
+// too slow for its heading to mean anything (under minKn) doesn't count either.
+function headingUpwind(fix, committeeFinish, finish, minKn = 1) {
+  if (!((fix.gSpeedMmS / 1000) * 1.94384 >= minKn) || fix.headMotDeg == null) return false;
+  const v = toXY(committeeFinish.lat, committeeFinish.lon, finish.lat, finish.lon);
+  const h = (fix.headMotDeg * Math.PI) / 180;
+  return Math.sin(h) * -v.y + Math.cos(h) * v.x > 0; // heading (east, north) . upwind (-v.y, v.x)
+}
+
+module.exports = { FinishApproachWatcher, headingUpwind };

@@ -145,7 +145,7 @@ const sections = [
       { label: 'parkedRepeatS', desc: "Re-send a parked boat's first report after about this long; 0 = no repeat", value: config.txGate.slot.parkedRepeatS, envVar: 'TX_PARKED_REPEAT_S', unit: 's', roles: ['boat'] },
       { label: 'slotWidthMs', desc: 'Width of each time slot', value: config.txGate.slot.widthMs, envVar: 'TX_SLOT_MS', unit: 'ms', roles: ['boat'] },
       { label: 'maxHz', desc: 'Most fixes per second a boat sends on the legs (the rest stay on its SD card)', value: config.txGate.slot.maxHz, envVar: 'TX_SLOT_MAX_HZ', unit: 'Hz', note: '0 = no cap; no cap applies inside markZoneM', roles: ['boat'] },
-      { label: 'markZoneM', desc: 'Within this distance of a mark or the finish line a boat sends every fix', value: config.txGate.slot.markZoneM, envVar: 'TX_SLOT_MARK_ZONE_M', unit: 'm', note: '0 turns the full-rate zone off', roles: ['boat'] },
+      { label: 'markZoneM', desc: 'Within this distance of a mark, or of the finish line heading upwind, a boat sends every fix', value: config.txGate.slot.markZoneM, envVar: 'TX_SLOT_MARK_ZONE_M', unit: 'm', note: '0 turns the full-rate zone off', roles: ['boat'] },
     ],
   },
   {
