@@ -1690,7 +1690,7 @@ needs no internet, so wind is recorded at a venue with no connection, as long as
   minute - how the station works them out for its own one-minute observation) and each one-minute `obs_st` (with the
   station's own gust and lull). Speeds are converted from the station's m/s to mph (the units RegattaUp's map reads) and `t` is the
   time the base received it. Kept for the same rolling `REDIS_TRACK_RETENTION_HOURS` (48 h) as the track - about 1,260
-  samples an hour, roughly 7 MB for the full 48 h. Everything else the hub sends is ignored.
+  samples an hour: about 60,500 samples and 12 MB (about 196 bytes each in Redis) for the full 48 h. Everything else the hub sends is ignored.
 - Nothing is written while no regatta is selected (counted as "not written" instead).
 - The **Tempest weather station** card on the base's home page (Regatta & boats) shows the newest reading with its
   gust and lull, the station(s) heard and how many readings were written. It turns red when nothing has arrived
