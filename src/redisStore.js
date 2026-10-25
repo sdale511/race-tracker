@@ -125,7 +125,7 @@ class RedisStore {
   // see recordFix's own comment on why this is set once, not refreshed on
   // every write. `keepaliveIntervalMs` (default 60000) is how often an
   // idle-connection keepalive PING is sent - see its own comment below.
-  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, keepaliveIntervalMs = 60000 }) {
+  constructor({ url, connection, minMovementM = 5, trackRetentionHours = 48, trackMaxMb = 300, keepaliveIntervalMs = 60000 }) {
     // Fixed 3s retry backoff, matching the reconnect cadence used elsewhere
     // in this app (radioLink.js, boatAgent.js's GPS reopen) instead of
     // ioredis's default rapid-fire retry.
@@ -188,6 +188,8 @@ class RedisStore {
     }, keepaliveIntervalMs);
     this.minMovementM = minMovementM;
     this.trackRetentionSeconds = Math.round(trackRetentionHours * 3600);
+    // The most memory the track may use: past it the oldest fixes go first (see _capTrackSize). 0 = no cap.
+    this.trackMaxBytes = Math.round(trackMaxMb * 1024 * 1024);
     this.lastKnownAt = new Map(); // `${prefix}${boatId}` -> when the boat was last added to that regatta's boats:known
     this.lastWindowAt = new Map(); // track key -> when its rolling window was last applied
     // Fixes waiting for this tick's flush (see writeFix), and the promise that flush resolves.
@@ -358,7 +360,8 @@ class RedisStore {
   // once a minute this (1) drops the fixes older than the retention window and (2) pushes the key's expiry out again: it
   // holds the last trackRetentionHours of fixes and only expires that long after its last write. The first write of a key
   // does it at once, so a key never goes without an expiry. Best effort; a failure is retried at the next interval.
-  // boats:last and boats:known (alongKeys) get the same expiry, so they go with the track they summarise.
+  // boats:last and boats:known (alongKeys) get the same expiry, so they go with the track they summarise. The track's size
+  // is capped at the same time (_capTrackSize).
   _keepRollingWindow(trackKey, alongKeys = []) {
     const now = Date.now();
     if (now - (this.lastWindowAt.get(trackKey) || 0) < RedisStore.TRIM_EVERY_MS * 6) return; // once a minute
@@ -366,6 +369,30 @@ class RedisStore {
     this.client.zremrangebyscore(trackKey, '-inf', now - this.trackRetentionSeconds * 1000).catch(() => {});
     this.client.expire(trackKey, this.trackRetentionSeconds).catch(() => {});
     for (const key of alongKeys) this.client.expire(key, this.trackRetentionSeconds).catch(() => {});
+    this._capTrackSize(trackKey).catch(() => {});
+  }
+
+  // Keeps the track under trackMaxBytes by dropping its oldest fixes. A race's fixes are pruned when RegattaUp archives it,
+  // but practice has no race to end, and a big fleet sailing for hours (60-70 MB an hour for 30 boats) would otherwise fill
+  // Redis long before the 48 h window, and a full Redis evicts whole keys - the track with it. By size, not time, so one boat
+  // sailing all day keeps all of it. MEMORY USAGE estimates the key's size from a sample of members; where that command is
+  // not allowed, BYTES_PER_FIX stands in.
+  async _capTrackSize(trackKey) {
+    if (!(this.trackMaxBytes > 0)) return;
+    const count = await this.client.zcard(trackKey);
+    if (!count) return;
+    let bytesPerFix = RedisStore.BYTES_PER_FIX;
+    try {
+      const bytes = await this.client.memory('USAGE', trackKey);
+      if (bytes > 0) bytesPerFix = bytes / count;
+    } catch {
+      // MEMORY not allowed on this server - use the estimate
+    }
+    const keep = Math.floor(this.trackMaxBytes / bytesPerFix);
+    if (count <= keep) return;
+    // ranks are oldest first: drop everything below the newest `keep`
+    const removed = await this.client.zremrangebyrank(trackKey, 0, count - keep - 1);
+    console.log(`[redis] track over ${Math.round(this.trackMaxBytes / 1048576)} MB (REDIS_TRACK_MAX_MB): dropped its ${removed} oldest fixes`);
   }
 
   // Adds the boat to boats:known, which RegattaUp's getRaceTracks reads on every poll for its boat list: on the boat's first
@@ -733,5 +760,7 @@ class RedisStore {
 }
 
 RedisStore.TRIM_EVERY_MS = 10000;
+// A track member's memory when MEMORY USAGE can't say: about 100 bytes of JSON plus the sorted set's own overhead.
+RedisStore.BYTES_PER_FIX = 200;
 
 module.exports = { RedisStore, packFix, unpackFix };

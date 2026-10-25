@@ -888,6 +888,12 @@ module.exports = {
     // never vanishes all at once mid-race. 48h by default - covers
     // reviewing a race day into the next.
     trackRetentionHours: parseFloat(process.env.REDIS_TRACK_RETENTION_HOURS || '48'),
+    // The most memory a regatta's track may use: once a minute, past this the oldest fixes are dropped (see redisStore.js's
+    // _capTrackSize). A race's fixes are pruned when RegattaUp archives it, but practice has no race to end, and a 30-boat
+    // fleet sailing adds about 60-70 MB an hour - this keeps Redis from filling (it would evict the whole track). By size,
+    // not time, so a boat or two sailing all day keep everything. 300 leaves room on the 512 MB plan for the wind, the
+    // other keys and Redis's own overhead. 0 = no cap.
+    trackMaxMb: Math.max(0, parseFloat(process.env.REDIS_TRACK_MAX_MB || '300') || 0),
     // The admin dashboard's "Redis memory" card divides usedBytes by this to
     // show a percentage/ALERT status, the same way the disk-space card does
     // for the filesystem - but unlike disk space, Redis has no OS syscall to

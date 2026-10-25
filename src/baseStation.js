@@ -825,6 +825,7 @@ function main() {
     connection: config.redis.connection,
     minMovementM: config.redis.minMovementM,
     trackRetentionHours: config.redis.trackRetentionHours,
+    trackMaxMb: config.redis.trackMaxMb,
     keepaliveIntervalMs: config.redis.keepaliveIntervalMs,
   });
 

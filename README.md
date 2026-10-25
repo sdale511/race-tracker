@@ -2054,6 +2054,8 @@ race). Nothing read those keys any more - RegattaUp gets the whole race from the
 saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
 `REDIS_TRACK_RETENTION_HOURS` (48) is a rolling window: once a minute the base drops fixes older than that from the track and pushes its (and `boats:last`'s) expiry out again, so the key holds the last 48 hours of fixes and never vanishes in one go (an expiry set only once, on a key's first write, deleted every race's fixes together 48 h after the first fix of all). The Redis memory card is on the Data page.
 
+**Size cap.** `REDIS_TRACK_MAX_MB` (300) caps the track: once a minute, if it is over that, the base drops its oldest fixes until it fits. A race's fixes are pruned when RegattaUp archives the race, but practice mode has no race to end, and a 30-boat fleet sailing adds about 60-70 MB an hour - without a cap Redis would fill and evict the whole track. It goes by size, not time, so one or two boats sailing all day keep every fix, and a big fleet keeps its most recent few hours (300 MB is about 4-5 hours of 30 boats sailing). The size comes from Redis's `MEMORY USAGE` (an estimate of 200 bytes a fix where that command isn't allowed). 300 leaves room on the 512 MB plan for the wind, the other keys and Redis's own overhead; 0 turns the cap off. Dropped fixes stay on each boat's SD card.
+
 **Memory limit.** Redis Cloud doesn't report its own plan size, so the Redis memory card works out its percentage
 against `REDIS_MEMORY_LIMIT_MB` - 512 by default, the plan this app runs on (512 MB, 2,000 ops/sec). Set it to the
 plan's size if that changes.

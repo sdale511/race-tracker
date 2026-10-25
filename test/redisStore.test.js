@@ -139,6 +139,33 @@ test('the rolling window trims the track to the retention period and refreshes i
   assert.deepStrictEqual(calls.slice(1), [['expire', 'track', 172800], ['expire', 'last', 172800], ['expire', 'known', 172800]]);
 });
 
+test('past trackMaxBytes the track drops its oldest fixes, sized by MEMORY USAGE', async () => {
+  const calls = [];
+  const store = (memory) => Object.assign(Object.create(RedisStore.prototype), {
+    trackMaxBytes: 300 * 1024 * 1024,
+    client: {
+      zcard: () => Promise.resolve(2_000_000),
+      memory,
+      zremrangebyrank: (key, from, to) => { calls.push([key, from, to]); return Promise.resolve(to - from + 1); },
+    },
+  });
+  // 2 million fixes in 400 MB is 209.7 bytes each: 300 MB holds 1.5 million, so the oldest 500,000 go
+  await store(() => Promise.resolve(400 * 1024 * 1024))._capTrackSize('track');
+  assert.deepStrictEqual(calls, [['track', 0, 499_999]]);
+  // under the cap: nothing removed (one boat sailing all day keeps every fix)
+  calls.length = 0;
+  await store(() => Promise.resolve(250 * 1024 * 1024))._capTrackSize('track');
+  assert.deepStrictEqual(calls, []);
+  // MEMORY not allowed: 200 bytes a fix, so 300 MB holds 1,572,864
+  await store(() => Promise.reject(new Error('NOPERM')))._capTrackSize('track');
+  assert.deepStrictEqual(calls, [['track', 0, 2_000_000 - 1_572_864 - 1]]);
+});
+
+test('a track cap of 0 is off', async () => {
+  const store = Object.assign(Object.create(RedisStore.prototype), { trackMaxBytes: 0, client: { zcard: () => assert.fail('read the track') } });
+  await store._capTrackSize('track');
+});
+
 test('marks:index follows every mark write and delete, and getMarks indexes the marks already there', async () => {
   const calls = [];
   const store = Object.assign(Object.create(RedisStore.prototype), {
