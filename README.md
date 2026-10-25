@@ -2051,6 +2051,10 @@ race). Nothing read those keys any more - RegattaUp gets the whole race from the
 saved (`PRUNE_TRACKS_AFTER_ARCHIVE=0` keeps them).
 `REDIS_TRACK_RETENTION_HOURS` (48) is a rolling window: once a minute the base drops fixes older than that from the track and pushes its (and `boats:last`'s) expiry out again, so the key holds the last 48 hours of fixes and never vanishes in one go (an expiry set only once, on a key's first write, deleted every race's fixes together 48 h after the first fix of all). The Redis memory card is on the Data page.
 
+**Memory limit.** Redis Cloud doesn't report its own plan size, so the Redis memory card works out its percentage
+against `REDIS_MEMORY_LIMIT_MB` - 512 by default, the plan this app runs on (512 MB, 2,000 ops/sec). Set it to the
+plan's size if that changes.
+
 Each stored fix: the decoded frame (`boatId, lat, lon, speedKnots, headingDeg,
 gnssFixOk, carrSoln, numSV`, plus the fix time `t` so members stay unique) as a compact JSON member, with the fix's own GPS
 time as the sorted-set score (no arrival time is stored). If Redis is

@@ -892,10 +892,10 @@ module.exports = {
     // Cloud and similar) commonly won't even report its own configured
     // maxmemory via CONFIG GET (see redisStore.js's getMemoryInfo) - that
     // limit lives in the platform's own plan size, not a queryable Redis
-    // setting. Defaults to 250 - this app's own smallest realistic Redis
-    // Cloud plan size - so the card shows a real percentage out of the box;
-    // override with the actual plan size if it's not 250MB.
-    memoryLimitMb: parseFloat(process.env.REDIS_MEMORY_LIMIT_MB || '250'),
+    // setting. Defaults to 512 - the Redis Cloud plan this app runs on - so
+    // the card shows a real percentage out of the box; override with the
+    // actual plan size if it's not 512MB.
+    memoryLimitMb: parseFloat(process.env.REDIS_MEMORY_LIMIT_MB || '512'),
     // How often redisStore.js sends an idle-connection keepalive PING.
     // Without real traffic, a managed instance (Redis Cloud and similar -
     // see memoryLimitMb's own comment) or whatever network sits between
