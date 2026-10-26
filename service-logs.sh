@@ -7,30 +7,24 @@ set -euo pipefail
 # boat-logs.sh/base-logs.sh pair.
 #
 # Usage:
-#   ./service-logs.sh MODE [extra journalctl args...]
+#   ./service-logs.sh [MODE] [extra journalctl args...]
+#
+# MODE defaults to the one race-tracker service installed on this machine (service-mode.sh).
 #
 # Extra args pass straight through, e.g. `./service-logs.sh base -n 200` to
 # also show the last 200 lines before following.
 #
 # May need sudo depending on this machine's journal permissions - if you
-# get a permission error, retry as `sudo ./service-logs.sh MODE`.
+# get a permission error, retry as `sudo ./service-logs.sh`.
 
-MODE="${1:-}"
-shift || true
-# Same mode -> unit-name mapping as install-service.sh - see its own
-# comment on why this small case statement is duplicated per script rather
-# than sourced from one shared file.
-case "$MODE" in
-  boat)     SERVICE_NAME="boat-agent" ;;
-  base)     SERVICE_NAME="base-station" ;;
-  rtk)      SERVICE_NAME="rtk-station" ;;
-  basertk)  SERVICE_NAME="basertk-station" ;;
-  mark)     SERVICE_NAME="mark-station" ;;
-  *)
-    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
-    echo "usage: $0 MODE [extra journalctl args...]" >&2
-    exit 1
-    ;;
+# The first argument is the mode, unless it's left out and the journalctl args start straight away (-n 200)
+MODE=""
+case "${1:-}" in
+  -* | "") ;;
+  *) MODE="$1"; shift ;;
 esac
+# shellcheck source=service-mode.sh
+source "$(dirname "${BASH_SOURCE[0]}")/service-mode.sh"
+resolve_mode "$MODE" "$0 [MODE] [extra journalctl args...]"
 
 exec journalctl -u "$SERVICE_NAME" -f "$@"

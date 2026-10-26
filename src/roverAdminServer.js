@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, VERSION_BADGE_CSS } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, VERSION_BADGE_CSS } = require('./dashboardFormat');
 const { MARK_NAMES, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderConsoleLogPage } = require('./consoleLogPage');
@@ -285,7 +285,7 @@ function renderDashboard(s, power, witty, shutdownFromBase) {
 </style>
 </head>
 <body>
-  <h1>boat ${s.boatId} - rover admin${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}${s.sleep && s.sleep.state !== 'awake' ? ` &middot; <span style="color:#58a6ff;">${s.sleep.gps && s.sleep.gps.asleep ? 'RADIO + GPS ASLEEP' : 'RADIO ASLEEP'}</span>` : ''}${renderVersionBadge()}</h1>
+  <h1>boat ${s.boatId} - rover admin${s.markMode ? ' &middot; <span style="color:#e3b341;">MARK MODE</span>' : ''}${s.sleep && s.sleep.state !== 'awake' ? ` &middot; <span style="color:#58a6ff;">${s.sleep.gps && s.sleep.gps.asleep ? 'RADIO + GPS ASLEEP' : 'RADIO ASLEEP'}</span>` : ''}${renderMachineBadges()}</h1>
   ${renderTabs(roverTabs(!!(s.currentMarks || fix)), 'home')}
   <div class="subtitle">
     <strong style="color:#e6e9ef;">Boat ID ${s.boatId}</strong>

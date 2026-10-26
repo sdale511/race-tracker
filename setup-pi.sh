@@ -161,26 +161,15 @@ deps_stamp() {
   echo "$(sha256sum "$lock" | cut -d' ' -f1) node$(node_major)"
 }
 
-unit_for_mode() {
-  case "$1" in
-    boat) echo boat-agent ;;
-    base) echo base-station ;;
-    rtk) echo rtk-station ;;
-    basertk) echo basertk-station ;;
-    mark) echo mark-station ;;
-  esac
-}
+# unit_for_mode and installed_modes are shared with the service-*.sh scripts
+# shellcheck source=service-mode.sh
+source "$REPO_DIR/service-mode.sh"
 
 # The mode of the one installed race-tracker service, when there is exactly one.
 detect_mode() {
-  local m found=""
-  for m in $MODES; do
-    if [ -f "/etc/systemd/system/$(unit_for_mode "$m").service" ]; then
-      [ -n "$found" ] && return 1
-      found="$m"
-    fi
-  done
-  [ -n "$found" ] && echo "$found"
+  local found
+  found="$(installed_modes)"
+  [ -n "$found" ] && [[ "$found" != *" "* ]] && echo "$found"
 }
 
 boot_file() {

@@ -3,6 +3,7 @@
 // "2m ago" and "1.4 MB" mean the same thing, formatted the same way, on
 // whichever side you're looking at.
 
+const os = require('os');
 const { VERSION } = require('./version');
 
 // Human-readable "3m ago" / "2h 15m" style formatting - a dashboard is
@@ -135,11 +136,26 @@ function renderVersionBadge(v = VERSION) {
   const tip = v.commit ? `commit ${v.commit}${v.date ? `, ${v.date}` : ''}${v.dirty ? ' - with uncommitted changes' : ''}` : 'no git: package.json version';
   return `<span class="version-badge${v.dirty ? ' dirty' : ''}" title="${tip}">${v.label}${v.dirty ? ' + local changes' : ''}</span>`;
 }
+// The machine's hostname as a pill beside the title, before the version - which Pi this page is coming from, when several
+// are on the same network.
+function renderHostBadge(host = os.hostname()) {
+  const safe = String(host).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  return `<span class="host-badge" title="This machine's hostname">${safe}</span>`;
+}
+
+// Hostname then version, for a page title
+function renderMachineBadges() {
+  return renderHostBadge() + renderVersionBadge();
+}
+
 const VERSION_BADGE_CSS = `
   .version-badge { display: inline-block; vertical-align: middle; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
     border: 1px solid #30363d; background: #161b22; color: #8b94a3; font-size: 11px; font-weight: 600;
     font-variant-numeric: tabular-nums; letter-spacing: 0.02em; cursor: default; }
   .version-badge.dirty { border-color: #9e6a03; color: #e3b341; }
+  .host-badge { display: inline-block; vertical-align: middle; margin-left: 10px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid #1f6feb66; background: #0d2a4d; color: #79c0ff; font-size: 11px; font-weight: 600; cursor: default; }
+  .host-badge + .version-badge { margin-left: 6px; }
 `;
 
-module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, VERSION_BADGE_CSS };
+module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, renderHostBadge, renderMachineBadges, VERSION_BADGE_CSS };

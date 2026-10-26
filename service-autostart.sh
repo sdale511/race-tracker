@@ -9,33 +9,26 @@ set -euo pipefail
 # boat-autostart.sh/base-autostart.sh pair.
 #
 # Usage:
-#   sudo ./service-autostart.sh MODE on    # enable  (will start on next boot)
-#   sudo ./service-autostart.sh MODE off   # disable (won't start on next boot)
-#   sudo ./service-autostart.sh MODE       # show current status
+#   sudo ./service-autostart.sh [MODE] on    # enable  (will start on next boot)
+#   sudo ./service-autostart.sh [MODE] off   # disable (won't start on next boot)
+#   sudo ./service-autostart.sh [MODE]       # show current status
+#
+# MODE defaults to the one race-tracker service installed on this machine (service-mode.sh).
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: changing a systemd unit's boot-enable state needs root - run with sudo" >&2
-  echo "usage: sudo $0 MODE [on|off]" >&2
+  echo "usage: sudo $0 [MODE] [on|off]" >&2
   exit 1
 fi
 
-MODE="${1:-}"
-ACTION="${2:-}"
-# Same mode -> unit-name mapping as install-service.sh - see its own
-# comment on why this small case statement is duplicated per script rather
-# than sourced from one shared file.
-case "$MODE" in
-  boat)     SERVICE_NAME="boat-agent" ;;
-  base)     SERVICE_NAME="base-station" ;;
-  rtk)      SERVICE_NAME="rtk-station" ;;
-  basertk)  SERVICE_NAME="basertk-station" ;;
-  mark)     SERVICE_NAME="mark-station" ;;
-  *)
-    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
-    echo "usage: sudo $0 MODE [on|off]" >&2
-    exit 1
-    ;;
+# The first argument is the mode, unless it's already the action (MODE left out)
+case "${1:-}" in
+  on | off | "") MODE=""; ACTION="${1:-}" ;;
+  *) MODE="$1"; ACTION="${2:-}" ;;
 esac
+# shellcheck source=service-mode.sh
+source "$(dirname "${BASH_SOURCE[0]}")/service-mode.sh"
+resolve_mode "$MODE" "sudo $0 [MODE] [on|off]"
 
 case "$ACTION" in
   on)
@@ -61,7 +54,7 @@ case "$ACTION" in
     ;;
   *)
     echo "error: unrecognized argument \"$ACTION\"" >&2
-    echo "usage: sudo $0 MODE [on|off]" >&2
+    echo "usage: sudo $0 [MODE] [on|off]" >&2
     exit 1
     ;;
 esac

@@ -1,3 +1,4 @@
+const os = require('os');
 const { versionLine } = require('./version');
 const config = require('./config');
 const { MAP_MARK_ORDER, COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH_M, FINISH_SIDE_LENGTH_M, COMMITTEE_GAP_M } = require('./course');
@@ -471,6 +472,7 @@ function modesSections(running, runningModes, source) {
       title: 'Running mode',
       rows: [
         { label: 'mode', value: running, note: source },
+        { label: 'host', value: os.hostname(), note: "this machine's hostname" },
         { label: 'version', value: versionLine(), note: "package.json's major.minor, then the commit count - every commit bumps it" },
       ],
     },

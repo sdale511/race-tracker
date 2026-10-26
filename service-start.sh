@@ -8,30 +8,20 @@ set -euo pipefail
 # boat-start.sh/base-start.sh pair.
 #
 # Usage:
-#   sudo ./service-start.sh MODE
+#   sudo ./service-start.sh [MODE]
+#
+# MODE defaults to the one race-tracker service installed on this machine (service-mode.sh).
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: starting a systemd service needs root - run with sudo" >&2
-  echo "usage: sudo $0 MODE" >&2
+  echo "usage: sudo $0 [MODE]" >&2
   exit 1
 fi
 
 MODE="${1:-}"
-# Same mode -> unit-name mapping as install-service.sh - see its own
-# comment on why this small case statement is duplicated per script rather
-# than sourced from one shared file.
-case "$MODE" in
-  boat)     SERVICE_NAME="boat-agent" ;;
-  base)     SERVICE_NAME="base-station" ;;
-  rtk)      SERVICE_NAME="rtk-station" ;;
-  basertk)  SERVICE_NAME="basertk-station" ;;
-  mark)     SERVICE_NAME="mark-station" ;;
-  *)
-    echo "error: MODE must be one of: boat base rtk basertk mark (got \"$MODE\")" >&2
-    echo "usage: sudo $0 MODE" >&2
-    exit 1
-    ;;
-esac
+# shellcheck source=service-mode.sh
+source "$(dirname "${BASH_SOURCE[0]}")/service-mode.sh"
+resolve_mode "$MODE" "sudo $0 [MODE]"
 
 systemctl start "$SERVICE_NAME"
 systemctl status "$SERVICE_NAME" --no-pager -l

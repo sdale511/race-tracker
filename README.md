@@ -1312,10 +1312,11 @@ Run `ls /dev/cu.*` before/after plugging in each device to find its path.
 
 ### Version
 
-Every page header on the base and the rover admin shows the version running, e.g. **v0.1.288**: `package.json`'s
+Every page header on the base and the rover admin shows the machine's hostname (blue) and the version running, e.g.
+**v0.1.288**: `package.json`'s
 major.minor, then the number of commits, so every commit bumps it with nothing to edit (bump the minor in `package.json`
 for a bigger step). Hover it for the commit hash and date; it turns amber with "+ local changes" when the checkout has
-uncommitted edits. It's also on the config page and print-config, and in the first lines each process logs. It's read at
+uncommitted edits. Both are also on the config page and print-config (Running mode), and in the first lines each process logs. It's read at
 startup, so after a `git pull` it changes once the service restarts.
 
 ### Selecting a regatta at startup
@@ -1397,10 +1398,14 @@ directly for other per-machine overrides. Safe to re-run any time
 
 | Script | Does |
 |---|---|
-| `./service-logs.sh MODE` | Follows logs (`journalctl -u <unit> -f`) |
-| `sudo ./service-restart.sh MODE` | Restarts, prints status |
-| `sudo ./service-stop.sh MODE` / `service-start.sh MODE` | Stop/start without touching autostart |
-| `sudo ./service-autostart.sh MODE [on\|off]` | Controls autostart-on-boot separately; no arg shows status |
+| `./service-logs.sh [MODE]` | Follows logs (`journalctl -u <unit> -f`); extra args pass through (`./service-logs.sh -n 200`) |
+| `sudo ./service-restart.sh [MODE]` | Restarts, prints status |
+| `sudo ./service-stop.sh [MODE]` / `service-start.sh [MODE]` | Stop/start without touching autostart |
+| `sudo ./service-autostart.sh [MODE] [on\|off]` | Controls autostart-on-boot separately; no arg shows status |
+
+`MODE` can be left out: it defaults to the one race-tracker service installed on the machine (a Pi normally has exactly
+one), so `sudo ./service-restart.sh` is enough. With none installed, or more than one, the script asks for it. The
+mode-to-unit mapping lives in `service-mode.sh`, which these scripts and `setup-pi.sh` share.
 
 **Which mode is this machine running?** Every admin dashboard's **Config** tab starts with a **Running mode** section,
 then **Available modes**: all five modes (boat, mark, base, basertk, rtk) with their `npm run` command and what each is for,

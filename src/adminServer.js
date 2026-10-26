@@ -1,5 +1,5 @@
 const http = require('http');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, VERSION_BADGE_CSS } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, VERSION_BADGE_CSS } = require('./dashboardFormat');
 const { MARK_NAMES, MAP_MARK_ORDER, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderWindWidget, windApiPayload } = require('./windWidget');
@@ -295,7 +295,7 @@ function adminTabs(active, hasCourse) {
 // BASE_HEADER_CSS, SELECT_REGATTA_JS and PRACTICE_MODE_JS.
 function renderBaseHeader(s, page) {
   return `  <div class="topbar">
-    <h1>race-tracker admin${renderVersionBadge()}</h1>
+    <h1>race-tracker admin${renderMachineBadges()}</h1>
     <div class="hdr-right">
     ${
       s.slots
