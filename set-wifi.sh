@@ -76,6 +76,11 @@ for arg in "$@"; do
       list_wifi
       exit 0
       ;;
+    --list-defaults)
+      # The default networks' names, one per line - for setup-pi.sh's verify and the boot-time restore.
+      printf '%s\n' "${DEFAULT_SSIDS[@]}"
+      exit 0
+      ;;
   esac
 done
 
@@ -108,18 +113,39 @@ default_password_for() {
 set_one_wifi() {
   local ssid="$1" password="$2" rc
   if command -v nmcli >/dev/null 2>&1; then
-    # Delete-then-add rather than modify-in-place, so re-running this for an
-    # SSID whose password changed always ends up with exactly the given
-    # credentials, not a stale mix of old+new fields. Not an error if no
-    # profile with this name exists yet (the common case).
-    nmcli connection delete "$ssid" >/dev/null 2>&1 || true
+    # Already saved with this password: leave it alone. Deleting and re-adding it would drop the connection if the Pi is
+    # on that network right now - an SSH session over it included - so re-running this (or setup-pi.sh) is safe.
+    # (nmcli's terse output escapes ':' and '\', so the password is escaped the same way to compare.)
+    if nmcli -t -f NAME connection show | grep -Fxq "$ssid"; then
+      local saved_psk want_psk="${password//\\/\\\\}"
+      want_psk="${want_psk//:/\\:}"
+      saved_psk="$(nmcli -s -g 802-11-wireless-security.psk connection show "$ssid" 2>/dev/null || true)"
+      if [ "$saved_psk" = "$want_psk" ] && [ "$(nmcli -g 802-11-wireless.ssid connection show "$ssid" 2>/dev/null || true)" = "$ssid" ]; then
+        echo "WiFi already saved: \"$ssid\""
+        return 0
+      fi
+    fi
+    # A new or changed network is added under a temporary name first, and only then does it replace the old profile, so the
+    # network is never missing - deleting first and then adding (as this used to) lost it for good whenever the add failed
+    # or the run was cut short. A fresh profile rather than modify-in-place, so it ends up with exactly the given
+    # credentials, not a stale mix of old and new fields.
+    local tmp="$ssid (new)"
+    nmcli connection delete "$tmp" >/dev/null 2>&1 || true
     if [ -n "$password" ]; then
-      nmcli connection add type wifi con-name "$ssid" ifname '*' ssid "$ssid" \
-        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$password" >/dev/null
+      nmcli connection add type wifi con-name "$tmp" ifname '*' ssid "$ssid" \
+        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$password" connection.autoconnect yes >/dev/null
     else
-      nmcli connection add type wifi con-name "$ssid" ifname '*' ssid "$ssid" >/dev/null
+      nmcli connection add type wifi con-name "$tmp" ifname '*' ssid "$ssid" connection.autoconnect yes >/dev/null
     fi
     rc=$?
+    if [ "$rc" -eq 0 ]; then
+      nmcli connection delete "$ssid" >/dev/null 2>&1 || true
+      nmcli connection modify "$tmp" connection.id "$ssid"
+      rc=$?
+    fi
+    # Flush the profile to the SD card now: a boat Pi that loses power before the kernel writes it back can boot with the
+    # file empty or gone.
+    sync
     [ "$rc" -eq 0 ] && echo "WiFi saved (auto-joins once in range): \"$ssid\""
     return "$rc"
   elif command -v raspi-config >/dev/null 2>&1; then
@@ -129,6 +155,7 @@ set_one_wifi() {
       raspi-config nonint do_wifi_ssid_passphrase "$ssid"
     fi
     rc=$?
+    sync # to the SD card now, as above
     [ "$rc" -eq 0 ] && echo "WiFi set via raspi-config: \"$ssid\""
     return "$rc"
   else

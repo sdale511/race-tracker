@@ -1329,6 +1329,37 @@ The command-line tools that touch a regatta's Redis data - `npm run fleet`, `npm
 `npm run clear-base-logs` and `npm run clean-bad-fixes` - use the saved regatta (or `REGATTAUP_REGATTA_ID`) and stop
 with an error when there isn't one, so none of them can act on the wrong regatta or on `regattas:none`.
 
+### Setting up a Pi (setup-pi.sh)
+
+One script takes a fresh Raspberry Pi OS image to a running service, in sections you can run on their own. Each one
+checks first and only changes what isn't already done, so it is safe to re-run any time (after a `git pull`, on a Pi
+that was half set up, ...):
+
+| Section | What it does |
+|---|---|
+| `update` | `apt update` + `full-upgrade`, and git/curl |
+| `node` | Node.js LTS from NodeSource, unless node 20+ is already there |
+| `repo` | `git pull --ff-only` this checkout - skipped if it has local changes; if the pull updated `setup-pi.sh` itself, the new copy runs the rest |
+| `deps` | `npm ci --omit=dev` - only when `package-lock.json` or the node version changed since the last run |
+| `uart` | frees the GPS UART (`setup-gps-uart.sh`) - needs a reboot the first time |
+| `wifi` | saves the event networks (`set-wifi.sh`); ones already saved with the same password are left alone, so a re-run never drops the WiFi you're connected over. Also installs `race-tracker-wifi.service`, which re-runs `set-wifi.sh` at every boot so a default network whose profile went missing comes back (one added with `--ssid` isn't restored) |
+| `service` | installs and starts the service for `--mode` (`install-service.sh`) |
+| `verify` | read-only check of all of the above (no sudo) - exits non-zero if anything is missing, including any default WiFi network not saved, or saved only in memory (under `/run`, gone at the next boot) |
+| `run` | `npm run <mode>` in the foreground for a manual test (refuses while the service is running) - not part of `all` |
+
+```
+sudo apt update && sudo apt install -y git
+git clone https://github.com/sdale511/race-tracker.git && cd race-tracker
+sudo ./setup-pi.sh all --mode boat --reboot     # everything; reboots at the end if the UART or a new kernel needs it
+./setup-pi.sh verify                            # after the reboot
+
+sudo ./setup-pi.sh all --mode boat --id 7       # pinned BOAT_ID (--id is install-service.sh's EXTRA_ARG)
+sudo ./setup-pi.sh repo deps service --mode base   # update an installed base
+sudo ./setup-pi.sh wifi --ssid "Club" --password "secret"
+```
+
+The separate scripts below still work on their own.
+
 ### Auto-start on boot (systemd)
 
 ```
@@ -1500,6 +1531,12 @@ so a no-arg run saves every default network in one pass. Falls back to
 range-independent. Blank password = open network. Only adds/updates given
 networks, existing ones untouched. If nothing associates, set a WiFi
 country code: `sudo raspi-config nonint do_wifi_country <CC>` (one-time).
+
+A network already saved with the same password is left alone (a re-run never drops the connection you're on). A new or
+changed one is added under a temporary name before it replaces the old profile, so an interrupted run can't leave it
+deleted, and every change is flushed to the SD card (`sync`) so a power cut right after can't lose it. To put back any
+default network that still goes missing, `sudo ./setup-pi.sh wifi` installs `race-tracker-wifi.service`, which runs
+`set-wifi.sh` at every boot; `./setup-pi.sh verify` lists any default network that isn't saved.
 
 ### Witty Pi 4: power the boat on and off on a schedule
 
