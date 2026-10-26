@@ -19,7 +19,9 @@ set -euo pipefail
 #   verify   read-only: checks all of the above and says what's missing (no sudo needed)
 #   fix      runs verify, re-runs just the sections behind what failed or warned, then verifies again
 #   run      runs the mode in the foreground (npm run <mode>) for a manual test - not part of "all"
-#   all      update node repo deps uart wifi service verify, in that order
+#   autoupdate  installs race-tracker-update.service: at every boot, before the app starts, a git pull and node_modules
+#            update when the Pi has a network (see boot-pull) - every mode
+#   all      update node repo deps uart wifi service autoupdate verify, in that order
 #
 # Usage:
 #   sudo ./setup-pi.sh all --mode boat              # a whole boat Pi
@@ -50,12 +52,16 @@ NODE_MIN_MAJOR="${NODE_MIN_MAJOR:-20}"
 GPS_PORT="${GPS_PORT:-/dev/ttyAMA0}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$REPO_DIR/$(basename "${BASH_SOURCE[0]}")"
-ALL_SECTIONS=(update node repo deps uart wifi service verify)
+ALL_SECTIONS=(update node repo deps uart wifi service autoupdate verify)
 MODES="boat base rtk basertk mark"
 # Set by the uart section when the boot config changed; /run is cleared at boot, so it goes away with the reboot it asks for.
 REBOOT_MARKER="/run/race-tracker-setup-reboot"
 # Runs set-wifi.sh at every boot, so a default network whose profile went missing is saved again (see do_wifi).
 WIFI_UNIT="race-tracker-wifi"
+# Pulls the latest code at every boot, before the app's service starts (see do_autoupdate and do_boot_pull).
+UPDATE_UNIT="race-tracker-update"
+# How long boot-pull waits for a network that reaches GitHub before giving up and letting the app start on the code it has.
+BOOT_PULL_WAIT_S="${BOOT_PULL_WAIT_S:-45}"
 # Written into node_modules by the deps section: the lock file's hash and node's major version it was installed with.
 DEPS_STAMP="$REPO_DIR/node_modules/.setup-pi-stamp"
 
@@ -82,7 +88,7 @@ while [ $# -gt 0 ]; do
     --reboot) DO_REBOOT=1; shift ;;
     -h | --help | help) usage; exit 0 ;;
     all) SECTIONS+=("${ALL_SECTIONS[@]}"); shift ;;
-    update | node | repo | deps | uart | wifi | service | verify | fix | run) SECTIONS+=("$1"); shift ;;
+    update | node | repo | deps | uart | wifi | service | autoupdate | boot-pull | verify | fix | run) SECTIONS+=("$1"); shift ;;
     *) echo "error: unknown section or option \"$1\"" >&2; echo "sections: ${ALL_SECTIONS[*]} run all   (--help for more)" >&2; exit 1 ;;
   esac
 done
@@ -137,11 +143,18 @@ die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 is_root() { [ "$(id -u)" -eq 0 ]; }
 
 # The user the app runs as: whoever invoked sudo (install-service.sh insists on the same), or the current user for verify.
-SERVICE_USER="${SUDO_USER:-$(id -un)}"
+if [ -n "${SUDO_USER:-}" ]; then
+  SERVICE_USER="$SUDO_USER"
+elif [ "$(id -u)" -eq 0 ] && [ -d "$REPO_DIR/.git" ]; then
+  # Run by systemd at boot (boot-pull), not through sudo: the checkout's owner is the app's user
+  SERVICE_USER="$(stat -c %U "$REPO_DIR" 2>/dev/null || id -un)"
+else
+  SERVICE_USER="$(id -un)"
+fi
 
 need_root() {
   is_root || die "section \"$1\" needs root - run with sudo"
-  if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
+  if [ "$SERVICE_USER" = "root" ]; then
     die "run via sudo as the user who should own the app (not directly as root), e.g. sudo $0 $1"
   fi
 }
@@ -353,6 +366,97 @@ do_service() {
   fi
 }
 
+# Installs race-tracker-update.service, which runs boot-pull at every boot, ordered before every mode's app service so the app
+# starts on the new code (nothing to restart). It doesn't hold the app back for long: boot-pull gives up on the network after
+# BOOT_PULL_WAIT_S, and the app starts whether it succeeded or not. sudo systemctl disable race-tracker-update turns it off.
+do_autoupdate() {
+  section "autoupdate: git pull at boot"
+  need_root autoupdate
+  local unit_file="/etc/systemd/system/$UPDATE_UNIT.service" units="" m want
+  for m in $SERVICE_MODES; do units="$units $(unit_for_mode "$m").service"; done
+  want="[Unit]
+Description=Race Tracker: git pull and update node_modules at boot, before the app starts (setup-pi.sh boot-pull)
+Wants=NetworkManager.service
+After=NetworkManager.service
+Before=${units# }
+
+[Service]
+Type=oneshot
+ExecStart=$SCRIPT_PATH boot-pull
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target"
+  if [ -f "$unit_file" ] && [ "$(cat "$unit_file")" = "$want" ] && systemctl is-enabled --quiet "$UPDATE_UNIT" 2>/dev/null; then
+    ok "$UPDATE_UNIT.service already pulls at boot"
+  else
+    printf '%s\n' "$want" > "$unit_file"
+    systemctl daemon-reload
+    systemctl enable "$UPDATE_UNIT" >/dev/null 2>&1
+    ok "$UPDATE_UNIT.service installed: pulls the latest code at every boot, before the app starts"
+  fi
+}
+
+# Run by race-tracker-update.service at boot (or by hand). Waits up to BOOT_PULL_WAIT_S for a network that reaches GitHub -
+# a boat out on the playa has none, and then the app simply starts on the code it has. Then the repo and deps sections:
+# git pull --ff-only (skipped if the checkout has local changes) and npm ci when package-lock.json changed. If that npm ci
+# fails, the old node_modules and the old commit are put back together, so the app never starts on code whose packages
+# didn't install. When run by hand with the app already running, the app is restarted if the code changed. Never fails:
+# whatever happens, the app still starts.
+do_boot_pull() {
+  section "boot-pull: latest code before the app starts"
+  is_root || die "boot-pull needs root"
+  [ "$SERVICE_USER" != "root" ] || die "can't tell which user owns $REPO_DIR"
+  local waited=0
+  until as_user timeout 15 git -C "$REPO_DIR" ls-remote -q origin HEAD >/dev/null 2>&1; do
+    if [ "$waited" -ge "$BOOT_PULL_WAIT_S" ]; then
+      info "no network to GitHub after ${BOOT_PULL_WAIT_S}s - starting on the code already here"
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  local before after
+  before="$(as_user git -C "$REPO_DIR" rev-parse HEAD)"
+  # Each step in a subshell so its die can't stop the boot, with errexit switched back on inside it - bash ignores set -e in a
+  # subshell used as an if/|| condition, which would let a failed step carry on as if it had worked
+  local rc
+  set +e; ( set -e; do_repo ); rc=$?; set -e
+  if [ "$rc" -ne 0 ]; then warn "git pull failed - starting on the code already here"; return 0; fi
+  after="$(as_user git -C "$REPO_DIR" rev-parse HEAD)"
+  if [ "$before" = "$after" ]; then
+    ok "already up to date"
+    return 0
+  fi
+  if [ -d "$REPO_DIR/node_modules" ] && [ -f "$DEPS_STAMP" ] && [ "$(cat "$DEPS_STAMP")" = "$(deps_stamp)" ]; then
+    ok "node_modules unchanged"
+  else
+    # npm ci empties node_modules first: keep the old one aside until the new one is in
+    rm -rf "$REPO_DIR/node_modules.previous"
+    [ ! -d "$REPO_DIR/node_modules" ] || mv "$REPO_DIR/node_modules" "$REPO_DIR/node_modules.previous"
+    set +e; ( set -e; do_deps ); rc=$?; set -e
+    if [ "$rc" -eq 0 ]; then
+      rm -rf "$REPO_DIR/node_modules.previous"
+    else
+      warn "npm ci failed - putting back the previous commit and node_modules"
+      rm -rf "$REPO_DIR/node_modules"
+      [ ! -d "$REPO_DIR/node_modules.previous" ] || mv "$REPO_DIR/node_modules.previous" "$REPO_DIR/node_modules"
+      as_user git -C "$REPO_DIR" reset -q --keep "$before" || warn "couldn't move back to ${before:0:7}"
+      return 0
+    fi
+  fi
+  ok "updated ${before:0:7} -> ${after:0:7}"
+  # By hand, with the app already running: restart it onto the new code (at boot it hasn't started yet)
+  local m unit
+  for m in $(installed_modes); do
+    unit="$(unit_for_mode "$m")"
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+      systemctl restart "$unit"
+      info "restarted $unit"
+    fi
+  done
+}
+
 do_run() {
   section "run: npm run ${MODE:-?} in the foreground (Ctrl-C to stop)"
   [ -n "$MODE" ] || MODE="$(detect_mode || true)"
@@ -450,6 +554,9 @@ do_verify() {
     fi
   fi
 
+  if systemctl is-enabled --quiet "$UPDATE_UNIT" 2>/dev/null; then ok "$UPDATE_UNIT.service pulls the latest code at boot"
+  else warn "$UPDATE_UNIT.service not installed - the code isn't updated at boot (section: autoupdate)"; fi
+
   [ "$pending" -eq 0 ] || warn "a reboot is pending (sudo reboot)"
 }
 
@@ -490,14 +597,14 @@ do_fix() {
 REEXEC=0
 DONE=()
 for s in "${SECTIONS[@]}"; do
-  "do_$s"
+  "do_${s//-/_}"
   DONE+=("$s")
   if [ "$REEXEC" -eq 1 ]; then
     # The rest of the run, with the new copy: the same options, minus the sections already done.
     REST=()
     skip=${#DONE[@]}
     for a in "${ORIGINAL_ARGS[@]}"; do
-      case "$a" in all | update | node | repo | deps | uart | wifi | service | verify | fix | run) ;; *) REST+=("$a") ;; esac
+      case "$a" in all | update | node | repo | deps | uart | wifi | service | autoupdate | boot-pull | verify | fix | run) ;; *) REST+=("$a") ;; esac
     done
     for s2 in "${SECTIONS[@]:$skip}"; do REST+=("$s2"); done
     [ ${#SECTIONS[@]} -gt "$skip" ] || exit 0
