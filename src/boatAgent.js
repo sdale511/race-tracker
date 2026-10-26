@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
 const util = require('util');
+const { versionLine } = require('./version');
 const config = require('./config');
 const logBuffer = require('./logBuffer');
 const { UbxParser, encodeNavPvt } = require('./ubxParser');
@@ -90,7 +91,7 @@ const myAdminPort = process.env.ADMIN_PORT ? config.admin.port : config.simulate
 // up front - instead of scattered one-line-each prints interleaved with
 // unrelated setup code further down this file, which made them easy to
 // miss and hard to compare against each other at a glance.
-console.log(`[boatAgent] boatId=${config.boatId}`);
+console.log(`[boatAgent] boatId=${config.boatId}, race-tracker ${versionLine()}`);
 // Boat mode only (not a mark device): the XBee's node identifier (NI) is set to the boat id when the radio
 // port opens, so a radio taken out of a boat, or listed by XCTU, says which boat it is - see radioLink.js/xbeeAt.js.
 const xbeeNodeIdentifier = !config.simulate && config.radio.enabled && !config.markMode ? config.boatId : null;

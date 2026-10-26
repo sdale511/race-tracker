@@ -21,6 +21,7 @@ const {
   bearingDeg,
   WIND_FROM_DEG,
 } = require('./course');
+const { versionLine } = require('./version');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { createPowerScheduleStore } = require('./powerScheduleStore');
@@ -185,6 +186,7 @@ function main() {
   // most wants right after launch - "where's the dashboard" - isn't
   // buried under everything else this function logs during radio/Redis/
   // upload-server setup.
+  console.log(`[baseStation] race-tracker ${versionLine()}`);
   console.log(`[adminServer] dashboard at http://localhost:${config.admin.port}`);
 
   // MARK_MODE=1 on the base itself (set by hand - npm run mark starts

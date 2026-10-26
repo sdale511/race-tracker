@@ -3,6 +3,8 @@
 // "2m ago" and "1.4 MB" mean the same thing, formatted the same way, on
 // whichever side you're looking at.
 
+const { VERSION } = require('./version');
+
 // Human-readable "3m ago" / "2h 15m" style formatting - a dashboard is
 // meant to be glanced at during a live race, not read as raw timestamps.
 function formatAgo(ms) {
@@ -127,4 +129,17 @@ const REFRESH_SCRIPT = `
   }, 5000);
 })();`;
 
-module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT };
+// The version this machine is running (version.js), as a small pill beside a page title: the commit and its date on
+// hover, amber with "+ local changes" when the checkout has uncommitted edits - so a glance tells which Pi has which code.
+function renderVersionBadge(v = VERSION) {
+  const tip = v.commit ? `commit ${v.commit}${v.date ? `, ${v.date}` : ''}${v.dirty ? ' - with uncommitted changes' : ''}` : 'no git: package.json version';
+  return `<span class="version-badge${v.dirty ? ' dirty' : ''}" title="${tip}">${v.label}${v.dirty ? ' + local changes' : ''}</span>`;
+}
+const VERSION_BADGE_CSS = `
+  .version-badge { display: inline-block; vertical-align: middle; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid #30363d; background: #161b22; color: #8b94a3; font-size: 11px; font-weight: 600;
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em; cursor: default; }
+  .version-badge.dirty { border-color: #9e6a03; color: #e3b341; }
+`;
+
+module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, VERSION_BADGE_CSS };

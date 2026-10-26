@@ -1,3 +1,4 @@
+const { versionLine } = require('./version');
 const config = require('./config');
 const { MAP_MARK_ORDER, COURSE_LENGTH_NM, START_LINE_POSITION, START_SIDE_LENGTH_M, FINISH_SIDE_LENGTH_M, COMMITTEE_GAP_M } = require('./course');
 
@@ -466,7 +467,13 @@ const MODES = [
 // mode; runningModes: which MODES entries to mark; source: how it was worked out.
 function modesSections(running, runningModes, source) {
   return [
-    { title: 'Running mode', rows: [{ label: 'mode', value: running, note: source }] },
+    {
+      title: 'Running mode',
+      rows: [
+        { label: 'mode', value: running, note: source },
+        { label: 'version', value: versionLine(), note: "package.json's major.minor, then the commit count - every commit bumps it" },
+      ],
+    },
     {
       title: 'Available modes',
       rows: MODES.map(({ mode, command, what }) => ({

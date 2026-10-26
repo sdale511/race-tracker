@@ -1310,6 +1310,14 @@ RADIO_PORT=/dev/cu.usbserial-0001 GPS_PORT=/dev/cu.usbmodem1101 npm run base
 ```
 Run `ls /dev/cu.*` before/after plugging in each device to find its path.
 
+### Version
+
+Every page header on the base and the rover admin shows the version running, e.g. **v0.1.288**: `package.json`'s
+major.minor, then the number of commits, so every commit bumps it with nothing to edit (bump the minor in `package.json`
+for a bigger step). Hover it for the commit hash and date; it turns amber with "+ local changes" when the checkout has
+uncommitted edits. It's also on the config page and print-config, and in the first lines each process logs. It's read at
+startup, so after a `git pull` it changes once the service restarts.
+
 ### Selecting a regatta at startup
 
 Everything the base records lives under the selected regatta, and nothing (radio, course, base GPS) starts until one is
