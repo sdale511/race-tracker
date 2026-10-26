@@ -466,9 +466,14 @@ function renderTempestCard(t) {
       <div class="sub">Turned off with TEMPEST_ENABLED=0</div>
     </div>`;
   }
+  // The title with a button that opens the embeddable wind display (GET /wind, windWidget.js) in a new tab
+  const head = `<div class="card-head">
+        <div class="label">Tempest weather station</div>
+        <a class="card-btn" href="/wind" target="_blank" rel="noopener" title="The wind display that can be embedded in an iframe (RegattaUp, a club site, a screen) - opens in a new tab">Wind display</a>
+      </div>`;
   if (!t.lastSample && !t.error) {
     return `<div class="card card-idle">
-      <div class="label">Tempest weather station</div>
+      ${head}
       <div class="idle-text">No data received</div>
       <div class="sub">Listening on UDP ${t.port}</div>
     </div>`;
@@ -480,7 +485,7 @@ function renderTempestCard(t) {
   const wind = (dir, speed) => (dir == null || speed == null ? '—' : `${dir}° at ${speed} mph`);
   const stations = t.stationsHeard.length ? t.stationsHeard.map((sn) => escapeHtml(sn)).join(', ') : '—';
   return `<div class="card">
-      <div class="label">Tempest weather station</div>
+      ${head}
       <div class="value"><span class="dot ${t.error || stale ? 'dot-red' : latest ? 'dot-green' : 'dot-gray'}"></span>${latest ? wind(latest.dir, latest.avg) : 'not listening'}</div>
       <div class="sub">${
         latest
@@ -957,6 +962,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
     background: #1c222b; color: #e6e9ef; font-size: 11px; cursor: pointer;
   }
   .card-btn:hover { background: #262c36; }
+  a.card-btn { display: inline-block; text-decoration: none; text-align: center; }
   .card-btn:disabled { opacity: 0.5; cursor: default; }
   .manual-fixed-card { grid-column: span 2; }
   .manual-fixed-field { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
