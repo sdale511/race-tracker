@@ -17,6 +17,7 @@ set -euo pipefail
 #            installs race-tracker-wifi.service, which puts back any of them that went missing at every boot
 #   service  installs and starts the systemd service for --mode (install-service.sh)
 #   verify   read-only: checks all of the above and says what's missing (no sudo needed)
+#   fix      runs verify, re-runs just the sections behind what failed or warned, then verifies again
 #   run      runs the mode in the foreground (npm run <mode>) for a manual test - not part of "all"
 #   all      update node repo deps uart wifi service verify, in that order
 #
@@ -26,6 +27,7 @@ set -euo pipefail
 #   sudo ./setup-pi.sh deps service --mode base     # just those sections
 #   sudo ./setup-pi.sh wifi --ssid "Club" --password "secret"
 #   ./setup-pi.sh verify                            # what's set up and what isn't
+#   sudo ./setup-pi.sh fix                          # put right whatever verify found
 #   sudo ./setup-pi.sh run --mode boat              # foreground test run (stop the service first)
 #
 # Options:
@@ -80,7 +82,7 @@ while [ $# -gt 0 ]; do
     --reboot) DO_REBOOT=1; shift ;;
     -h | --help | help) usage; exit 0 ;;
     all) SECTIONS+=("${ALL_SECTIONS[@]}"); shift ;;
-    update | node | repo | deps | uart | wifi | service | verify | run) SECTIONS+=("$1"); shift ;;
+    update | node | repo | deps | uart | wifi | service | verify | fix | run) SECTIONS+=("$1"); shift ;;
     *) echo "error: unknown section or option \"$1\"" >&2; echo "sections: ${ALL_SECTIONS[*]} run all   (--help for more)" >&2; exit 1 ;;
   esac
 done
@@ -117,8 +119,17 @@ WARNS=0
 section() { printf '\n== %s ==\n' "$1"; }
 info() { printf '   %s\n' "$*"; }
 ok() { printf '   ok    %s\n' "$*"; }
-warn() { printf '   WARN  %s\n' "$*"; WARNS=$((WARNS + 1)); }
-bad() { printf '   FAIL  %s\n' "$*"; FAILS=$((FAILS + 1)); }
+warn() { printf '   WARN  %s\n' "$*"; WARNS=$((WARNS + 1)); needs_section "$*"; }
+bad() { printf '   FAIL  %s\n' "$*"; FAILS=$((FAILS + 1)); needs_section "$*"; }
+
+# A check's message names the section that puts it right - "(section: uart)" - and fix re-runs those sections.
+FIX_SECTIONS=()
+needs_section() {
+  local s
+  s="$(printf '%s' "$1" | sed -nE 's/.*\(section: ([a-z]+).*/\1/p')"
+  [ -n "$s" ] || return 0
+  [[ " ${FIX_SECTIONS[*]:-} " == *" $s "* ]] || FIX_SECTIONS+=("$s")
+}
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
@@ -453,6 +464,38 @@ do_verify() {
   [ "$pending" -eq 0 ] || warn "a reboot is pending (sudo reboot)"
 }
 
+do_fix() {
+  do_verify
+  if [ ${#FIX_SECTIONS[@]} -eq 0 ]; then
+    if [ "$FAILS" -gt 0 ]; then
+      echo
+      echo "Nothing here can be fixed by re-running a section - see the FAIL lines above (a reboot, the service's logs)."
+    fi
+    return
+  fi
+  # In setup order (node before deps, uart before service), whatever order verify found them in
+  local todo=() s
+  for s in "${ALL_SECTIONS[@]}"; do
+    if [[ " ${FIX_SECTIONS[*]} " == *" $s "* ]]; then todo+=("$s"); fi
+  done
+  if [[ " ${todo[*]} " == *" service "* ]] && [ -z "$MODE" ]; then
+    MODE="$(detect_mode || true)"
+    if [ -z "$MODE" ]; then
+      echo
+      echo "The service needs installing, but which mode? Re-run with --mode ($MODES)."
+      todo=(${todo[@]/service/})
+    fi
+  fi
+  echo
+  echo "Fixing: ${todo[*]}"
+  for s in "${todo[@]}"; do "do_$s"; done
+  # Check again, counting only this second pass
+  FAILS=0
+  WARNS=0
+  FIX_SECTIONS=()
+  do_verify
+}
+
 # ---- run -------------------------------------------------------------------------------------------------------------
 
 REEXEC=0
@@ -465,7 +508,7 @@ for s in "${SECTIONS[@]}"; do
     REST=()
     skip=${#DONE[@]}
     for a in "${ORIGINAL_ARGS[@]}"; do
-      case "$a" in all | update | node | repo | deps | uart | wifi | service | verify | run) ;; *) REST+=("$a") ;; esac
+      case "$a" in all | update | node | repo | deps | uart | wifi | service | verify | fix | run) ;; *) REST+=("$a") ;; esac
     done
     for s2 in "${SECTIONS[@]:$skip}"; do REST+=("$s2"); done
     [ ${#SECTIONS[@]} -gt "$skip" ] || exit 0

@@ -1345,6 +1345,7 @@ that was half set up, ...):
 | `wifi` | saves the event networks (`set-wifi.sh`); ones already saved with the same password are left alone, so a re-run never drops the WiFi you're connected over. Also installs `race-tracker-wifi.service`, which re-runs `set-wifi.sh` at every boot so a default network whose profile went missing comes back (one added with `--ssid` isn't restored) |
 | `service` | installs and starts the service for `--mode` (`install-service.sh`) |
 | `verify` | read-only check of all of the above (no sudo) - exits non-zero if anything is missing, including any default WiFi network not saved, or saved only in memory (under `/run`, gone at the next boot) |
+| `fix` | runs `verify`, re-runs only the sections named by what failed or warned (each check says which, e.g. `(section: uart)`), then verifies again. A failure no section can fix - a pending reboot, a service that keeps crashing - is left for you, with the hint shown |
 | `run` | `npm run <mode>` in the foreground for a manual test (refuses while the service is running) - not part of `all` |
 
 ```
@@ -1352,11 +1353,14 @@ sudo apt update && sudo apt install -y git
 git clone https://github.com/sdale511/race-tracker.git && cd race-tracker
 sudo ./setup-pi.sh all --mode boat --reboot     # everything; reboots at the end if the UART or a new kernel needs it
 ./setup-pi.sh verify                            # after the reboot
+sudo ./setup-pi.sh fix                          # if verify found anything
 
 sudo ./setup-pi.sh all --mode boat --id 7       # pinned BOAT_ID (--id is install-service.sh's EXTRA_ARG)
 sudo ./setup-pi.sh repo deps service --mode base   # update an installed base
 sudo ./setup-pi.sh wifi --ssid "Club" --password "secret"
 ```
+
+**One reboot at most**, at the end: the UART change and a new kernel from the upgrade both wait for it (nothing in between needs them), and `--reboot` does it for you. After that, `verify` should come back clean.
 
 `set-wifi.sh` and `install-service.sh` (below) still work on their own.
 
