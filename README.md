@@ -122,7 +122,7 @@ stty -F /dev/ttyAMA0 <baud> raw -echo
 cat /dev/ttyAMA0        # Ctrl-C to stop
 ```
 
-`setup-gps-uart.sh` on the Pi only frees the UART (serial console off, Bluetooth off, `dialout` group); it does not touch
+`sudo ./setup-pi.sh uart` on the Pi only frees the UART (serial console off, Bluetooth off, `dialout` group); it does not touch
 the GPS module.
 
 ### Verifying the connection
@@ -1341,7 +1341,7 @@ that was half set up, ...):
 | `node` | Node.js LTS from NodeSource, unless node 20+ is already there |
 | `repo` | `git pull --ff-only` this checkout - skipped if it has local changes; if the pull updated `setup-pi.sh` itself, the new copy runs the rest |
 | `deps` | `npm ci --omit=dev` - only when `package-lock.json` or the node version changed since the last run |
-| `uart` | frees the GPS UART (`setup-gps-uart.sh`) - needs a reboot the first time |
+| `uart` | frees the GPS UART: serial console off, Bluetooth off, the user in `dialout` - needs a reboot the first time |
 | `wifi` | saves the event networks (`set-wifi.sh`); ones already saved with the same password are left alone, so a re-run never drops the WiFi you're connected over. Also installs `race-tracker-wifi.service`, which re-runs `set-wifi.sh` at every boot so a default network whose profile went missing comes back (one added with `--ssid` isn't restored) |
 | `service` | installs and starts the service for `--mode` (`install-service.sh`) |
 | `verify` | read-only check of all of the above (no sudo) - exits non-zero if anything is missing, including any default WiFi network not saved, or saved only in memory (under `/run`, gone at the next boot) |
@@ -1358,7 +1358,7 @@ sudo ./setup-pi.sh repo deps service --mode base   # update an installed base
 sudo ./setup-pi.sh wifi --ssid "Club" --password "secret"
 ```
 
-The separate scripts below still work on their own.
+`set-wifi.sh` and `install-service.sh` (below) still work on their own.
 
 ### Auto-start on boot (systemd)
 

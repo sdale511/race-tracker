@@ -11,7 +11,8 @@ set -euo pipefail
 #   node     Node.js LTS from NodeSource, unless node $NODE_MIN_MAJOR+ is already installed
 #   repo     git pull --ff-only this checkout (skipped when it has local changes)
 #   deps     npm ci --omit=dev, only when package-lock.json or the node version changed since the last run
-#   uart     frees the Pi's hardware UART for the GPS (setup-gps-uart.sh) - needs a reboot the first time
+#   uart     frees the Pi's hardware UART for the GPS (serial console and Bluetooth off, dialout group) - needs a reboot
+#            the first time
 #   wifi     saves the event WiFi networks (set-wifi.sh) - ones already saved with the same password are left alone - and
 #            installs race-tracker-wifi.service, which puts back any of them that went missing at every boot
 #   service  installs and starts the systemd service for --mode (install-service.sh)
@@ -66,7 +67,8 @@ WIFI_PASSWORD_SET=0
 DO_REBOOT=0
 
 usage() {
-  sed -n '4,43p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+  # the header comment above, from its first line after the shebang/set to the first non-comment line
+  awk 'NR >= 4 && /^#/ { sub(/^# ?/, ""); print; next } NR >= 4 { exit }' "$SCRIPT_PATH"
 }
 
 while [ $# -gt 0 ]; do
@@ -250,18 +252,53 @@ do_deps() {
   ok "installed"
 }
 
+# Frees the Pi's hardware UART (GPIO14/15, $GPS_PORT) for the GPS and lets the app's user open it. It does not configure the
+# GPS module or the radios - the rovers only read; the ZED-F9P is set up from a computer with ubx_config_set.py and the XBee
+# with xbee_configure_at.py (README's "GPS configuration"). config.txt/cmdline.txt changes only apply at boot.
 do_uart() {
   section "uart: GPS serial port"
   need_root uart
-  local out rc=0
-  out="$(GPS_PORT="$GPS_PORT" SERVICE_USER="$SERVICE_USER" "$REPO_DIR/setup-gps-uart.sh" 2>&1)" || rc=$?
-  printf '%s\n' "$out" | sed 's/^/   | /'
-  [ "$rc" -eq 0 ] || die "setup-gps-uart.sh failed"
-  if printf '%s' "$out" | grep -q 'reboot required'; then
+  local cfg cmd changed=0
+  cfg="$(boot_file config.txt)"
+  cmd="$(boot_file cmdline.txt)"
+  [ -f "$cfg" ] && [ -f "$cmd" ] || die "no $cfg / $cmd - not a Raspberry Pi?"
+  # The UART on, with the mini-UART's clock fixed to the CPU's real frequency
+  if ! grep -q '^enable_uart=1' "$cfg"; then
+    echo "enable_uart=1" >> "$cfg"
+    info "added enable_uart=1 to $cfg"
+    changed=1
+  fi
+  # No login shell on the serial port: cmdline.txt ships with console=serial0,115200, which claims the UART
+  if grep -qE 'console=(serial0|ttyAMA0),[0-9]+' "$cmd"; then
+    sed -i -E 's/console=(serial0|ttyAMA0),[0-9]+ ?//g' "$cmd"
+    info "removed the serial console from $cmd"
+    changed=1
+  fi
+  # On a Pi with onboard Bluetooth, GPIO14/15 get the mini-UART (ttyS0) while Bluetooth has the real one (ttyAMA0)
+  if ! grep -q '^dtoverlay=disable-bt' "$cfg"; then
+    echo "dtoverlay=disable-bt" >> "$cfg"
+    info "added dtoverlay=disable-bt to $cfg"
+    changed=1
+  fi
+  local svc
+  for svc in hciuart bluealsa bluetooth; do
+    systemctl disable --now "$svc" >/dev/null 2>&1 || true
+  done
+  # The app's user can open the port (applies from its next login or service restart)
+  if ! id -nG "$SERVICE_USER" | grep -qw dialout; then
+    usermod -aG dialout "$SERVICE_USER"
+    info "added $SERVICE_USER to the dialout group"
+  fi
+  if [ "$changed" -eq 1 ]; then
+    sync
     touch "$REBOOT_MARKER"
     info "the UART is freed at the next boot"
-  else
+  elif [ -e "$GPS_PORT" ]; then
     ok "UART free, $GPS_PORT present"
+  elif reboot_pending; then
+    info "UART set up; $GPS_PORT appears after the pending reboot"
+  else
+    die "$GPS_PORT still missing with the UART freed - check: ls -la /dev/ttyAMA0 /dev/ttyS0 /dev/serial0 /dev/serial1"
   fi
 }
 
