@@ -471,6 +471,13 @@ class RedisStore {
     ]);
   }
 
+  // Whether the selected regatta already has a track for this boat (boats:known): false the first time a boat is heard,
+  // true from its first write on - see codeAnnouncer.js.
+  async isBoatKnown(boatId) {
+    await this.ready;
+    return (await this.client.sismember(`${this._prefix()}boats:known`, String(boatId))) === 1;
+  }
+
   async knownBoatIds() {
     await this.ready;
     return this.client.smembers(`${this._prefix()}boats:known`);

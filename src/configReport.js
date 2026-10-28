@@ -440,6 +440,8 @@ const sections = [
       },
       { label: 'foulEnabled', desc: 'Report fouls (wrong-way line crossings) to RegattaUp', value: config.regattaup.foulEnabled, envVar: 'REGATTAUP_FOUL_ENABLED' },
       { label: 'foulQueueDbPath', desc: 'File foul events wait in until RegattaUp accepts them', value: config.regattaup.foulQueueDbPath, envVar: 'REGATTAUP_FOUL_QUEUE_DB' },
+      { label: 'newCodeEnabled', desc: "Tell RegattaUp the first time each transponder code (boat id) is heard in the regatta, so it shows in its code management", value: config.regattaup.newCodeEnabled, envVar: 'REGATTAUP_NEW_CODE_ENABLED' },
+      { label: 'newCodeQueueDbPath', desc: 'File new-code hits wait in until RegattaUp accepts them', value: config.regattaup.newCodeQueueDbPath, envVar: 'REGATTAUP_NEW_CODE_QUEUE_DB' },
     ],
   },
 ];

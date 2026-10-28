@@ -2077,6 +2077,34 @@ on `mode: "foul"` yet; falls into the "unknown mode" catch-all
 matching webhook branch are being built separately on the RegattaUp
 platform.
 
+### New transponder codes
+
+A rover's boat id is its transponder code (the webhooks send it as `tranCode`). The first time the base hears a code in
+the selected regatta it sends RegattaUp one **info** hit, so the code shows up in RegattaUp's code management to be
+assigned to a boat:
+
+```json
+{
+  "mode": "info",
+  "reason": "new transponder code",
+  "regatta_id": "6a44a2531e401d60c28afcd8",
+  "decoded": { "tranCode": "00051", "rtcTime": 1785337740000000, "strength": 2 }
+}
+```
+
+`rtcTime` is the first fix's time (ms -> µs) and `strength` that fix's `carrSoln`, as in the other events; `reason` says
+what the info is, so another kind of info hit later needs no new mode. A code counts as new when the regatta's Redis
+`boats:known` set does not have it yet - so restarting the base does not announce every boat on the water again, while a
+fresh Redis, or a boat's track expiring, announces it again (RegattaUp should treat a code it already has as a no-op,
+the same as for a retried lap). If Redis cannot be asked the code is announced anyway. Nothing is sent with no regatta
+selected. Same durable-queue mechanics as the other events - `src/newCodeWebhookQueue.js`, own sqlite file
+(`REGATTAUP_NEW_CODE_QUEUE_DB`) - and the pending hits show on the admin Data page's webhook queues card as "New codes".
+`REGATTAUP_NEW_CODE_ENABLED=0` turns it off, independent of `REGATTAUP_WEBHOOK_ENABLED`.
+
+**RegattaUp's side:** `mylapsWebhook` needs a `mode: "info"` branch that adds `tranCode` to the regatta's code management
+if it is not there. Until then it falls into the "unknown mode" catch-all (a safe no-op), and the base counts the hit as
+delivered on the HTTP 2xx.
+
 ### Testing with SIM_FOUL
 
 ```
@@ -2148,6 +2176,7 @@ race-config/                                 - small per-device identity/state (
   ongrid_webhook_queue.sqlite
   mark_rounding_webhook_queue.sqlite
   foul_webhook_queue.sqlite
+  new_code_webhook_queue.sqlite
 
 boat-logs/                                   - BOAT ONLY: this boat's own chunked SD-card log (BOAT_LOG_DIR to redirect, e.g. an SD card mount)
   boat<boatId>_<chunk>.csv

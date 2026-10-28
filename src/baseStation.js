@@ -31,6 +31,8 @@ const { OnGridWatcher, zonePolygon, sameZone } = require('./onGridWatcher');
 const { changedMarks } = require('./markSync');
 const { decideOnGridPost } = require('./onGridPost');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
+const { NewCodeWebhookQueue } = require('./newCodeWebhookQueue');
+const { createCodeAnnouncer } = require('./codeAnnouncer');
 const { MarkRoundingWatcher } = require('./markRoundingWatcher');
 const { MarkRoundingWebhookQueue } = require('./markRoundingWebhookQueue');
 const { FoulWatcher } = require('./foulWatcher');
@@ -2175,6 +2177,22 @@ function main() {
     }
   })();
 
+  // Same buffer-then-flush pattern again, for new transponder codes (see codeAnnouncer.js) - its own separate queue file,
+  // same reasoning as onGridWebhookQueue.js's module comment.
+  let newCodeWebhookQueue = null;
+  let bufferedNewCodes = [];
+
+  (async () => {
+    try {
+      newCodeWebhookQueue = await NewCodeWebhookQueue.create(config.regattaup.newCodeQueueDbPath);
+      console.log(`[baseStation] new-code webhook queue ready (${queueFileLabel(config.regattaup.newCodeQueueDbPath)})`);
+      for (const event of bufferedNewCodes) enqueueNewCode(event);
+      bufferedNewCodes = [];
+    } catch (err) {
+      console.error(red(`[regattaup] failed to initialize new-code webhook queue: ${err.message}`));
+    }
+  })();
+
   // Every queued lap/on-grid/mark-rounding/foul event, first attempt or
   // retry alike, is sent through this single shared loop instead of ever
   // being POSTed directly from enqueueLap/OnGrid/MarkRounding/Foul below -
@@ -2191,6 +2209,7 @@ function main() {
     { get: () => onGridWebhookQueue, send: sendQueuedOnGrid, inFlight: new Set() },
     { get: () => markRoundingWebhookQueue, send: sendQueuedMarkRounding, inFlight: new Set() },
     { get: () => foulWebhookQueue, send: sendQueuedFoul, inFlight: new Set() },
+    { get: () => newCodeWebhookQueue, send: sendQueuedNewCode, inFlight: new Set() },
   ];
   let webhookQueueCursor = 0;
 
@@ -2232,6 +2251,7 @@ function main() {
     ['On grid', (r) => r.mode],
     ['Mark roundings', (r) => r.mark],
     ['Fouls', (r) => r.reason],
+    ['New codes', () => 'new code'],
   ];
   function webhookQueueSnapshot() {
     return webhookQueues.map((entry, i) => {
@@ -2417,6 +2437,8 @@ function main() {
     // ...) is caught, tracked, and rate-limit logged inside redisStore.js
     // itself now (see its own comment), surfaced on the admin dashboard's
     // Redis card rather than needing a .catch() here.
+    // Before writeFix, which is what adds the boat to the regatta's boats:known - see codeAnnouncer.js.
+    noteTransponderCode(decoded).catch((err) => console.error(`[baseStation] failed to queue a new-code hit for boat=${decoded.boatId}: ${err.message}`));
     if (verdict === 'post') redisStore.writeFix(decoded);
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
@@ -2710,6 +2732,20 @@ function main() {
   function enqueueFoul(event) {
     foulWebhookQueue.enqueue(event);
   }
+
+  // Same pattern again, for a transponder code heard for the first time in this regatta.
+  function enqueueNewCode(event) {
+    newCodeWebhookQueue.enqueue(event);
+  }
+  const noteTransponderCode = createCodeAnnouncer({
+    isKnown: (boatId) => redisStore.isBoatKnown(boatId),
+    getRegattaId: () => (config.regattaup.enabled && config.regattaup.newCodeEnabled ? currentRegattaId : null),
+    announce: (event) => {
+      console.log(orange(`[baseStation] boat=${event.boatId} - code heard for the first time in this regatta, reporting it to RegattaUp`, process.stdout));
+      if (newCodeWebhookQueue) enqueueNewCode(event);
+      else bufferedNewCodes.push(event);
+    },
+  });
 
   // verdict: redisStore.decideRecord's answer for this exact fix - 'post', 'skip' (not moved REDIS_MIN_MOVEMENT_M from the
   // last posted fix) or 'invalid'. Appended as "posted" or "no-post (...)" so this console line says right away whether
@@ -3018,6 +3054,11 @@ function main() {
         ? '[baseStation] fouls (downwind start/finish line crossings, committee gap, pin boundary gate if on) post to RegattaUp'
         : '[baseStation] foul webhook disabled (set REGATTAUP_FOUL_ENABLED=1 to enable)'
     );
+    console.log(
+      config.regattaup.newCodeEnabled
+        ? '[baseStation] a transponder code heard for the first time in a regatta posts to RegattaUp as an info hit'
+        : '[baseStation] new-code webhook disabled (set REGATTAUP_NEW_CODE_ENABLED=1 to enable)'
+    );
   }
 }
 
@@ -3140,6 +3181,37 @@ async function sendQueuedMarkRounding(queue, row) {
 // rtcTime/strength conventions and retry/removal semantics as
 // sendQueuedMarkRounding above, with `mode: 'foul'` and which foul
 // (row.reason, e.g. 'downwind finish line') occurred.
+// Tells RegattaUp a transponder code has just been heard for the first time in the regatta: an 'info' hit, not a lap -
+// its code management lists the code so someone can assign it to a boat. The same shape as the other events (tranCode
+// is the boat id, rtcTime the first fix's time in microseconds) with `reason` saying what the info is, so a later
+// info kind needs no new mode.
+async function sendQueuedNewCode(queue, row) {
+  queue.recordAttempt(row.id);
+  const payload = {
+    mode: 'info',
+    reason: 'new transponder code',
+    ...(currentRegattaId ? { regatta_id: currentRegattaId } : {}),
+    decoded: {
+      tranCode: String(row.boat_id),
+      rtcTime: row.rtc_time,
+      strength: row.strength,
+    },
+  };
+  try {
+    const res = await fetch(config.regattaup.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.regattaup.requestTimeoutMs), // a hung request must not hold an in-flight slot for ever
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    queue.remove(row.id);
+    console.log(orange(`[regattaup] new-code webhook sent for boat=${row.boat_id}`, process.stdout));
+  } catch (err) {
+    console.error(orange(`[regattaup] new-code webhook failed for boat=${row.boat_id} (attempt ${row.attempts + 1}), will retry: ${err.message}`));
+  }
+}
+
 async function sendQueuedFoul(queue, row) {
   queue.recordAttempt(row.id);
   const payload = {
