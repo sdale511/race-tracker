@@ -44,7 +44,10 @@ const boatMaxFixHz = new Map();
 const FIX_RATE_MIN_SPAN_MS = 5000;
 const boatPending = new Map(); // boatId -> { pending, reportedAt } - self-reported by the rover, see uploadClient.js
 const boatUploadStats = new Map(); // boatId -> { attempts, successes, failures, bytes }
-const boatIp = new Map(); // boatId -> LAN IP, learned from its own upload/health-check requests
+const boatIp = new Map(); // boatId -> { ip, at }: LAN IP and when, learned from its own upload/health-check requests
+// A boat's IP is shown only while it keeps checking in over WiFi (every UPLOAD_CHECK_INTERVAL_MS, 15 s by default):
+// after this long without one it has left WiFi or been given a new address, and the old one may belong to someone else.
+const BOAT_IP_MAX_AGE_MS = 2 * 60 * 1000;
 const boatAdminPort = new Map(); // boatId -> its own admin dashboard port, self-reported (see uploadClient.js)
 
 function _boatUpload(boatId) {
@@ -163,9 +166,19 @@ function recordPending(boatId, count) {
 
 // Learned passively from the source address of the boat's own HTTP
 // requests (uploadServer.js) - lets the base dashboard link out to that
-// boat's own rover dashboard (see roverAdminServer.js).
-function recordBoatIp(boatId, ip) {
-  boatIp.set(normalizeBoatId(boatId), ip);
+// boat's own rover dashboard (see roverAdminServer.js). DHCP can hand an address on to another boat, so whichever boat
+// used it last owns it and any other boat holding it loses it.
+function recordBoatIp(boatId, ip, now = Date.now()) {
+  const id = normalizeBoatId(boatId);
+  for (const [other, entry] of boatIp) {
+    if (other !== id && entry.ip === ip) boatIp.delete(other);
+  }
+  boatIp.set(id, { ip, at: now });
+}
+
+function currentBoatIp(boatId, now) {
+  const entry = boatIp.get(boatId);
+  return entry && now - entry.at < BOAT_IP_MAX_AGE_MS ? entry.ip : null;
 }
 
 // Self-reported by the rover on the same health check as recordPending
@@ -178,7 +191,7 @@ function recordBoatAdminPort(boatId, port) {
 }
 
 // One combined, JSON-friendly snapshot for adminServer.js's /api/stats.
-function snapshot() {
+function snapshot(now = Date.now()) {
   const boatIds = new Set([...boatLastSeen.keys(), ...boatPending.keys(), ...boatUploadStats.keys(), ...boatIp.keys()]);
   const boats = {};
   for (const boatId of boatIds) {
@@ -193,7 +206,7 @@ function snapshot() {
       upload,
       pending: pendingInfo ? pendingInfo.pending : null,
       pendingReportedAt: pendingInfo ? pendingInfo.reportedAt : null,
-      ip: boatIp.get(boatId) || null,
+      ip: currentBoatIp(boatId, now),
       adminPort: boatAdminPort.get(boatId) || null,
     };
   }

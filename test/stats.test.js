@@ -19,3 +19,19 @@ test('fixes of one frame in any order give the same rate', () => {
   const hz = stats.snapshot().boats['90002'].fixHz;
   assert.ok(hz > 3.5 && hz < 4.5, `expected about 4 Hz, got ${hz}`);
 });
+
+test('a boat\'s IP drops off after two minutes without a WiFi check-in', () => {
+  const t0 = Date.now();
+  stats.recordBoatIp('90003', '192.168.1.50', t0);
+  assert.strictEqual(stats.snapshot(t0 + 60000).boats['90003'].ip, '192.168.1.50');
+  assert.strictEqual(stats.snapshot(t0 + 120000).boats['90003'].ip, null);
+});
+
+test('an IP handed on to another boat is taken from the one that had it', () => {
+  const t0 = Date.now();
+  stats.recordBoatIp('90004', '192.168.1.60', t0);
+  stats.recordBoatIp('90005', '192.168.1.60', t0 + 1000);
+  const { boats } = stats.snapshot(t0 + 2000);
+  assert.strictEqual(boats['90004'] && boats['90004'].ip, undefined);
+  assert.strictEqual(boats['90005'].ip, '192.168.1.60');
+});

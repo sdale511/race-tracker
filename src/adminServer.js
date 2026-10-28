@@ -1092,7 +1092,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
           <th title="Successful vs. attempted SD-card log uploads since this base station started">Uploads this session</th>
           <th title="Log files this boat says are still waiting to upload, self-reported on its own last health-check ping">Pending</th>
           <th title="Total files ever received from this boat, from a one-time scan of base-uploads at startup - includes previous sessions, not just this one">Files on disk (all-time)</th>
-          <th title="Link to this boat's own admin dashboard - appears once it has self-reported its IP/port via a health check">Rover dashboard</th>
+          <th title="Link to this boat's own admin dashboard - appears once it has self-reported its IP/port via a WiFi health check, and goes after 2 minutes without one">Rover dashboard</th>
         </tr>
       </thead>
       <tbody>${boatRows}</tbody>

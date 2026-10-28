@@ -2435,16 +2435,22 @@ function main() {
   // record. Deliberately not gated on a selected regatta either, unlike
   // the frame handler above - this never touches anything
   // regatta-namespaced, and confirming a boat's radio is alive is exactly
-  // as useful before a regatta's even picked as after. Logged once per
-  // boat (not every ~5s retry until a real fix arrives, see
-  // HELLO_RETRY_MS) - the dashboard's own "last seen" already reflects
-  // every retry; the console only needs to announce the boat once.
-  const helloLoggedBoatIds = new Set();
+  // as useful before a regatta's even picked as after. Logged at most once
+  // per HELLO_LOG_INTERVAL_MS per boat (not every ~30s retry, see
+  // HELLO_RETRY_MS) - the boat keeps sending hellos until its first real
+  // fix goes out, so a rover stuck without GPS keeps reappearing in the
+  // console about once a minute rather than being announced once and
+  // forgotten. A little under 60 s so every second retry logs, even when
+  // the radio delivers it a few ms early.
+  const HELLO_LOG_INTERVAL_MS = 55 * 1000;
+  const helloLoggedAt = new Map();
   radio.on('hello', ({ boatId }) => {
     fleetSleep.noteHeard(boatId);
     stats.recordFrame(boatId, null, null);
-    if (!helloLoggedBoatIds.has(boatId)) {
-      helloLoggedBoatIds.add(boatId);
+    const now = Date.now();
+    const last = helloLoggedAt.get(boatId);
+    if (last === undefined || now - last >= HELLO_LOG_INTERVAL_MS) {
+      helloLoggedAt.set(boatId, now);
       console.log(`[baseStation] boat=${boatId} radio online (no GPS fix yet)`);
     }
   });
