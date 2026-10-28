@@ -1089,7 +1089,7 @@ function sendFixes(fixes) {
 // own the moment a real fix actually transmits (lastTxTime goes non-null,
 // see transmitFix above), since the base then has much better information
 // than a bare hello and there's nothing left for this to usefully add.
-const HELLO_RETRY_MS = 5000;
+const HELLO_RETRY_MS = 30000;
 let helloIntervalId = null;
 let helloStartupTimeoutId = null;
 
