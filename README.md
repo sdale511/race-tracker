@@ -1543,6 +1543,17 @@ SSH tunnel to the base's `:8092` is the safe way to reach it). Two things from t
 `/wind` display and the other tabs (data, radio, map, console, config) live only on the base itself, and a boat's
 "Rover dashboard" link points at that boat's own address on the base's network, so it only opens from there.
 
+### Marks changed outside the base
+
+RegattaUp can move course marks too: it writes the same Redis keys the base reads. The base re-reads the marks every
+`MARKS_SYNC_INTERVAL_MS` (default 10 s; `0` turns the check off). Any mark whose position differs from the base's is
+taken over, the per-boat lap, on-grid and mark-rounding detectors are rebuilt from the new geometry, the boats get the
+new marks straight away (not at the next 60 s heartbeat), and when `committeeStart` or `pin` moved the on-grid zone is
+recalculated and republished (`regattas:<id>:course:on_grid_zone`). A mark Redis no longer has is ignored, and a read
+that overlaps an edit made through the base (map, rover, course reset) or a regatta switch is thrown away, so an older
+position is never put back. The zone is also checked against the marks at startup and on every marks broadcast, so a
+pin moved while the base was down is picked up when it starts.
+
 ### Setting marks from the base's map
 
 On the base's **Map** tab, **edit marks** opens a column with a **Set** button per mark (listed windward to leeward).
@@ -2176,7 +2187,7 @@ to run without one, so there should be no `regattas:none:` keys.
 | `regattas:<id>:mark:<name>` | Hash: `lat`/`lon`, plus `assignedBoatId`/`assignedAt` while a mark-mode rover actively posts it |
 | `regattas:<id>:marks:index` | Set of the mark names above, kept with every mark write and delete (and filled in from the marks already there at startup), so RegattaUp's `getRaceTracks` reads each mark by name instead of scanning the whole keyspace on every poll |
 | `regattas:<id>:course:pin_boundary_enabled` | On/off flag; when on, also publishes `mark:pinBoundary` (computed) for RegattaUp's generic scan |
-| `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against, republished on every marks broadcast |
+| `regattas:<id>:course:on_grid_zone` | JSON array of `{lat, lon}` - the exact polygon `OnGridWatcher` tests against. Recalculated whenever `committeeStart` or `pin` moves, wherever the move came from (the base's map, a mark-mode rover, RegattaUp editing the marks), and at startup or a regatta switch if the published zone no longer matches the marks |
 | `regattas:<id>:track` | Sorted set, every boat's fixes for the regatta, scored by fix timestamp - what RegattaUp's map and archives read. `getTrack(fromMs, toMs, regattaId)`. Formerly `regattas:<id>:all:track` |
 | `regattas:<id>:boats:last` | Hash, boat ID -> that boat's newest fix (the same packed member). One `HSET` per write batch with each boat's newest fix; a fix older than the one already there, or more than a minute in the future, is not written. RegattaUp's `getRaceTracks` reads it with one `HGETALL` for every boat's last position. Expires with the track |
 | `regattas:<id>:boats:known` | Set of boat IDs that reported in; RegattaUp's `getRaceTracks` reads it on every poll for its boat list and each boat's last position. Added on a boat's first fix, then refreshed at most every 10 s per boat (not on every fix), so it refills within 10 s if cleared. Expires with the track `knownBoatIds()` |

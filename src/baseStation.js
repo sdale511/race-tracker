@@ -27,7 +27,8 @@ const roverDiag = require('./roverDiag');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { createPowerScheduleStore } = require('./powerScheduleStore');
-const { OnGridWatcher, zonePolygon } = require('./onGridWatcher');
+const { OnGridWatcher, zonePolygon, sameZone } = require('./onGridWatcher');
+const { changedMarks } = require('./markSync');
 const { decideOnGridPost } = require('./onGridPost');
 const { OnGridWebhookQueue } = require('./onGridWebhookQueue');
 const { MarkRoundingWatcher } = require('./markRoundingWatcher');
@@ -842,15 +843,15 @@ function main() {
   // real radio or SimRadioLink in SIMULATE mode - both just broadcast, no
   // per-boat addressing at this layer at all (see simRadioLink.js).
   //
-  // forceZoneUpdate: only true from setMarkLocation's own call (an explicit,
-  // deliberate operator edit) - every other call site (initial resolve, the
-  // periodic heartbeat, a new boat joining) is routine/automatic and must
-  // NOT overwrite an already-published course:on_grid_zone, same "generate
-  // only if nothing's there yet, never silently regenerate over top of it"
-  // policy as the marks themselves (see resolveMarks' own comment on why -
-  // this Redis instance can be shared with a real course). An edit
-  // genuinely changed a mark's position, so the zone MUST be recomputed to
-  // match, or it'd be left silently stale/wrong for the rest of the race.
+  // forceZoneUpdate: true from the calls that know a mark just changed
+  // (setMarkLocation, the pin boundary switch, resetting the course) - the
+  // zone is then recomputed and written unconditionally, or it'd be left
+  // silently stale/wrong for the rest of the race. Every other call site
+  // (initial resolve or regatta switch, the periodic heartbeat, a new boat
+  // joining) compares the published zone with the one the marks give right
+  // now and republishes only if they differ: that catches a pin or
+  // committeeStart that moved while the base was down or the regatta was
+  // not selected, without rewriting an unchanged zone on every heartbeat.
   let warnedLongRegattaName = null;
   function broadcastMarksNow(forceZoneUpdate = false) {
     if (!raceMarks) return;
@@ -878,8 +879,13 @@ function main() {
     if (config.logMarksBroadcast) console.log('[baseStation] broadcast course marks to all boats');
     (async () => {
       try {
-        if (!forceZoneUpdate && (await redisStore.getOnGridZone())) return;
-        await redisStore.setOnGridZone(zonePolygon(raceMarks, config.regattaup.onGridZoneM));
+        const zone = zonePolygon(raceMarks, config.regattaup.onGridZoneM);
+        if (!forceZoneUpdate) {
+          const published = await redisStore.getOnGridZone();
+          if (sameZone(published, zone)) return;
+          if (published) console.log('[baseStation] the published on-grid zone no longer matches the start marks (committeeStart/pin) - recalculated');
+        }
+        await redisStore.setOnGridZone(zone);
       } catch (err) {
         console.error('[redis] failed to publish on-grid zone:', err.message);
       }
@@ -1276,7 +1282,21 @@ function main() {
   // will silently reassert it if it's still actively assigned - manually
   // editing a mark a live rover still represents doesn't stick, and this
   // deliberately doesn't try to hide that from the admin dashboard.
-  async function setMarkLocation(name, lat, lon, { assignedByBoatId } = {}) {
+  // Edits this process makes to the marks (setMarkLocation, resetCourseToDefault) write Redis first and raceMarks after;
+  // syncMarksFromRedis must not read Redis in between, or it would take the half-done edit for someone else's.
+  const markEdits = { inFlight: 0, epoch: 0 };
+  async function trackMarkEdit(edit) {
+    markEdits.inFlight++;
+    try {
+      return await edit();
+    } finally {
+      markEdits.inFlight--;
+      markEdits.epoch++;
+    }
+  }
+
+  const setMarkLocation = (...args) => trackMarkEdit(() => setMarkLocationNow(...args));
+  async function setMarkLocationNow(name, lat, lon, { assignedByBoatId } = {}) {
     if (!MARK_NAMES.includes(name)) throw new Error(`unknown mark: ${name}`);
     if (!raceMarks) throw new Error('no course published yet - nothing to edit');
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
@@ -1365,7 +1385,8 @@ function main() {
   // hardcoded Black Rock Desert fallback - so this never needs a regatta
   // selected to mean something, but uses the regatta's real location when
   // one is.
-  async function resetCourseToDefault() {
+  const resetCourseToDefault = () => trackMarkEdit(resetCourseToDefaultNow);
+  async function resetCourseToDefaultNow() {
     await redisStore.clearCourseMarks();
     const explicitCenterOverride = process.env.SIM_CENTER_LAT !== undefined || process.env.SIM_CENTER_LON !== undefined;
     const { lat: centerLat, lon: centerLon } = resolveCourseCenter(
@@ -1910,6 +1931,36 @@ function main() {
   // one above (powered on late, brief radio dropout) - see
   // broadcastMarksNow()'s comment.
   setInterval(broadcastMarksNow, config.marksBroadcastIntervalMs);
+
+  // RegattaUp can move marks too - it writes the same Redis keys this base read at startup (or at the regatta switch) and
+  // has no way to tell the base. So every marksSyncIntervalMs the base reads the marks again; any whose position differs
+  // from raceMarks is taken over, the per-boat watchers (which cached the old geometry) are cleared, the boats get the
+  // new marks, and - when committeeStart or pin moved - the on-grid zone is recalculated. A read that overlaps an edit
+  // made here, a regatta switch or a course reset is thrown away rather than risk putting an older position back.
+  let syncingMarks = false;
+  async function syncMarksFromRedis() {
+    if (syncingMarks || !raceMarks || !selectedRegatta || markEdits.inFlight) return;
+    syncingMarks = true;
+    const marksAtStart = raceMarks;
+    const epochAtStart = markEdits.epoch;
+    try {
+      const fresh = await redisStore.getMarks();
+      if (raceMarks !== marksAtStart || markEdits.inFlight || markEdits.epoch !== epochAtStart) return;
+      const changed = changedMarks(raceMarks, fresh, MARK_NAMES);
+      if (!changed.length) return;
+      for (const name of changed) raceMarks[name] = fresh[name];
+      clearRaceWatchers();
+      const startMoved = changed.includes('committeeStart') || changed.includes('pin');
+      if (startMoved && raceMarks.pinBoundaryEnabled) await republishPinBoundaryMark();
+      console.log(`[baseStation] course marks changed outside the base (${changed.join(', ')}) - sent to the boats${startMoved ? ', on-grid zone recalculated' : ''}`);
+      broadcastMarksNow(startMoved);
+    } catch (err) {
+      console.error('[redis] failed to check the course marks for changes:', err.message);
+    } finally {
+      syncingMarks = false;
+    }
+  }
+  if (config.marksSyncIntervalMs > 0) setInterval(syncMarksFromRedis, config.marksSyncIntervalMs);
 
   // One FinishLineWatcher per boat (each needs its own independent
   // crossing-state and lap counter), built lazily the first time a given

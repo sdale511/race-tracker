@@ -272,6 +272,17 @@ function zonePolygon(marks, zoneMeters) {
   ];
 }
 
+// Whether two zone polygons are the same place: same number of corners, each within a centimetre or so (1e-7 degrees) of
+// its counterpart. Only lat/lon count - a stored corner can also carry a mark's assignedBoatId/assignedAt. For deciding
+// whether a zone published earlier still matches the marks as they are now.
+const ZONE_TOLERANCE_DEG = 1e-7;
+function sameZone(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every(
+    (p, i) => p && b[i] && Math.abs(p.lat - b[i].lat) <= ZONE_TOLERANCE_DEG && Math.abs(p.lon - b[i].lon) <= ZONE_TOLERANCE_DEG
+  );
+}
+
 class OnGridWatcher {
   // marks: { committeeStart, pin, windwardGreen, leewardGreen } (all {lat, lon}).
   // zoneMeters: how far behind (leeward of) the line still counts as
@@ -435,4 +446,4 @@ class OnGridWatcher {
   }
 }
 
-module.exports = { OnGridWatcher, zonePolygon };
+module.exports = { OnGridWatcher, zonePolygon, sameZone };

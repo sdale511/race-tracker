@@ -763,6 +763,9 @@ module.exports = {
   // ACK/retry - see "Radio configuration" in the README), so a boat that
   // misses one still gets the next one a minute later.
   marksBroadcastIntervalMs: parseInt(process.env.MARKS_BROADCAST_INTERVAL_MS || '60000', 10),
+  // How often the base station checks Redis for course marks edited outside it (RegattaUp writes the same keys) and
+  // applies a change: new marks to the boats, the on-grid zone recalculated. 0 = never check.
+  marksSyncIntervalMs: parseInt(process.env.MARKS_SYNC_INTERVAL_MS || '10000', 10),
   // Base station only - off by default (see baseStation.js's
   // broadcastMarksNow), set LOG_MARKS_BROADCAST=1 to log every broadcast.
   logMarksBroadcast: process.env.LOG_MARKS_BROADCAST === '1' || process.env.LOG_MARKS_BROADCAST === 'true',
