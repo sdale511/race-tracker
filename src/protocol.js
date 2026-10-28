@@ -447,6 +447,69 @@ function decodeHello(buf) {
   return { boatId: buf.toString('ascii', 1, 1 + BOAT_ID_LEN) };
 }
 
+// Boat -> base: the hello with the rover's own diagnosis attached (see roverDiag.js for what each field means and how the
+// rover works it out). Replaces the plain hello above on current rovers - its own sync byte, so a base that predates it skips
+// it as noise, and a current base still decodes a plain hello from an older rover. Sent before the first fix like the plain
+// hello, and after it whenever the rover has a problem to report (see boatAgent.js's sendHello).
+//
+// Layout (all little-endian):
+//   [0]     sync byte  0x9D
+//   [1..5]  boatId     BOAT_ID_LEN raw ASCII bytes
+//   [6]     flags      uint8, roverDiag.FLAGS bits
+//   [7]     power      uint8, roverDiag.POWER bits (the Pi's own under-voltage/throttling record)
+//   [8]     numSV      uint8, satellites in the last NAV-PVT (0 with none)
+//   [9]     fix        uint8, fixType (low nibble) | carrSoln << 4 from the last NAV-PVT; 0xFF = no NAV-PVT yet
+//   [10..11] build     uint16, the rover's commit count (version.js's last part), top bit set for local changes; 0 = unknown
+//   [12]    checksum   uint8 (sum of bytes 1..11 mod 256)
+const STATUS_HELLO_SYNC = 0x9d;
+const STATUS_HELLO_FRAME_LEN = 1 + BOAT_ID_LEN + 6 + 1;
+const NO_PVT = 0xff;
+
+function encodeStatusHello({ boatId, flags = 0, power = 0, numSV = 0, fixType = null, carrSoln = 0, build = 0, dirty = false }) {
+  if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
+    throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
+  }
+  const buf = Buffer.alloc(STATUS_HELLO_FRAME_LEN);
+  let o = 0;
+  buf.writeUInt8(STATUS_HELLO_SYNC, o++);
+  buf.write(boatId, o, BOAT_ID_LEN, 'ascii');
+  o += BOAT_ID_LEN;
+  buf.writeUInt8(flags & 0xff, o++);
+  buf.writeUInt8(power & 0xff, o++);
+  buf.writeUInt8(Math.min(255, Math.max(0, numSV | 0)), o++);
+  buf.writeUInt8(fixType == null ? NO_PVT : (fixType & 0x0f) | ((carrSoln & 0x0f) << 4), o++);
+  buf.writeUInt16LE((Math.min(0x7fff, Math.max(0, build | 0)) | (dirty ? 0x8000 : 0)) & 0xffff, o);
+  o += 2;
+  let sum = 0;
+  for (let i = 1; i < o; i++) sum = (sum + buf[i]) & 0xff;
+  buf.writeUInt8(sum, o);
+  return buf;
+}
+
+// Returns { boatId, diag: { flags, power, numSV, fixType, carrSoln, build, dirty } }, or null if the buffer isn't one.
+// fixType is null when the rover has had no NAV-PVT at all; build is null when the rover couldn't tell.
+function decodeStatusHello(buf) {
+  if (buf.length !== STATUS_HELLO_FRAME_LEN || buf[0] !== STATUS_HELLO_SYNC) return null;
+  let sum = 0;
+  for (let i = 1; i < STATUS_HELLO_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[STATUS_HELLO_FRAME_LEN - 1]) return null;
+  const o = 1 + BOAT_ID_LEN;
+  const fix = buf[o + 3];
+  const build = buf.readUInt16LE(o + 4);
+  return {
+    boatId: buf.toString('ascii', 1, 1 + BOAT_ID_LEN),
+    diag: {
+      flags: buf[o],
+      power: buf[o + 1],
+      numSV: buf[o + 2],
+      fixType: fix === NO_PVT ? null : fix & 0x0f,
+      carrSoln: fix === NO_PVT ? 0 : fix >> 4,
+      build: build & 0x7fff || null,
+      dirty: (build & 0x8000) !== 0,
+    },
+  };
+}
+
 // Fifth frame type: boat -> base, an optional batched variant of the plain
 // position frame above - packs several consecutive fixes from the SAME boat
 // into one radio transmission instead of one each (see config.js's
@@ -1242,6 +1305,10 @@ module.exports = {
   decodeHello,
   HELLO_FRAME_LEN,
   HELLO_SYNC,
+  encodeStatusHello,
+  decodeStatusHello,
+  STATUS_HELLO_FRAME_LEN,
+  STATUS_HELLO_SYNC,
   encodeBatch,
   decodeBatch,
   batchFrameLen,

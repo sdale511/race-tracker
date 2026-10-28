@@ -108,7 +108,8 @@ python3 ubx_config_set.py --port <the board's USB port> --role rover
 ```
 
 The rover profile turns `UBX-NAV-PVT` on (without it this app sees nothing), sets 10 Hz, disables TMODE3, turns
-`UBX-RXM-RTCM` on, and sets UART2's baud to match the XBee in the board's socket. It writes to RAM, BBR and flash, so it
+`UBX-RXM-RTCM` on, sets UART2's baud to match the XBee in the board's socket, and sets UART1 (the port the Pi reads) to
+115200 with UBX output on. It writes to RAM, BBR and flash, so it
 survives a power cycle, and reads every value back. Each UART is configured independently - the UART the Pi's wires reach
 may still be at factory defaults (NMEA on, UBX off) even after another port was configured. The profile sets
 `UBX-NAV-PVT` on UART1; if the Pi's wires reach UART2, check with the verification step below. The XBee is configured
@@ -308,9 +309,17 @@ use corrections for constellations it tracks) and sets the differential mode to
 
 **Both roles** set UART2's baud (`--uart2-baud`, default 115200) - UART2 is the
 port the onboard correction radio is wired to, so it **must equal that radio's
-own baud** (the base's reads 115200). Only UART2 is touched, never the port the
-script is connected through. If your correction radios aren't at 115200, pass
-their baud instead of accepting the default.
+own baud** (the base's reads 115200). If your correction radios aren't at
+115200, pass their baud instead of accepting the default.
+
+**Both roles** also set UART1, the port the Pi reads, to `--uart1-baud` (default
+115200 - must equal the app's `GPS_BAUD`) with UBX output on. The boards come
+from ArduSimple at 115200, but a receiver that loses its configuration falls back
+to u-blox's factory 38400, and the Pi then reads only garbage (`e0 1c fc 70`...
+bytes on `/dev/ttyAMA0`). Re-running the profile over USB fixes it; through the
+Pi's own UART, connect at the old baud (`--baud 38400`) - UART1's baud is written
+last and the script reconnects at the new one to check it. If nothing answers at
+`--baud` at all, the script says so and stops.
 
 Every write goes to
 RAM+BBR+Flash (survives a power cycle) and is read back afterward to
@@ -1057,7 +1066,8 @@ the radio's 9-byte encryption overhead), the slot table can reach 97 and the pow
 | `0xAA` | position | boat to base | 26 | one fix: boat id, time, lat, lon, speed, heading, status |
 | `0xBB` | marks | base to boats | 91 | the course marks, regatta name (16 chars), and the base's upload address |
 | `0xCC` | ping | base to boats | 6 | "report your position now" |
-| `0xDD` | hello | boat to base | 7 | "my radio is up", before a GPS fix |
+| `0xDD` | hello | boat to base | 7 | "my radio is up", before a GPS fix (rovers before the status hello) |
+| `0x9D` | status hello | boat to base | 13 | the hello plus the rover's own diagnosis - see below |
 | `0xEE` | batch | boat to base | 27 to 84 (7 + 19 per fix + 1) | 1 to 4 full fixes (`TX_DELTA=0`) |
 | `0xE7` | delta batch | boat to base | 35 to 83 (26 + 8 per later fix + 1) | 2 to 8 fixes, first in full, the rest as changes |
 | `0xFF` | set mark | boat to base | 17 | "set this mark to my position" |
@@ -1065,6 +1075,34 @@ the radio's 9-byte encryption overhead), the slot table can reach 97 and the pow
 | `0x99` | power | base to boats | 5 to 95 | radio sleep / wake, for all boats or up to 18 listed |
 | `0xA7` | slot table | base to boats | 7 to 97 | which transmit slot each boat has |
 | `0xD3` | RTCM3 | base to boats | variable | the RTK corrections (standard RTCM3, see above) |
+
+**Status hello frame (`0x9D`).** What a rover sends in place of the plain hello: before its first fix every 30 s, and
+after it at once when its diagnosis changes (a problem starts or clears) and every minute while a problem lasts. The base
+logs it (`boat=... radio online (no GPS fix yet) - GPS wrong baud?, no corrections heard - no GPS data, build 290`, at once
+on a change and otherwise about once a minute) and shows it in the fleet table's **Rover issues** column, with what each
+badge means in its tooltip. A report older than 3 minutes is dropped. A base older than this frame ignores it, so update
+the base too. The checks live in `src/roverDiag.js`:
+
+- **GPS link**, only the first stage that fails: port not open; not a byte from the receiver (wiring, power); bytes but
+  no UBX (UART1 at another baud - a reset receiver is at 38400); UBX but no NAV-PVT. Plus "no satellites" when NAV-PVT
+  shows none (antenna, cable, coupler). Not checked with a simulated GPS or while the GPS sleeps on purpose.
+- **Corrections**: no RTCM bursts heard on the rover's radio, or bursts heard but the receiver reports none arriving
+  (UBX-RXM-RTCM - UART2 at another baud from the XBee).
+- **One-way radio**: nothing from the base (marks, slot table, ping, power) for 2.5 minutes.
+- **Power**: the Pi's own under-voltage/throttling record (`get_throttled`), now and since boot.
+- **Build**: the rover's commit count, flagged when it differs from the base's (a rover that missed its boot update).
+
+```
+[0]       0x9D
+[1..5]    boatId
+[6]       flags        bit 0 GPS port not open, 1 no GPS data, 2 no UBX, 3 no NAV-PVT, 4 no bursts heard,
+                       5 corrections not reaching the GPS, 6 nothing heard from the base
+[7]       power        bit 0 under-voltage now, 1 since boot, 2 throttled now, 3 since boot
+[8]       numSV        satellites in the last NAV-PVT
+[9]       fix          fixType | carrSoln << 4 from the last NAV-PVT; 0xFF = none yet
+[10..11]  build        uint16 commit count, top bit = local changes; 0 = unknown
+[12]      checksum
+```
 
 **Slot table frame (`0xA7`).** Sent by the base, in the base's own slot, every `TX_SLOT_TABLE_S` seconds and
 whenever the table changes, as many frames as needed (up to 15 boats each; every frame also carries the slot count, width and join

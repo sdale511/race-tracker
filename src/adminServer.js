@@ -1,4 +1,6 @@
 const http = require('http');
+const roverDiag = require('./roverDiag');
+const { VERSION } = require('./version');
 const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, VERSION_BADGE_CSS } = require('./dashboardFormat');
 const { MARK_NAMES, MAP_MARK_ORDER, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
@@ -842,6 +844,14 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
       const fixCell = b.lastFix
         ? `<span class="dot ${fixDotClass}"></span>${fixQualityText(b.lastFix)} <span class="muted">(${b.lastFix.numSV} sv)</span>`
         : '<span class="muted">—</span>';
+      // What the rover itself reports is wrong (its status hello - see roverDiag.js), worst first; the full explanation is in
+      // each badge's tooltip. '—' for a rover that has reported nothing (an older rover, or none in the last 3 minutes).
+      const issueItems = b.diag ? roverDiag.describe(b.diag, { baseBuild: roverDiag.buildNumber(VERSION), hasPosition: !!b.lastFix }) : [];
+      const issuesCell = issueItems.length
+        ? issueItems.map((i) => `<span class="rover-issue ${i.level}" title="${escapeHtml(i.title)}">${escapeHtml(i.text)}</span>`).join(' ')
+        : b.diag
+        ? `<span class="muted" title="Reported ${formatAgo(b.diag.at)}">none</span>`
+        : '<span class="muted">—</span>';
       return `
         <tr>
           <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${sleepingIds.includes(id) ? ' <span class="muted" title="Put to sleep from the Radio sleep card - radio off until woken">💤 asleep</span>' : ''}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
@@ -851,6 +861,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
           <td>${fixRate}</td>
           <td>${maxFixRate}</td>
           <td>${fixCell}</td>
+          <td>${issuesCell}</td>
           <td>${laps}</td>
           <td>${b.upload.successes} / ${b.upload.attempts} <span class="muted">(${pct(b.upload.successes, b.upload.attempts)})</span></td>
           <td>${b.pending ?? '—'}</td>
@@ -894,6 +905,10 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   /* A card with nothing to show yet (e.g. no weather station heard): greyed out, small text instead of a big value. */
   .card-idle { opacity: 0.55; }
   .card-idle .idle-text { color: #8b94a3; font-size: 14px; font-weight: 500; }
+  .rover-issue { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 12px; white-space: nowrap; margin: 1px 0; cursor: help; }
+  .rover-issue.bad { background: #3a1416; color: #ff7b72; border: 1px solid #6e2a2c; }
+  .rover-issue.warn { background: #3a2a0f; color: #f2b84b; border: 1px solid #6b5020; }
+  .rover-issue.info { background: #1c2430; color: #8b94a3; border: 1px solid #2c3644; }
   .marks-card { grid-column: span 2; }
   /* The Link health card carries a table, so it spans two (wide screens: three) cards' width - one card's width is too
      narrow for it and the table ran underneath its neighbour; the table scrolls sideways if it still doesn't fit. */
@@ -1088,6 +1103,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
           <th title="How often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Fix rate</th>
           <th title="Highest Fix rate this boat has sustained (measured over a rolling 10s window, sampled only once at least 5s of frames are in it) since this base started - resets on restart">Max rate</th>
           <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count in parentheses">Fix</th>
+          <th title="What the rover itself reports is wrong - GPS link, corrections, radio, power, software build - sent with its hello while it waits for a fix and whenever it has a problem. Hover a badge for what it means and what to check">Rover issues</th>
           <th title="Completed lap count for this boat this race">Laps</th>
           <th title="Successful vs. attempted SD-card log uploads since this base station started">Uploads this session</th>
           <th title="Log files this boat says are still waiting to upload, self-reported on its own last health-check ping">Pending</th>

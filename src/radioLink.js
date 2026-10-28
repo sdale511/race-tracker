@@ -159,9 +159,9 @@ class RadioLink extends EventEmitter {
     return this.send(buf);
   }
 
-  // Eleven frame types share this one byte stream (position frames,
+  // These frame types share this one byte stream (position frames,
   // boat->base; mark broadcasts, base->boats; ping requests, base->boats;
-  // hello announcements, boat->base; batched position frames, boat->base;
+  // hello announcements (plain, and with the rover's diagnosis), boat->base; batched position frames, boat->base;
   // set-mark requests, boat->base; mark-log notes, boat->base; sleep/wake
   // commands, base->boats; transmit-slot tables, base->boats - see protocol.js's own comment on each)
   // - each with its own sync byte, since a single radio link hears
@@ -175,6 +175,7 @@ class RadioLink extends EventEmitter {
     { sync: protocol.PING_SYNC, len: protocol.PING_FRAME_LEN, decode: protocol.decodePing, event: 'ping' },
     { sync: protocol.POWER_SCHEDULE_SYNC, len: protocol.POWER_SCHEDULE_FRAME_LEN, decode: protocol.decodePowerSchedule, event: 'power-schedule' },
     { sync: protocol.HELLO_SYNC, len: protocol.HELLO_FRAME_LEN, decode: protocol.decodeHello, event: 'hello' },
+    { sync: protocol.STATUS_HELLO_SYNC, len: protocol.STATUS_HELLO_FRAME_LEN, decode: protocol.decodeStatusHello, event: 'hello' },
     { sync: protocol.BATCH_SYNC, getLen: protocol.batchFrameLenFromHeader, decode: protocol.decodeBatch, event: 'frame-batch' },
     { sync: protocol.SET_MARK_SYNC, len: protocol.SET_MARK_FRAME_LEN, decode: protocol.decodeSetMark, event: 'set-mark' },
     { sync: protocol.MARK_LOG_SYNC, len: protocol.MARK_LOG_FRAME_LEN, decode: protocol.decodeMarkLog, event: 'mark-log' },

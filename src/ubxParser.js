@@ -234,6 +234,7 @@ class UbxParser extends EventEmitter {
       this._buf = this._buf.slice(frameLen);
 
       if (this._checksumOk(frame)) {
+        this.emit('ubx-frame', msgClass, msgId); // any valid UBX at all - the rover's "is the GPS link right" check (roverDiag.js)
         if (msgClass === CLASS_NAV && msgId === ID_NAV_PVT && length === PVT_LENGTH) {
           const payload = frame.slice(6, 6 + length);
           this.emit('nav-pvt', this._decodePvt(payload));

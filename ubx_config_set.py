@@ -41,7 +41,13 @@ fleet's own pair of boards actually found wrong:
     radio link, not just a bench test).
   Both roles also set UART2's baud (--uart2-baud, default 115200) - UART2 is
   the port the onboard correction radio is wired to, so it MUST equal that
-  radio's own baud (the base's was 115200). The rover profile also makes sure
+  radio's own baud (the base's was 115200). And both set UART1 - the port the
+  Pi reads - to --uart1-baud (default 115200, the app's GPS_BAUD) with UBX
+  output on. A receiver reset to factory settings is back at 38400 there, and
+  the Pi then hears nothing it can decode; the boards come from ArduSimple at
+  115200, which is why nothing set it before. UART1's baud is written last, and
+  when this script is connected through UART1 itself it reconnects at the new
+  baud to read it back. The rover profile also makes sure
   GPS/GLONASS/Galileo/BeiDou tracking is on and the differential mode is 3 (RTK
   fixed), so it can use everything the base sends.
 
@@ -60,6 +66,7 @@ USAGE
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base --dry-run
+    python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 38400 --role rover      # a receiver reset to factory settings
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-ports uart2,usb,uart1
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --constellations gps,galileo,beidou
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-interval 2     # corrections every 2 s
@@ -107,6 +114,8 @@ KEY_INFO = {
     "CFG-UART2OUTPROT-UBX": (0x10760001, "bool", "UBX output UART2"),
     "CFG-UART2OUTPROT-NMEA": (0x10760002, "bool", "NMEA output UART2"),
     "CFG-UART1INPROT-RTCM3X": (0x10730004, "bool", "RTCM3 input UART1"),
+    "CFG-UART1-BAUDRATE": (0x40520001, "u4", "UART1 baud"),
+    "CFG-UART1OUTPROT-UBX": (0x10740001, "bool", "UBX output UART1"),
     "CFG-USBINPROT-RTCM3X": (0x10770004, "bool", "RTCM3 input USB"),
     "CFG-NAVHPG-DGNSSMODE": (0x20140011, "u1", "DGNSS mode (3=fixed)"),
     "CFG-SIGNAL-GPS_ENA": (0x1031001F, "bool", "GPS tracking"),
@@ -522,6 +531,36 @@ def report_tmode(mode):
     print(f"{prefix} = {mode} ({TMODE_NAMES.get(mode, 'unknown')}) [left alone]")
 
 
+def apply_uart1_baud(ser, port, target, dry_run):
+    """UART1 is the port the Pi reads, so its baud must equal the app's GPS_BAUD. Written after everything else: when this
+    script is connected through UART1 itself, the receiver switches as soon as it takes the write, so the ACK can be lost
+    and nothing answers at the old baud - then it reconnects at the new one to read the value back. Over USB the
+    connection doesn't depend on UART1's baud and the read-back just works. Returns (ok, the serial port now in use)."""
+    key_id, kind, label = KEY_INFO["CFG-UART1-BAUDRATE"]
+    prefix = f"  {label:<{LABEL_WIDTH}}"
+    current = poll_key(ser, key_id, kind)
+    current_display = current if current is not None else "?"
+    if current == target:
+        print(f"{prefix} = {target} (unchanged)")
+        return True, ser
+    if dry_run:
+        print(f"{prefix} {current_display} -> {target} [dry run]")
+        return True, ser
+    set_key(ser, key_id, kind, target)  # the ACK may already come at the new baud - the read-back decides
+    verified = poll_key(ser, key_id, kind)
+    via = ""
+    if verified is None and ser.baudrate != target:
+        ser.close()
+        ser = serial.Serial(port, target, timeout=0.1)
+        verified = poll_key(ser, key_id, kind)
+        via = f" (reconnected at {target})"
+    if verified == target:
+        print(f"{prefix} {current_display} -> {target} [OK]{via}")
+        return True, ser
+    print(f"{prefix} {current_display} -> {target} [FAILED - read back {verified if verified is not None else 'nothing'}]")
+    return False, ser
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyAMA0 or COM5")
@@ -582,7 +621,14 @@ def main():
         type=int,
         default=115200,
         help="both roles: baud for UART2, the port the onboard correction radio is wired to - must equal that radio's own baud "
-        "(default 115200). Only UART2 is touched, never the port this script is connected through",
+        "(default 115200)",
+    )
+    ap.add_argument(
+        "--uart1-baud",
+        type=int,
+        default=115200,
+        help="both roles: baud for UART1, the port the Pi reads - must equal the app's GPS_BAUD (default 115200). A receiver "
+        "reset to factory settings is at 38400 here: connect with --baud 38400 through UART1, or over USB, which works at any baud",
     )
     args = ap.parse_args()
 
@@ -609,7 +655,9 @@ def main():
             ap.error("--survey-in is for the base role only (a rover's TMODE3 is switched off)")
         settings = dict(ROVER_SETTINGS)
     settings["CFG-UART2-BAUDRATE"] = args.uart2_baud
+    settings["CFG-UART1OUTPROT-UBX"] = True  # NAV-PVT/NAV-SVIN go out on UART1 - UBX must be allowed there
     print(f"[ubx_config_set] UART2 baud {args.uart2_baud} - must equal the correction radio's own baud")
+    print(f"[ubx_config_set] UART1 baud {args.uart1_baud} - must equal the app's GPS_BAUD")
 
     print(f"[ubx_config_set] connecting to {args.port} @ {args.baud}, role={args.role}{' (dry run)' if args.dry_run else ''}")
     try:
@@ -620,6 +668,11 @@ def main():
 
     ok = True
     try:
+        # Nothing answering at all is almost always the wrong --baud - say so once rather than print "?" for every setting.
+        if poll_key(ser, *KEY_INFO["CFG-UART1-BAUDRATE"][:2]) is None:
+            print(f"[ubx_config_set] no UBX reply on {args.port} @ {args.baud} - wrong --baud? A receiver reset to factory "
+                  "settings talks at 38400 on UART1 (try --baud 38400); over USB any baud works")
+            sys.exit(1)
         if args.role == "base" and not args.survey_in:
             # A receiver is only a base while TMODE3 is survey-in or fixed. 0 (disabled) - e.g. after the rover profile,
             # which sets it to 0, was applied to this receiver - means it sends no usable corrections, so the base profile
@@ -638,6 +691,8 @@ def main():
                 ok = False
         if rtcm_rates and not apply_rtcm_rates(ser, rtcm_rates, args.dry_run, args.realign_rtcm):
             ok = False
+        uart1_ok, ser = apply_uart1_baud(ser, args.port, args.uart1_baud, args.dry_run)
+        ok = ok and uart1_ok
     finally:
         ser.close()
 

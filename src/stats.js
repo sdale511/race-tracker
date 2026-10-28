@@ -48,6 +48,11 @@ const boatIp = new Map(); // boatId -> { ip, at }: LAN IP and when, learned from
 // A boat's IP is shown only while it keeps checking in over WiFi (every UPLOAD_CHECK_INTERVAL_MS, 15 s by default):
 // after this long without one it has left WiFi or been given a new address, and the old one may belong to someone else.
 const BOAT_IP_MAX_AGE_MS = 2 * 60 * 1000;
+// boatId -> { diag, at }: the rover's own diagnosis from its last status hello (protocol.js's decodeStatusHello, roverDiag.js).
+// A rover resends while it has a problem and once more when it clears, so an old one is only left by a rover gone quiet -
+// dropped after DIAG_MAX_AGE_MS rather than shown as if current.
+const boatDiag = new Map();
+const DIAG_MAX_AGE_MS = 3 * 60 * 1000;
 const boatAdminPort = new Map(); // boatId -> its own admin dashboard port, self-reported (see uploadClient.js)
 
 function _boatUpload(boatId) {
@@ -190,6 +195,15 @@ function recordBoatAdminPort(boatId, port) {
   boatAdminPort.set(normalizeBoatId(boatId), port);
 }
 
+function recordRoverDiag(boatId, diag, now = Date.now()) {
+  boatDiag.set(normalizeBoatId(boatId), { diag, at: now });
+}
+
+function currentDiag(boatId, now) {
+  const entry = boatDiag.get(boatId);
+  return entry && now - entry.at < DIAG_MAX_AGE_MS ? { ...entry.diag, at: entry.at } : null;
+}
+
 // One combined, JSON-friendly snapshot for adminServer.js's /api/stats.
 function snapshot(now = Date.now()) {
   const boatIds = new Set([...boatLastSeen.keys(), ...boatPending.keys(), ...boatUploadStats.keys(), ...boatIp.keys()]);
@@ -208,6 +222,7 @@ function snapshot(now = Date.now()) {
       pendingReportedAt: pendingInfo ? pendingInfo.reportedAt : null,
       ip: currentBoatIp(boatId, now),
       adminPort: boatAdminPort.get(boatId) || null,
+      diag: currentDiag(boatId, now),
     };
   }
   return {
@@ -229,5 +244,6 @@ module.exports = {
   recordPending,
   recordBoatIp,
   recordBoatAdminPort,
+  recordRoverDiag,
   snapshot,
 };

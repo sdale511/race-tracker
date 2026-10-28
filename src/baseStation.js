@@ -21,7 +21,8 @@ const {
   bearingDeg,
   WIND_FROM_DEG,
 } = require('./course');
-const { versionLine } = require('./version');
+const { versionLine, VERSION } = require('./version');
+const roverDiag = require('./roverDiag');
 const { FinishLineWatcher } = require('./finishLineWatcher');
 const { LapWebhookQueue } = require('./lapWebhookQueue');
 const { createPowerScheduleStore } = require('./powerScheduleStore');
@@ -2423,35 +2424,49 @@ function main() {
   // never hears a 'frame-batch' event, same as before batching existed.
   radio.on('frame-batch', (fixes) => fixes.forEach(handleDecodedFrame));
 
-  // A boat announcing itself unprompted right at its own radio startup,
-  // before it necessarily has a GPS fix yet (see protocol.js's own comment
-  // on encodeHello, and boatAgent.js's startHelloAnnounce for why - a cold
-  // GPS start can take minutes, and without this there's no way to know a
-  // boat's radio is even alive until its first real fix goes out). Purely
-  // a live-dashboard "last seen" signal - stats.recordFrame with no
-  // position/fix data, so it updates boatLastSeen without ever touching
-  // boatLastPosition/boatLastFix - nothing here is written to CSV, Redis,
-  // or RegattaUp the way a real frame is, since there's no position to
-  // record. Deliberately not gated on a selected regatta either, unlike
-  // the frame handler above - this never touches anything
-  // regatta-namespaced, and confirming a boat's radio is alive is exactly
-  // as useful before a regatta's even picked as after. Logged at most once
-  // per HELLO_LOG_INTERVAL_MS per boat (not every ~30s retry, see
-  // HELLO_RETRY_MS) - the boat keeps sending hellos until its first real
-  // fix goes out, so a rover stuck without GPS keeps reappearing in the
+  // A boat announcing itself unprompted, before it necessarily has a GPS
+  // fix yet (see protocol.js's own comment on encodeHello/encodeStatusHello,
+  // and boatAgent.js's startHelloAnnounce for why - a cold GPS start can
+  // take minutes, and without this there's no way to know a boat's radio is
+  // even alive until its first real fix goes out). A live-dashboard signal
+  // only - stats.recordFrame with no position/fix data, so it updates
+  // boatLastSeen without ever touching boatLastPosition/boatLastFix - nothing
+  // here is written to CSV, Redis, or RegattaUp the way a real frame is.
+  // Deliberately not gated on a selected regatta either, unlike the frame
+  // handler above - this never touches anything regatta-namespaced, and
+  // confirming a boat's radio is alive is exactly as useful before a
+  // regatta's even picked as after.
+  //
+  // A current rover's hello carries its own diagnosis (roverDiag.js): kept
+  // for the fleet table's Rover issues column, and put in the log line. A
+  // plain hello (an older rover) has none. Logged at once when what the
+  // rover reports changes, and otherwise at most once per
+  // HELLO_LOG_INTERVAL_MS per boat - a rover keeps sending hellos until its
+  // first fix goes out (every ~30 s, see HELLO_RETRY_MS) and after it while
+  // it has a problem, so one stuck without GPS keeps reappearing in the
   // console about once a minute rather than being announced once and
-  // forgotten. A little under 60 s so every second retry logs, even when
-  // the radio delivers it a few ms early.
+  // forgotten. A little under 60 s so every second retry logs, even when the
+  // radio delivers it a few ms early.
   const HELLO_LOG_INTERVAL_MS = 55 * 1000;
-  const helloLoggedAt = new Map();
-  radio.on('hello', ({ boatId }) => {
+  const helloLog = new Map(); // boatId -> { at, text }
+  const baseBuild = roverDiag.buildNumber(VERSION);
+  radio.on('hello', ({ boatId, diag }) => {
     fleetSleep.noteHeard(boatId);
     stats.recordFrame(boatId, null, null);
+    if (diag) stats.recordRoverDiag(boatId, diag);
+    const items = diag ? roverDiag.describe(diag, { baseBuild }) : [];
+    const noFix = !diag || diag.fixType == null || diag.fixType < 2;
+    const problems = items.filter((i) => i.level !== 'info').map((i) => i.text);
+    const text =
+      `boat=${boatId} ${noFix ? 'radio online (no GPS fix yet)' : problems.length ? 'reports' : 'reports no problems now'}` +
+      (problems.length ? `${noFix ? ' -' : ''} ${problems.join(', ')}` : '') +
+      (diag ? ` - ${diag.fixType == null ? 'no GPS data' : `sv=${diag.numSV}`}${diag.build ? `, build ${diag.build}` : ''}` : '');
     const now = Date.now();
-    const last = helloLoggedAt.get(boatId);
-    if (last === undefined || now - last >= HELLO_LOG_INTERVAL_MS) {
-      helloLoggedAt.set(boatId, now);
-      console.log(`[baseStation] boat=${boatId} radio online (no GPS fix yet)`);
+    const last = helloLog.get(boatId);
+    const changed = !last || last.text.replace(/ - (sv=|no GPS data).*$/, '') !== text.replace(/ - (sv=|no GPS data).*$/, '');
+    if (changed || now - last.at >= HELLO_LOG_INTERVAL_MS) {
+      helloLog.set(boatId, { at: now, text });
+      (problems.length ? console.warn : console.log)(`[baseStation] ${text}`);
     }
   });
 

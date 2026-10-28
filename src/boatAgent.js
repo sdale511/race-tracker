@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
 const util = require('util');
-const { versionLine } = require('./version');
+const { versionLine, VERSION } = require('./version');
 const config = require('./config');
 const logBuffer = require('./logBuffer');
 const { UbxParser, encodeNavPvt } = require('./ubxParser');
@@ -32,6 +32,7 @@ const { SlotTableFollower, ZoneState, ParkedReporter, JoinBackoff, autoSlotCount
 const { OnGridWatcher } = require('./onGridWatcher');
 const { thinForTurns, thinBackfill } = require('./thinFixes');
 const roverStats = require('./roverStats');
+const roverDiag = require('./roverDiag');
 const { persistMarkName, clearPersistedMarkName } = require('./markNameFile');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 const { startShutdownScheduler } = require('./powerSchedule');
@@ -246,6 +247,8 @@ let announceNextFix = false;
 // the GPS sleeps (or is still reacquiring) it's dropped, and the first fresh
 // fix after a wake is sent immediately instead of waiting for the movement gate.
 function onGpsFix(pvt) {
+  diagState.lastPvtAt = Date.now();
+  diagPvt = pvt;
   if (gpsSleep.shouldDrop(pvt, { valid: hasValidFix(pvt), rtkFixed: pvt.carrSoln === 2 })) return;
   handlePvt(pvt);
   if (announceNextFix && hasValidFix(pvt) && !sleeper.isSleeping()) {
@@ -1081,47 +1084,93 @@ function sendFixes(fixes) {
 // before a first GPS fix necessarily exists - a cold GPS start can take
 // minutes, and without this the base has no way to know this boat's radio
 // is even alive until that first real fix goes out (see protocol.js's own
-// comment on encodeHello for the full reasoning, and baseStation.js's
-// radio.on('hello', ...) for what the base does with it - just a live
-// dashboard "last seen," never written to CSV/Redis/RegattaUp the way a
-// real fix is). Sent immediately, then retried every HELLO_RETRY_MS in
-// case the base wasn't listening yet or the frame was lost - stops on its
-// own the moment a real fix actually transmits (lastTxTime goes non-null,
-// see transmitFix above), since the base then has much better information
-// than a bare hello and there's nothing left for this to usefully add.
+// comment on encodeHello/encodeStatusHello, and baseStation.js's
+// radio.on('hello', ...) for what the base does with it - the log, the
+// dashboard's "last seen" and its Rover issues column, never written to
+// CSV/Redis/RegattaUp the way a real fix is). Carries the rover's own
+// diagnosis (roverDiag.js). Sent immediately, then every HELLO_RETRY_MS
+// until the first real fix transmits (lastTxTime goes non-null, see
+// transmitFix above). After that only when there's something to say: at
+// once when the diagnosis changes (including when a problem clears, so the
+// base drops it), and every HELLO_PROBLEM_MS while a problem lasts.
 const HELLO_RETRY_MS = 30000;
+const HELLO_PROBLEM_MS = 60000;
 let helloIntervalId = null;
 let helloStartupTimeoutId = null;
+let lastHelloAt = 0;
+let lastHelloKey = null;
 
-function sendHello() {
-  if (lastTxTime !== null) {
-    clearInterval(helloIntervalId);
-    helloIntervalId = null;
-    return;
+// What roverDiag.computeFlags looks at - see its own comment. Timestamps are this Pi's clock, set by the handlers below and in
+// openGps/onGpsFix; `since` moves on a wake, so nothing counts as missing until it has had time to come back.
+const diagState = {
+  since: Date.now(),
+  gpsPortOpen: false,
+  lastGpsBytesAt: null,
+  lastUbxAt: null,
+  lastPvtAt: null,
+  lastRxmRtcmAt: null,
+  lastBaseRxAt: null,
+};
+let diagPvt = null; // the last NAV-PVT, whatever its quality, for the satellite count and fix type
+for (const evt of ['marks', 'slot-table', 'ping', 'power-schedule', 'power']) radio.on(evt, () => { diagState.lastBaseRxAt = Date.now(); });
+
+function currentDiag() {
+  const flags = roverDiag.computeFlags({
+    ...diagState,
+    gpsReal: gpsMode === 'real',
+    gpsAsleep: gpsSleep.isAsleep(),
+    watchBursts: config.txGate.enabled && config.txGate.rtcmWatch.enabled && radioExpected,
+    burstsHeard: burstTracker.isActive(),
+  });
+  return {
+    boatId: config.boatId,
+    flags,
+    power: config.simulate ? 0 : roverDiag.readPower(),
+    numSV: diagPvt ? diagPvt.numSV : 0,
+    fixType: diagPvt ? diagPvt.fixType : null,
+    carrSoln: diagPvt ? diagPvt.carrSoln : 0,
+    build: roverDiag.buildNumber(VERSION) || 0,
+    dirty: VERSION.dirty,
+  };
+}
+
+function sendHello({ force = false } = {}) {
+  if (sleeper.isSleeping()) return; // keeps trying on its interval once awake
+  const diag = currentDiag();
+  const key = roverDiag.problemKey(diag);
+  const now = Date.now();
+  const due =
+    force ||
+    lastTxTime === null ||
+    key !== lastHelloKey ||
+    (roverDiag.hasProblem(diag) && now - lastHelloAt >= HELLO_PROBLEM_MS);
+  if (!due) return;
+  const sent = radio.send(protocol.encodeStatusHello(diag));
+  if (sent) {
+    lastHelloAt = now;
+    lastHelloKey = key;
+  } else if (radioExpected) {
+    console.warn(`[radio] ${radioDropReason()}, dropped a hello frame (will keep retrying)`);
   }
-  if (sleeper.isSleeping()) return; // keeps retrying on its interval once awake
-  const sent = radio.send(protocol.encodeHello(config.boatId));
-  if (!sent && radioExpected) console.warn(`[radio] ${radioDropReason()}, dropped a hello frame (will keep retrying)`);
 }
 
 function startHelloAnnounce() {
   // A real radio reconnecting mid-run (see radio.on('disconnected', ...)
   // above) fires 'connected' again - clear any interval/pending startup
-  // delay from the previous connection first, so a reconnect before the
-  // first real fix doesn't leave two intervals (or two pending jittered
-  // starts) both calling sendHello.
+  // delay from the previous connection first, so a reconnect doesn't leave
+  // two intervals (or two pending jittered starts) both calling sendHello.
   if (helloIntervalId !== null) clearInterval(helloIntervalId);
   if (helloStartupTimeoutId !== null) clearTimeout(helloStartupTimeoutId);
 
   // Random delay before the first send (see config.js's own comment on
-  // helloStartupJitterMs) - the retry interval below only starts counting
+  // helloStartupJitterMs) - the interval below only starts counting
   // once this fires, so it inherits the same random offset rather than
   // snapping back to a fleet-wide fixed beat after just one jittered send.
   const delayMs = Math.random() * config.helloStartupJitterMs;
   helloStartupTimeoutId = setTimeout(() => {
     helloStartupTimeoutId = null;
-    sendHello();
-    if (lastTxTime === null) helloIntervalId = setInterval(sendHello, HELLO_RETRY_MS);
+    sendHello({ force: true });
+    helloIntervalId = setInterval(sendHello, HELLO_RETRY_MS);
   }, delayMs);
 }
 
@@ -1228,12 +1277,13 @@ sleeper.on('sleep', () => {
 // instant), then the position itself as soon as the GPS has a fresh fix (see
 // onGpsFix). A rover with no GPS at all just reports its last known fix.
 sleeper.on('wake', () => {
+  diagState.since = Date.now();
   gpsSleep.wake();
   announceNextFix = gpsSleep.supported;
   const delayMs = Math.random() * config.pingResponseJitterMs;
   setTimeout(() => {
     if (!gpsSleep.supported && lastPvt && hasValidFix(lastPvt)) transmitFix(lastPvt);
-    else radio.send(protocol.encodeHello(config.boatId));
+    else sendHello({ force: true });
   }, delayMs);
 });
 
@@ -1248,10 +1298,18 @@ function openGps() {
   const parser = new UbxParser();
 
   gpsSerial = gpsPort;
-  gpsPort.on('open', () => gpsSleep.wakeOnStartup()); // see GpsSleep.wakeOnStartup
+  gpsPort.on('open', () => {
+    diagState.gpsPortOpen = true;
+    gpsSleep.wakeOnStartup(); // see GpsSleep.wakeOnStartup
+  });
 
-  gpsPort.on('data', (chunk) => parser.write(chunk));
+  gpsPort.on('data', (chunk) => {
+    diagState.lastGpsBytesAt = Date.now();
+    parser.write(chunk);
+  });
+  parser.on('ubx-frame', () => { diagState.lastUbxAt = Date.now(); });
   gpsPort.on('close', () => {
+    diagState.gpsPortOpen = false;
     console.warn('[gps] port closed, retrying in 3s');
     setTimeout(openGps, 3000);
   });
@@ -1280,6 +1338,7 @@ function openGps() {
   // own isn't - plenty of message types (e.g. a constellation you're not
   // tracking) are legitimately ignored.
   parser.on('rxm-rtcm', (msg) => {
+    diagState.lastRxmRtcmAt = Date.now();
     roverStats.recordRtcm(msg);
     if (rtcmLogger) rtcmLogger.receiver(msg);
   });

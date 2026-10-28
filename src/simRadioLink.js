@@ -19,6 +19,8 @@ function decodeDatagram(msg) {
   if (powerSchedule) return { event: 'power-schedule', decoded: powerSchedule };
   const hello = protocol.decodeHello(msg);
   if (hello) return { event: 'hello', decoded: hello };
+  const statusHello = protocol.decodeStatusHello(msg);
+  if (statusHello) return { event: 'hello', decoded: statusHello };
   const batch = protocol.decodeBatch(msg);
   if (batch) return { event: 'frame-batch', decoded: batch };
   const delta = protocol.decodeDeltaBatch(msg);
