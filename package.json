@@ -9,6 +9,7 @@
     "fleet": "node src/fleetSim.js",
     "fleet-rf": "RF_BRIDGE=1 node src/fleetSim.js",
     "base": "node src/baseStation.js",
+    "viewer": "node src/baseViewer.js",
     "rtk": "node src/rtkStation.js",
     "basertk": "node src/baseRtkStation.js",
     "mark": "node src/markStation.js",

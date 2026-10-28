@@ -1,7 +1,7 @@
 const http = require('http');
 const roverDiag = require('./roverDiag');
 const { VERSION } = require('./version');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, VERSION_BADGE_CSS } = require('./dashboardFormat');
+const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, renderHostBadge, renderVersionBadge, VERSION_BADGE_CSS } = require('./dashboardFormat');
 const { MARK_NAMES, MAP_MARK_ORDER, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderWindWidget, windApiPayload } = require('./windWidget');
@@ -270,11 +270,11 @@ function renderBandwidthCard(bandwidth, mode) {
 }
 
 // The radio frames card: fix and frame rates, status, totals, sync errors and the port. On the home page and the radio page.
-function renderRadioFramesCard(s) {
+function renderRadioFramesCard(s, readOnly = false) {
   return `<div class="card">
     <div class="card-head">
       <div class="label">Radio frames</div>
-      <button type="button" class="card-btn" onclick="clearRadioStats(this)" title="Start the frame and sync-error totals and the bandwidth graph again from zero.">Clear stats</button>
+      ${readOnly ? '' : '<button type="button" class="card-btn" onclick="clearRadioStats(this)" title="Start the frame and sync-error totals and the bandwidth graph again from zero.">Clear stats</button>'}
     </div>
     <div class="value">${s.radio.fixesPerSec.toLocaleString()}<span class="muted" style="font-size:14px;"> fixes/s</span></div>
     <div class="value" style="font-size:16px; margin-top:-4px;">${s.radio.framesPerSec.toLocaleString()}<span class="muted"> f/s</span></div>
@@ -295,7 +295,31 @@ function adminTabs(active, hasCourse) {
 // The header every base admin page shares - dashboard pages and the course map: the title, the race/practice mode card,
 // the regatta select with webhook status, the no-regatta warning and the tab bar. Its CSS and scripts are
 // BASE_HEADER_CSS, SELECT_REGATTA_JS and PRACTICE_MODE_JS.
-function renderBaseHeader(s, page) {
+// The header of the read-only base viewer (baseViewer.js): no controls and no tab bar - the mode and regatta as plain
+// text, the base's own host and version beside the title.
+function renderViewerHeader(s) {
+  const regatta = s.regatta && s.regatta.selected;
+  return `  <div class="topbar">
+    <h1>race-tracker base viewer${s.host ? renderHostBadge(s.host) : ''}${s.version ? renderVersionBadge(s.version) : ''}</h1>
+    <div class="hdr-right">
+    ${
+      s.slots
+        ? `<div class="mode-card ${s.slots.practice ? 'practice' : 'race'}">
+      <div class="mode-title">${s.slots.practice ? 'PRACTICE MODE' : 'RACE MODE'}</div>
+    </div>`
+        : ''
+    }
+    <div class="regatta-bar">
+      <label>Regatta</label>
+      <strong>${regatta ? `${escapeHtml(regatta.name || '')} - ${escapeHtml(regatta.venue || '')}` : 'none selected'}</strong>
+      <span class="muted" title="Whether results are being sent to RegattaUp">webhook <strong>${s.webhook && s.webhook.enabled ? 'on' : 'off'}</strong></span>
+    </div>
+    </div>
+  </div>`;
+}
+
+function renderBaseHeader(s, page, readOnly = false) {
+  if (readOnly) return renderViewerHeader(s);
   return `  <div class="topbar">
     <h1>race-tracker admin${renderMachineBadges()}</h1>
     <div class="hdr-right">
@@ -407,7 +431,7 @@ const PRACTICE_MODE_JS = `
 // boats that need a look first (bad, then warn), with why. `h` is baseStation's linkHealth.status().
 // The transmit slot table at a glance: how the cycle is laid out, who holds which slot, and what the base is doing with it.
 // compact: just the top of the card (the count and the slot map), for the home page; the full card is on the radio page.
-function renderSlotsCard(slots, info, compact = false) {
+function renderSlotsCard(slots, info, compact = false, readOnly = false) {
   if (!slots) return '';
   const assignable = slots.slotCount - slots.joinSlots;
   const bySlot = new Map(slots.boats.map((b) => [b.slot, b.boatId]));
@@ -438,10 +462,10 @@ function renderSlotsCard(slots, info, compact = false) {
     return `<div class="card slots-card">
       <div class="card-head">
         <div class="label">Transmit slots</div>
-        <button type="button" class="card-btn" onclick="pingFleet(this)" title="Every boat reports its position now, even a stationary one that has already sent its one and only frame. Replies trickle in over the next few seconds.">Ping fleet</button>
+        ${readOnly ? '' : '<button type="button" class="card-btn" onclick="pingFleet(this)" title="Every boat reports its position now, even a stationary one that has already sent its one and only frame. Replies trickle in over the next few seconds.">Ping fleet</button>'}
       </div>
       <div class="value">${slots.boats.length} of ${assignable}</div>
-      <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use &middot; <a href="/radio">details</a></div>
+      <div class="sub">${slots.practice ? 'Practice mode' : 'Race mode'} - slots in use${readOnly ? '' : ' &middot; <a href="/radio">details</a>'}</div>
       ${slotMap}
     </div>`;
   }
@@ -459,7 +483,7 @@ function renderSlotsCard(slots, info, compact = false) {
 // has arrived the newest wind sample (with the last minute's gust and lull), and whether readings are being written - they are
 // only written while a regatta is selected. No reading for 3 minutes is shown red: the hub has stopped broadcasting or
 // left the network.
-function renderTempestCard(t) {
+function renderTempestCard(t, readOnly = false) {
   // Off, or on with nothing received yet: a quiet, greyed-out card rather than a big status line.
   if (!t.enabled) {
     return `<div class="card card-idle">
@@ -471,7 +495,7 @@ function renderTempestCard(t) {
   // The title with a button that opens the embeddable wind display (GET /wind, windWidget.js) in a new tab
   const head = `<div class="card-head">
         <div class="label">Tempest weather station</div>
-        <a class="card-btn" href="/wind" target="_blank" rel="noopener" title="The wind display that can be embedded in an iframe (RegattaUp, a club site, a screen) - opens in a new tab">Wind display</a>
+        ${readOnly ? '' : '<a class="card-btn" href="/wind" target="_blank" rel="noopener" title="The wind display that can be embedded in an iframe (RegattaUp, a club site, a screen) - opens in a new tab">Wind display</a>'}
       </div>`;
   if (!t.lastSample && !t.error) {
     return `<div class="card card-idle">
@@ -683,7 +707,8 @@ function renderWebhookQueuesCard(w) {
 
 // page is 'home' (the default: slots at a glance, course marks, the boat table), 'data' (fleet controls and uploads) or
 // 'radio' (the radio, GPS and system cards) - three views of the same stats, switched by the tabs under the title.
-function renderDashboard(s, rtkControlsEnabled, page = 'home') {
+// readOnly: the remote base viewer's page (baseViewer.js) - the same home page with every control left out.
+function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = false } = {}) {
   // Active fleet at the top, so it naturally floats above however boat IDs
   // happen to be numbered. "Active" is the more recent of lastSeen (an
   // actual radio position frame) and pendingReportedAt (the boat's own
@@ -846,7 +871,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
         : '<span class="muted">—</span>';
       // What the rover itself reports is wrong (its status hello - see roverDiag.js), worst first; the full explanation is in
       // each badge's tooltip. '—' for a rover that has reported nothing (an older rover, or none in the last 3 minutes).
-      const issueItems = b.diag ? roverDiag.describe(b.diag, { baseBuild: roverDiag.buildNumber(VERSION), hasPosition: !!b.lastFix }) : [];
+      const issueItems = b.diag ? roverDiag.describe(b.diag, { baseBuild: roverDiag.buildNumber(s.version || VERSION), hasPosition: !!b.lastFix }) : [];
       const issuesCell = issueItems.length
         ? issueItems.map((i) => `<span class="rover-issue ${i.level}" title="${escapeHtml(i.title)}">${escapeHtml(i.text)}</span>`).join(' ')
         : b.diag
@@ -997,7 +1022,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
 </style>
 </head>
 <body>
-  ${renderBaseHeader(s, page)}
+  ${renderBaseHeader(s, page, readOnly)}
   <div class="subtitle">
     <span class="dot ${redisStatus.dot}"></span>Redis ${redisStatus.text}
     &nbsp;·&nbsp; uptime ${formatDuration(s.uptimeMs)}
@@ -1008,10 +1033,10 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home') {
   ${
     page === 'home'
       ? `<div class="grid">
-    ${renderSlotsCard(s.slots, s.slotInfo, true)}
+    ${renderSlotsCard(s.slots, s.slotInfo, true, readOnly)}
     ${renderBandwidthCard(s.radio.bandwidth, s.radio.mode)}
-    ${renderRadioFramesCard(s)}
-    ${renderTempestCard(s.tempest || { enabled: false, port: config.tempest.port })}
+    ${renderRadioFramesCard(s, readOnly)}
+    ${renderTempestCard(s.tempest || { enabled: false, port: config.tempest.port }, readOnly)}
   </div>`
       : ''
   }

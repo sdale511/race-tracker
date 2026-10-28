@@ -1,0 +1,724 @@
+{
+ "startedAt": 1793214069772,
+ "uptimeMs": 44856,
+ "radio": {
+  "framesReceived": 0,
+  "syncErrors": 0,
+  "mode": "simulated",
+  "port": "UDP :41234",
+  "baud": null,
+  "connected": true,
+  "framesPerSec": 0,
+  "fixesPerSec": 0,
+  "bandwidth": {
+   "history": [
+    {
+     "rx": 587,
+     "tx": 587,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 7,
+     "tx": 7,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 496,
+     "tx": 496,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 151,
+     "tx": 151,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 151,
+     "tx": 151,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 151,
+     "tx": 151,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 151,
+     "tx": 151,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 158,
+     "tx": 158,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 151,
+     "tx": 151,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 151,
+     "tx": 151,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 345,
+     "tx": 345,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 278,
+     "tx": 278,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 278,
+     "tx": 278,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 271,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 225,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 391,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 105,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 271,
+     "tx": 391,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 225,
+     "tx": 105,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 398,
+     "tx": 398,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 105,
+     "tx": 105,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    },
+    {
+     "rx": 391,
+     "tx": 391,
+     "frames": 0,
+     "fixes": 0,
+     "syncErrors": 0
+    }
+   ],
+   "rxBytesPerSec": 391,
+   "txBytesPerSec": 391
+  }
+ },
+ "upload": {
+  "attempts": 0,
+  "successes": 0,
+  "failures": 0,
+  "bytesTotal": 0
+ },
+ "boats": {
+  "00001": {
+   "lastSeen": null,
+   "lastPosition": null,
+   "lastFix": null,
+   "fixHz": null,
+   "maxFixHz": null,
+   "upload": {
+    "attempts": 0,
+    "successes": 0,
+    "failures": 0,
+    "bytes": 0
+   },
+   "pending": 0,
+   "pendingReportedAt": 1793214104215,
+   "ip": null,
+   "adminPort": 8093,
+   "diag": null,
+   "filesOnDisk": 62,
+   "lastUploadOnDisk": 1793213400000
+  },
+  "00002": {
+   "lastSeen": null,
+   "lastPosition": null,
+   "lastFix": null,
+   "fixHz": null,
+   "maxFixHz": null,
+   "upload": {
+    "attempts": 0,
+    "successes": 0,
+    "failures": 0,
+    "bytes": 0
+   },
+   "pending": 0,
+   "pendingReportedAt": 1793214104216,
+   "ip": null,
+   "adminPort": 8094,
+   "diag": null,
+   "filesOnDisk": 63,
+   "lastUploadOnDisk": 1793213400000
+  },
+  "00003": {
+   "lastSeen": null,
+   "lastPosition": null,
+   "lastFix": null,
+   "fixHz": null,
+   "maxFixHz": null,
+   "upload": {
+    "attempts": 0,
+    "successes": 0,
+    "failures": 0,
+    "bytes": 0
+   },
+   "pending": 0,
+   "pendingReportedAt": 1793214104215,
+   "ip": null,
+   "adminPort": 8095,
+   "diag": null,
+   "filesOnDisk": 62,
+   "lastUploadOnDisk": 1793213400000
+  },
+  "00004": {
+   "lastSeen": null,
+   "lastPosition": null,
+   "lastFix": null,
+   "fixHz": null,
+   "maxFixHz": null,
+   "upload": {
+    "attempts": 0,
+    "successes": 0,
+    "failures": 0,
+    "bytes": 0
+   },
+   "pending": 0,
+   "pendingReportedAt": 1793214104216,
+   "ip": "192.168.1.10",
+   "adminPort": 8096,
+   "diag": null,
+   "filesOnDisk": 62,
+   "lastUploadOnDisk": 1793213400000
+  }
+ },
+ "host": "base-pi",
+ "version": {
+  "version": "0.1.295",
+  "commit": "abc1234",
+  "date": "2026-01-01",
+  "dirty": false,
+  "label": "v0.1.295"
+ },
+ "disk": {
+  "totalBytes": 994662584320,
+  "freeBytes": 180541206528,
+  "freePct": 18.151000085262766,
+  "status": "ok"
+ },
+ "base": {
+  "ip": "192.168.1.10",
+  "uploadPort": 8090,
+  "adminPort": 8092,
+  "redisConnected": true
+ },
+ "course": {
+  "marks": {
+   "windwardGreen": {
+    "lat": 40.89477018074021,
+    "lon": -118.385889
+   },
+   "windwardBlack": {
+    "lat": 40.89892936148042,
+    "lon": -118.385889
+   },
+   "leewardGreen": {
+    "lat": 40.88645181925979,
+    "lon": -118.385889
+   },
+   "leewardBlack": {
+    "lat": 40.88229263851958,
+    "lon": -118.385889
+   },
+   "pin": {
+    "lat": 40.890611,
+    "lon": -118.38661339011121
+   },
+   "committeeStart": {
+    "lat": 40.890611,
+    "lon": -118.385889
+   },
+   "committeeFinish": {
+    "lat": 40.890611,
+    "lon": -118.38581770176071
+   },
+   "finish": {
+    "lat": 40.890611,
+    "lon": -118.38516575066063
+   },
+   "pinBoundaryEnabled": false
+  },
+  "boatsKnown": 0
+ },
+ "lapCounts": {},
+ "sleep": {
+  "cycleS": 10,
+  "sleeping": {},
+  "waking": null
+ },
+ "slots": {
+  "version": 0,
+  "slotCount": 41,
+  "slotWidthMs": 45,
+  "joinSlots": 2,
+  "parked": [],
+  "racing": [],
+  "gridOnly": false,
+  "practice": true,
+  "boats": [],
+  "overflow": []
+ },
+ "slotInfo": {
+  "configuredPeriodMs": 2000,
+  "heardPeriodMs": 2001.669499874115,
+  "countAuto": true,
+  "afterMs": 30,
+  "staleS": 45,
+  "movingKn": 1.5,
+  "tableIntervalS": 10,
+  "lastTableAt": 1793214110835,
+  "tablesSent": 5,
+  "baseTx": {
+   "spilled": 0,
+   "expired": 0,
+   "dropped": 0,
+   "queued": 0
+  }
+ },
+ "linkHealth": {
+  "level": "ok",
+  "syncPct": null,
+  "syncLevel": "ok",
+  "syncErrors": 0,
+  "frames": 0,
+  "boats": [],
+  "counts": {
+   "ok": 0,
+   "warn": 0,
+   "bad": 0,
+   "quiet": 0
+  },
+  "thresholds": {
+   "rtkWarnPct": 90,
+   "rtkBadPct": 50,
+   "gapsWarn": 1,
+   "gapsBad": 3,
+   "silentWarnS": 5,
+   "silentBadS": 10,
+   "syncWarnPct": 1,
+   "syncBadPct": 3,
+   "syncMinFrames": 20
+  }
+ },
+ "tempest": {
+  "enabled": true,
+  "port": 50222,
+  "serial": null,
+  "error": null,
+  "packets": 14,
+  "ignored": 0,
+  "samples": 14,
+  "stationsHeard": [
+   "ST-SIM00001"
+  ],
+  "lastObs": null,
+  "lastRapid": {
+   "type": "rapid",
+   "serial": "ST-SIM00001",
+   "stationTime": 1793214111000,
+   "speed": 6,
+   "dir": 7,
+   "at": 1793214111812
+  },
+  "lastSample": {
+   "t": 1793214111812,
+   "dir": 7,
+   "avg": 6,
+   "gust": 6.7,
+   "lull": 5,
+   "station": "ST-SIM00001",
+   "units": "mph"
+  },
+  "written": 14,
+  "skipped": 0,
+  "failed": 0,
+  "lastError": null,
+  "regattaSelected": true
+ },
+ "redis": {
+  "totalTracks": 8,
+  "boatsKnown": 4,
+  "writeHealth": {
+   "healthy": true,
+   "failureCount": 0,
+   "lastError": null,
+   "lastErrorAt": null,
+   "lastOkAt": null
+  }
+ },
+ "redisMemory": {
+  "usedBytes": 1350224,
+  "maxmemoryBytes": 536870912
+ },
+ "baseGpsPort": null,
+ "baseGpsConnected": null,
+ "baseGpsFix": null,
+ "baseGpsSurvey": null,
+ "markAssignment": null,
+ "powerSchedule": {
+  "lastSentAt": null,
+  "sendCount": 0,
+  "rebroadcastS": 60,
+  "radioEnabled": true,
+  "witty": {
+   "settings": {
+    "mode": "daily",
+    "haltItself": true,
+    "stamp": 1792297821,
+    "startTime": "09:00",
+    "endTime": "17:00",
+    "lat": 40.890611,
+    "lon": -118.385889,
+    "beforeMin": 30,
+    "afterMin": 30,
+    "days": 366,
+    "enabled": false
+   },
+   "description": "on 09:00 to 17:00 every day, the boat halts itself when idle",
+   "defaultPlace": {
+    "lat": 40.890611,
+    "lon": -118.385889
+   }
+  },
+  "shutdown": {
+   "settings": {
+    "enabled": false,
+    "whenIdle": true,
+    "time": "17:00",
+    "idleMinutes": 10,
+    "speedKn": 0.5,
+    "stamp": 1792360545
+   },
+   "description": "disabled"
+  }
+ },
+ "webhook": {
+  "enabled": false,
+  "queueReady": true,
+  "queues": [
+   {
+    "name": "Laps",
+    "ready": true,
+    "rows": []
+   },
+   {
+    "name": "On grid",
+    "ready": true,
+    "rows": []
+   },
+   {
+    "name": "Mark roundings",
+    "ready": true,
+    "rows": []
+   },
+   {
+    "name": "Fouls",
+    "ready": true,
+    "rows": []
+   }
+  ]
+ },
+ "regatta": {
+  "regattas": [
+   {
+    "id": "6a44a2531e401d60c28afcd8",
+    "name": "test",
+    "venue": "JYC",
+    "default_lat": 40.890611,
+    "default_lon": -118.385889,
+    "start_date": "2026-09-24",
+    "end_date": "2026-10-31",
+    "status": "draft",
+    "classes": [
+     "Blokart",
+     "Mini Skeeter",
+     "NALSA Class II",
+     "NALSA Class V",
+     "NALSA Class IV",
+     "NALSA Class III",
+     "FISLY Class 3"
+    ],
+    "organization_id": "6a4af26a5058045f6b5d20db"
+   },
+   {
+    "id": "6a9ce2dc71d957f79f17eb9d",
+    "name": "NALSA ALC",
+    "venue": "Ivanpah Dry Lake, CA",
+    "default_lat": 35.55394,
+    "default_lon": -115.396081,
+    "start_date": "2027-03-21",
+    "end_date": "2027-03-27",
+    "status": "coming_soon",
+    "classes": [
+     "Blokart",
+     "Mini Skeeter",
+     "Sportsman",
+     "Manta Twin",
+     "Standart",
+     "Manta Single",
+     "Promo",
+     "NALSA Class IV",
+     "NALSA Class II",
+     "NALSA Class V",
+     "Intl 5.6 Mini",
+     "NALSA Class III",
+     "US Mini 6.7",
+     "FISLY Class 3",
+     "FISLY Class 5"
+    ],
+    "organization_id": "6a4af2ae3be33170d9e8cb9c"
+   }
+  ],
+  "selected": {
+   "id": "6a44a2531e401d60c28afcd8",
+   "name": "test",
+   "venue": "JYC",
+   "default_lat": 40.890611,
+   "default_lon": -118.385889,
+   "start_date": "2026-09-24",
+   "end_date": "2026-10-31",
+   "status": "draft",
+   "classes": [
+    "Blokart",
+    "Mini Skeeter",
+    "NALSA Class II",
+    "NALSA Class V",
+    "NALSA Class IV",
+    "NALSA Class III",
+    "FISLY Class 3"
+   ],
+   "organization_id": "6a4af26a5058045f6b5d20db"
+  }
+ }
+}

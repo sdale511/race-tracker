@@ -866,6 +866,29 @@ module.exports = {
     port: parseInt(process.env.ADMIN_PORT || '8092', 10),
   },
 
+  // --- Base discovery (base answers, viewer asks) ---
+  // The base answers a UDP broadcast probe on this port with its hostname, version, regatta and admin port, so
+  // `npm run viewer` with no address can find it on the local network (src/baseDiscovery.js). The viewer sends the
+  // probes and waits timeoutMs for answers. Broadcasts don't cross routers or a VPN - give the viewer an address there.
+  discovery: {
+    enabled: process.env.DISCOVERY_ENABLED !== '0' && process.env.DISCOVERY_ENABLED !== 'false',
+    port: parseInt(process.env.DISCOVERY_PORT || '8093', 10),
+    timeoutMs: parseInt(process.env.DISCOVERY_TIMEOUT_MS || '2000', 10),
+  },
+
+  // --- Base viewer (npm run viewer) ---
+  // A read-only, radio-less copy of the base dashboard's fleet page (src/baseViewer.js), fed by polling a running
+  // base's GET /api/stats over HTTP - so it can run anywhere that can reach the base's admin port, to monitor a
+  // race remotely. baseUrl: that base's admin address (http://pi.local:8092; a bare host gets http:// and the admin
+  // port added), or empty to find a base on the local network (see discovery above); the viewer's own page is served
+  // on host:port (loopback unless VIEWER_HOST says otherwise).
+  viewer: {
+    baseUrl: process.env.VIEWER_BASE_URL || '',
+    port: parseInt(process.env.VIEWER_PORT || '8094', 10),
+    host: process.env.VIEWER_HOST || '127.0.0.1',
+    timeoutMs: parseInt(process.env.VIEWER_TIMEOUT_MS || '4000', 10),
+  },
+
   // --- Redis (base station only) ---
   // Where baseStation.js records every decoded fix, so tracks can be queried
   // per-boat or across the whole fleet for a timeframe. See redisStore.js.

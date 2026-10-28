@@ -314,6 +314,25 @@ const sections = [
     rows: [{ label: 'port', desc: "Port this machine's admin dashboard is served on", value: config.admin.port, envVar: 'ADMIN_PORT' }],
   },
   {
+    title: 'Base discovery',
+    roles: ['base', 'viewer'],
+    rows: [
+      { label: 'enabled', desc: 'Base only: answer discovery probes so a base viewer can find this base without its address', value: config.discovery.enabled, envVar: 'DISCOVERY_ENABLED', roles: ['base'] },
+      { label: 'port', desc: 'UDP port the base listens for discovery probes on (the viewer probes the same one)', value: config.discovery.port, envVar: 'DISCOVERY_PORT' },
+      { label: 'timeoutMs', desc: 'Viewer only: how long to wait for bases to answer a probe', value: config.discovery.timeoutMs, envVar: 'DISCOVERY_TIMEOUT_MS', unit: 'ms', roles: ['viewer'] },
+    ],
+  },
+  {
+    title: 'Base viewer (npm run viewer)',
+    roles: ['viewer'],
+    rows: [
+      { label: 'baseUrl', desc: "The base whose stats the viewer shows (its admin address, e.g. http://pi.local:8092) - or pass it as an argument. Empty: find a base on the local network", value: config.viewer.baseUrl || '(not set)', envVar: 'VIEWER_BASE_URL' },
+      { label: 'port', desc: 'Port the viewer page is served on', value: config.viewer.port, envVar: 'VIEWER_PORT' },
+      { label: 'host', desc: 'Address the viewer listens on - loopback only unless set (0.0.0.0 lets other machines open it)', value: config.viewer.host, envVar: 'VIEWER_HOST' },
+      { label: 'timeoutMs', desc: "How long to wait for the base's stats before showing it as unreachable", value: config.viewer.timeoutMs, envVar: 'VIEWER_TIMEOUT_MS', unit: 'ms' },
+    ],
+  },
+  {
     title: 'Tempest weather station',
     roles: ['base'],
     rows: [
@@ -514,8 +533,10 @@ function sectionModes(section) {
 }
 
 // A section's heading with the modes it applies to, worked out from its rows' tags: "Redis (base, basertk)".
+// A section no mode reads (the base viewer's, which is its own program) is just its title.
 function sectionHeading(section, mark) {
-  return `${section.title} (${modesText(sectionModes(section), mark)})`;
+  const modes = sectionModes(section);
+  return modes.length ? `${section.title} (${modesText(modes, mark)})` : section.title;
 }
 
 // A row's own modes when fewer modes read it than its section as a whole, else null (the heading already says).

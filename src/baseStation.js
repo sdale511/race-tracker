@@ -21,6 +21,7 @@ const {
   bearingDeg,
   WIND_FROM_DEG,
 } = require('./course');
+const os = require('os');
 const { versionLine, VERSION } = require('./version');
 const roverDiag = require('./roverDiag');
 const { FinishLineWatcher } = require('./finishLineWatcher');
@@ -36,6 +37,7 @@ const { FoulWebhookQueue } = require('./foulWebhookQueue');
 const { pruneOldLogs, pruneForDiskSpace } = require('./logRotation');
 const { startUploadServer, detectLocalIp, scanUploadDir } = require('./uploadServer');
 const { startAdminServer } = require('./adminServer');
+const { startResponder } = require('./baseDiscovery');
 const stats = require('./stats');
 const { getDiskSpace, CRITICAL_BELOW_PCT } = require('./diskSpace');
 const { createBaseGps } = require('./baseGps');
@@ -2745,6 +2747,10 @@ function main() {
     return {
       ...snapshot,
       boats,
+      // Which machine and code these stats come from - a remote base viewer (baseViewer.js) shows them, and judges the
+      // boats' software builds against this version rather than its own.
+      host: os.hostname(),
+      version: VERSION,
       disk: getDiskSpace(config.logDir),
       base: {
         ip: baseIp,
@@ -2911,6 +2917,18 @@ function main() {
     // represents" dropdown and hides the manual "Set" button list.
     markMode,
   });
+
+  // Answers a base viewer's "who's the base?" broadcast (see baseDiscovery.js) so it can find this admin dashboard
+  // without being told the address. Not being able to bind the port only costs that, never the base.
+  if (config.discovery.enabled) {
+    startResponder({
+      port: config.discovery.port,
+      getInfo: () => ({ host: os.hostname(), version: VERSION, adminPort: config.admin.port, regatta: selectedRegatta ? selectedRegatta.name || null : null }),
+    }).then(
+      () => console.log(`[baseStation] answering base viewer discovery on UDP ${config.discovery.port}`),
+      (err) => console.warn(`[baseStation] base viewer discovery unavailable (cannot listen on UDP ${config.discovery.port}): ${err.message}`)
+    );
+  }
 
   if (config.simulate) {
     console.log(`[baseStation] SIMULATE=1 - listening for sim radio frames on UDP :${config.sim.port}`);

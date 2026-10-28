@@ -1306,7 +1306,7 @@ looking identical.
 
 ## Running
 
-Five modes, each its own `npm run` script:
+Five modes, each its own `npm run` script - plus a read-only viewer for watching a base from elsewhere (`npm run viewer`, see "Base viewer" below):
 
 | Mode | Command | Runs on | What it does |
 |---|---|---|---|
@@ -1501,6 +1501,47 @@ Plain `base` still opens `GPS_PORT` when set, but only for the ordinary
 TMODE3/survey-in cards, and `/api/gps/survey/mode`/`/api/gps/save-config`
 404. Use `basertk` when this machine's GPS should actually control RTCM
 broadcast to the fleet, not just supply a one-off reading.
+
+### Base viewer (watching a race remotely)
+
+```
+npm run viewer                               # finds the base on the local network; then open http://localhost:8094
+npm run viewer -- http://pi.local:8092       # or name the base's admin address
+```
+`src/baseViewer.js` is a read-only, radio-less copy of the base dashboard's home page - the same transmit-slots,
+radio, Tempest and **Fleet** table cards, with every control left out (no race/practice switch, regatta select,
+Ping fleet, Clear stats or tab bar). It only polls the base's `GET /api/stats` over HTTP, so it opens no radio,
+serial port or Redis, keeps no data of its own, and runs on any machine that can reach the base's admin port - a laptop
+at home, say, over a VPN or Tailscale. The page reloads itself every 5 s like the base's own; its header shows the base's
+hostname and software version, and the boat-build check in "Rover issues" is made against the base's version, not the
+viewer's.
+
+**Finding the base.** With no address the viewer broadcasts a small UDP probe (port 8093) and every base on the same
+network answers with its hostname, version, regatta and admin port; the viewer uses the address the answer came from. It
+keeps looking until a base answers, and looks again (at most every 10 s) if the one it found stops answering, so a base
+that gets a new DHCP address is picked up again by hostname. If more than one base answers (say a simulated one on a
+laptop), the page lists them as ready-to-run `npm run viewer -- <address>` commands rather than guess. Broadcasts stay on
+the local network segment: across a router, VPN or the internet, give the viewer the address. A base answers probes
+from the moment it starts, so one already running needs a restart; `DISCOVERY_ENABLED=0` turns the answering off.
+
+If the base stops answering, the last reading stays on screen under a red "Base unreachable" banner saying how old it is,
+and the page recovers by itself when the base is back; before the first answer it shows a waiting page. Several browsers
+open on one viewer cost the base one stats request every 2 s between them.
+
+| Setting | Default | |
+|---|---|---|
+| `VIEWER_BASE_URL` (or the first argument) | - | The base: `http://pi.local:8092`, `pi.local:8092` or a bare `pi.local` (port 8092 assumed). Empty: find one by UDP broadcast |
+| `DISCOVERY_PORT` | `8093` | UDP port the base listens for probes on and the viewer sends them to |
+| `DISCOVERY_TIMEOUT_MS` | `2000` | How long the viewer waits for bases to answer a probe |
+| `DISCOVERY_ENABLED` | `1` | Base only: `0` stops it answering probes |
+| `VIEWER_PORT` | `8094` | Port the viewer page is served on |
+| `VIEWER_HOST` | `127.0.0.1` | Address it listens on - this machine only. `0.0.0.0` lets other machines open it |
+| `VIEWER_TIMEOUT_MS` | `4000` | How long to wait for the base before showing it as unreachable |
+
+The viewer page has no login, and neither does the base's admin port - keep both off the open internet (a VPN or
+SSH tunnel to the base's `:8092` is the safe way to reach it). Two things from the base's page don't carry over: the
+`/wind` display and the other tabs (data, radio, map, console, config) live only on the base itself, and a boat's
+"Rover dashboard" link points at that boat's own address on the base's network, so it only opens from there.
 
 ### Setting marks from the base's map
 
