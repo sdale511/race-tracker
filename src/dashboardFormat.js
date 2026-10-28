@@ -17,6 +17,16 @@ function formatAgo(ms) {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`;
 }
 
+// formatAgo without the words, for a table cell that should stay on one line: "now", "42s", "7m", "2h15m".
+function formatAgoShort(ms) {
+  if (ms == null) return 'never';
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 5) return 'now';
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
 function formatDuration(ms) {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -158,4 +168,4 @@ const VERSION_BADGE_CSS = `
   .host-badge + .version-badge { margin-left: 6px; }
 `;
 
-module.exports = { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, renderHostBadge, renderMachineBadges, VERSION_BADGE_CSS };
+module.exports = { formatAgo, formatAgoShort, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderVersionBadge, renderHostBadge, renderMachineBadges, VERSION_BADGE_CSS };

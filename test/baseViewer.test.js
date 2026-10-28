@@ -261,3 +261,14 @@ test('a discovered base that moves to a new address is found again', async () =>
     }
   );
 });
+
+test('the fleet table keeps its cells short enough to stay on one line', () => {
+  const html = renderDashboard(STATS, false, 'home', { readOnly: true });
+  assert.ok(html.includes('<table class="fleet">'));
+  for (const header of ['>Seen</th>', '>Radio</th>', '>Rate Hz</th>', '>Max Hz</th>', '>Uploads</th>', '>Files</th>', '>Dashboard</th>']) {
+    assert.ok(html.includes(header), `header ${header}`);
+  }
+  for (const wordy of ['Uploads this session</th>', 'Files on disk (all-time)</th>', 'Rover dashboard</th>', ' ago</td>', '(WiFi)</span>', ' sv)']) {
+    assert.ok(!html.includes(wordy), `no ${wordy}`);
+  }
+});

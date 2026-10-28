@@ -1,7 +1,7 @@
 const http = require('http');
 const roverDiag = require('./roverDiag');
 const { VERSION } = require('./version');
-const { formatAgo, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, renderHostBadge, renderVersionBadge, VERSION_BADGE_CSS } = require('./dashboardFormat');
+const { formatAgo, formatAgoShort, formatDuration, formatBytes, pct, renderDiskCard, SLOT_MAP_CSS, renderSlotMap, REFRESH_CONTROL_HTML, REFRESH_SCRIPT, renderMachineBadges, renderHostBadge, renderVersionBadge, VERSION_BADGE_CSS } = require('./dashboardFormat');
 const { MARK_NAMES, MAP_MARK_ORDER, MARK_COLORS, markStroke, distanceMeters, bearingDeg, compassDir, getPinBoundaryFarPoint } = require('./course');
 const { renderConfigPage } = require('./configReport');
 const { renderWindWidget, windApiPayload } = require('./windWidget');
@@ -781,8 +781,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
     const of = s.slots.slotCount - s.slots.joinSlots;
     if (slotParked.has(id)) return '<td title="On the start grid: parked. A boat there takes no slot and reports only now and then, until it leaves the grid"><span class="muted">parked</span></td>';
     if (slotByBoat.has(id)) return `<td title="Slot ${slotByBoat.get(id)} of ${of}, ${s.slots.slotWidthMs} ms each, assigned by the base's slot table">${slotByBoat.get(id)}</td>`;
-    if (slotOverflow.has(id)) return `<td title="All ${of} slots are taken - this boat shares the ${s.slots.joinSlots} join slots with other boats that have none, and may collide with them"><span class="muted">shared (full)</span></td>`;
-    if (s.slots.gridOnly && !slotRacing.has(id)) return '<td title="No slot: slots go only to boats that have started from the start grid, so a boat rolling out, watching or heading to camp does not use one"><span class="muted">not racing</span></td>';
+    if (slotOverflow.has(id)) return `<td title="All ${of} slots are taken - this boat shares the ${s.slots.joinSlots} join slots with other boats that have none, and may collide with them"><span class="muted">shared</span></td>`;
+    if (s.slots.gridOnly && !slotRacing.has(id)) return '<td title="No slot: slots go only to boats that have started from the start grid, so a boat rolling out, watching or heading to camp does not use one"><span class="muted">idle</span></td>';
     return '<td title="No slot: a boat gets one on its first fix under way, and gives it up when it stops"><span class="muted">—</span></td>';
   };
 
@@ -818,7 +818,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
       // but whose WiFi still reaches the base looks deceptively "recent"
       // in that combined column; this one can't be fooled that way, since
       // it's exactly b.lastSeen with nothing else mixed in.
-      const lastSeenRadio = b.lastSeen != null ? formatAgo(b.lastSeen) : '<span class="muted">—</span>';
+      const lastSeenRadio = b.lastSeen != null ? formatAgoShort(b.lastSeen) : '<span class="muted">—</span>';
       const laps = s.lapCounts[id] || 0;
       // The boat's own rover dashboard (see roverAdminServer.js) - IP and
       // admin port are both learned passively/self-reported from its
@@ -840,15 +840,15 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
       // before.
       const diskHistory =
         b.filesOnDisk != null
-          ? `${b.filesOnDisk} <span class="muted">(last ${formatAgo(b.lastUploadOnDisk)})</span>`
+          ? `<span title="Last upload ${formatAgo(b.lastUploadOnDisk)}">${b.filesOnDisk} <span class="muted">${formatAgoShort(b.lastUploadOnDisk)}</span></span>`
           : '<span class="muted">—</span>';
       // The actual radio-frame arrival rate at THIS base, not the boat's own
       // onboard GPS_HZ - see stats.js's fixHz for why those normally
       // differ (TX_DISTANCE_M gates what's ever transmitted). '—' both
       // before any frame has arrived and for a stationary boat that
       // legitimately has nothing new to send right now.
-      const fixRate = b.fixHz != null ? `${b.fixHz.toFixed(1)} Hz` : '<span class="muted">—</span>';
-      const maxFixRate = b.maxFixHz != null ? `${b.maxFixHz.toFixed(1)} Hz` : '<span class="muted">—</span>';
+      const fixRate = b.fixHz != null ? b.fixHz.toFixed(1) : '<span class="muted">—</span>';
+      const maxFixRate = b.maxFixHz != null ? b.maxFixHz.toFixed(1) : '<span class="muted">—</span>';
       // b.lastFix is {carrSoln, gnssFixOk, numSV} off the last decoded
       // frame (see stats.js's recordFrame) - null until the first frame
       // arrives. No fixType here (RTK-fixed/float vs. plain 3D/2D) - that
@@ -867,7 +867,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
         ? 'dot-orange'
         : 'dot-red';
       const fixCell = b.lastFix
-        ? `<span class="dot ${fixDotClass}"></span>${fixQualityText(b.lastFix)} <span class="muted">(${b.lastFix.numSV} sv)</span>`
+        ? `<span class="dot ${fixDotClass}"></span>${fixQualityText(b.lastFix)} <span class="muted">${b.lastFix.numSV}sv</span>`
         : '<span class="muted">—</span>';
       // What the rover itself reports is wrong (its status hello - see roverDiag.js), worst first; the full explanation is in
       // each badge's tooltip. '—' for a rover that has reported nothing (an older rover, or none in the last 3 minutes).
@@ -879,16 +879,16 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
         : '<span class="muted">—</span>';
       return `
         <tr>
-          <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${sleepingIds.includes(id) ? ' <span class="muted" title="Put to sleep from the Radio sleep card - radio off until woken">💤 asleep</span>' : ''}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
+          <td><span class="dot ${online ? 'dot-green' : 'dot-gray'}"></span>boat ${id}${sleepingIds.includes(id) ? ' <span class="muted" title="Put to sleep from the Radio sleep card - radio off until woken">💤</span>' : ''}${assignmentBadge ? ` ${assignmentBadge}` : ''}</td>
           ${slotCell(id)}
-          <td>${formatAgo(activity)}${viaWifi ? ' <span class="muted">(WiFi)</span>' : ''}</td>
+          <td>${formatAgoShort(activity)}${viaWifi ? ' <span class="muted" title="Only the WiFi health-check ping is current - no radio frame this recent">wifi</span>' : ''}</td>
           <td>${lastSeenRadio}</td>
           <td>${fixRate}</td>
           <td>${maxFixRate}</td>
           <td>${fixCell}</td>
-          <td>${issuesCell}</td>
+          <td class="wrap">${issuesCell}</td>
           <td>${laps}</td>
-          <td>${b.upload.successes} / ${b.upload.attempts} <span class="muted">(${pct(b.upload.successes, b.upload.attempts)})</span></td>
+          <td>${b.upload.successes}/${b.upload.attempts} <span class="muted">${pct(b.upload.successes, b.upload.attempts)}</span></td>
           <td>${b.pending ?? '—'}</td>
           <td>${diskHistory}</td>
           <td>${statsLink}</td>
@@ -985,6 +985,11 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
      page's own 5s refreshes; without this the whole table visibly
      reflows every refresh even when no row actually changed. */
   th:nth-child(2), td:nth-child(2) { min-width: 150px; }
+  /* The fleet table: one line per cell (the rover issues badges are the one cell allowed to wrap), tighter padding,
+     and none of the fixed width above - that was for a column of long "21m ago (WiFi)" text. */
+  table.fleet th, table.fleet td { white-space: nowrap; padding: 8px 10px; }
+  table.fleet td.wrap { white-space: normal; }
+  table.fleet th:nth-child(2), table.fleet td:nth-child(2) { min-width: 0; }
   th { color: #8b94a3; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid #262c36; }
   tr:not(:last-child) td { border-bottom: 1px solid #1c222b; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
@@ -1118,22 +1123,22 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
     ${
       boatIds.length === 0
         ? '<div class="card empty">No boats heard from yet.</div>'
-        : `<table>
+        : `<table class="fleet">
       <thead>
         <tr>
           <th title="Green dot = heard from (radio or WiFi) within the last minute">Boat</th>
           ${s.slots ? `<th title="Transmit slot assigned by the base's slot table: this boat sends its position frames in slot N of each correction cycle (${s.slots.slotCount - s.slots.joinSlots} slots of ${s.slots.slotWidthMs} ms, starting just after the correction burst)">Slot</th>` : ''}
-          <th title="Most recent activity from either the radio link or the WiFi health-check ping, whichever is more recent - marked (WiFi) when that ping is the only reason this looks current">Last seen</th>
-          <th title="Most recent actual position frame received over radio specifically - unlike &quot;Last seen&quot;, not satisfied by the WiFi health-check ping alone, so a boat with a dead radio link but working WiFi shows stale here even while Last seen looks current">Last seen (radio)</th>
-          <th title="How often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Fix rate</th>
-          <th title="Highest Fix rate this boat has sustained (measured over a rolling 10s window, sampled only once at least 5s of frames are in it) since this base started - resets on restart">Max rate</th>
-          <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count in parentheses">Fix</th>
+          <th title="Last seen: most recent activity from either the radio link or the WiFi health-check ping, whichever is more recent - marked wifi when that ping is the only reason this looks current">Seen</th>
+          <th title="Last seen (radio): most recent actual position frame received over radio specifically - unlike &quot;Last seen&quot;, not satisfied by the WiFi health-check ping alone, so a boat with a dead radio link but working WiFi shows stale here even while Last seen looks current">Radio</th>
+          <th title="Fix rate, frames per second: how often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Rate Hz</th>
+          <th title="Max rate, frames per second: highest Fix rate this boat has sustained (measured over a rolling 10s window, sampled only once at least 5s of frames are in it) since this base started - resets on restart">Max Hz</th>
+          <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count after it (sv)">Fix</th>
           <th title="What the rover itself reports is wrong - GPS link, corrections, radio, power, software build - sent with its hello while it waits for a fix and whenever it has a problem. Hover a badge for what it means and what to check">Rover issues</th>
           <th title="Completed lap count for this boat this race">Laps</th>
-          <th title="Successful vs. attempted SD-card log uploads since this base station started">Uploads this session</th>
+          <th title="Uploads this session: successful vs. attempted SD-card log uploads since this base station started">Uploads</th>
           <th title="Log files this boat says are still waiting to upload, self-reported on its own last health-check ping">Pending</th>
-          <th title="Total files ever received from this boat, from a one-time scan of base-uploads at startup - includes previous sessions, not just this one">Files on disk (all-time)</th>
-          <th title="Link to this boat's own admin dashboard - appears once it has self-reported its IP/port via a WiFi health check, and goes after 2 minutes without one">Rover dashboard</th>
+          <th title="Files on disk (all-time): total files ever received from this boat, from a one-time scan of base-uploads at startup - includes previous sessions, not just this one">Files</th>
+          <th title="Rover dashboard: link to this boat's own admin dashboard - appears once it has self-reported its IP/port via a WiFi health check, and goes after 2 minutes without one">Dashboard</th>
         </tr>
       </thead>
       <tbody>${boatRows}</tbody>
