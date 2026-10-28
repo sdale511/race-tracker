@@ -1075,8 +1075,8 @@ module.exports = {
     // must allow it for it to send).
     foulEnabled: process.env.REGATTAUP_FOUL_ENABLED !== '0' && process.env.REGATTAUP_FOUL_ENABLED !== 'false',
     foulQueueDbPath: process.env.REGATTAUP_FOUL_QUEUE_DB || path.join(configDir, 'foul_webhook_queue.sqlite'),
-    // New transponder codes (see codeAnnouncer.js): the first time a boat id is heard in the selected regatta the base
-    // sends an 'info' webhook with it as tranCode, so RegattaUp lists the code in its code management to be assigned
+    // New transponder codes (see codeAnnouncer.js): the first time a boat id is seen in the selected regatta (a fix or a
+    // hello, once more after each base restart) the base sends an 'info' webhook with it as tranCode, so RegattaUp lists the code in its code management to be assigned
     // to a boat. On by default, same as the other events - set REGATTAUP_NEW_CODE_ENABLED=0 to turn it off,
     // independent of the overall REGATTAUP_WEBHOOK_ENABLED switch (which still gates it too).
     newCodeEnabled: process.env.REGATTAUP_NEW_CODE_ENABLED !== '0' && process.env.REGATTAUP_NEW_CODE_ENABLED !== 'false',

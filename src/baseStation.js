@@ -2437,8 +2437,7 @@ function main() {
     // ...) is caught, tracked, and rate-limit logged inside redisStore.js
     // itself now (see its own comment), surfaced on the admin dashboard's
     // Redis card rather than needing a .catch() here.
-    // Before writeFix, which is what adds the boat to the regatta's boats:known - see codeAnnouncer.js.
-    noteTransponderCode(decoded).catch((err) => console.error(`[baseStation] failed to queue a new-code hit for boat=${decoded.boatId}: ${err.message}`));
+    noteTransponderCode(decoded.boatId, decoded.timestamp, decoded.carrSoln);
     if (verdict === 'post') redisStore.writeFix(decoded);
     outputFrame(decoded); // <- swap/extend this for your actual race software
 
@@ -2528,6 +2527,7 @@ function main() {
   radio.on('hello', ({ boatId, diag }) => {
     fleetSleep.noteHeard(boatId);
     stats.recordFrame(boatId, null, null);
+    noteTransponderCode(boatId, Date.now(), 0); // a rover with no GPS fix yet is in the rover list too
     if (diag) stats.recordRoverDiag(boatId, diag);
     const items = diag ? roverDiag.describe(diag, { baseBuild }) : [];
     const noFix = !diag || diag.fixType == null || diag.fixType < 2;
@@ -2737,11 +2737,18 @@ function main() {
   function enqueueNewCode(event) {
     newCodeWebhookQueue.enqueue(event);
   }
-  const noteTransponderCode = createCodeAnnouncer({
-    isKnown: (boatId) => redisStore.isBoatKnown(boatId),
+  // Called for the first sign of a boat: a position fix (handleDecodedFrame) or a hello from a rover with no fix yet.
+  function noteTransponderCode(boatId, atMs, strength) {
+    try {
+      announceCode(boatId, atMs, strength);
+    } catch (err) {
+      console.error(`[baseStation] failed to queue a new-code hit for boat=${boatId}: ${err.message}`);
+    }
+  }
+  const announceCode = createCodeAnnouncer({
     getRegattaId: () => (config.regattaup.enabled && config.regattaup.newCodeEnabled ? currentRegattaId : null),
     announce: (event) => {
-      console.log(orange(`[baseStation] boat=${event.boatId} - code heard for the first time in this regatta, reporting it to RegattaUp`, process.stdout));
+      console.log(orange(`[baseStation] boat=${event.boatId} - transponder code seen for the first time, reporting it to RegattaUp`, process.stdout));
       if (newCodeWebhookQueue) enqueueNewCode(event);
       else bufferedNewCodes.push(event);
     },
@@ -3056,7 +3063,7 @@ function main() {
     );
     console.log(
       config.regattaup.newCodeEnabled
-        ? '[baseStation] a transponder code heard for the first time in a regatta posts to RegattaUp as an info hit'
+        ? '[baseStation] a transponder code seen for the first time (a hello or a fix) posts to RegattaUp as an info hit'
         : '[baseStation] new-code webhook disabled (set REGATTAUP_NEW_CODE_ENABLED=1 to enable)'
     );
   }

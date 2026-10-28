@@ -2079,9 +2079,10 @@ platform.
 
 ### New transponder codes
 
-A rover's boat id is its transponder code (the webhooks send it as `tranCode`). The first time the base hears a code in
-the selected regatta it sends RegattaUp one **info** hit, so the code shows up in RegattaUp's code management to be
-assigned to a boat:
+A rover's boat id is its transponder code (the webhooks send it as `tranCode`). The first time the base hears from a boat
+in the selected regatta - a position fix, or the status hello of a rover that has no GPS fix yet, so a rover appears in
+the rover list and in RegattaUp's code management at the same moment - it sends RegattaUp one **info** hit, so the code
+can be assigned to a boat:
 
 ```json
 {
@@ -2092,14 +2093,15 @@ assigned to a boat:
 }
 ```
 
-`rtcTime` is the first fix's time (ms -> µs) and `strength` that fix's `carrSoln`, as in the other events; `reason` says
-what the info is, so another kind of info hit later needs no new mode. A code counts as new when the regatta's Redis
-`boats:known` set does not have it yet - so restarting the base does not announce every boat on the water again, while a
-fresh Redis, or a boat's track expiring, announces it again (RegattaUp should treat a code it already has as a no-op,
-the same as for a retried lap). If Redis cannot be asked the code is announced anyway. Nothing is sent with no regatta
-selected. Same durable-queue mechanics as the other events - `src/newCodeWebhookQueue.js`, own sqlite file
-(`REGATTAUP_NEW_CODE_QUEUE_DB`) - and the pending hits show on the admin Data page's webhook queues card as "New codes".
-`REGATTAUP_NEW_CODE_ENABLED=0` turns it off, independent of `REGATTAUP_WEBHOOK_ENABLED`.
+`rtcTime` is when the base first heard the boat (ms -> µs) and `strength` that fix's `carrSoln` (0 for a hello, which has
+no fix), as in the other events; `reason` says what the info is, so another kind of info hit later needs no new mode.
+The base remembers nothing about which codes it has announced: each is sent once per base run, so a restart sends one
+more hit per boat that is heard again, and RegattaUp must treat a code it already has as a no-op (as for a retried lap).
+That also means a boat the base heard before this existed, or while RegattaUp could not take the hit, is announced after
+the next restart. Nothing is sent with no regatta selected; the code is announced once one is. Same durable-queue
+mechanics as the other events - `src/newCodeWebhookQueue.js`, own sqlite file (`REGATTAUP_NEW_CODE_QUEUE_DB`) - and the
+pending hits show on the admin Data page's webhook queues card as "New codes". `REGATTAUP_NEW_CODE_ENABLED=0` turns it
+off, independent of `REGATTAUP_WEBHOOK_ENABLED`.
 
 **RegattaUp's side:** `mylapsWebhook` needs a `mode: "info"` branch that adds `tranCode` to the regatta's code management
 if it is not there. Until then it falls into the "unknown mode" catch-all (a safe no-op), and the base counts the hit as
