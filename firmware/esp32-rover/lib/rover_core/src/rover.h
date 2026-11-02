@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "burst_tracker.h"
@@ -80,6 +81,14 @@ struct RoverConfig {
   bool dirty = false;
   // this boot came from the accelerometer (see power_policy.h)
   bool motionWoken = false;
+  // for boatAgent.js's startup summary, filled in by the platform: "v0.1.290 (abc1234, 2026-11-02)", how the GPS and radio are
+  // connected ("real /dev/cu.usbmodem1@115200", "simulated udp:41234"), whether the XBee's node identifier is set at boot
+  std::string version = "unknown";
+  std::string gpsDesc;
+  std::string radioDesc;
+  std::string radioPort;
+  bool xbeeNi = false;
+  bool gpsLog = false;  // GPS_LOG: a console line for every fix
 };
 
 struct RoverHal {
@@ -123,6 +132,14 @@ class Rover {
   const TxScheduler* scheduler() const { return scheduler_.get(); }
   const RadioScanner& scanner() const { return scanner_; }
 
+  // The settings and the live state as name/value pairs, for a status page; the console's startup summary and [status] line are
+  // made from the same values
+  using Items = std::vector<std::pair<std::string, std::string>>;
+  Items configItems() const;
+  Items statusItems() const;
+  std::string statusLine() const;  // boatAgent.js's [status] line
+  std::string txgateStats() const;  // boatAgent.js's [txgate-stats] line, for shutting down
+
   // exposed for the tests
   void handlePvtForTest(const Pvt& p) { onGpsFix(p); }
 
@@ -154,7 +171,9 @@ class Rover {
 
   void after(double delayMs, std::function<void()> fn);
   void checkPower();
-  static std::string describeSchedule(const protocol::PowerSchedule& s);
+  static std::string describeWitty(const protocol::PowerSchedule& s);
+  static std::string describeShutdown(const protocol::PowerSchedule& s);
+  std::string radioDropReason() const { return sleeper_.isSleeping() ? "asleep (radio sleep mode)" : "backed up (congested link?)"; }
 
  public:
   bool wallNow(int64_t& out) const;  // unix ms, false until the time is known
@@ -216,9 +235,27 @@ class Rover {
   std::string lastHelloKey_;
   bool hasLastHelloKey_ = false;
 
-  double rtcmWarnedAt_ = -1e300;
+  // rtcmWatchdog.js
+  double rtcmStartedAt_ = 0;
+  bool rtcmMissing_ = false;
+  double rtcmLastWarnAt_ = -1e300;
+  double rtcmMissingSince_ = 0;
+  double rtcmCheckedAt_ = -1e300;
   uint32_t lastPowerStamp_ = 0;
   bool hasPowerStamp_ = false;
+
+  // the console's [status] line and the status page
+  int slotCount_ = 0;
+  double lastMarksAt_ = -1;  // monotonic ms, -1 = not this run
+  double lastTxAt_ = -1;
+  double lastPvtAt_ = -1;
+  std::string lastStatusKey_;
+  double lastStatusAt_ = -1e300;
+  double statusCheckedAt_ = -1e300;
+  double waitingLoggedAt_ = 0;
+  std::string statusKey() const;
+  void maybeLogStatus();
+  void logStartup();
 
   struct Timer {
     double at;

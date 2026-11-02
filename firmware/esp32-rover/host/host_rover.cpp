@@ -4,6 +4,7 @@
 //   the GPS        --gps /dev/cu.usbmodem-X[@baud]     or  --gps - (UBX on stdin)  or  --gps none
 //   NVS            files in --state (the boat id, the last course marks, the base's last power schedule)
 //   deep sleep     emulated: the radio and GPS are ignored until the wake time, or a SIGUSR1 (the accelerometer), then a fresh boot
+//   a status page  http://localhost:8095 (--ui-port): the rover's settings and live state, refreshed every second
 // The ESP32-only parts - SLEEP_RQ, the accelerometer, the battery chip, the screen - aren't here.
 
 #include <arpa/inet.h>
@@ -30,7 +31,18 @@
 #include <string>
 
 #include "rover.h"
+#include "status_page.h"
 #include "xbee_at.h"
+
+#ifndef ROVER_VERSION
+#define ROVER_VERSION "unknown"  // tools/version.py sets these from git
+#endif
+#ifndef ROVER_BUILD
+#define ROVER_BUILD 0
+#endif
+#ifndef ROVER_DIRTY
+#define ROVER_DIRTY 0
+#endif
 
 using rover::Rover;
 using rover::RoverConfig;
@@ -48,7 +60,8 @@ struct Options {
   bool rtcmForward = false;
   bool setNi = false;
   bool gpsSleepForceUsb = false;
-  int statusS = 30;
+  bool gpsLog = false;
+  int uiPort = 8095;
 };
 
 void usage() {
@@ -61,7 +74,8 @@ void usage() {
                "  --rtcm-forward                      write the RTCM the radio hears to the GPS (an XBee on its own USB adapter)\n"
                "  --set-ni                            set the XBee's node identifier to the boat id at boot (writes the XBee's config)\n"
                "  --gps-sleep-force-usb               let the ZED go into backup with its USB connected (disables its USB until a power cycle)\n"
-               "  --status-s N                        status line every N s (30)\n"
+               "  --gps-log                           a console line for every fix (the Node rover's GPS_LOG=1)\n"
+               "  --ui-port N                         the status page's port (8095; 0 = none)\n"
                "  kill -USR1 <pid> wakes an emulated deep sleep, as the accelerometer would\n");
 }
 
@@ -78,11 +92,12 @@ bool parseArgs(int argc, char** argv, Options& o) {
     if (a == "--gps" && value(o.gps)) continue;
     if (a == "--boat-id" && value(o.boatId)) continue;
     if (a == "--state" && value(o.stateDir)) continue;
-    if (a == "--status-s" && value(v)) {
-      o.statusS = std::atoi(v.c_str());
+    if (a == "--ui-port" && value(v)) {
+      o.uiPort = std::atoi(v.c_str());
       continue;
     }
     if (a == "--rtcm-forward") o.rtcmForward = true;
+    else if (a == "--gps-log") o.gpsLog = true;
     else if (a == "--set-ni") o.setNi = true;
     else if (a == "--gps-sleep-force-usb") o.gpsSleepForceUsb = true;
     else return false;
@@ -275,7 +290,7 @@ std::string loadBoatId() {
   id.clear();
   for (size_t i = 0; i < rover::protocol::BOAT_ID_LEN; i++) id += (char)('A' + rng() % 26);
   writeFile("boat_id", id.data(), id.size());
-  log("[rover] new boat id " + id);
+  log("[boatAgent] new boat id " + id);
   return id;
 }
 
@@ -321,6 +336,8 @@ bool radioAsleep = false;  // the UDP radio's stand-in for SLEEP_RQ, as SimRadio
 bool deepAsleep = false;
 int64_t wakeAt = INT64_MAX;
 volatile sig_atomic_t motion = 0;
+volatile sig_atomic_t stopping = 0;
+StatusPage page;
 
 void setNodeIdentifier(const std::string& boatId) {
   rover::xbee::Io io;
@@ -362,9 +379,20 @@ void boot(bool motionWoken) {
   cfg.motionWoken = motionWoken;
   cfg.rtcmForward = opts.rtcmForward;
   cfg.gpsSleepForceUsb = opts.gpsSleepForceUsb;
-  log(fmt("[rover] boatId=%s radio=%s gps=%s state=%s wake=%s", cfg.boatId.c_str(), radio.name.c_str(), gps.name.c_str(), stateDir.c_str(),
-          motionWoken ? "motion" : "power on"));
-  if (opts.setNi && radio.kind == Port::SERIAL) setNodeIdentifier(cfg.boatId);
+  cfg.gpsLog = opts.gpsLog;
+  cfg.version = ROVER_VERSION;
+  cfg.build = ROVER_BUILD;
+  cfg.dirty = ROVER_DIRTY;
+  auto desc = [](const Port& p) {
+    return p.kind == Port::UDP     ? fmt("simulated udp:%u", p.udpPort)
+           : p.kind == Port::STDIN ? std::string("simulated (UBX on stdin)")
+           : p.kind == Port::NONE  ? std::string("none")
+                                   : "real " + p.name + (p.name.find('@') == std::string::npos ? "@115200" : "");
+  };
+  cfg.gpsDesc = desc(gps);
+  cfg.radioDesc = desc(radio);
+  cfg.radioPort = radio.name;
+  cfg.xbeeNi = opts.setNi && radio.kind == Port::SERIAL;
 
   RoverHal hal;
   hal.radioWrite = [](const uint8_t* d, size_t n) { return !radioAsleep && writePort(radio, d, n); };
@@ -384,17 +412,12 @@ void boot(bool motionWoken) {
   hal.loadSchedule = loadSchedule;
   hal.requestDeepSleep = deepSleep;
 
-  theRover = new Rover(cfg, hal);
+  theRover = new Rover(cfg, hal);  // logs the startup summary; sends nothing until begin()
+  log(fmt("[boatAgent] state=%s wake=%s%s", stateDir.c_str(), motionWoken ? "motion" : "power on",
+          opts.uiPort > 0 ? fmt(" status page=http://localhost:%d", opts.uiPort).c_str() : ""));
+  if (cfg.xbeeNi) setNodeIdentifier(cfg.boatId);  // before anything is sent
   theRover->setGpsPortOpen(gps.kind != Port::NONE);
   theRover->begin();
-}
-
-void logStatus() {
-  const rover::Pvt* p = theRover->lastPvt();
-  log(fmt("[status] fix=%s sv=%d carr=%d bursts=%s slot=%d%s marks=%s sent=%u syncErr=%u%s", p && p->gnssFixOk ? "ok" : "none", p ? p->numSV : 0,
-          p ? p->carrSoln : 0, theRover->burstsHeard() ? "yes" : "no", theRover->assignedSlot(), theRover->parked() ? " parked" : "",
-          theRover->hasMarks() ? "yes" : "no", theRover->framesSent(), (unsigned)theRover->scanner().syncErrors,
-          theRover->sleeping() ? " SLEEPING" : ""));
 }
 
 }  // namespace
@@ -406,6 +429,8 @@ int main(int argc, char** argv) {
   }
   signal(SIGPIPE, SIG_IGN);
   signal(SIGUSR1, [](int) { motion = 1; });
+  signal(SIGINT, [](int) { stopping = 1; });
+  signal(SIGTERM, [](int) { stopping = 1; });
 
   const char* home = std::getenv("HOME");
   stateDir = !opts.stateDir.empty() ? opts.stateDir : std::string(home ? home : ".") + "/.esp32-rover-host";
@@ -426,14 +451,31 @@ int main(int argc, char** argv) {
   }
 
   boot(false);
-  double lastStatusAt = monoMs();
+  if (opts.uiPort > 0 && !page.listen((uint16_t)opts.uiPort))
+    log(fmt("[boatAgent] status page: could not listen on port %d (%s) - carrying on without it", opts.uiPort, std::strerror(errno)));
   uint8_t buf[2048];
   for (;;) {
-    struct pollfd pfd[2];
+    if (stopping) {
+      const std::string st = theRover->txgateStats();
+      if (!st.empty()) log(st);
+      log("[boatAgent] shutting down");
+      return 0;
+    }
+    struct pollfd pfd[3];
     nfds_t n = 0;
     if (radio.fd >= 0) pfd[n++] = {radio.fd, POLLIN, 0};
     if (gps.fd >= 0) pfd[n++] = {gps.fd, POLLIN, 0};
+    if (page.fd() >= 0) pfd[n++] = {page.fd(), POLLIN, 0};
     poll(pfd, n, 5);
+    page.serve([]() {
+      StatusPage::Snapshot s;
+      s.title = "rover " + opts.boatId;
+      s.subtitle = std::string("race-tracker ") + ROVER_VERSION + (deepAsleep ? " - in (emulated) deep sleep" : "");
+      s.config = theRover->configItems();
+      s.config.insert(s.config.begin(), {{"boatId", opts.boatId}, {"gps", gps.name}, {"radio", radio.name}, {"state", stateDir}});
+      s.status = theRover->statusItems();
+      return s;
+    });
 
     // the UDP radio delivers a datagram per read, which is one frame - as SimRadioLink hears it
     ssize_t got;
@@ -459,9 +501,5 @@ int main(int argc, char** argv) {
     }
     motion = 0;
     theRover->tick();
-    if (opts.statusS > 0 && monoMs() - lastStatusAt > opts.statusS * 1000.0) {
-      lastStatusAt = monoMs();
-      logStatus();
-    }
   }
 }

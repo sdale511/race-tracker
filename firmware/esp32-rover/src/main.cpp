@@ -64,7 +64,16 @@
 #define ROVER_TZ "PST8PDT,M3.2.0,M11.1.0"  // the boat's local time, as a POSIX TZ string - the power schedule's times are local
 #endif
 #ifndef ROVER_BUILD
-#define ROVER_BUILD 0
+#define ROVER_BUILD 0  // tools/version.py sets these from git
+#endif
+#ifndef ROVER_VERSION
+#define ROVER_VERSION "unknown"
+#endif
+#ifndef ROVER_DIRTY
+#define ROVER_DIRTY 0
+#endif
+#ifndef GPS_LOG
+#define GPS_LOG 0  // a console line for every fix, as the Node rover's GPS_LOG=1
 #endif
 
 using rover::Rover;
@@ -94,7 +103,7 @@ std::string loadBoatId() {
     for (size_t i = 0; i < rover::protocol::BOAT_ID_LEN; i++) b[i] = 'A' + esp_random() % 26;
     id = b;
     prefs.putString("boatId", id);
-    Serial.printf("[rover] new boat id %s\n", id.c_str());
+    Serial.printf("[boatAgent] new boat id %s\n", id.c_str());
   }
   return id.c_str();
 }
@@ -271,7 +280,6 @@ void deepSleep(const rover::PowerPolicy::Decision& d) {
 
 // ---- status ----
 
-uint32_t lastStatusAt = 0;
 display::Status status() {
   display::Status s;
   const rover::Pvt* p = theRover->lastPvt();
@@ -291,10 +299,11 @@ display::Status status() {
   return s;
 }
 
-void logStatus(const display::Status& s) {
-  Serial.printf("[status] fix=%s sv=%d carr=%d bursts=%s slot=%d%s battery=%d%% sent=%u syncErr=%u%s\n", s.fix ? "ok" : "none", s.numSV, s.carrSoln,
-                s.bursts ? "yes" : "no", s.slot, s.parked ? " parked" : "", s.batteryPct, s.framesSent, (unsigned)theRover->scanner().syncErrors,
-                s.sleeping ? " SLEEPING" : "");
+// the rover logs its own [status] line; the battery is the ESP32's
+uint32_t lastBatteryAt = 0;
+void logBattery(const display::Status& s) {
+  if (s.batteryPct >= 0) Serial.printf("[battery] %d%% %.2fV\n", s.batteryPct, s.batteryV);
+  else Serial.println("[battery] no MAX17048 answering");
 }
 
 }  // namespace
@@ -336,12 +345,17 @@ void setup() {
   RoverConfig cfg;
   cfg.boatId = loadBoatId();
   cfg.build = ROVER_BUILD;
+  cfg.dirty = ROVER_DIRTY;
+  cfg.version = ROVER_VERSION;
   cfg.motionWoken = motionWoken;
-
-  Serial.printf("[rover] boatId=%s gps=Serial1@%d radio=Serial2@%d (rx %d, tx %d) sleepPin=%d accelInt=%d wake=%s\n", cfg.boatId.c_str(), GPS_BAUD,
-                RADIO_BAUD, XBEE_RX_PIN, XBEE_TX_PIN, RADIO_SLEEP_PIN, ACCEL_INT_PIN,
-                motionWoken ? "motion" : cause == ESP_SLEEP_WAKEUP_TIMER ? "timer" : "power on");
-  if (SET_XBEE_NI) setNodeIdentifier(cfg.boatId);  // before anything is sent: telemetry in AT command mode would be read as commands
+  cfg.gpsLog = GPS_LOG;
+  char b[96];
+  snprintf(b, sizeof b, "real Serial1@%d (rx %d, tx %d)", GPS_BAUD, GPS_RX_PIN, GPS_TX_PIN);
+  cfg.gpsDesc = b;
+  snprintf(b, sizeof b, "real Serial2@%d (rx %d, tx %d, SLEEP_RQ %d)", RADIO_BAUD, XBEE_RX_PIN, XBEE_TX_PIN, RADIO_SLEEP_PIN);
+  cfg.radioDesc = b;
+  cfg.radioPort = "Serial2";
+  cfg.xbeeNi = SET_XBEE_NI;
 
   RoverHal hal;
   hal.radioWrite = radioWrite;
@@ -363,7 +377,11 @@ void setup() {
   hal.loadSchedule = loadSchedule;
   hal.requestDeepSleep = deepSleep;
 
-  theRover = new Rover(cfg, hal);
+  theRover = new Rover(cfg, hal);  // logs the startup summary; sends nothing until begin()
+  Serial.printf("[power] %s, accelerometer INT on %d\n", motionWoken ? "woken by motion" : cause == ESP_SLEEP_WAKEUP_TIMER ? "woken by the timer" : "power on",
+                ACCEL_INT_PIN);
+  // before anything is sent: telemetry in AT command mode would be read as commands
+  if (SET_XBEE_NI) setNodeIdentifier(cfg.boatId);
   theRover->setGpsPortOpen(true);
   theRover->begin();
   lastNote = motionWoken ? "woken by motion" : cause == ESP_SLEEP_WAKEUP_TIMER ? "woken by schedule" : "";
@@ -378,8 +396,8 @@ void loop() {
   keepRtc();
   const display::Status s = status();
   display::update(s);
-  if (millis() - lastStatusAt > 30000) {
-    lastStatusAt = millis();
-    logStatus(s);
+  if (millis() - lastBatteryAt > 60000) {
+    lastBatteryAt = millis();
+    logBattery(s);
   }
 }

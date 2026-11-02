@@ -71,8 +71,13 @@ Leave the ArduSimple socket's pin 3 (DIN) unconnected - the ZED drives it. Check
 Feather before wiring, and change them with build flags (`-DXBEE_RX_PIN=...`) if needed. The XBee-PRO needs a few hundred mA when it
 transmits: give it its own 3.3 V buck-boost regulator from the battery.
 
-The boat id (5 letters, made up on first boot), the last course marks and the last power schedule are kept in NVS. Status goes to the USB
-serial console every 30 s. On the Reverse TFT the screen is lit for 30 s after boot and after a press of the D1 button.
+The boat id (5 letters, made up on first boot), the last course marks and the last power schedule are kept in NVS.
+
+The USB serial console reads like the Node rover's: the same startup summary (`[boatAgent] boatId=..., race-tracker v0.1.N (hash, date)`,
+then gps, radio and a `config:` line of the settings by their Node names), the same `[status]` line (at once when the fix, radio or
+marks change, otherwise every minute), and the same wording for slots, parking, sleep, the RTCM watchdog and dropped frames. The
+version comes from git at build time (`tools/version.py`, as `src/version.js` does it), and its commit count is the status hello's build
+number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute. On the Reverse TFT the screen is lit for 30 s after boot and after a press of the D1 button.
 
 ## Building and testing
 
@@ -120,6 +125,9 @@ node tools/sim_gps.js | .pio/build/mac/program --radio udp --gps -        # SPAC
 ```
 
 The `SIM_*` settings apply, as for `npm run boat`. Radio sleep mode works over UDP, as in the Node simulation.
+
+It logs exactly what the ESP32 does (`--gps-log` for a line per fix), and serves a status page at http://localhost:8095 (`--ui-port`):
+the same config and status values, refreshed every second. Ctrl+C prints the `[txgate-stats]` line, as the Node rover does.
 
 The boat id, marks and power schedule are kept in `~/.esp32-rover-host` (`--state DIR` for a second rover, `--boat-id` to pick the id).
 Local time is the Mac's (`TZ=...` to run as a boat in another zone). Deep sleep is emulated: the rover ignores the radio and GPS until the

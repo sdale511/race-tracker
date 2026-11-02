@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 #include "js_math.h"
 #include "thin_fixes.h"
@@ -15,6 +16,20 @@ namespace {
 constexpr int ROUNDING_MARKS[] = {0, 1, 2, 3};
 constexpr int COMMITTEE_FINISH = 6;
 constexpr int FINISH = 7;
+
+// A number as JavaScript prints it in a template string: 1, 0.3, 40.897 (the shortest digits that read back the same)
+std::string num(double v) {
+  char b[32];
+  if (v == std::floor(v) && std::fabs(v) < 1e15) {
+    std::snprintf(b, sizeof b, "%lld", (long long)v);
+    return b;
+  }
+  for (int prec = 1; prec <= 17; prec++) {
+    std::snprintf(b, sizeof b, "%.*g", prec, v);
+    if (std::strtod(b, nullptr) == v) break;
+  }
+  return b;
+}
 }  // namespace
 
 Rover::Rover(RoverConfig config, RoverHal hal)
@@ -37,10 +52,14 @@ Rover::Rover(RoverConfig config, RoverHal hal)
   parkedReporter_.reset(new ParkedReporter(cfg_.parkedReportS * 1000, cfg_.parkedFirstS * 1000, cfg_.parkedRepeatS * 1000, mono, rnd));
   diagState_.since = now();
   diagState_.watchBursts = cfg_.txGateEnabled && cfg_.rtcmWatch;
+  rtcmStartedAt_ = now();
+  // Until a table arrives the boat assumes the layout the base works out from the same settings (see boatAgent.js)
+  if (cfg_.txGateEnabled)
+    slotCount_ = cfg_.slotCount > 0 ? cfg_.slotCount : autoSlotCount(cfg_.joinSlots, cfg_.rtcmIntervalS, cfg_.slotWidthMs, gate_);
+  logStartup();
 
   if (cfg_.txGateEnabled) {
-    // Until a table arrives the boat assumes the layout the base works out from the same settings (see boatAgent.js)
-    const int slotCount = cfg_.slotCount > 0 ? cfg_.slotCount : autoSlotCount(cfg_.joinSlots, cfg_.rtcmIntervalS, cfg_.slotWidthMs, gate_);
+    const int slotCount = slotCount_;
     const int pinned = cfg_.slotIndex >= 0 ? cfg_.slotIndex % slotCount : -1;
     const int joinSlots = std::min(cfg_.joinSlots, slotCount - 1);
     SlotConfig slot;
@@ -53,7 +72,8 @@ Rover::Rover(RoverConfig config, RoverHal hal)
       slot.join = {slotCount - joinSlots, joinSlots};
     }
     if (cfg_.slotEnabled) {
-      log(pinned >= 0 ? "[txgate] slot mode: slot " + std::to_string(pinned) + " of " + std::to_string(slotCount) + " (set by TX_SLOT; the base's slot table is ignored)"
+      log(pinned >= 0 ? "[txgate] slot mode: slot " + std::to_string(pinned) + " of " + std::to_string(slotCount) + ", " + num(cfg_.slotWidthMs) +
+                            " ms each (set by TX_SLOT; the base's slot table is ignored)"
                       : "[txgate] slot mode: waiting for the base's slot table - sharing the last " + std::to_string(joinSlots) + " of " + std::to_string(slotCount) +
                             " slots until a slot is assigned");
     }
@@ -92,8 +112,9 @@ Rover::Rover(RoverConfig config, RoverHal hal)
     hasMarks_ = true;
     freshMarksReceived_ = true;
     rebuildWatchers();
+    lastMarksAt_ = now();
     if (hal_.saveMarks) hal_.saveMarks(m);
-    if (first) log("[rover] received course marks from base station");
+    if (first) log("[boatAgent] received course marks from base station");
   };
   scanner_.onPing = [this]() {
     diagState_.lastBaseRxAt = now();
@@ -116,7 +137,9 @@ Rover::Rover(RoverConfig config, RoverHal hal)
     lastPowerStamp_ = s.stamp;
     policy_.setSchedule(s);
     if (hal_.saveSchedule) hal_.saveSchedule(s);
-    log("[power] the base's power schedule: " + describeSchedule(s));
+    log("[power] heard the base's power schedule (" + std::string(cfg_.radioDesc.rfind("simulated", 0) == 0 ? "simulated radio" : "radio") +
+        ") - Witty Pi: " + (s.hasWitty ? describeWitty(s) : "not set by the base") + "; shutdown: " + (s.hasShutdown ? describeShutdown(s) : "not set by the base") +
+        " - applied as deep sleep");
   };
   scanner_.onRtcm = [this](const protocol::Rtcm& r, const uint8_t* raw) {
     tracker_.onRtcm(r.type, now(), r.length);
@@ -158,7 +181,9 @@ Rover::Rover(RoverConfig config, RoverHal hal)
   if (hal_.loadMarks && hal_.loadMarks(marks_)) {
     hasMarks_ = true;
     rebuildWatchers();
-    log("[rover] loaded last-known course marks");
+    std::string names;
+    for (size_t i = 0; i < protocol::MARK_COUNT; i++) names += (i ? ", " : "") + std::string(protocol::MARK_NAMES[i]);
+    log("[boatAgent] loaded last-known course marks from storage: " + names);
   }
 }
 
@@ -236,6 +261,7 @@ void Rover::tick() {
   for (auto& d : due) d.fn();
   checkRtcmWatchdog();
   checkPower();
+  maybeLogStatus();
 }
 
 bool Rover::wallNow(int64_t& out) const {
@@ -267,26 +293,35 @@ void Rover::checkPower() {
   hal_.requestDeepSleep(d);
 }
 
-std::string Rover::describeSchedule(const protocol::PowerSchedule& s) {
-  auto hhmm = [](int m) {
-    char b[16];
-    std::snprintf(b, sizeof b, "%02d:%02d", m / 60, m % 60);
-    return std::string(b);
-  };
-  std::string w = "no on window";
-  if (s.hasWitty && s.wittyMode == 1) w = "on " + hhmm(s.startMin) + " to " + hhmm(s.endMin);
-  if (s.hasWitty && s.wittyMode == 2) w = "on " + std::to_string(s.beforeMin) + " min before sunrise to " + std::to_string(s.afterMin) + " min after sunset";
-  if (s.hasWitty && s.wittyMode != 0) w += s.haltItself ? " (then the shutdown rule)" : " (then asleep at once)";
-  std::string r = "no shutdown rule";
-  if (s.hasShutdown && s.shutdownEnabled)
-    r = s.whenIdle ? "asleep after " + hhmm(s.shutdownMin) + " once stopped " + std::to_string(s.idleMinutes) + " min" : "asleep at " + hhmm(s.shutdownMin);
-  return w + "; " + r;
+namespace {
+std::string hhmm(int m) {
+  char b[16];
+  std::snprintf(b, sizeof b, "%02d:%02d", m / 60, m % 60);
+  return b;
+}
+}  // namespace
+
+// wittySchedule.js's describe
+std::string Rover::describeWitty(const protocol::PowerSchedule& s) {
+  if (s.wittyMode == 0) return "no schedule";
+  const std::string tail = s.haltItself ? ", the boat halts itself when idle" : ", the Witty Pi shuts the Pi down at the end";
+  if (s.wittyMode == 1) return "on " + hhmm(s.startMin) + " to " + hhmm(s.endMin) + " every day" + tail;
+  return "on " + std::to_string(s.beforeMin) + " min before sunrise to " + std::to_string(s.afterMin) + " min after sunset at " + num(s.lat) + ", " +
+         num(s.lon) + tail;
+}
+
+// fleetShutdown.js's describe
+std::string Rover::describeShutdown(const protocol::PowerSchedule& s) {
+  if (!s.shutdownEnabled) return "disabled";
+  if (!s.whenIdle) return "at " + hhmm(s.shutdownMin) + " local time, whatever the boat is doing";
+  return "after " + hhmm(s.shutdownMin) + " local time, once stopped (under " + num(s.speedKn) + " kn) for " + std::to_string(s.idleMinutes) + " min";
 }
 
 // ---- fixes ----
 
 void Rover::onGpsFix(const Pvt& pvt) {
   diagState_.lastPvtAt = now();
+  lastPvtAt_ = now();
   if (pvt.utcValid) {
     wallOffsetMs_ = (double)pvt.timestamp - now();
     hasWallOffset_ = true;
@@ -322,6 +357,15 @@ void Rover::handlePvt(const Pvt& pvt) {
       if (f.timestamp > lastQueuedAt) pendingBatch_.push_back(f);
   }
   const bool clearedTxGate = urgent || distanceGate_.cleared(pvt, distanceM) || (parked_ && parkedReporter_->wantsRepeat());
+  // GPS_LOG: every fix gets a console line, as boatAgent.js's (scrolling; no in-place overwrite)
+  if (cfg_.gpsLog) {
+    const int64_t ms = ((pvt.timestamp % 86400000) + 86400000) % 86400000;
+    char b[160];
+    std::snprintf(b, sizeof b, "[gps] %02d:%02d:%02d.%03d %.6f,%.6f fixType=%d diffSoln=%s carrSoln=%d numSV=%d hAcc=%.2fm", (int)(ms / 3600000),
+                  (int)(ms / 60000 % 60), (int)(ms / 1000 % 60), (int)(ms % 1000), pvt.lat, pvt.lon, pvt.fixType, pvt.diffSoln ? "true" : "false",
+                  pvt.carrSoln, pvt.numSV, pvt.hAccMm / 1000.0);
+    log(b);
+  }
   if (!clearedTxGate) return;
   if (hasValidFix(pvt)) {
     distanceGate_.advance(pvt);
@@ -329,7 +373,8 @@ void Rover::handlePvt(const Pvt& pvt) {
     else transmitFix(pvt);
   } else if (now() - lastInvalidFixWarnAt_ > INVALID_FIX_WARN_INTERVAL_MS) {
     lastInvalidFixWarnAt_ = now();
-    log("[gps] no valid fix (gnssFixOk=" + std::string(pvt.gnssFixOk ? "true" : "false") + ") - not transmitting");
+    log("[gps] no valid fix (gnssFixOk=" + std::string(pvt.gnssFixOk ? "true" : "false") + " lat=" + num(pvt.lat) + " lon=" + num(pvt.lon) +
+        ") - not transmitting");
   }
 }
 
@@ -373,11 +418,12 @@ void Rover::transmitFix(const Pvt& pvt) {
   if (sent) {
     hasLastTx_ = true;
     lastTxTime_ = pvt.timestamp;
+    lastTxAt_ = now();
     if (!scheduler_) distanceGate_.sent(pvt);
     framesSent_++;
   } else {
     distanceGate_.failed();
-    log("[radio] dropped a frame (" + std::string(sleeper_.isSleeping() ? "asleep" : "not written") + ")");
+    log("[radio] " + radioDropReason() + ", dropped a frame");
   }
 }
 
@@ -407,6 +453,8 @@ void Rover::flushPendingBatch(bool forSlot, bool final) {
   std::vector<Pvt> fixes;
   fixes.swap(pendingBatch_);
   bool backfilled = false;
+  std::string backfillLog;  // what the first cycle in a slot did with the fixes held while waiting - logged once below
+  size_t backfillTotal = 0;
   if (fixes.empty()) return;
   if (sleeper_.isSleeping()) return;
   auto protect = [this](const Pvt& f) { return isNearRoundingMark(f); };
@@ -429,8 +477,13 @@ void Rover::flushPendingBatch(bool forSlot, bool final) {
         if (f.timestamp < fixes.front().timestamp && f.timestamp >= fixes.front().timestamp - BACKFILL_MAX_AGE_MS) held.push_back(f);
       backfilled = !held.empty();
       std::vector<Pvt> kept = thinBackfill(held, protect);
-      if (backfilled)
-        log("[slots] first cycle in the slot: " + std::to_string(held.size()) + " fixes held while waiting, thinned to " + std::to_string(kept.size()));
+      if (backfilled) {
+        char b[160];
+        std::snprintf(b, sizeof b, "[slots] first cycle in the slot: %zu fixes held over %.1f s while waiting, thinned to %zu; with this cycle's %zu that is %zu",
+                      held.size(), (held.back().timestamp - held.front().timestamp) / 1000.0, kept.size(), fixes.size(), kept.size() + fixes.size());
+        backfillLog = b;
+        backfillTotal = kept.size() + fixes.size();
+      }
       kept.insert(kept.end(), fixes.begin(), fixes.end());
       fixes.swap(kept);
     }
@@ -453,6 +506,11 @@ void Rover::flushPendingBatch(bool forSlot, bool final) {
       fixes = thinForTurns(fixes, cap, anchor, 480, protect);
     }
   }
+  if (!backfillLog.empty()) {
+    (void)backfillTotal;
+    log(backfillLog + ", sending " + std::to_string(fixes.size()) + " (about " + std::to_string((fixes.size() + maxFixesPerFrame_ - 1) / maxFixesPerFrame_) +
+        " frame(s))");
+  }
   lastBatchFix_ = fixes.back();
   hasLastBatchFix_ = true;
   const size_t perFrame = forSlot ? maxFixesPerFrame_ : std::max(1, cfg_.txBatchSize);
@@ -473,11 +531,12 @@ void Rover::sendFixes(const std::vector<Pvt>& fixes) {
     if (sent) {
       hasLastTx_ = true;
       lastTxTime_ = last.timestamp;
+      lastTxAt_ = now();
       if (!scheduler_) distanceGate_.sent(last);
       framesSent_++;
     } else {
       distanceGate_.failed();
-      log("[radio] dropped " + std::string(f.count == 1 ? "a frame" : "a batch of " + std::to_string(f.count) + " fixes"));
+      log("[radio] " + radioDropReason() + ", dropped " + (f.count == 1 ? std::string("a frame") : "a batch of " + std::to_string(f.count) + " frames"));
     }
   }
 }
@@ -519,7 +578,7 @@ void Rover::sendHello(bool force) {
     lastHelloKey_ = key;
     hasLastHelloKey_ = true;
   } else {
-    log("[radio] dropped a hello frame (will keep retrying)");
+    log("[radio] " + radioDropReason() + ", dropped a hello frame (will keep retrying)");
   }
 }
 
@@ -530,14 +589,164 @@ void Rover::startHelloAnnounce() {
   helloNextAt_ = now() + hal_.random() * cfg_.helloStartupJitterMs;
 }
 
-// rtcmWatchdog.js, reduced to its console warning: the correction bursts are not heard
+// rtcmWatchdog.js: warns once the correction bursts have been missing for RTCM_WATCHDOG_WARN_S (counted from the start if none were
+// ever heard), repeats every RTCM_WATCHDOG_REPEAT_S, says so when they come back; paused while the radio or GPS sleeps. Every 5 s.
 void Rover::checkRtcmWatchdog() {
-  if (!cfg_.txGateEnabled || !cfg_.rtcmWatch || sleeper_.isSleeping() || gpsSleep_.isAsleep()) return;
+  if (!cfg_.txGateEnabled || !cfg_.rtcmWatch) return;
   const double t = now();
-  if (tracker_.isActive(t) || t - diagState_.since < cfg_.rtcmWarnS * 1000) return;
-  if (t - rtcmWarnedAt_ < cfg_.rtcmRepeatS * 1000) return;
-  rtcmWarnedAt_ = t;
-  log("[rtcm] no correction bursts heard on the radio - no RTK, and no transmit slot timing");
+  if (t - rtcmCheckedAt_ < 5000) return;
+  rtcmCheckedAt_ = t;
+  if (sleeper_.isSleeping() || gpsSleep_.isAsleep()) {
+    rtcmStartedAt_ = t;
+    rtcmMissing_ = false;
+    return;
+  }
+  if (tracker_.isActive(t)) {
+    if (rtcmMissing_) log("[rtcm] correction bursts heard again after " + std::to_string((long)jsRound((t - rtcmMissingSince_) / 1000)) + " s");
+    rtcmMissing_ = false;
+    return;
+  }
+  const double last = tracker_.lastStart();
+  const bool heard = last != BurstTracker::NONE && last >= rtcmStartedAt_;
+  const double since = heard ? last : rtcmStartedAt_;
+  const double silentMs = t - since;
+  if (silentMs < cfg_.rtcmWarnS * 1000) return;
+  if (!rtcmMissing_) {
+    rtcmMissing_ = true;
+    rtcmMissingSince_ = since;
+  }
+  if (t - rtcmLastWarnAt_ < cfg_.rtcmRepeatS * 1000) return;
+  rtcmLastWarnAt_ = t;
+  const std::string secs = std::to_string((long)jsRound(silentMs / 1000));
+  log((heard ? "[rtcm] WARNING: no correction bursts heard for " + secs + " s - out of range of the base, or its correction radio is off. "
+             : "[rtcm] WARNING: no correction bursts heard since this boat started (" + secs + " s) - is the base's correction radio on and in range? ") +
+      "Transmit slots cannot be timed (this boat sends unslotted) and RTK corrections are probably not arriving");
+}
+
+// ---- the console and the status page ----
+
+namespace {
+std::string onOff(bool b) { return b ? "on" : "off"; }
+
+// boatAgent.js's ageStr: "Xs"/"Xm" ago, or "never"
+std::string ageStr(double nowMs, double atMs) {
+  if (atMs < 0) return "never";
+  const long s = std::max(0L, (long)jsRound((nowMs - atMs) / 1000));
+  return s < 60 ? std::to_string(s) + "s" : std::to_string((long)jsRound(s / 60.0)) + "m";
+}
+
+std::string fixLabel(const Pvt* p) {
+  if (!p) return "none";
+  if (p->carrSoln == 2) return "RTK-fixed";
+  if (p->carrSoln == 1) return "RTK-float";
+  static const char* const LABELS[] = {"no-fix", "dead-reckoning", "2D", "3D", "GNSS+DR", "time-only"};
+  return p->fixType <= 5 ? LABELS[p->fixType] : "type" + std::to_string(p->fixType);
+}
+}  // namespace
+
+// boatAgent.js's startup summary, then the settings it doesn't print but a C++ port might get wrong
+void Rover::logStartup() {
+  log("[boatAgent] boatId=" + cfg_.boatId + ", race-tracker " + cfg_.version);
+  if (cfg_.xbeeNi) log("[boatAgent] xbee node identifier (NI): setting to \"" + cfg_.boatId + "\" when " + cfg_.radioPort + " opens");
+  log("[boatAgent] gps=" + cfg_.gpsDesc);
+  log("[boatAgent] radio=" + cfg_.radioDesc + " txDistance=" + num(cfg_.txDistanceM) + "m txInterval=" + num(cfg_.txIntervalMs / 1000) + "s");
+  std::string line = "[boatAgent] config:";
+  for (const auto& kv : configItems()) line += " " + kv.first + "=" + kv.second;
+  log(line);
+}
+
+Rover::Items Rover::configItems() const {
+  Items c;
+  c.push_back({"TX_DISTANCE_M", num(cfg_.txDistanceM)});
+  c.push_back({"TX_INTERVAL_S", num(cfg_.txIntervalMs / 1000)});
+  c.push_back({"TX_BATCH_SIZE", std::to_string(cfg_.txBatchSize)});
+  c.push_back({"TX_DELTA", onOff(cfg_.txDelta)});
+  c.push_back({"TX_GATE", onOff(cfg_.txGateEnabled)});
+  if (cfg_.txGateEnabled) {
+    c.push_back({"TX_SLOT_MODE", onOff(cfg_.slotEnabled)});
+    c.push_back({"TX_SLOT", cfg_.slotIndex >= 0 ? std::to_string(cfg_.slotIndex) : "base"});
+    c.push_back({"TX_SLOT_COUNT", std::to_string(slotCount_) + (cfg_.slotCount > 0 ? "" : " (auto)")});
+    c.push_back({"TX_SLOT_MS", num(cfg_.slotWidthMs)});
+    c.push_back({"TX_SLOT_JOIN", std::to_string(cfg_.joinSlots)});
+    c.push_back({"TX_SLOT_MAX_HZ", num(cfg_.maxHz)});
+    c.push_back({"TX_SLOT_MARK_ZONE_M", num(cfg_.markZoneM)});
+    c.push_back({"TX_PARKED_REPORT_S", num(cfg_.parkedReportS)});
+    c.push_back({"RTCM_WATCHDOG", onOff(cfg_.rtcmWatch)});
+  }
+  c.push_back({"REGATTAUP_ONGRID_ZONE_M", num(cfg_.onGridZoneM)});
+  c.push_back({"TX_FINISH_APPROACH_ZONE_M", num(cfg_.txFinishApproachZoneM)});
+  c.push_back({"RTCM_FORWARD", onOff(cfg_.rtcmForward)});
+  c.push_back({"radioSleep", hal_.canSleep ? "on" : "off (no SLEEP_RQ)"});
+  c.push_back({"GPS_LOG", onOff(cfg_.gpsLog)});
+  return c;
+}
+
+Rover::Items Rover::statusItems() const {
+  const double t = now();
+  const Pvt* p = hasLastPvt_ ? &lastPvt_ : nullptr;
+  char pos[48] = "none";
+  if (p) std::snprintf(pos, sizeof pos, "%.6f,%.6f", p->lat, p->lon);
+  char acc[16] = "-";
+  if (p) std::snprintf(acc, sizeof acc, "%.2fm", p->hAccMm / 1000.0);
+  Items s;
+  s.push_back({"gps", fixLabel(p)});
+  s.push_back({"acc", acc});
+  s.push_back({"sv", std::to_string(p ? p->numSV : 0)});
+  s.push_back({"pos", pos});
+  s.push_back({"fixAge", ageStr(t, lastPvtAt_)});
+  s.push_back({"marks", ageStr(t, lastMarksAt_)});
+  s.push_back({"radio", sleeper_.isSleeping() ? "asleep" : "ok"});
+  s.push_back({"txAge", ageStr(t, lastTxAt_)});
+  // not on the console line
+  const double period = tracker_.period();
+  s.push_back({"corrections", tracker_.isActive(t) ? "heard" + (period != BurstTracker::NONE ? " (every " + num(jsRound(period) / 1000) + " s)" : std::string()) : "not heard"});
+  s.push_back({"slot", parked_ ? "parked on the start grid" : assignedSlot() >= 0 ? std::to_string(assignedSlot()) : "none yet (join slots)"});
+  s.push_back({"practice", onOff(practiceMode_)});
+  s.push_back({"gpsSleep", gpsSleep_.isAsleep() ? "asleep (backup)" : "awake"});
+  s.push_back({"framesSent", std::to_string(framesSent_)});
+  s.push_back({"syncErrors", std::to_string(scanner_.syncErrors)});
+  int64_t wall;
+  s.push_back({"powerWindow", !wallNow(wall) ? "time unknown" : !policy_.windowManaged() ? "not managed" : policy_.inWindow(wall) ? "in the on window" : "outside the on window"});
+  return s;
+}
+
+std::string Rover::statusLine() const {
+  std::string line = "[status]";
+  int n = 0;
+  for (const auto& kv : statusItems()) {
+    if (n++ == 8) break;  // boatAgent.js's fields (it adds uploadAge)
+    line += " " + kv.first + "=" + kv.second;
+  }
+  return line;
+}
+
+std::string Rover::txgateStats() const {
+  if (!scheduler_) return "";
+  const auto& c = scheduler_->counters;
+  return "[txgate-stats] submitted=" + std::to_string(c.submitted) + " held=" + std::to_string(c.held) + " dropped=" + std::to_string(c.dropped) +
+         " expired=" + std::to_string(c.expired) + " spilled=" + std::to_string(c.spilled) + " queued=" + std::to_string(scheduler_->queued());
+}
+
+// boatAgent.js's statusKey: the discrete part of the status - logged at once when it changes, else every 60 s
+std::string Rover::statusKey() const {
+  const Pvt* p = hasLastPvt_ ? &lastPvt_ : nullptr;
+  return fixLabel(p) + (sleeper_.isSleeping() ? "|asleep" : "|ok") + (p ? "|1" : "|0") + (lastMarksAt_ >= 0 ? "|1" : "|0") + (lastTxAt_ >= 0 ? "|1" : "|0");
+}
+
+void Rover::maybeLogStatus() {
+  const double t = now();
+  if (t - statusCheckedAt_ < 2000) return;
+  statusCheckedAt_ = t;
+  const std::string key = statusKey();
+  if (key != lastStatusKey_ || t - lastStatusAt_ >= 60000) {
+    log(statusLine());
+    lastStatusKey_ = key;
+    lastStatusAt_ = t;
+  }
+  if (!hasLastPvt_ && t - waitingLoggedAt_ >= 10000) {
+    waitingLoggedAt_ = t;
+    log("[boatAgent] waiting for first GPS fix...");
+  }
 }
 
 }  // namespace rover
