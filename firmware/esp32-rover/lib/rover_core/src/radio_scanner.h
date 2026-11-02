@@ -18,7 +18,7 @@ class RadioScanner {
   std::function<void()> onPing;
   std::function<void(const protocol::Power&)> onPower;
   std::function<void(const protocol::SlotTable&)> onSlotTable;
-  std::function<void(const protocol::PowerScheduleStamp&)> onPowerSchedule;
+  std::function<void(const protocol::PowerSchedule&)> onPowerSchedule;
   // the whole RTCM3 frame, for forwarding to the GPS untouched
   std::function<void(const protocol::Rtcm&, const uint8_t* raw)> onRtcm;
   std::function<void()> onSyncError;

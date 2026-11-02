@@ -17,8 +17,10 @@
 #include <vector>
 
 #include "burst_tracker.h"
+#include "course_watchers.h"
 #include "distance_gate.h"
 #include "gps_sleep.h"
+#include "power_policy.h"
 #include "protocol.h"
 #include "radio_scanner.h"
 #include "rover_diag.h"
@@ -55,6 +57,17 @@ struct RoverConfig {
   int reserveFrames = 1;
   double markZoneM = 80;
   double joinReportS = 15;
+  // start-grid parking (TX_PARKED_*, TX_SLOT_UNPARK_FIXES, TX_SLOT_PARK_DWELL_S, TX_SLOT_MOVING_KN) and the zone (REGATTAUP_ONGRID_ZONE_M)
+  double parkedReportS = 15;
+  double parkedFirstS = 2;
+  double parkedRepeatS = 10;
+  int unparkFixes = 3;
+  double parkDwellS = 5;
+  double movingKn = 1.5;
+  double onGridZoneM = 10;
+  // TX_FINISH_APPROACH_ZONE_M (0 = off) / TX_FINISH_DISTANCE_M
+  double txFinishApproachZoneM = 0;
+  double txFinishDistanceM = 0.3;
   // RTCM watchdog
   bool rtcmWatch = true;
   double rtcmWarnS = 20, rtcmRepeatS = 30;
@@ -65,6 +78,8 @@ struct RoverConfig {
   // the status hello's build field (version.js's commit count); 0 = unknown
   uint16_t build = 0;
   bool dirty = false;
+  // this boot came from the accelerometer (see power_policy.h)
+  bool motionWoken = false;
 };
 
 struct RoverHal {
@@ -78,6 +93,12 @@ struct RoverHal {
   std::function<void(const std::string&)> log;
   std::function<void(const protocol::Marks&)> saveMarks;   // persist the course across a restart
   std::function<bool(protocol::Marks&)> loadMarks;
+  // the power schedule (see power_policy.h): local time, the RTC's clock across a deep sleep, the base's last schedule, and the sleep
+  LocalClock clock;
+  std::function<bool()> wallClockValid;                    // wallMs is real time (the GPS set the RTC)
+  std::function<void(const protocol::PowerSchedule&)> saveSchedule;
+  std::function<bool(protocol::PowerSchedule&)> loadSchedule;
+  std::function<void(const PowerPolicy::Decision&)> requestDeepSleep;  // the GPS has been put in backup; the HAL does the rest
 };
 
 class Rover {
@@ -95,6 +116,7 @@ class Rover {
   bool gpsAsleep() const { return gpsSleep_.isAsleep(); }
   bool burstsHeard() const { return tracker_.isActive(now()); }
   int assignedSlot() const { return follower_ ? follower_->assigned : -1; }
+  bool parked() const { return parked_; }
   bool hasMarks() const { return hasMarks_; }
   const Pvt* lastPvt() const { return hasLastPvt_ ? &lastPvt_ : nullptr; }
   uint32_t framesSent() const { return framesSent_; }
@@ -122,6 +144,8 @@ class Rover {
   Pacer* sendPacer();
   bool joinThrottleActive() const;
   bool isWaitingPacer(const Pacer* p) const { return p == joinBackoff_.get() || p == movingBackoff_.get(); }
+  void rebuildWatchers();
+  void updateParked(const Pvt& pvt);
 
   diag::Report currentDiag() const;
   void sendHello(bool force);
@@ -129,6 +153,14 @@ class Rover {
   void checkRtcmWatchdog();
 
   void after(double delayMs, std::function<void()> fn);
+  void checkPower();
+  static std::string describeSchedule(const protocol::PowerSchedule& s);
+
+ public:
+  bool wallNow(int64_t& out) const;  // unix ms, false until the time is known
+  const PowerPolicy& powerPolicy() const { return policy_; }
+
+ private:
 
   RoverConfig cfg_;
   RoverHal hal_;
@@ -139,12 +171,22 @@ class Rover {
   RoverSleep sleeper_;
   GpsSleep gpsSleep_;
   DistanceGate distanceGate_;
+  PowerPolicy policy_;
+  bool sleepRequested_ = false;
+  double lastPowerCheckAt_ = -1e300;
+  static constexpr double POWER_CHECK_MS = 5000;
   RadioScanner scanner_;
   ubx::Parser ubxParser_;
   std::unique_ptr<JoinBackoff> joinBackoff_;
   std::unique_ptr<JoinBackoff> movingBackoff_;
   bool parkingEnabled_ = false;
   bool practiceMode_ = false;
+  bool parked_ = false;
+  ZoneState zoneState_;
+  std::unique_ptr<ParkedReporter> parkedReporter_;
+  std::unique_ptr<OnGridWatcher> zoneWatcher_;
+  std::unique_ptr<EventBoost> eventBoost_;
+  std::unique_ptr<FinishApproachWatcher> finishApproach_;
   int maxFixesPerFrame_;
 
   protocol::Marks marks_;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 
 #include "js_math.h"
@@ -26,11 +27,14 @@ Rover::Rover(RoverConfig config, RoverHal hal)
           true, [this](const std::vector<uint8_t>& b) { return hal_.gpsWrite(b.data(), b.size()); }, cfg_.gpsSleepForceUsb, hal_.monoMs,
           hal_.log),
       distanceGate_(cfg_.txIntervalMs),
+      policy_(hal_.clock),
       maxFixesPerFrame_(cfg_.txDelta ? (int)protocol::MAX_DELTA_COUNT : (int)protocol::MAX_BATCH_COUNT) {
   auto rnd = hal_.random;
   auto mono = hal_.monoMs;
   joinBackoff_.reset(new JoinBackoff(cfg_.joinReportS * 1000, {0, 1000, 2000, 4000, 8000}, mono, rnd));
   movingBackoff_.reset(new JoinBackoff(4000, {0, 2000}, mono, rnd));
+  zoneState_ = ZoneState(cfg_.unparkFixes, cfg_.parkDwellS * 1000);
+  parkedReporter_.reset(new ParkedReporter(cfg_.parkedReportS * 1000, cfg_.parkedFirstS * 1000, cfg_.parkedRepeatS * 1000, mono, rnd));
   diagState_.since = now();
   diagState_.watchBursts = cfg_.txGateEnabled && cfg_.rtcmWatch;
 
@@ -64,6 +68,10 @@ Rover::Rover(RoverConfig config, RoverHal hal)
       follower_.reset(new SlotTableFollower(cfg_.boatId, *scheduler_, pinned >= 0, mono, hal_.log));
       follower_->onPractice = [this](bool on) {
         practiceMode_ = on;
+        if (on && parked_) {
+          parked_ = false;
+          follower_->setParked(false);
+        }
         log(on ? "[slots] the base is in practice mode - no start-grid parking, any moving boat gets a slot"
                : "[slots] the base left practice mode - start-grid parking is back");
       };
@@ -83,6 +91,7 @@ Rover::Rover(RoverConfig config, RoverHal hal)
     marks_ = m;
     hasMarks_ = true;
     freshMarksReceived_ = true;
+    rebuildWatchers();
     if (hal_.saveMarks) hal_.saveMarks(m);
     if (first) log("[rover] received course marks from base station");
   };
@@ -99,12 +108,15 @@ Rover::Rover(RoverConfig config, RoverHal hal)
     diagState_.lastBaseRxAt = now();
     if (follower_) follower_->onTable(t);
   };
-  scanner_.onPowerSchedule = [this](const protocol::PowerScheduleStamp& s) {
+  scanner_.onPowerSchedule = [this](const protocol::PowerSchedule& s) {
     diagState_.lastBaseRxAt = now();
+    // the base repeats it every minute or so: apply (and keep, for the next boot) only a new version
     if (hasPowerStamp_ && s.stamp == lastPowerStamp_) return;
     hasPowerStamp_ = true;
     lastPowerStamp_ = s.stamp;
-    log("[power] heard the base's power schedule - not applied: the ESP32 rover has no Witty Pi or shutdown rule yet");
+    policy_.setSchedule(s);
+    if (hal_.saveSchedule) hal_.saveSchedule(s);
+    log("[power] the base's power schedule: " + describeSchedule(s));
   };
   scanner_.onRtcm = [this](const protocol::Rtcm& r, const uint8_t* raw) {
     tracker_.onRtcm(r.type, now(), r.length);
@@ -115,8 +127,8 @@ Rover::Rover(RoverConfig config, RoverHal hal)
   // the GPS
   // A fix without valid UTC is stamped from the clock the last fix with valid UTC set, else the HAL's (an ESP32 has no clock of its own)
   ubxParser_.wallMs = [this]() -> int64_t {
-    if (hasWallOffset_) return (int64_t)jsRound(now() + wallOffsetMs_);
-    return hal_.wallMs ? hal_.wallMs() : (int64_t)now();
+    int64_t w;
+    return wallNow(w) ? w : (hal_.wallMs ? hal_.wallMs() : (int64_t)now());
   };
   ubxParser_.onFrame = [this](uint8_t, uint8_t) { diagState_.lastUbxAt = now(); };
   ubxParser_.onPvt = [this](const Pvt& p) { onGpsFix(p); };
@@ -136,10 +148,41 @@ Rover::Rover(RoverConfig config, RoverHal hal)
   };
 
   // the last-known course, so a restart has one at once
+  // the base's last power schedule, so a boat that wakes from deep sleep keeps to it before it hears the base again
+  protocol::PowerSchedule saved;
+  if (hal_.loadSchedule && hal_.loadSchedule(saved)) {
+    policy_.setSchedule(saved);
+    hasPowerStamp_ = true;
+    lastPowerStamp_ = saved.stamp;
+  }
   if (hal_.loadMarks && hal_.loadMarks(marks_)) {
     hasMarks_ = true;
+    rebuildWatchers();
     log("[rover] loaded last-known course marks");
   }
+}
+
+// Rebuilt whenever the marks change, so they always describe the course as it is now (boatAgent.js's rebuildFinishApproachWatcher /
+// rebuildZoneWatcher). A marks frame always carries every mark, so all of them can be built.
+void Rover::rebuildWatchers() {
+  finishApproach_.reset(new FinishApproachWatcher(marks_));
+  eventBoost_.reset(new EventBoost(marks_, cfg_.onGridZoneM));
+  zoneWatcher_.reset(new OnGridWatcher(marks_, cfg_.onGridZoneM));
+}
+
+// Parked: inside the on-grid zone behind the start line, the boat takes no slot and reports in the join slots only every parkedReportS
+// (see boatAgent.js's updateParked)
+void Rover::updateParked(const Pvt& pvt) {
+  if (practiceMode_ || !parkingEnabled_ || !zoneWatcher_ || !hasValidFix(pvt)) return;
+  const bool inZone = zoneWatcher_->check(pvt.lat, pvt.lon) == OnGridWatcher::ONGRID;
+  const bool stationary = speedKnots(pvt) < cfg_.movingKn;
+  const bool now = zoneState_.update(inZone, false, (double)pvt.timestamp, stationary);
+  if (now == parked_) return;
+  parked_ = now;
+  if (follower_) follower_->setParked(parked_);
+  if (parked_) parkedReporter_->reset();
+  log(parked_ ? "[slots] on the start grid - parked: no slot, reporting every ~" + std::to_string((int)cfg_.parkedReportS) + " s in the shared join slots"
+              : "[slots] left the start grid - waiting for the base to assign a slot");
 }
 
 void Rover::begin() { startHelloAnnounce(); }
@@ -192,6 +235,52 @@ void Rover::tick() {
   }
   for (auto& d : due) d.fn();
   checkRtcmWatchdog();
+  checkPower();
+}
+
+bool Rover::wallNow(int64_t& out) const {
+  if (hasWallOffset_) {
+    out = (int64_t)jsRound(now() + wallOffsetMs_);
+    return true;
+  }
+  // after a deep sleep the ESP32's RTC still has the time the GPS last set
+  if (hal_.wallClockValid && hal_.wallClockValid()) {
+    out = hal_.wallMs();
+    return true;
+  }
+  return false;
+}
+
+// The power schedule, every few seconds once the time is known (see power_policy.h). Asks for deep sleep once; the HAL does it.
+void Rover::checkPower() {
+  const double t = now();
+  if (sleepRequested_ || t - lastPowerCheckAt_ < POWER_CHECK_MS || !hal_.requestDeepSleep || !hal_.clock.toLocal) return;
+  lastPowerCheckAt_ = t;
+  int64_t wall;
+  if (!wallNow(wall)) return;
+  const PowerPolicy::Decision d = policy_.evaluate(wall, hasLastPvt_ ? &lastPvt_ : nullptr, sleeper_.isSleeping(), cfg_.motionWoken);
+  if (!d.sleep) return;
+  sleepRequested_ = true;
+  log("[power] going to sleep: " + d.reason + (d.hasWakeAt ? ", waking when the on window opens" : ", waking on motion"));
+  if (scheduler_) scheduler_->flushNow();
+  gpsSleep_.sleep();
+  hal_.requestDeepSleep(d);
+}
+
+std::string Rover::describeSchedule(const protocol::PowerSchedule& s) {
+  auto hhmm = [](int m) {
+    char b[16];
+    std::snprintf(b, sizeof b, "%02d:%02d", m / 60, m % 60);
+    return std::string(b);
+  };
+  std::string w = "no on window";
+  if (s.hasWitty && s.wittyMode == 1) w = "on " + hhmm(s.startMin) + " to " + hhmm(s.endMin);
+  if (s.hasWitty && s.wittyMode == 2) w = "on " + std::to_string(s.beforeMin) + " min before sunrise to " + std::to_string(s.afterMin) + " min after sunset";
+  if (s.hasWitty && s.wittyMode != 0) w += s.haltItself ? " (then the shutdown rule)" : " (then asleep at once)";
+  std::string r = "no shutdown rule";
+  if (s.hasShutdown && s.shutdownEnabled)
+    r = s.whenIdle ? "asleep after " + hhmm(s.shutdownMin) + " once stopped " + std::to_string(s.idleMinutes) + " min" : "asleep at " + hhmm(s.shutdownMin);
+  return w + "; " + r;
 }
 
 // ---- fixes ----
@@ -216,7 +305,23 @@ void Rover::onGpsFix(const Pvt& pvt) {
 void Rover::handlePvt(const Pvt& pvt) {
   lastPvt_ = pvt;
   hasLastPvt_ = true;
-  const bool clearedTxGate = distanceGate_.cleared(pvt, cfg_.txDistanceM);
+  updateParked(pvt);
+  // closing on the finish line upwind: a tighter distance gate (TX_FINISH_APPROACH_ZONE_M, off by default)
+  const double distanceM = cfg_.txFinishApproachZoneM > 0 && finishApproach_ &&
+                                   finishApproach_->isApproachingUpwind(pvt.lat, pvt.lon, cfg_.txFinishApproachZoneM)
+                               ? cfg_.txFinishDistanceM
+                               : cfg_.txDistanceM;
+  // a start, finish or foul crossing seen on the boat's own fixes: the fixes just before it go back in the batch and everything just
+  // after goes through, so the base sees the pair that straddles the line (see eventBoost.js)
+  bool urgent = false;
+  if (eventBoost_ && hasValidFix(pvt)) {
+    const EventBoost::Result boost = eventBoost_->onFix(pvt);
+    urgent = boost.urgent;
+    const int64_t lastQueuedAt = pendingBatch_.empty() ? INT64_MIN : pendingBatch_.back().timestamp;
+    for (const Pvt& f : boost.before)
+      if (f.timestamp > lastQueuedAt) pendingBatch_.push_back(f);
+  }
+  const bool clearedTxGate = urgent || distanceGate_.cleared(pvt, distanceM) || (parked_ && parkedReporter_->wantsRepeat());
   if (!clearedTxGate) return;
   if (hasValidFix(pvt)) {
     distanceGate_.advance(pvt);
@@ -238,12 +343,14 @@ bool Rover::isNearRoundingMark(const Pvt& fix) const {
 }
 
 bool Rover::joinThrottleActive() const {
-  return cfg_.joinReportS > 0 && parkingEnabled_ && scheduler_ && scheduler_->slot().hasJoin && scheduler_->slotAligned();
+  return !parked_ && cfg_.joinReportS > 0 && parkingEnabled_ && scheduler_ && scheduler_->slot().hasJoin && scheduler_->slotAligned();
 }
 
-// The pacing that applies to this boat's radio sends right now, or null for none: sharing the join slots without a slot of its own.
-// (Parking on the start grid is not ported yet, so the parked pacer never applies.)
+// The pacing that applies to this boat's radio sends right now, or null for none: parked on the start grid, or sharing the join slots
+// without a slot of its own
 Pacer* Rover::sendPacer() {
+  if (eventBoost_ && hasLastPvt_ && eventBoost_->isUrgent(lastPvt_.timestamp)) return nullptr;  // a line crossing must be seen
+  if (parked_ && cfg_.parkedReportS > 0 && scheduler_ && scheduler_->slotAligned()) return parkedReporter_.get();
   if (joinThrottleActive()) {
     if (hasLastPvt_ && speedKnots(lastPvt_) > MOVING_UNTHROTTLED_KN) return isNearRoundingMark(lastPvt_) ? nullptr : movingBackoff_.get();
     return joinBackoff_.get();

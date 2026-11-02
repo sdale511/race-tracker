@@ -3,11 +3,14 @@
 #include <unity.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "../vectors/node_vectors.h"
+#include "course_watchers.h"
+#include "power_policy.h"
 #include "protocol.h"
 #include "radio_scanner.h"
 #include "rover.h"
@@ -15,6 +18,7 @@
 #include "slot_table.h"
 #include "thin_fixes.h"
 #include "ubx.h"
+#include "xbee_at.h"
 
 using namespace rover;
 
@@ -123,7 +127,7 @@ void test_power_and_slot_tables_decode_like_node() {
     TEST_ASSERT_EQUAL_UINT8(vec::TABLES[i].joinSlots, t.joinSlots);
     TEST_ASSERT_EQUAL_INT(vec::TABLES[i].entries, (int)t.entries.size());
   }
-  protocol::PowerScheduleStamp s;
+  protocol::PowerSchedule s;
   TEST_ASSERT_TRUE(protocol::decodePowerSchedule(vec::POWER_SCHEDULE_FRAME.data(), vec::POWER_SCHEDULE_FRAME.size(), s));
   TEST_ASSERT_EQUAL_UINT32(vec::POWER_SCHEDULE_STAMP, s.stamp);
 }
@@ -144,7 +148,7 @@ void test_radio_stream_scans_like_radiolink() {
   s.onPing = [&]() { events.push_back(2); };
   s.onPower = [&](const protocol::Power&) { events.push_back(3); };
   s.onSlotTable = [&](const protocol::SlotTable&) { events.push_back(4); };
-  s.onPowerSchedule = [&](const protocol::PowerScheduleStamp&) { events.push_back(5); };
+  s.onPowerSchedule = [&](const protocol::PowerSchedule&) { events.push_back(5); };
   s.onRtcm = [&](const protocol::Rtcm&, const uint8_t*) { events.push_back(6); };
   size_t at = 0;
   for (int n : vec::RADIO_CHUNKS) {
@@ -260,6 +264,36 @@ void test_distances_match_node() {
                                                 {vec::MARKS_LATLON[14], vec::MARKS_LATLON[15]}));
 }
 
+void test_course_watchers_match_node() {
+  protocol::Marks m;
+  TEST_ASSERT_TRUE(protocol::decodeMarks(vec::MARKS_FRAME.data(), vec::MARKS_FRAME.size(), m));
+  const size_t n = sizeof vec::WATCH_PATH / sizeof vec::WATCH_PATH[0];
+  for (int pass = 0; pass < 2; pass++) {
+    m.pinBoundaryEnabled = pass == 0;
+    OnGridWatcher grid(m, 10);
+    FinishLineWatcher fin(m);
+    FoulWatcher foul(m);
+    FinishApproachWatcher approach(m);
+    EventBoost boost(m, 10);
+    for (size_t i = 0; i < n; i++) {
+      const Pvt p = toPvt(vec::WATCH_PATH[i]);
+      const vec::WatchV& w = vec::WATCH[pass * n + i];
+      char at[48];
+      std::snprintf(at, sizeof at, "pass %d fix %u", pass, (unsigned)i);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(w.grid, (int)grid.check(p.lat, p.lon), at);
+      TEST_ASSERT_EQUAL_MESSAGE(w.pastLine, grid.pastLine, at);
+      const bool crossed = i > 0 && grid.crossedStartLine(vec::WATCH_PATH[i - 1].lat, vec::WATCH_PATH[i - 1].lon, p.lat, p.lon);
+      TEST_ASSERT_EQUAL_MESSAGE(w.crossedStart, crossed, at);
+      TEST_ASSERT_EQUAL_MESSAGE(w.finish, fin.check(p.lat, p.lon, p.timestamp), at);
+      TEST_ASSERT_EQUAL_MESSAGE(w.foul, foul.check(p.lat, p.lon, p.timestamp), at);
+      TEST_ASSERT_EQUAL_MESSAGE(w.approaching, approach.isApproachingUpwind(p.lat, p.lon, 30), at);
+      const EventBoost::Result b = boost.onFix(p);
+      TEST_ASSERT_EQUAL_MESSAGE(w.urgent, b.urgent, at);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(w.before, (int)b.before.size(), at);
+    }
+  }
+}
+
 void test_diag_flags_match_node() {
   for (const auto& c : vec::DIAG_CASES) {
     diag::State s;
@@ -280,8 +314,12 @@ void test_diag_flags_match_node() {
 
 // ---- the rover end to end ----
 
+static LocalClock utcClock();
+
 struct Harness {
   double t = 1000;
+  bool slept = false;
+  PowerPolicy::Decision sleepDecision;
   std::vector<std::vector<uint8_t>> sent;
   std::vector<std::vector<uint8_t>> toGps;
   bool radioAsleep = false;
@@ -305,6 +343,11 @@ struct Harness {
     hal.wallMs = [this]() { return (int64_t)t; };
     hal.random = []() { return 0.5; };
     hal.log = [](const std::string&) {};
+    hal.clock = utcClock();
+    hal.requestDeepSleep = [this](const PowerPolicy::Decision& d) {
+      slept = true;
+      sleepDecision = d;
+    };
     rover.reset(new Rover(cfg, hal));
     rover->setGpsPortOpen(true);
     rover->begin();
@@ -385,6 +428,255 @@ void test_rover_follows_the_slot_table_and_sends_in_its_slot() {
   TEST_ASSERT_TRUE_MESSAGE(sentAt >= slotOpens && sentAt <= slotOpens + 45, "sent outside its slot");
 }
 
+void test_rover_parks_on_the_start_grid_and_reports_sparsely() {
+  Harness h;
+  h.rover->onRadioBytes(vec::MARKS_FRAME.data(), vec::MARKS_FRAME.size());
+  auto rtcm = vec::RTCM_FRAMES[0];
+  for (int b = 0; b < 4; b++) {
+    h.rover->onRadioBytes(rtcm.data(), rtcm.size());
+    h.run(2000);
+  }
+  // stopped, 3 m behind the middle of the start line
+  Pvt p;
+  p.lat = 40.780523;
+  p.lon = -119.20425;
+  p.gnssFixOk = true;
+  p.numSV = 30;
+  p.carrSoln = 2;
+  p.timestamp = 1793639000000;
+  h.rover->handlePvtForTest(p);
+  TEST_ASSERT_TRUE(h.rover->parked());
+  // a minute on the grid at 10 Hz: the first report within 2 s, its repeat, then about one every 15 s - not 600
+  h.sent.clear();
+  for (int i = 0; i < 600; i++) {
+    if (i % 20 == 0) h.rover->onRadioBytes(rtcm.data(), rtcm.size());
+    p.timestamp += 100;
+    h.rover->handlePvtForTest(p);
+    h.run(100);
+  }
+  const size_t reports = h.count(protocol::SYNC) + h.count(protocol::DELTA_SYNC);
+  TEST_ASSERT_TRUE_MESSAGE(reports >= 3 && reports <= 8, "a parked boat should report only now and then");
+  // under way and off the grid: three fixes outside and it unparks
+  for (int i = 0; i < 3; i++) {
+    p.lat += 0.001;
+    p.gSpeedMmS = 3000;
+    p.timestamp += 100;
+    h.rover->handlePvtForTest(p);
+  }
+  TEST_ASSERT_FALSE(h.rover->parked());
+}
+
+// ---- the power schedule ----
+
+// Local time = UTC, like the vectors (gen_vectors.js pins TZ=UTC)
+static LocalClock utcClock() {
+  LocalClock c;
+  c.toLocal = [](int64_t ms) {
+    int64_t days = ms / 86400000 - (ms % 86400000 < 0);
+    const int minutes = (int)((ms - days * 86400000) / 60000);
+    // civil_from_days
+    days += 719468;
+    const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    const unsigned doe = (unsigned)(days - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    return LocalDate{(int)(yoe + era * 400 + (m <= 2)), (int)m, (int)d, minutes};
+  };
+  c.fromLocal = [](int y, int m, int d, int minutes) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + 1 - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = era * 146097 + (int64_t)doe - 719468 + (d - 1);  // an out-of-range day rolls over, like Date
+    return days * 86400000 + (int64_t)minutes * 60000;
+  };
+  return c;
+}
+
+void test_power_schedule_decodes_like_node() {
+  for (size_t i = 0; i < vec::FULL_SCHEDULE_FRAMES.size(); i++) {
+    protocol::PowerSchedule s;
+    const auto& f = vec::FULL_SCHEDULE_FRAMES[i];
+    const auto& w = vec::SCHEDULES[i];
+    TEST_ASSERT_TRUE(protocol::decodePowerSchedule(f.data(), f.size(), s));
+    TEST_ASSERT_EQUAL_UINT32(w.stamp, s.stamp);
+    TEST_ASSERT_EQUAL(w.hasWitty, s.hasWitty);
+    TEST_ASSERT_EQUAL(w.hasShutdown, s.hasShutdown);
+    if (w.hasWitty) {
+      TEST_ASSERT_EQUAL_INT(w.mode, s.wittyMode);
+      TEST_ASSERT_EQUAL(w.halt, s.haltItself);
+      TEST_ASSERT_EQUAL_INT(w.start, s.startMin);
+      TEST_ASSERT_EQUAL_INT(w.end, s.endMin);
+      assertClose(w.lat, s.lat);
+      assertClose(w.lon, s.lon);
+      TEST_ASSERT_EQUAL_INT(w.before, s.beforeMin);
+      TEST_ASSERT_EQUAL_INT(w.after, s.afterMin);
+      TEST_ASSERT_EQUAL_INT(w.days, s.days);
+    }
+    if (w.hasShutdown) {
+      TEST_ASSERT_EQUAL(w.enabled, s.shutdownEnabled);
+      TEST_ASSERT_EQUAL(w.whenIdle, s.whenIdle);
+      TEST_ASSERT_EQUAL_INT(w.time, s.shutdownMin);
+      TEST_ASSERT_EQUAL_INT(w.idle, s.idleMinutes);
+      assertClose(w.speed, s.speedKn);
+    }
+  }
+}
+
+void test_shutdown_gate_matches_node() {
+  const LocalClock clock = utcClock();
+  for (const auto& c : vec::GATES) {
+    Pvt fix;
+    fix.timestamp = (int64_t)c.fixTs;
+    fix.gSpeedMmS = c.fixSpeed;
+    const GateResult r = evaluateGate(c.at, c.kn, c.idle, c.req, c.hasIdle, (int64_t)c.idleSince, c.hasFix ? &fix : nullptr, (int64_t)c.now, clock);
+    TEST_ASSERT_EQUAL(c.resIdle, r.idle);
+    if (c.resIdle) TEST_ASSERT_EQUAL_INT64((int64_t)c.resIdleSince, r.idleSince);
+    TEST_ASSERT_EQUAL(c.shut, r.shouldShutDown);
+  }
+}
+
+void test_sun_times_match_node() {
+  for (const auto& c : vec::SUNS) {
+    const SunTimes t = sunTimes(c.y, c.m, c.d, c.lat, c.lon);
+    TEST_ASSERT_EQUAL(c.ok, t.ok);
+    if (!c.ok) continue;
+    TEST_ASSERT_EQUAL_INT64((int64_t)c.sunrise, t.sunrise);
+    TEST_ASSERT_EQUAL_INT64((int64_t)c.sunset, t.sunset);
+  }
+}
+
+void test_power_policy_sleeps_outside_the_window_and_wakes_at_its_start() {
+  PowerPolicy p(utcClock());
+  protocol::PowerSchedule s;
+  s.hasWitty = true;
+  s.wittyMode = 1;   // daily
+  s.startMin = 540;  // 09:00
+  s.endMin = 1020;   // 17:00
+  p.setSchedule(s);
+  const int64_t day = 1793577600000LL;  // 2026-11-02 00:00 UTC
+  Pvt moving;
+  moving.gSpeedMmS = 3000;
+  moving.timestamp = day + 12 * 3600000;
+  TEST_ASSERT_FALSE(p.evaluate(day + 12 * 3600000, &moving, false, false).sleep);  // noon: in the window
+  moving.timestamp = day + 17 * 3600000 + 60000;
+  auto d = p.evaluate(day + 17 * 3600000 + 60000, &moving, false, false);  // 17:01, even under way: the hard stop
+  TEST_ASSERT_TRUE(d.sleep);
+  TEST_ASSERT_TRUE(d.hasWakeAt);
+  TEST_ASSERT_EQUAL_INT64(day + 86400000 + 9 * 3600000, d.wakeAt);  // tomorrow 09:00
+  // woken by motion at 20:00 and being sailed: stays up; stopped for 10 minutes: back to sleep
+  moving.timestamp = day + 20 * 3600000;
+  TEST_ASSERT_FALSE(p.evaluate(day + 20 * 3600000, &moving, false, true).sleep);
+  Pvt stopped;
+  stopped.timestamp = day + 20 * 3600000 + 60000;
+  TEST_ASSERT_FALSE(p.evaluate(stopped.timestamp, &stopped, false, true).sleep);
+  stopped.timestamp += 10 * 60000;
+  TEST_ASSERT_TRUE(p.evaluate(stopped.timestamp, &stopped, false, true).sleep);
+  // in radio sleep mode nothing counts
+  TEST_ASSERT_FALSE(p.evaluate(day + 23 * 3600000, nullptr, true, false).sleep);
+}
+
+void test_power_policy_follows_the_shutdown_rule() {
+  PowerPolicy p(utcClock());
+  protocol::PowerSchedule s;
+  s.hasShutdown = true;
+  s.shutdownEnabled = true;
+  s.whenIdle = true;
+  s.shutdownMin = 21 * 60;
+  s.idleMinutes = 10;
+  s.speedKn = 0.5;
+  p.setSchedule(s);
+  const int64_t t = 1793577600000LL + 22 * 3600000;
+  Pvt stopped;
+  stopped.timestamp = t;
+  TEST_ASSERT_FALSE(p.evaluate(t, &stopped, false, false).sleep);
+  stopped.timestamp = t + 600000;
+  auto d = p.evaluate(t + 600000, &stopped, false, false);
+  TEST_ASSERT_TRUE(d.sleep);
+  TEST_ASSERT_FALSE(d.hasWakeAt);  // no on window: only motion wakes it
+}
+
+void test_rover_sleeps_when_the_base_schedule_says_so() {
+  Harness h;
+  // daily 09:00-17:30 with a hard stop, shutdown after 21:00 (see gen_vectors.js)
+  h.rover->onRadioBytes(vec::POWER_SCHEDULE_FRAME.data(), vec::POWER_SCHEDULE_FRAME.size());
+  Pvt p;
+  p.utcValid = true;
+  p.gnssFixOk = true;
+  p.lat = 40.7864;
+  p.lon = -119.2066;
+  p.timestamp = 1793577600000LL + 12 * 3600000;  // noon UTC: inside the window
+  h.rover->handlePvtForTest(p);
+  h.run(6000);
+  TEST_ASSERT_FALSE(h.slept);
+  p.timestamp = 1793577600000LL + 18 * 3600000;  // 18:00: outside it
+  h.rover->handlePvtForTest(p);
+  h.run(6000);
+  TEST_ASSERT_TRUE(h.slept);
+  TEST_ASSERT_TRUE(h.sleepDecision.hasWakeAt);
+  TEST_ASSERT_EQUAL_INT64(1793577600000LL + 86400000 + 9 * 3600000, h.sleepDecision.wakeAt);
+  assertBytes(vec::PMREQ, h.toGps.back());  // the GPS went into backup first
+}
+
+// A pretend XBee: replies to +++ and AT commands the way the module does (xbeeAt.js's tests use the same exchange)
+struct FakeXbee {
+  std::string ni;
+  std::string pending;
+  std::vector<std::string> written;
+  bool saved = false;
+  xbee::Io io() {
+    xbee::Io x;
+    x.write = [this](const std::string& s) {
+      written.push_back(s);
+      if (s == "+++") pending += "\x01\x02 frame bytes\rOK\r";  // air traffic, a stray \r, then the OK
+      else if (s == "ATNI\r") pending += ni + "\r";
+      else if (s.rfind("ATNI", 0) == 0) {
+        ni = s.substr(4, s.size() - 5);
+        pending += "OK\r";
+      } else if (s == "ATWR\r") {
+        saved = true;
+        pending += "OK\r";
+      } else if (s == "ATCN\r") pending += "OK\r";
+    };
+    x.read = [this](std::string& buf, unsigned) {
+      if (pending.empty()) return false;
+      buf += pending;
+      pending.clear();
+      return true;
+    };
+    x.sleep = [](unsigned) {};
+    return x;
+  }
+};
+
+void test_xbee_node_identifier_is_set_once() {
+  FakeXbee radio;
+  radio.ni = "old name";
+  auto r = xbee::setNodeIdentifier(radio.io(), "QXZRA");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_TRUE(r.changed);
+  TEST_ASSERT_EQUAL_STRING("old name", r.previous.c_str());
+  TEST_ASSERT_EQUAL_STRING("QXZRA", radio.ni.c_str());
+  TEST_ASSERT_TRUE(radio.saved);
+  TEST_ASSERT_EQUAL_STRING("ATCN\r", radio.written.back().c_str());
+  // already right: nothing written to the radio's flash
+  radio.saved = false;
+  r = xbee::setNodeIdentifier(radio.io(), "QXZRA");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_FALSE(r.changed);
+  TEST_ASSERT_FALSE(radio.saved);
+  // no XBee there at all
+  xbee::Io silent;
+  silent.write = [](const std::string&) {};
+  silent.read = [](std::string&, unsigned) { return false; };
+  silent.sleep = [](unsigned) {};
+  TEST_ASSERT_FALSE(xbee::setNodeIdentifier(silent, "QXZRA").ok);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_position_frames_match_node);
@@ -402,9 +694,18 @@ int main() {
   RUN_TEST(test_join_backoff_matches_node);
   RUN_TEST(test_thinning_keeps_what_node_keeps);
   RUN_TEST(test_distances_match_node);
+  RUN_TEST(test_course_watchers_match_node);
   RUN_TEST(test_diag_flags_match_node);
   RUN_TEST(test_rover_says_hello_then_sends_fixes_in_delta_frames);
   RUN_TEST(test_rover_sleeps_and_wakes_on_power_frames);
   RUN_TEST(test_rover_follows_the_slot_table_and_sends_in_its_slot);
+  RUN_TEST(test_rover_parks_on_the_start_grid_and_reports_sparsely);
+  RUN_TEST(test_xbee_node_identifier_is_set_once);
+  RUN_TEST(test_power_schedule_decodes_like_node);
+  RUN_TEST(test_shutdown_gate_matches_node);
+  RUN_TEST(test_sun_times_match_node);
+  RUN_TEST(test_power_policy_sleeps_outside_the_window_and_wakes_at_its_start);
+  RUN_TEST(test_power_policy_follows_the_shutdown_rule);
+  RUN_TEST(test_rover_sleeps_when_the_base_schedule_says_so);
   return UNITY_END();
 }

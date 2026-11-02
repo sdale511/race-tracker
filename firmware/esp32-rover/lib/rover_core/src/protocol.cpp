@@ -248,11 +248,31 @@ bool decodeSlotTable(const uint8_t* buf, size_t len, SlotTable& out) {
   return true;
 }
 
-bool decodePowerSchedule(const uint8_t* buf, size_t len, PowerScheduleStamp& out) {
+bool decodePowerSchedule(const uint8_t* buf, size_t len, PowerSchedule& out) {
   if (len != POWER_SCHEDULE_FRAME_LEN || buf[0] != POWER_SCHEDULE_SYNC || !sumOk(buf, len)) return false;
   if ((buf[2] & 0x03) == 3) return false;  // not one of WITTY_MODES
-  out.managed = buf[1];
+  out = PowerSchedule();
   out.stamp = getU32(buf + 4);
+  out.hasWitty = buf[1] & 1;
+  if (out.hasWitty) {
+    out.wittyMode = buf[2] & 0x03;
+    out.haltItself = (buf[2] & 0x80) != 0;
+    out.startMin = getU16(buf + 8) % 1440;
+    out.endMin = getU16(buf + 10) % 1440;
+    out.lat = getI32(buf + 12) / 1e5;
+    out.lon = getI32(buf + 16) / 1e5;
+    out.beforeMin = buf[20];
+    out.afterMin = buf[21];
+    out.days = getU16(buf + 22);
+  }
+  out.hasShutdown = (buf[1] & 2) != 0;
+  if (out.hasShutdown) {
+    out.shutdownEnabled = (buf[3] & 1) != 0;
+    out.whenIdle = (buf[3] & 2) != 0;
+    out.shutdownMin = getU16(buf + 24) % 1440;
+    out.idleMinutes = getU16(buf + 26);
+    out.speedKn = getU16(buf + 28) / 100.0;
+  }
   return true;
 }
 

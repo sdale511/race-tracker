@@ -6,6 +6,10 @@
 //   node firmware/esp32-rover/tools/gen_vectors.js           regenerate (after changing any of those files)
 //   node firmware/esp32-rover/tools/gen_vectors.js --check   exit 1 if the checked-in header is out of date (test/firmwareVectors.test.js)
 
+// powerSchedule.js and sunSchedule.js work in local time: pin it, so the vectors don't depend on the machine's zone (the C++ tests'
+// clock is UTC too)
+process.env.TZ = 'UTC';
+
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -298,7 +302,54 @@ out(`static const double DISTANCES[] = {${geo.map(([a, b]) => num(distanceMeters
 out(`static const double SEG_DIST = ${num(distanceToSegmentM(MARKS.windwardGreen, MARKS.committeeFinish, MARKS.finish))};`);
 out();
 
-// 9. the diagnosis flags
+// 9. the course watchers, on a path of random points around the start/finish complex - so it crosses every line, both ways, many times
+const { OnGridWatcher } = require(path.join(src, 'onGridWatcher'));
+const { FinishLineWatcher } = require(path.join(src, 'finishLineWatcher'));
+const { FoulWatcher } = require(path.join(src, 'foulWatcher'));
+const { FinishApproachWatcher } = require(path.join(src, 'finishApproach'));
+const { EventBoost } = require(path.join(src, 'eventBoost'));
+const watchPath = [];
+for (let i = 0; i < 400; i++) {
+  // mostly small steps (so the zone sees real stays), now and then a jump across the complex
+  const prev = watchPath[watchPath.length - 1];
+  const jump = !prev || rand() < 0.15;
+  const lat = jump ? 40.7797 + rand() * 0.0016 : prev.lat + (rand() - 0.5) * 0.00008;
+  const lon = jump ? -119.2058 + rand() * 0.0030 : prev.lon + (rand() - 0.5) * 0.0001;
+  watchPath.push({ timestamp: 1793638900000 + i * 200, lat: Math.round(lat * 1e8) / 1e8, lon: Math.round(lon * 1e8) / 1e8, gSpeedMmS: 2000, headMotDeg: 0, gnssFixOk: true, carrSoln: 2, numSV: 30 });
+}
+const results = [];
+for (const marks of [MARKS, { ...MARKS, pinBoundaryEnabled: false }]) {
+  const grid = new OnGridWatcher(marks, 10);
+  const fin = new FinishLineWatcher(marks);
+  const foul = new FoulWatcher(marks);
+  const approach = new FinishApproachWatcher(marks);
+  const boost = new EventBoost(marks, { zoneM: 10 });
+  watchPath.forEach((p, i) => {
+    const g = grid.check(p.lat, p.lon);
+    const prev = watchPath[i - 1];
+    const b = boost.onFix(p);
+    results.push([
+      g === 'ongrid' ? 1 : g === 'offgrid' ? 2 : 0,
+      grid.pastLine,
+      !!prev && grid.crossedStartLine(prev.lat, prev.lon, p.lat, p.lon),
+      !!fin.check(p.lat, p.lon, p.timestamp),
+      !!foul.check(p.lat, p.lon, p.timestamp),
+      approach.isApproachingUpwind(p.lat, p.lon, 30),
+      b.urgent,
+      b.before.length,
+    ]);
+  });
+}
+pvtArray('WATCH_PATH', watchPath);
+out('// per fix, first with the pin boundary on, then off: on-grid (0 none, 1 ongrid, 2 offgrid), pastLine, crossedStartLine, finish, foul,');
+out('// approaching (30 m zone), event boost urgent, event boost before-count');
+out('struct WatchV { int grid; bool pastLine, crossedStart, finish, foul, approaching, urgent; int before; };');
+out('static const WatchV WATCH[] = {');
+for (const r of results) out(`  {${r.join(', ')}},`);
+out('};');
+out();
+
+// 10. the diagnosis flags
 const diagCases = [
   { since: 0, gpsReal: true, gpsAsleep: false, gpsPortOpen: false, lastGpsBytesAt: null, lastUbxAt: null, lastPvtAt: null, lastRxmRtcmAt: null, lastBaseRxAt: null, watchBursts: true, burstsHeard: false, now: 1000 },
   { since: 0, gpsReal: true, gpsAsleep: false, gpsPortOpen: true, lastGpsBytesAt: 90000, lastUbxAt: 50000, lastPvtAt: null, lastRxmRtcmAt: null, lastBaseRxAt: 10000, watchBursts: true, burstsHeard: false, now: 100000 },
@@ -313,7 +364,55 @@ for (const d of diagCases) {
 }
 out('};');
 
-// 10. join back-off with a fixed random sequence
+// 11. the power schedule: the decoded frame, the shutdown gate, sunrise and sunset
+const { evaluateGate } = require(path.join(src, 'powerSchedule'));
+const { sunTimes } = require(path.join(src, 'sunSchedule'));
+const fullSchedules = [
+  schedule,
+  protocol.encodePowerSchedule({ stamp: 1793700000, witty: { mode: 'sun', haltItself: true, lat: 40.78642, lon: -119.20662, beforeMin: 30, afterMin: 45, days: 366 }, shutdown: null }),
+  protocol.encodePowerSchedule({ stamp: 1793800000, witty: null, shutdown: { enabled: false, whenIdle: false, time: '06:05', idleMinutes: 0, speedKn: 12.34 } }),
+];
+bytesArray('FULL_SCHEDULE_FRAMES', fullSchedules);
+out('struct ScheduleV { uint32_t stamp; bool hasWitty; int mode; bool halt; int start, end; double lat, lon; int before, after, days; bool hasShutdown, enabled, whenIdle; int time, idle; double speed; };');
+out('static const ScheduleV SCHEDULES[] = {');
+const hm = (t) => Number(t.split(':')[0]) * 60 + Number(t.split(':')[1]);
+for (const f of fullSchedules) {
+  const s = protocol.decodePowerSchedule(f);
+  const w = s.witty || { mode: 'off', haltItself: false, startTime: '00:00', endTime: '00:00', lat: 0, lon: 0, beforeMin: 0, afterMin: 0, days: 0 };
+  const d = s.shutdown || { enabled: false, whenIdle: true, time: '00:00', idleMinutes: 0, speedKn: 0 };
+  out(`  {${s.stamp}, ${!!s.witty}, ${['off', 'daily', 'sun'].indexOf(w.mode)}, ${w.haltItself}, ${hm(w.startTime)}, ${hm(w.endTime)}, ${num(w.lat)}, ${num(w.lon)}, ${w.beforeMin}, ${w.afterMin}, ${w.days}, ${!!s.shutdown}, ${d.enabled}, ${d.whenIdle}, ${hm(d.time)}, ${d.idleMinutes}, ${num(d.speedKn)}},`);
+}
+out('};');
+const day = Date.UTC(2026, 10, 2); // 2026-11-02 00:00 UTC
+const fixAt = (ms, mmS) => ({ timestamp: ms, gSpeedMmS: mmS });
+const gateCases = [
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: null, fix: fixAt(day + 20 * 3600000, 0), now: day + 20 * 3600000 }, // not yet time
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: null, fix: fixAt(day + 22 * 3600000, 3000), now: day + 22 * 3600000 }, // moving
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: null, fix: fixAt(day + 22 * 3600000, 100), now: day + 22 * 3600000 }, // just stopped
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: day + 22 * 3600000, fix: fixAt(day + 22 * 3600000 + 599000, 0), now: day + 22 * 3600000 + 599000 },
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: day + 22 * 3600000, fix: fixAt(day + 22 * 3600000 + 600000, 0), now: day + 22 * 3600000 + 600000 },
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: null, fix: fixAt(day + 22 * 3600000 - 200000, 9000), now: day + 22 * 3600000 }, // stale fix: idle
+  { at: '21:00', kn: 0.5, idle: 10, req: true, idleSince: null, fix: null, now: day + 23 * 3600000 }, // no fix at all
+  { at: '06:05', kn: 0.5, idle: 10, req: false, idleSince: null, fix: fixAt(day + 7 * 3600000, 9000), now: day + 7 * 3600000 }, // no idle gate
+];
+out('struct GateV { int at; double kn, idle; bool req, hasIdle; double idleSince; bool hasFix; double fixTs; int fixSpeed; double now; bool resIdle; double resIdleSince; bool shut; };');
+out('static const GateV GATES[] = {');
+for (const c of gateCases) {
+  const r = evaluateGate({ shutdownAt: c.at, shutdownSpeedKn: c.kn, shutdownIdleMinutes: c.idle, requireIdle: c.req, idleSince: c.idleSince, lastFix: c.fix, now: c.now });
+  out(`  {${hm(c.at)}, ${c.kn}, ${c.idle}, ${c.req}, ${c.idleSince != null}, ${c.idleSince || 0}, ${!!c.fix}, ${c.fix ? c.fix.timestamp : 0}, ${c.fix ? c.fix.gSpeedMmS : 0}, ${c.now}, ${r.idleSince != null}, ${r.idleSince || 0}, ${r.shouldShutDown}},`);
+}
+out('};');
+const suns = [[2026, 11, 2, 40.78642, -119.20662], [2026, 6, 21, 40.78642, -119.20662], [2026, 12, 21, -33.86785, 151.20732], [2026, 6, 21, 78.2, 15.6]];
+out('struct SunV { int y, m, d; double lat, lon; bool ok; double sunrise, sunset; };');
+out('static const SunV SUNS[] = {');
+for (const [y, m, d, lat, lon] of suns) {
+  const t = sunTimes(new Date(y, m - 1, d, 12), lat, lon);
+  out(`  {${y}, ${m}, ${d}, ${lat}, ${lon}, ${!!t}, ${t ? t.sunrise : 0}, ${t ? t.sunset : 0}},`);
+}
+out('};');
+out();
+
+// 12. join back-off with a fixed random sequence
 let jbT = 0;
 const jbRand = [0.1, 0.9, 0.5, 0.25, 0.75, 0.0, 0.99];
 let jbI = 0;

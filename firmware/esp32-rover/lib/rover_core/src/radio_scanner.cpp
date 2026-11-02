@@ -70,7 +70,7 @@ bool RadioScanner::dispatch(const uint8_t* buf, size_t len) {
       return true;
     }
     case POWER_SCHEDULE_SYNC: {
-      PowerScheduleStamp s;
+      PowerSchedule s;
       if (!decodePowerSchedule(buf, len, s)) return false;
       if (onPowerSchedule) onPowerSchedule(s);
       return true;

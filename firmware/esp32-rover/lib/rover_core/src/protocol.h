@@ -138,11 +138,23 @@ struct SlotTable {
 };
 bool decodeSlotTable(const uint8_t* buf, size_t len, SlotTable& out);
 
-struct PowerScheduleStamp {
+// protocol.js's decodePowerSchedule: each part only when the base manages it (hasWitty / hasShutdown)
+struct PowerSchedule {
   uint32_t stamp = 0;
-  uint8_t managed = 0;
+  bool hasWitty = false;
+  uint8_t wittyMode = 0;  // 0 off, 1 daily hours, 2 sunrise to sunset
+  bool haltItself = false;
+  int startMin = 0, endMin = 0;  // minutes after local midnight (daily)
+  double lat = 0, lon = 0;       // sun mode
+  int beforeMin = 0, afterMin = 0, days = 0;
+  bool hasShutdown = false;
+  bool shutdownEnabled = false;
+  bool whenIdle = true;
+  int shutdownMin = 0;  // minutes after local midnight
+  int idleMinutes = 0;
+  double speedKn = 0;
 };
-bool decodePowerSchedule(const uint8_t* buf, size_t len, PowerScheduleStamp& out);
+bool decodePowerSchedule(const uint8_t* buf, size_t len, PowerSchedule& out);
 
 uint32_t crc24q(const uint8_t* buf, size_t end);
 struct Rtcm {
