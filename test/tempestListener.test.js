@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { TempestListener, parseTempestMessage, windSampleFromObs, directionRange } = require('../src/tempestListener');
+const { TempestListener, parseTempestMessage, windSampleFromObs, directionRange, FOLLOW_TIMEOUT_MS } = require('../src/tempestListener');
 const { RedisStore } = require('../src/redisStore');
 
 // The shapes the Tempest hub broadcasts (WeatherFlow UDP API v171): wind in m/s, direction in degrees.
@@ -69,7 +69,7 @@ test('a 3-second reading with no speed or direction (a sensor fault) is not stor
   assert.deepStrictEqual(samples, []);
 });
 
-test('a 3-second sample\'s gust and lull are the highest and lowest speed of the last minute, per station', () => {
+test('a 3-second sample\'s gust and lull are the highest and lowest speed of the last minute, of the followed station only', () => {
   let t = 0;
   const samples = [];
   const listener = new TempestListener({ now: () => t });
@@ -77,7 +77,7 @@ test('a 3-second sample\'s gust and lull are the highest and lowest speed of the
   const ms = (mph) => mph / 2.2369362920544; // the station sends m/s
   t = 0; listener.handleMessage(rapidWind(ms(9), 0)); // 9 mph
   t = 30000; listener.handleMessage(rapidWind(ms(4), 0)); // 4 mph
-  t = 30000; listener.handleMessage(rapidWind(ms(20), 0, 'ST-OTHER')); // another station: its own window
+  t = 30000; listener.handleMessage(rapidWind(ms(20), 0, 'ST-OTHER')); // another station: ignored
   t = 59000; listener.handleMessage(rapidWind(ms(6), 0)); // all three of this station's readings are within a minute
   const at59 = samples.at(-1);
   assert.deepStrictEqual([at59.avg, at59.gust, at59.lull], [6, 9, 4]);
@@ -121,6 +121,44 @@ test('the direction range is the smallest arc holding every direction, across no
   assert.deepStrictEqual(directionRange([350, 5, 15, 355]), { from: 350, to: 15, width: 25 });
   assert.deepStrictEqual(directionRange([10, 10]), { from: 10, to: 10, width: 0 });
   assert.strictEqual(directionRange([]), null);
+});
+
+test('with no serial set, only the first station heard is used, so two stations never interleave', () => {
+  let t = 0;
+  const samples = [];
+  const listener = new TempestListener({ now: () => t });
+  listener.on('sample', (s) => samples.push(s));
+  // The base's own SIMULATE=1 station and a real one on the network, taking turns as they did on a live base.
+  for (let i = 0; i < 10; i++) {
+    t = i * 3000;
+    listener.handleMessage(rapidWind(3, (350 + (i % 3) * 10) % 360, 'ST-REAL0001')); // 350, 0, 10
+    listener.handleMessage(rapidWind(1, 200, 'ST-SIM00001'));
+  }
+  assert.strictEqual(samples.length, 10);
+  assert.ok(samples.every((s) => s.station === 'ST-REAL0001'));
+  assert.deepStrictEqual(listener.directionSwing(), { from: 350, to: 10, width: 20 });
+  assert.deepStrictEqual([listener.status().following, listener.status().ignored], ['ST-REAL0001', 10]);
+});
+
+test('with no serial set, another station takes over once the followed one has been silent for 3 minutes', () => {
+  let t = 0;
+  const listener = new TempestListener({ now: () => t });
+  listener.handleMessage(rapidWind(3, 300, 'ST-A'));
+  t = FOLLOW_TIMEOUT_MS - 1;
+  listener.handleMessage(rapidWind(3, 100, 'ST-B'));
+  assert.strictEqual(listener.status().following, 'ST-A');
+  t = FOLLOW_TIMEOUT_MS;
+  listener.handleMessage(rapidWind(3, 100, 'ST-B'));
+  assert.strictEqual(listener.status().following, 'ST-B');
+  assert.deepStrictEqual(listener.directionSwing(), { from: 100, to: 100, width: 0 });
+});
+
+test('a configured serial is never replaced by another station, however long it is silent', () => {
+  let t = 0;
+  const listener = new TempestListener({ serial: 'ST-A', now: () => t });
+  t = 10 * FOLLOW_TIMEOUT_MS;
+  listener.handleMessage(rapidWind(3, 100, 'ST-B'));
+  assert.deepStrictEqual([listener.status().following, listener.status().samples], ['ST-A', 0]);
 });
 
 test('the swing covers the last 10 minutes of the newest station\'s readings', () => {

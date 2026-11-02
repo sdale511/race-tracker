@@ -13,6 +13,8 @@ const { MS_TO_MPH } = require('./tempestListener');
 
 const RAPID_EVERY_MS = 3000;
 const OBS_EVERY_MS = 60000;
+// The pretend station's serial number - never a real one's, so its wind can't be mixed with a real station's.
+const SIM_TEMPEST_SERIAL = 'ST-SIM00001';
 
 const wrap360 = (deg) => ((deg % 360) + 360) % 360;
 
@@ -57,7 +59,7 @@ function obsStMessage(serial, epochS, readings) {
 }
 
 class SimTempest {
-  constructor({ port, address = '127.0.0.1', serial = 'ST-SIM00001', getAxisDeg, changeS = 30, minMph = 5, maxMph = 8, dirSwingDeg = 10, rng = Math.random, now = Date.now }) {
+  constructor({ port, address = '127.0.0.1', serial = SIM_TEMPEST_SERIAL, getAxisDeg, changeS = 30, minMph = 5, maxMph = 8, dirSwingDeg = 10, rng = Math.random, now = Date.now }) {
     this.port = port;
     this.address = address;
     this.serial = serial;
@@ -119,4 +121,4 @@ class SimTempest {
   }
 }
 
-module.exports = { SimTempest, pickWind, wobble, meanDirection, rapidWindMessage, obsStMessage };
+module.exports = { SimTempest, SIM_TEMPEST_SERIAL, pickWind, wobble, meanDirection, rapidWindMessage, obsStMessage };

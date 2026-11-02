@@ -4,7 +4,7 @@ const protocol = require('./protocol');
 const { RadioLink } = require('./radioLink');
 const { RedisStore } = require('./redisStore');
 const { TempestListener } = require('./tempestListener');
-const { SimTempest } = require('./simTempest');
+const { SimTempest, SIM_TEMPEST_SERIAL } = require('./simTempest');
 const { implausibleReason } = require('./fixSanity');
 const { getPersistedPractice, persistPractice } = require('./slotModeFile');
 const { persistRegattaId, clearPersistedRegattaId } = require('./regattaIdFile');
@@ -1075,9 +1075,12 @@ function main() {
 
   // Tempest weather station (see tempestListener.js): every wind reading heard on its local UDP broadcast (each 3-second
   // rapid_wind and each one-minute observation) goes into the selected regatta's wind series in Redis. With no regatta selected it is counted, not written - there is no
-  // regatta to file it under, the same rule boat fixes follow.
+  // regatta to file it under, the same rule boat fixes follow. A SIMULATE=1 base with the pretend Tempest below listens to
+  // that one only, so a real station on the same network doesn't interleave its wind with the simulated course's.
+  const simTempestOn = config.tempest.enabled && config.simulate && config.sim.tempest;
+  const tempestSerial = simTempestOn ? SIM_TEMPEST_SERIAL : config.tempest.serial;
   const tempest = config.tempest.enabled
-    ? new TempestListener({ port: config.tempest.port, serial: config.tempest.serial, stationName: config.tempest.stationName }).start()
+    ? new TempestListener({ port: config.tempest.port, serial: tempestSerial, stationName: config.tempest.stationName }).start()
     : null;
   const windWrites = { written: 0, skipped: 0, failed: 0, lastError: null };
   // Whoever wants each sample the moment it arrives - the /wind widget's live stream (see adminServer.js's
@@ -1090,7 +1093,7 @@ function main() {
   let lastWindErrorLogAt = 0;
   if (tempest) {
     console.log(
-      `[baseStation] Tempest weather station: listening on UDP ${config.tempest.port}${config.tempest.serial ? ` for ${config.tempest.serial}` : ''} - wind goes to the selected regatta's Redis wind data`
+      `[baseStation] Tempest weather station: listening on UDP ${config.tempest.port}${tempestSerial ? ` for ${tempestSerial}` : ''} - wind goes to the selected regatta's Redis wind data`
     );
     tempest.on('sample', (sample) => {
       for (const fn of windSubscribers) fn(sample);
@@ -1115,11 +1118,11 @@ function main() {
   }
   // SIMULATE=1: a pretend Tempest (see simTempest.js) sending wind down the current course to the listener above - from
   // the leeward black -> windward black bearing (the direction the wind comes from), or course.js's default before a
-  // course has resolved. Uses TEMPEST_SERIAL when set, so the listener's station filter lets it through.
-  if (tempest && config.simulate && config.sim.tempest) {
+  // course has resolved. The listener above takes only its station, SIM_TEMPEST_SERIAL.
+  if (tempest && simTempestOn) {
     new SimTempest({
       port: config.tempest.port,
-      serial: config.tempest.serial || 'ST-SIM00001',
+      serial: SIM_TEMPEST_SERIAL,
       getAxisDeg: () =>
         raceMarks && raceMarks.leewardBlack && raceMarks.windwardBlack ? bearingDeg(raceMarks.leewardBlack, raceMarks.windwardBlack) : WIND_FROM_DEG,
       changeS: config.sim.windChangeS,

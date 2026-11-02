@@ -16,6 +16,7 @@ const SYNC2 = 0x62;
 const CLASS_NAV = 0x01;
 const ID_NAV_PVT = 0x07;
 const ID_NAV_SVIN = 0x3b;
+const ID_NAV_SIG = 0x43;
 const CLASS_CFG = 0x06;
 const ID_CFG_TMODE3 = 0x71;
 const ID_CFG_CFG = 0x09;
@@ -26,6 +27,8 @@ const SVIN_LENGTH = 40;
 const TMODE3_LENGTH = 40;
 const CFG_CFG_LENGTH = 13;
 const RXM_RTCM_LENGTH = 8;
+const NAV_SIG_HEADER_LENGTH = 8;
+const NAV_SIG_BLOCK_LENGTH = 16;
 
 // WGS84 ellipsoid constants, for converting the ECEF position NAV-SVIN
 // reports (survey-in works in ECEF, not lat/lon) into something the admin
@@ -241,6 +244,12 @@ class UbxParser extends EventEmitter {
         } else if (msgClass === CLASS_NAV && msgId === ID_NAV_SVIN && length === SVIN_LENGTH) {
           const payload = frame.slice(6, 6 + length);
           this.emit('nav-svin', this._decodeSvin(payload));
+        } else if (msgClass === CLASS_NAV && msgId === ID_NAV_SIG && length >= NAV_SIG_HEADER_LENGTH) {
+          const payload = frame.slice(6, 6 + length);
+          // A count that disagrees with the length isn't a layout this decodes
+          if (length === NAV_SIG_HEADER_LENGTH + payload.readUInt8(5) * NAV_SIG_BLOCK_LENGTH) {
+            this.emit('nav-sig', this._decodeNavSig(payload));
+          }
         } else if (msgClass === CLASS_CFG && msgId === ID_CFG_TMODE3 && length === TMODE3_LENGTH) {
           const payload = frame.slice(6, 6 + length);
           this.emit('cfg-tmode3', this._decodeTmode3(payload));
@@ -372,6 +381,23 @@ class UbxParser extends EventEmitter {
     };
   }
 
+  // Every signal the receiver is looking at, one 16-byte block each after an
+  // 8-byte header - see gnssSignals.js for what the rover dashboard makes of
+  // them. Only the fields that use are decoded.
+  _decodeNavSig(p) {
+    const signals = [];
+    for (let at = NAV_SIG_HEADER_LENGTH; at < p.length; at += NAV_SIG_BLOCK_LENGTH) {
+      signals.push({
+        gnssId: p.readUInt8(at),
+        svId: p.readUInt8(at + 1),
+        sigId: p.readUInt8(at + 2),
+        cno: p.readUInt8(at + 6), // dB-Hz
+        qualityInd: p.readUInt8(at + 7), // 0-3 not locked, 4 code locked, 5-7 code and carrier locked
+      });
+    }
+    return signals;
+  }
+
   // Current TMODE3 configuration, as returned when we poll for it (see
   // encodePollRequest) - mode tells us whether survey-in is even the thing
   // in progress (as opposed to a fixed position, or the mode being off
@@ -469,4 +495,6 @@ module.exports = {
   RTCM_MSG_USED_NAMES,
   CLASS_CFG,
   ID_CFG_TMODE3,
+  CLASS_NAV,
+  ID_NAV_SIG,
 };

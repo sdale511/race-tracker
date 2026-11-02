@@ -191,6 +191,54 @@ function renderSlotTableCard(s) {
     </div>`;
 }
 
+// How long a NAV-SIG answer stays worth showing, and how long one may take
+// before the card says the receiver isn't answering. See boatAgent.js's
+// pollGpsSignals: it asks once per dashboard load, and the page reloads every 5s.
+const GPS_SIGNALS_FRESH_MS = 15000;
+const GPS_SIGNALS_REPLY_MS = 3000;
+
+const GPS_SIGNALS_VERDICTS = {
+  ok: { dot: 'dot-green', value: 'L1 + L2', note: 'This antenna is delivering both bands.' },
+  'weak-l2': { dot: 'dot-orange', value: 'L2 weak', note: 'L2 is much weaker than L1 or on few satellites - expect slower, less reliable RTK fixes. Check the antenna and its cable.' },
+  'l1-only': { dot: 'dot-red', value: 'L1 only', note: 'No L2 at all - the antenna may not cover it, or L2 may be turned off on the receiver.' },
+  'too-few': { dot: 'dot-gray', value: 'too few sats', note: 'Too few satellites to judge the antenna - give it a clear view of the sky.' },
+};
+
+function formatBand(band) {
+  return band.sats ? `${band.sats} sats, ${band.meanCno.toFixed(0)} dB-Hz` : 'none';
+}
+
+// The per-band satellite check for the GPS antenna (see gnssSignals.js). Null
+// signals means there's no real receiver to ask (simulated or no GPS).
+function renderGpsSignalsCard(signals) {
+  if (!signals) return '';
+  const card = (value, sub, rows = '') => `<div class="card">
+      <div class="label" title="Satellites and signal strength per GPS band, asked of the receiver (UBX-NAV-SIG) while this page is open - dual-band RTK needs both L1 and L2. Compare with the radio transmitting and silent to see whether it is interfering with the antenna.">GPS signals</div>
+      <div class="value">${value}</div>
+      <div class="sub">${sub}</div>
+      ${rows}
+    </div>`;
+  if (signals.asleep) return card('GPS asleep', 'Not asked while it sleeps - any byte sent to the receiver would wake it.');
+  const fresh = signals.summary && signals.receivedAt != null && Date.now() - signals.receivedAt < GPS_SIGNALS_FRESH_MS;
+  if (!fresh) {
+    return signals.requestedAt != null && Date.now() - signals.requestedAt < GPS_SIGNALS_REPLY_MS
+      ? card('asking', 'Asked the receiver just now - shows on the next reload.')
+      : card('no reply', 'The receiver did not answer - the Pi TX line must be wired to the receiver RX, with UBX input on for that port.');
+  }
+  const { verdict, l1, l2, bothBands, gapDb, constellations } = signals.summary;
+  const { dot, value, note } = GPS_SIGNALS_VERDICTS[verdict];
+  const rows = [
+    { label: 'L1 band', value: formatBand(l1) },
+    { label: 'L2 band', title: 'The second band: GPS, GLONASS and QZSS L2, Galileo E5b and BeiDou B2I', value: formatBand(l2) },
+    gapDb != null ? { label: 'L2 below L1', title: 'Average C/N0 difference, on satellites heard on both bands. A few dB is normal.', value: `${gapDb.toFixed(1)} dB on ${bothBands} sats` } : null,
+    ...constellations.map((c) => ({ label: c.name, value: `L1 ${formatBand(c.l1)} / L2 ${formatBand(c.l2)}` })),
+  ]
+    .filter(Boolean)
+    .map((r) => `<div class="stat-row"><span class="name" title="${r.title || ''}">${r.label}</span><span class="val">${r.value}</span></div>`)
+    .join('');
+  return card(`<span class="dot ${dot}"></span>${value}`, note, `<div class="stat-rows">${rows}</div>`);
+}
+
 function renderDashboard(s, power, witty, shutdownFromBase) {
   const fix = s.lastFix;
   // receivedAt (this Pi's own local-clock receipt time), not timestamp
@@ -364,6 +412,7 @@ function renderDashboard(s, power, witty, shutdownFromBase) {
           : ''
       }</div>
     </div>
+    ${renderGpsSignalsCard(s.gpsSignals)}
     ${
       s.currentMarks
         ? `<div class="card marks-card">
@@ -1025,7 +1074,7 @@ function readJsonBody(req) {
 // /api/stats specifically so watching the map doesn't cost a
 // fs.readdirSync of the log directory (via countPending) every 5s for
 // data it doesn't use.
-function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, getShutdownFromBase, setMarkName, sendMarkLog }) {
+function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, getWittyStatus, getShutdownFromBase, setMarkName, sendMarkLog, pollGpsSignals }) {
   const server = http.createServer(async (req, res) => {
     // Dashboard's "Mark log" card (see renderDashboard) - sends a short
     // free-text note to the base over the radio (see boatAgent.js's
@@ -1085,6 +1134,7 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, ge
     }
 
     if (req.url === '/' || req.url === '') {
+      if (pollGpsSignals) pollGpsSignals();
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(renderDashboard(getStats(), getPowerStatus(), getWittyStatus ? getWittyStatus() : null, getShutdownFromBase ? getShutdownFromBase() : null));
       return;
@@ -1129,4 +1179,4 @@ function startRoverAdminServer({ port, getStats, getPosition, getPowerStatus, ge
   return server;
 }
 
-module.exports = { startRoverAdminServer, renderDashboard, renderMap };
+module.exports = { startRoverAdminServer, renderDashboard, renderMap, renderGpsSignalsCard };

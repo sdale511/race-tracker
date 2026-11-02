@@ -24,6 +24,9 @@ const MS_TO_MPH = 2.2369362920544;
 const GUST_WINDOW_MS = 60000;
 // The window the direction swing covers (see directionSwing).
 const SWING_WINDOW_MS = 600000;
+// With no serial configured, how long the station being followed can go quiet before another station takes over (the
+// same 3 minutes after which the dashboard card turns red).
+const FOLLOW_TIMEOUT_MS = 180000;
 
 const round1 = (v) => Math.round(v * 10) / 10;
 const speedMph = (ms) => (Number.isFinite(ms) && ms >= 0 ? round1(ms * MS_TO_MPH) : null);
@@ -97,6 +100,9 @@ function windSampleFromRapid(rapid, t, station, recentSpeeds = [rapid && rapid.s
 
 // Emits 'sample' with each wind sample (see windSampleFromObs). serial, when set, keeps only that station's messages (for a
 // network with more than one Tempest); stationName names the station in the samples, defaulting to its serial number.
+// Without a serial it follows one station all the same - the first it hears, until that one has been quiet for
+// FOLLOW_TIMEOUT_MS - because taking every station's readings would interleave them into one wind series (and the swing
+// and the gust and lull would jump between the stations' windows with each reading).
 class TempestListener extends EventEmitter {
   constructor({ port = 50222, serial = null, stationName = null, now = Date.now } = {}) {
     super();
@@ -107,9 +113,11 @@ class TempestListener extends EventEmitter {
     this.socket = null;
     this.error = null;
     this.packets = 0;
-    this.ignored = 0; // from a different station than TEMPEST_SERIAL
+    this.ignored = 0; // from a different station than the one followed
     this.samples = 0;
     this.stationsHeard = new Set();
+    this.following = serial; // the station whose messages are used: serial, or the first heard
+    this.followingHeardAt = null;
     this.lastObs = null; // { ...parsed, at }
     this.lastRapid = null; // { ...parsed, at }
     this.lastSample = null; // the newest sample emitted, of either kind
@@ -143,11 +151,16 @@ class TempestListener extends EventEmitter {
     if (!msg) return;
     this.packets++;
     if (msg.serial) this.stationsHeard.add(msg.serial);
-    if (this.serial && msg.serial !== this.serial) {
+    const at = this.now();
+    if (!this.serial && msg.serial && msg.serial !== this.following && (this.following == null || at - this.followingHeardAt >= FOLLOW_TIMEOUT_MS)) {
+      if (this.following != null) console.log(`[tempest] ${this.following} silent for ${FOLLOW_TIMEOUT_MS / 60000} min - following ${msg.serial} instead`);
+      this.following = msg.serial;
+    }
+    if (this.following && msg.serial !== this.following) {
       this.ignored++;
       return;
     }
-    const at = this.now();
+    this.followingHeardAt = at;
     const station = this.stationName || msg.serial || 'Tempest';
     let sample;
     if (msg.type === 'rapid') {
@@ -181,6 +194,7 @@ class TempestListener extends EventEmitter {
     return {
       port: this.port,
       serial: this.serial,
+      following: this.following,
       error: this.error,
       packets: this.packets,
       ignored: this.ignored,
@@ -198,4 +212,4 @@ class TempestListener extends EventEmitter {
   }
 }
 
-module.exports = { TempestListener, parseTempestMessage, windSampleFromObs, windSampleFromRapid, directionRange, MS_TO_MPH, GUST_WINDOW_MS, SWING_WINDOW_MS };
+module.exports = { TempestListener, parseTempestMessage, windSampleFromObs, windSampleFromRapid, directionRange, MS_TO_MPH, GUST_WINDOW_MS, SWING_WINDOW_MS, FOLLOW_TIMEOUT_MS };

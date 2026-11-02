@@ -126,6 +126,16 @@ cat /dev/ttyAMA0        # Ctrl-C to stop
 `sudo ./setup-pi.sh uart` on the Pi only frees the UART (serial console off, Bluetooth off, `dialout` group); it does not touch
 the GPS module.
 
+### Checking the antenna gets both bands
+
+Dual-band RTK needs L2 as well as L1, and an antenna that only passes L1 still gives a normal-looking fix. While a rover's
+dashboard is open, its **GPS signals** card asks the receiver for `UBX-NAV-SIG` every few seconds and shows satellites and
+average C/N0 per band and per constellation, with a verdict: L1 + L2, L2 weak, L1 only, or too few satellites to judge.
+"L2" includes Galileo E5b and BeiDou B2I, and a gap of a few dB under L1 is normal. The weak thresholds in
+`src/gnssSignals.js` are rules of thumb. The card also shows whether the telemetry radio hurts reception: compare it with
+the radio transmitting and silent. It needs the Pi TX line wired to the receiver RX, and it doesn't ask while the GPS
+sleeps, because any byte would wake it. Nothing on the receiver is reconfigured.
+
 ### Verifying the connection
 
 ```
@@ -1846,9 +1856,11 @@ needs no internet, so wind is recorded at a venue with no connection, as long as
   for 3 minutes, and is greyed out with "No data received" until the first reading.
 
 On by default; settings: `TEMPEST_ENABLED=0` turns it off, `TEMPEST_PORT` (default 50222, the hub's own port),
-`TEMPEST_SERIAL` keeps one station's readings when more than one Tempest is on the network (its `ST-...` serial number),
-and `TEMPEST_STATION_NAME` is the name stored with each reading and shown on the map (default: the serial number). If the
-card stays at "nothing heard", check the base and hub are on the same subnet and that the machine's firewall lets
+`TEMPEST_SERIAL` keeps one station's readings when more than one Tempest is on the network (its `ST-...` serial number).
+Without it the base still uses only one station: the first it hears, until that one has been silent for 3 minutes. The card
+names it ("using ST-..."), and counts the others' messages. Taking every station would mix their wind into one series and
+make the widget's swing and lull–gust jump between the stations with each reading. `TEMPEST_STATION_NAME` is the name stored
+with each reading and shown on the map (default: the serial number). If the card stays at "nothing heard", check the base and hub are on the same subnet and that the machine's firewall lets
 incoming UDP 50222 through.
 
 **Wind widget for an iframe.** The base serves a tiny standalone wind display at `/wind` (no header or tabs), for
@@ -1886,7 +1898,9 @@ listener the same messages a real hub would: a `rapid_wind` every 3 s and an `ob
 gust are the lowest, mean and highest of that minute's 3-second speeds). The wind blows down the course - from the
 leeward black -> windward black bearing of the current marks - and every `SIM_WIND_CHANGE_S` (30 s) it picks a new speed
 between `SIM_WIND_MIN_MPH` and `SIM_WIND_MAX_MPH` (5-8 mph) and a direction within `SIM_WIND_SWING_DEG` (10°) either
-side of that axis. Its station is `ST-SIM00001` (or `TEMPEST_SERIAL`, if set). `SIM_TEMPEST=0` turns it off. Like real
+side of that axis. Its station is `ST-SIM00001`, and while it runs the base listens to it only (`TEMPEST_SERIAL` is
+ignored), so a real Tempest on the same network doesn't mix its wind in. `SIM_TEMPEST=0` turns it off, and the base then
+uses the real station. Like real
 readings, it is only written to Redis while a regatta is selected.
 
 When RegattaUp can also reach the Tempest cloud during a race, both write to the same series; RegattaUp's

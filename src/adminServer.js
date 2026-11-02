@@ -520,7 +520,7 @@ function renderTempestCard(t, readOnly = false) {
       }</div>
       ${t.error && latest ? `<div class="sub" style="color:#f85149;">${escapeHtml(t.error)}</div>` : ''}
       <div class="stat-rows">
-        <div class="stat-row"><span class="name">Station${t.serial ? ` (only ${escapeHtml(t.serial)})` : ''}</span><span class="val">${stations}</span></div>
+        <div class="stat-row"><span class="name">Station${t.serial ? ` (only ${escapeHtml(t.serial)})` : t.following ? ` (using ${escapeHtml(t.following)})` : ''}</span><span class="val">${stations}</span></div>
         <div class="stat-row"><span class="name">Written to Redis</span><span class="val">${t.written.toLocaleString()}${t.failed ? ` <span style="color:#f85149;">(${t.failed} failed)</span>` : ''}</span></div>
         ${t.skipped ? `<div class="stat-row"><span class="name">Not written</span><span class="val">${t.skipped.toLocaleString()} <span class="muted">(no regatta selected)</span></span></div>` : ''}
         ${t.ignored ? `<div class="stat-row"><span class="name">Other stations' messages</span><span class="val">${t.ignored.toLocaleString()}</span></div>` : ''}

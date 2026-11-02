@@ -8,7 +8,8 @@ const util = require('util');
 const { versionLine, VERSION } = require('./version');
 const config = require('./config');
 const logBuffer = require('./logBuffer');
-const { UbxParser, encodeNavPvt } = require('./ubxParser');
+const { UbxParser, encodeNavPvt, encodePollRequest, CLASS_NAV, ID_NAV_SIG } = require('./ubxParser');
+const { summarizeSignals } = require('./gnssSignals');
 const { toGGA } = require('./nmea');
 const { RadioLink } = require('./radioLink');
 const { SdLogger } = require('./sdLogger');
@@ -1287,6 +1288,22 @@ sleeper.on('wake', () => {
   }, delayMs);
 });
 
+// The dashboard's "GPS signals" card (see gnssSignals.js). Asked for only while
+// someone has that page open, rather than turned on as a regular output: a
+// NAV-SIG can run to a kilobyte on UART1, which a race has no use for, and
+// rovers don't change their receiver's settings (a poll changes nothing).
+const GPS_SIGNALS_POLL_MIN_MS = 4000;
+const gpsSignals = { requestedAt: null, receivedAt: null, summary: null };
+
+function pollGpsSignals() {
+  if (gpsMode !== 'real' || !gpsSerial || !gpsSerial.isOpen) return;
+  // Any byte written to a sleeping receiver wakes it - see gpsSleep.js
+  if (gpsSleep.isAsleep()) return;
+  if (gpsSignals.requestedAt != null && Date.now() - gpsSignals.requestedAt < GPS_SIGNALS_POLL_MIN_MS) return;
+  gpsSignals.requestedAt = Date.now();
+  gpsSerial.write(encodePollRequest(CLASS_NAV, ID_NAV_SIG));
+}
+
 function openGps() {
   const gpsPort = new SerialPort({ path: config.gps.port, baudRate: config.gps.baud }, (err) => {
     if (err) {
@@ -1321,6 +1338,11 @@ function openGps() {
   });
 
   parser.on('nav-pvt', onGpsFix);
+
+  parser.on('nav-sig', (signals) => {
+    gpsSignals.receivedAt = Date.now();
+    gpsSignals.summary = summarizeSignals(signals);
+  });
 
   // The only direct evidence this app can show that RTCM corrections are
   // actually reaching the receiver - that link runs over the module's own
@@ -1599,6 +1621,7 @@ function getRoverStats() {
     currentMarks,
     currentRegattaName,
     sleep: { ...sleeper.status(), gps: gpsSleep.status() },
+    gpsSignals: gpsMode === 'real' ? { ...gpsSignals, asleep: gpsSleep.isAsleep() } : null,
     txGate: txScheduler ? txScheduler.stats() : null,
     txSlot: txScheduler
       ? { enabled: !!txScheduler.slot.enabled, index: txScheduler.slot.index, count: txScheduler.slot.count, widthMs: txScheduler.slot.widthMs, sharing: !!txScheduler.slot.join, joinSlots: txScheduler.slot.join ? txScheduler.slot.join.n : 0, joinFirst: txScheduler.slot.join ? txScheduler.slot.join.first : null, tableHeard: !!(slotFollower && slotFollower.tablesHeard > 0), practice: practiceMode, table: slotFollower ? slotFollower.lastTable : null }
@@ -1709,6 +1732,7 @@ startRoverAdminServer({
   getShutdownFromBase: fleetShutdown.boatStatus,
   setMarkName,
   sendMarkLog,
+  pollGpsSignals,
 });
 
 // Compact fix-quality label - RTK carrier solution takes priority over the
