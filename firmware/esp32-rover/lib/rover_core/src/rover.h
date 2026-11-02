@@ -4,10 +4,10 @@
 // Ported: GPS fixes -> distance gate -> batching -> delta frames -> the shared-radio scheduler (burst gate, slots, the base's slot table,
 // the join-slot back-off, thinning to the slot's budget, backfill after waiting for a slot), the status hello with the rover's diagnosis,
 // ping replies, the course marks (kept across a restart), radio and GPS sleep, RTCM from the radio (counted for the burst timing, and
-// optionally forwarded to the GPS).
-// Not yet: start-grid parking (needs onGridWatcher.js), the event boost at line crossings (finish/foul/on-grid watchers), the finish
-// approach gate (off by default), mark mode / set-mark / mark-log, the power schedule (Witty Pi / shutdown), SD logging, log uploads,
-// the local UDP broadcast and the admin page. See firmware/esp32-rover/README.md.
+// optionally forwarded to the GPS), start-grid parking, the event boost at line crossings, the finish approach gate, and the power
+// schedule as a deep sleep the HAL carries out.
+// Not here: mark mode / set-mark / mark-log, the L1/L2 signal check, SD logging, log uploads, the local UDP broadcast and the admin page.
+// See firmware/esp32-rover/README.md. The HAL is implemented by src/main.cpp (the ESP32), host/host_rover.cpp (a Mac) and the tests.
 #pragma once
 
 #include <cstdint>

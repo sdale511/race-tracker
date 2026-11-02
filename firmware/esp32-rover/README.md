@@ -86,6 +86,46 @@ pio device monitor           # the console
 pio test -e native           # the host tests (no hardware)
 ```
 
+## Running it on a Mac
+
+`host/host_rover.cpp` runs the same `lib/rover_core` on the Mac, in place of `src/main.cpp`, so the C++ rover can sail against a base
+before there is a Feather:
+
+```
+cd firmware/esp32-rover
+pio run -e mac                        # builds .pio/build/mac/program
+.pio/build/mac/program --help
+```
+
+**With the hardware on USB** - the ArduSimple's ZED-F9P on its GPS USB port, the XBee on the ArduSimple's XBee USB port or its own USB
+adapter (`ls /dev/cu.*` to find them):
+
+```
+.pio/build/mac/program --radio /dev/cu.usbserial-XXXX --gps /dev/cu.usbmodemXXXX
+```
+
+- The ZED has to send NAV-PVT on its USB port too (`CFG-MSGOUT-UBX_NAV_PVT_USB`), not just UART1 as on the boat.
+- An XBee on the ArduSimple still feeds the ZED's UART2 with RTCM, as on the boat. An XBee on its own adapter doesn't: add
+  `--rtcm-forward` so the rover writes the RTCM it hears to the GPS.
+- `--set-ni` sets the XBee's node identifier as the firmware does at boot (it writes the XBee's config, so it's off by default).
+- The GPS won't go into backup with its USB connected (`--gps-sleep-force-usb` forces it, which turns the ZED's USB off until a power
+  cycle). There is no SLEEP_RQ pin, so radio sleep mode is off with a serial XBee.
+
+**With no hardware** - against a `SIMULATE=1` base, over its UDP "radio", with `tools/sim_gps.js` sailing the simulated race (`simGps.js`)
+as the GPS:
+
+```
+SIMULATE=1 npm run base                                                    # in the repo root
+node tools/sim_gps.js | .pio/build/mac/program --radio udp --gps -        # SPACE starts the race
+```
+
+The `SIM_*` settings apply, as for `npm run boat`. Radio sleep mode works over UDP, as in the Node simulation.
+
+The boat id, marks and power schedule are kept in `~/.esp32-rover-host` (`--state DIR` for a second rover, `--boat-id` to pick the id).
+Local time is the Mac's (`TZ=...` to run as a boat in another zone). Deep sleep is emulated: the rover ignores the radio and GPS until the
+wake time, or until `kill -USR1 <pid>` (the accelerometer), then boots again. The accelerometer, battery chip and screen are not
+emulated.
+
 ## Keeping it in sync with the Node rover
 
 `lib/rover_core` is hardware-free C++ - one file per Node module it ports, with the same names, so a change to a Node module points at the
