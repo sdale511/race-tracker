@@ -93,15 +93,11 @@ RTC_DATA_ATTR bool rtcClockSet = false;
 
 // ---- NVS ----
 
-// boatIdFile.js's rule: exactly 5 letters A-Z, made up once and kept
+// boatIdFile.js's rule: 5 of A-Z and 0-9, made up once and kept in NVS
 std::string loadBoatId() {
   String id = prefs.getString("boatId", "");
-  bool ok = id.length() == rover::protocol::BOAT_ID_LEN;
-  for (size_t i = 0; ok && i < id.length(); i++) ok = id[i] >= 'A' && id[i] <= 'Z';
-  if (!ok) {
-    char b[rover::protocol::BOAT_ID_LEN + 1] = {0};
-    for (size_t i = 0; i < rover::protocol::BOAT_ID_LEN; i++) b[i] = 'A' + esp_random() % 26;
-    id = b;
+  if (!rover::protocol::validBoatId(id.c_str())) {
+    id = rover::protocol::makeBoatId([](uint32_t n) { return esp_random() % n; }).c_str();
     prefs.putString("boatId", id);
     Serial.printf("[boatAgent] new boat id %s\n", id.c_str());
   }
@@ -296,6 +292,12 @@ display::Status status() {
   }
   s.framesSent = theRover->framesSent();
   s.note = lastNote;
+  s.boatId = theRover->boatId();
+  const rover::Rover::BaseData base = theRover->baseData();
+  s.ready = base.ready;
+  // "marks, corrections, slot table" -> "marks rtcm slot", to fit the screen
+  for (const auto& kv : {std::make_pair("marks", "marks"), std::make_pair("corrections", "rtcm"), std::make_pair("slot table", "slot")})
+    if (base.missing.find(kv.first) != std::string::npos) s.need += (s.need.empty() ? "" : " ") + std::string(kv.second);
   return s;
 }
 
@@ -394,7 +396,13 @@ void loop() {
   while ((n = Serial2.read(buf, min((int)sizeof buf, Serial2.available()))) > 0) theRover->onRadioBytes(buf, n);
   theRover->tick();
   keepRtc();
-  const display::Status s = status();
+  // twice a second is plenty for the screen, and keeps the battery's I2C reads and the strings off the fast loop
+  static display::Status s;
+  static uint32_t statusAt = 0;
+  if (statusAt == 0 || millis() - statusAt > 500) {
+    statusAt = millis();
+    s = status();
+  }
   display::update(s);
   if (millis() - lastBatteryAt > 60000) {
     lastBatteryAt = millis();

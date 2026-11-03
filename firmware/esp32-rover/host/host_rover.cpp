@@ -43,6 +43,9 @@
 #ifndef ROVER_DIRTY
 #define ROVER_DIRTY 0
 #endif
+#ifndef ROVER_REPO_DIR
+#define ROVER_REPO_DIR "."  // the checkout this was built from, for race-config/boat_id.txt
+#endif
 
 using rover::Rover;
 using rover::RoverConfig;
@@ -69,8 +72,8 @@ void usage() {
                "usage: host_rover [options]\n"
                "  --radio udp[:PORT] | DEVICE[@BAUD]  the SIMULATE=1 base's UDP port (41234), or the XBee's serial port (115200)\n"
                "  --gps - | none | DEVICE[@BAUD]      UBX on stdin (tools/sim_gps.js), no GPS, or the ZED-F9P's serial port (115200)\n"
-               "  --boat-id ABCDE                     the boat id (default: made up once and kept in the state dir)\n"
-               "  --state DIR                         where the boat id, marks and schedule are kept (default ~/.esp32-rover-host)\n"
+               "  --boat-id ABCDE                     the boat id (default: BOAT_ID, else race-config/boat_id.txt - the Node rover's)\n"
+               "  --state DIR                         where the marks and schedule are kept (default ~/.esp32-rover-host); a second\n                                      rover: its boat id is kept there too, so it is another boat\n"
                "  --rtcm-forward                      write the RTCM the radio hears to the GPS (an XBee on its own USB adapter)\n"
                "  --set-ni                            set the XBee's node identifier to the boat id at boot (writes the XBee's config)\n"
                "  --gps-sleep-force-usb               let the ZED go into backup with its USB connected (disables its USB until a power cycle)\n"
@@ -275,22 +278,24 @@ void writeFile(const char* name, const void* data, size_t len) {
   f.write((const char*)data, (std::streamsize)len);
 }
 
-bool validBoatId(const std::string& id) {
-  if (id.size() != rover::protocol::BOAT_ID_LEN) return false;
-  for (char c : id)
-    if (c < 'A' || c > 'Z') return false;
-  return true;
-}
+using rover::protocol::validBoatId;
 
-std::string loadBoatId() {
+// boatIdFile.js's getOrCreatePersistentBoatId, on the same file the Node rover uses (race-config/boat_id.txt), so the C++ and Node
+// rovers on this Mac are the same boat. With --state the id is that state dir's own (a second rover is another boat).
+std::string loadBoatId(const std::string& path) {
   std::string id;
-  readFile("boat_id", id);
-  while (!id.empty() && (id.back() == '\n' || id.back() == '\r')) id.pop_back();
+  {
+    std::ifstream f(path, std::ios::binary);
+    if (f) std::getline(f, id);
+  }
+  while (!id.empty() && (id.back() == '\n' || id.back() == '\r' || id.back() == ' ')) id.pop_back();
   if (validBoatId(id)) return id;
-  id.clear();
-  for (size_t i = 0; i < rover::protocol::BOAT_ID_LEN; i++) id += (char)('A' + rng() % 26);
-  writeFile("boat_id", id.data(), id.size());
-  log("[boatAgent] new boat id " + id);
+  if (!id.empty()) log("[boatIdFile] " + path + " contains an invalid boat id - generating a fresh one");
+  id = rover::protocol::makeBoatId([](uint32_t n) { return (uint32_t)(rng() % n); });
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  f << id;
+  if (!f) log("[boatIdFile] failed to persist generated boat id to " + path);
+  else log("[boatAgent] new boat id " + id + " (kept in " + path + ")");
   return id;
 }
 
@@ -435,9 +440,15 @@ int main(int argc, char** argv) {
   const char* home = std::getenv("HOME");
   stateDir = !opts.stateDir.empty() ? opts.stateDir : std::string(home ? home : ".") + "/.esp32-rover-host";
   mkdir(stateDir.c_str(), 0755);
-  if (opts.boatId.empty()) opts.boatId = loadBoatId();
-  else if (!validBoatId(opts.boatId)) {
-    std::fprintf(stderr, "--boat-id must be %zu letters A-Z\n", rover::protocol::BOAT_ID_LEN);
+  // config.js's order: an explicit id (--boat-id, then BOAT_ID), else the stored one
+  const char* envId = std::getenv("BOAT_ID");
+  if (opts.boatId.empty() && envId && *envId) opts.boatId = envId;
+  if (opts.boatId.empty()) {
+    const std::string raceConfig = std::string(ROVER_REPO_DIR) + "/race-config";
+    if (opts.stateDir.empty()) mkdir(raceConfig.c_str(), 0755);
+    opts.boatId = loadBoatId(opts.stateDir.empty() ? raceConfig + "/boat_id.txt" : statePath("boat_id"));
+  } else if (!validBoatId(opts.boatId)) {
+    std::fprintf(stderr, "the boat id must be %zu of A-Z and 0-9 (got \"%s\")\n", rover::protocol::BOAT_ID_LEN, opts.boatId.c_str());
     return 2;
   }
 
@@ -474,6 +485,10 @@ int main(int argc, char** argv) {
       s.config = theRover->configItems();
       s.config.insert(s.config.begin(), {{"boatId", opts.boatId}, {"gps", gps.name}, {"radio", radio.name}, {"state", stateDir}});
       s.status = theRover->statusItems();
+      const Rover::BaseData b = theRover->baseData();
+      s.ready = b.ready;
+      s.missing = b.missing;
+      s.base = b.items;
       return s;
     });
 

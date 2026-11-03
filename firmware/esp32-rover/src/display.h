@@ -19,6 +19,8 @@ struct Status {
   float batteryV = 0;
   unsigned framesSent = 0;
   std::string note;  // a short last message, e.g. why it is about to sleep
+  bool ready = false;  // the course marks, corrections and slot table have all been heard from the base (Rover::baseData)
+  std::string need;    // what it is still waiting for, short: "marks rtcm slot"
 };
 
 void begin();

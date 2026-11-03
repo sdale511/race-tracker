@@ -8,6 +8,20 @@
 namespace rover {
 namespace protocol {
 
+bool validBoatId(const std::string& id) {
+  if (id.size() != BOAT_ID_LEN) return false;
+  for (char c : id)
+    if (!std::strchr(BOAT_ID_ALPHABET, c) || c == 0) return false;
+  return true;
+}
+
+std::string makeBoatId(const std::function<uint32_t(uint32_t)>& random) {
+  const uint32_t n = (uint32_t)std::strlen(BOAT_ID_ALPHABET);
+  std::string id;
+  for (size_t i = 0; i < BOAT_ID_LEN; i++) id += BOAT_ID_ALPHABET[random(n)];
+  return id;
+}
+
 const char* const MARK_NAMES[MARK_COUNT] = {"windwardGreen", "windwardBlack", "leewardGreen", "leewardBlack",
                                             "pin",           "committeeStart", "committeeFinish", "finish"};
 

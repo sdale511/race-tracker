@@ -42,7 +42,7 @@ void begin() {
   tft.init(135, 240);
   tft.setRotation(3);
   tft.fillScreen(ST77XX_BLACK);
-  tft.setTextSize(2);  // 12x16 px: 20 characters by 8 lines
+  tft.setTextSize(2);  // 12x16 px: 20 characters by 8 lines, 17 px apart
   light(true);
 }
 
@@ -53,22 +53,24 @@ void update(const Status& s) {
   if (!lit || now - drawnAt < 1000) return;
   drawnAt = now;
   char b[32];
-  snprintf(b, sizeof b, "%s %s", s.boatId.c_str(), s.sleeping ? "ASLEEP" : "");
-  line(0, ST77XX_WHITE, b);
+  snprintf(b, sizeof b, "%s %s", s.boatId.c_str(), s.sleeping ? "ASLEEP" : s.ready ? "READY" : "waiting");
+  line(0, s.sleeping ? ST77XX_WHITE : s.ready ? ST77XX_GREEN : ST77XX_YELLOW, b);
   const char* fix = !s.fix ? "no fix" : s.carrSoln == 2 ? "RTK fixed" : s.carrSoln == 1 ? "RTK float" : "GPS only";
   snprintf(b, sizeof b, "%s  %d sv", fix, s.numSV);
-  line(18, !s.fix ? ST77XX_RED : s.carrSoln == 2 ? ST77XX_GREEN : ST77XX_YELLOW, b);
-  line(36, s.bursts ? ST77XX_GREEN : ST77XX_RED, s.bursts ? "corrections heard" : "no corrections");
+  line(17, !s.fix ? ST77XX_RED : s.carrSoln == 2 ? ST77XX_GREEN : ST77XX_YELLOW, b);
+  line(34, s.bursts ? ST77XX_GREEN : ST77XX_RED, s.bursts ? "corrections heard" : "no corrections");
   if (s.parked) snprintf(b, sizeof b, "parked on the grid");
   else if (s.slot >= 0) snprintf(b, sizeof b, "slot %d", s.slot);
   else snprintf(b, sizeof b, "no slot yet");
-  line(54, ST77XX_CYAN, b);
+  line(51, ST77XX_CYAN, b);
   if (s.batteryPct >= 0) snprintf(b, sizeof b, "battery %d%% %.2fV", s.batteryPct, s.batteryV);
   else snprintf(b, sizeof b, "battery ?");
-  line(72, s.batteryPct >= 0 && s.batteryPct < 20 ? ST77XX_RED : ST77XX_WHITE, b);
+  line(68, s.batteryPct >= 0 && s.batteryPct < 20 ? ST77XX_RED : ST77XX_WHITE, b);
   snprintf(b, sizeof b, "sent %u", s.framesSent);
-  line(90, ST77XX_WHITE, b);
-  line(108, ST77XX_YELLOW, s.note.substr(0, 19).c_str());
+  line(85, ST77XX_WHITE, b);
+  line(102, ST77XX_YELLOW, s.note.substr(0, 19).c_str());
+  // what the base hasn't sent yet, the bottom line so "waiting" always says why
+  line(119, ST77XX_YELLOW, s.ready || s.sleeping ? "" : ("need " + s.need).substr(0, 20).c_str());
 }
 
 void off() {

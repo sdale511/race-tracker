@@ -138,6 +138,16 @@ class Rover {
   Items configItems() const;
   Items statusItems() const;
   std::string statusLine() const;  // boatAgent.js's [status] line
+  // What the base has sent this boat: ready once the course marks (heard this run, not just the stored copy), the correction bursts
+  // and, when the boat follows the base's slot table, the table have all been heard. The power schedule is listed but not required:
+  // the base sends one only when it has one set.
+  struct BaseData {
+    Items items;
+    bool ready = false;
+    std::string missing;  // "marks, slot table" - what it is still waiting for
+  };
+  BaseData baseData() const;
+  const std::string& boatId() const { return cfg_.boatId; }
   std::string txgateStats() const;  // boatAgent.js's [txgate-stats] line, for shutting down
 
   // exposed for the tests
@@ -249,6 +259,14 @@ class Rover {
   double lastMarksAt_ = -1;  // monotonic ms, -1 = not this run
   double lastTxAt_ = -1;
   double lastPvtAt_ = -1;
+  double lastSlotTableAt_ = -1;
+  int lastSlotTableVersion_ = -1;
+  double lastScheduleAt_ = -1;
+  bool scheduleFromStorage_ = false;
+  bool marksFromStorage_ = false;
+  int readyLogged_ = -1;  // -1 not yet, 0 not ready, 1 ready
+  double readyCheckedAt_ = -1e300;
+  void maybeLogReady();
   std::string lastStatusKey_;
   double lastStatusAt_ = -1e300;
   double statusCheckedAt_ = -1e300;

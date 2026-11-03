@@ -13,7 +13,9 @@ class StatusPage {
   using Items = std::vector<std::pair<std::string, std::string>>;
   struct Snapshot {
     std::string title, subtitle;
-    Items config, status;
+    bool ready = false;
+    std::string missing;  // what it is waiting for from the base
+    Items base, config, status;
   };
 
   bool listen(uint16_t port);  // false: the port is taken (errno says why)

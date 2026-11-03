@@ -38,4 +38,6 @@ else:
     build = 0
 
 env.Append(CPPDEFINES=[("ROVER_VERSION", env.StringifyMacro(label)), ("ROVER_BUILD", build), ("ROVER_DIRTY", int(dirty))])  # noqa: F821
+# the checkout, for host_rover's race-config/boat_id.txt (the Node rover's stored id)
+env.Append(CPPDEFINES=[("ROVER_REPO_DIR", env.StringifyMacro(repo))])  # noqa: F821
 print(f"race-tracker {label}")

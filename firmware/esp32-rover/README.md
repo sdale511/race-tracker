@@ -77,7 +77,10 @@ The USB serial console reads like the Node rover's: the same startup summary (`[
 then gps, radio and a `config:` line of the settings by their Node names), the same `[status]` line (at once when the fix, radio or
 marks change, otherwise every minute), and the same wording for slots, parking, sleep, the RTCM watchdog and dropped frames. The
 version comes from git at build time (`tools/version.py`, as `src/version.js` does it), and its commit count is the status hello's build
-number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute. On the Reverse TFT the screen is lit for 30 s after boot and after a press of the D1 button.
+number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute. On the Reverse TFT the screen is lit for 30 s after boot and after a press of the D1 button. Its top line says READY once the boat has
+heard the course marks (this run - a stored copy doesn't count), the correction bursts and the slot table from the base, and the bottom
+line says what it still needs (`need marks rtcm slot`); the console logs `[boatAgent] ready: ...` when that happens. The power schedule
+is not required: the base sends one only when it has one set.
 
 ## Building and testing
 
@@ -127,9 +130,10 @@ node tools/sim_gps.js | .pio/build/mac/program --radio udp --gps -        # SPAC
 The `SIM_*` settings apply, as for `npm run boat`. Radio sleep mode works over UDP, as in the Node simulation.
 
 It logs exactly what the ESP32 does (`--gps-log` for a line per fix), and serves a status page at http://localhost:8095 (`--ui-port`):
-the same config and status values, refreshed every second. Ctrl+C prints the `[txgate-stats]` line, as the Node rover does.
+the same config and status values, refreshed every second, under a "Ready" or "Waiting for ... from the base" banner and a table of what
+the base has sent: the course marks, the correction bursts, the slot table and the power schedule. Ctrl+C prints the `[txgate-stats]` line, as the Node rover does.
 
-The boat id, marks and power schedule are kept in `~/.esp32-rover-host` (`--state DIR` for a second rover, `--boat-id` to pick the id).
+The boat id is the Node rover's - `BOAT_ID`, else `race-config/boat_id.txt` - so both rovers on the Mac are the same boat (`--boat-id` picks another). Marks and the power schedule are kept in `~/.esp32-rover-host`; `--state DIR` runs a second rover, which keeps its own boat id there.
 Local time is the Mac's (`TZ=...` to run as a boat in another zone). Deep sleep is emulated: the rover ignores the radio and GPS until the
 wake time, or until `kill -USR1 <pid>` (the accelerometer), then boots again. The accelerometer, battery chip and screen are not
 emulated.

@@ -127,10 +127,14 @@ Rover::Rover(RoverConfig config, RoverHal hal)
   };
   scanner_.onSlotTable = [this](const protocol::SlotTable& t) {
     diagState_.lastBaseRxAt = now();
+    lastSlotTableAt_ = now();
+    lastSlotTableVersion_ = t.version;
     if (follower_) follower_->onTable(t);
   };
   scanner_.onPowerSchedule = [this](const protocol::PowerSchedule& s) {
     diagState_.lastBaseRxAt = now();
+    lastScheduleAt_ = now();
+    scheduleFromStorage_ = false;
     // the base repeats it every minute or so: apply (and keep, for the next boot) only a new version
     if (hasPowerStamp_ && s.stamp == lastPowerStamp_) return;
     hasPowerStamp_ = true;
@@ -177,9 +181,11 @@ Rover::Rover(RoverConfig config, RoverHal hal)
     policy_.setSchedule(saved);
     hasPowerStamp_ = true;
     lastPowerStamp_ = saved.stamp;
+    scheduleFromStorage_ = true;
   }
   if (hal_.loadMarks && hal_.loadMarks(marks_)) {
     hasMarks_ = true;
+    marksFromStorage_ = true;
     rebuildWatchers();
     std::string names;
     for (size_t i = 0; i < protocol::MARK_COUNT; i++) names += (i ? ", " : "") + std::string(protocol::MARK_NAMES[i]);
@@ -262,6 +268,7 @@ void Rover::tick() {
   checkRtcmWatchdog();
   checkPower();
   maybeLogStatus();
+  maybeLogReady();
 }
 
 bool Rover::wallNow(int64_t& out) const {
@@ -708,6 +715,66 @@ Rover::Items Rover::statusItems() const {
   int64_t wall;
   s.push_back({"powerWindow", !wallNow(wall) ? "time unknown" : !policy_.windowManaged() ? "not managed" : policy_.inWindow(wall) ? "in the on window" : "outside the on window"});
   return s;
+}
+
+Rover::BaseData Rover::baseData() const {
+  const double t = now();
+  BaseData b;
+  std::vector<std::string> missing;
+  auto ago = [t](double at) { return ageStr(t, at) + " ago"; };
+
+  std::string marks;
+  if (lastMarksAt_ >= 0) marks = "heard " + ago(lastMarksAt_) + (marks_.regattaName.empty() ? "" : " (" + marks_.regattaName + ")");
+  else if (marksFromStorage_) marks = "stored copy only - not heard from the base yet";
+  else marks = "none";
+  if (lastMarksAt_ < 0) missing.push_back("marks");
+  b.items.push_back({"course marks", marks});
+
+  const double lastBurst = tracker_.lastStart();
+  const double period = tracker_.period();
+  std::string bursts = tracker_.isActive(t) ? "heard " + ago(lastBurst) + (period != BurstTracker::NONE ? ", every " + num(jsRound(period) / 1000) + " s" : "")
+                       : lastBurst != BurstTracker::NONE ? "not heard for " + ageStr(t, lastBurst)
+                                                         : "not heard";
+  if (!tracker_.isActive(t)) missing.push_back("corrections");
+  b.items.push_back({"corrections", bursts});
+
+  std::string table;
+  if (!follower_) table = cfg_.txGateEnabled && cfg_.slotEnabled ? "not used (TX_SLOT pinned)" : "not used (slot mode off)";
+  else if (cfg_.slotIndex >= 0) table = "not used (TX_SLOT pinned)";
+  else if (lastSlotTableAt_ < 0) {
+    table = "not heard";
+    missing.push_back("slot table");
+  } else {
+    table = "heard " + ago(lastSlotTableAt_) + ", version " + std::to_string(lastSlotTableVersion_) + " - " +
+            (parked_ ? "parked, no slot needed" : assignedSlot() >= 0 ? "slot " + std::to_string(assignedSlot()) : "not listed yet (join slots)");
+  }
+  b.items.push_back({"slot table", table});
+
+  std::string power;
+  if (lastScheduleAt_ >= 0 || scheduleFromStorage_) {
+    const protocol::PowerSchedule& s = policy_.schedule();
+    power = (scheduleFromStorage_ ? std::string("stored copy") : "heard " + ago(lastScheduleAt_)) + " - Witty Pi: " +
+            (s.hasWitty ? describeWitty(s) : "not set") + "; shutdown: " + (s.hasShutdown ? describeShutdown(s) : "not set");
+  } else {
+    power = "not heard (the base sends one only when it has one set)";
+  }
+  b.items.push_back({"power schedule", power});
+
+  b.ready = missing.empty();
+  for (size_t i = 0; i < missing.size(); i++) b.missing += (i ? ", " : "") + missing[i];
+  return b;
+}
+
+// Says so when the boat has everything it needs from the base, and when it loses any of it
+void Rover::maybeLogReady() {
+  if (readyCheckedAt_ > now() - 2000) return;
+  readyCheckedAt_ = now();
+  const BaseData b = baseData();
+  const int state = b.ready ? 1 : 0;
+  if (state == readyLogged_) return;
+  if (b.ready) log("[boatAgent] ready: course marks, corrections" + std::string(follower_ && cfg_.slotIndex < 0 ? " and the slot table" : "") + " heard from the base");
+  else if (readyLogged_ == 1) log("[boatAgent] no longer ready - waiting for " + b.missing + " from the base");
+  readyLogged_ = state;
 }
 
 std::string Rover::statusLine() const {

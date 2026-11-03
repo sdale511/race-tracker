@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,12 @@ namespace protocol {
 using Bytes = std::vector<uint8_t>;
 
 constexpr size_t BOAT_ID_LEN = 5;
+// boatIdFile.js's ALPHABET: a made-up id is BOAT_ID_LEN of these, and a stored or given one must be too (config.js only checks the
+// length of an explicit BOAT_ID; this is the stored-id rule, which is what a boat's own id has to pass)
+constexpr const char* BOAT_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+bool validBoatId(const std::string& id);
+// random(n) returns a number in [0, n)
+std::string makeBoatId(const std::function<uint32_t(uint32_t)>& random);
 constexpr size_t FIX_FIELDS_LEN = 19;
 constexpr size_t RADIO_MAX_PAYLOAD = 100;
 

@@ -26,8 +26,15 @@ td { padding: 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; 
 td:first-child { color: var(--muted); padding-right: 12px; white-space: nowrap; }
 td:last-child { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break: break-all; }
 #err { color: #d70015; }
+:root { --ok: #1b7f3b; --okbg: #e3f5e8; --wait: #8a5a00; --waitbg: #fdf1d8; }
+@media (prefers-color-scheme: dark) { :root { --ok: #5fd68a; --okbg: #12331f; --wait: #f2c46d; --waitbg: #3a2c0d; } }
+#ready { border-radius: 8px; padding: 10px 14px; margin: 0 0 20px; font-weight: 600; }
+#ready.ok { color: var(--ok); background: var(--okbg); } #ready.wait { color: var(--wait); background: var(--waitbg); }
+.base { margin-bottom: 24px; }
 </style></head><body>
 <h1 id="title">Rover</h1><div class="sub"><span id="sub"></span> <span id="err"></span></div>
+<div id="ready" class="wait">-</div>
+<section class="base"><h2>From the base</h2><table id="base"></table></section>
 <div class="cols"><section><h2>Status</h2><table id="status"></table></section>
 <section><h2>Config</h2><table id="config"></table></section></div>
 <script>
@@ -41,7 +48,10 @@ async function update() {
     const s = await (await fetch('status.json', { cache: 'no-store' })).json();
     document.title = s.title; document.getElementById('title').textContent = s.title;
     document.getElementById('sub').textContent = s.subtitle; document.getElementById('err').textContent = '';
-    fill('status', s.status); fill('config', s.config);
+    const r = document.getElementById('ready');
+    r.className = s.ready ? 'ok' : 'wait';
+    r.textContent = s.ready ? 'Ready - everything heard from the base' : 'Waiting for ' + s.missing + ' from the base';
+    fill('base', s.base); fill('status', s.status); fill('config', s.config);
   } catch { document.getElementById('err').textContent = '- the rover is not answering'; }
 }
 update(); setInterval(update, 1000);
@@ -112,7 +122,8 @@ void StatusPage::serve(const std::function<Snapshot()>& snapshot) {
     if (!std::strncmp(req, "GET /status.json", 16)) {
       const Snapshot s = snapshot();
       respond(c, "200 OK", "application/json",
-              "{\"title\":" + jsonString(s.title) + ",\"subtitle\":" + jsonString(s.subtitle) + ",\"status\":" + jsonItems(s.status) +
+              "{\"title\":" + jsonString(s.title) + ",\"subtitle\":" + jsonString(s.subtitle) + ",\"ready\":" + (s.ready ? "true" : "false") +
+                  ",\"missing\":" + jsonString(s.missing) + ",\"base\":" + jsonItems(s.base) + ",\"status\":" + jsonItems(s.status) +
                   ",\"config\":" + jsonItems(s.config) + "}");
     } else if (!std::strncmp(req, "GET / ", 6)) {
       respond(c, "200 OK", "text/html; charset=utf-8", PAGE);
