@@ -77,7 +77,9 @@ The USB serial console reads like the Node rover's: the same startup summary (`[
 then gps, radio and a `config:` line of the settings by their Node names), the same `[status]` line (at once when the fix, radio or
 marks change, otherwise every minute), and the same wording for slots, parking, sleep, the RTCM watchdog and dropped frames. The
 version comes from git at build time (`tools/version.py`, as `src/version.js` does it), and its commit count is the status hello's build
-number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute. On the Reverse TFT the screen is lit for 30 s after boot and after a press of the D1 button. Its top line says READY once the boat has
+number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute. On the Reverse TFT the screen is lit for 30 s after boot and after a button press: D1 shows the full status, D0 a large page of
+just the boat id, the battery and one status word (ASLEEP, NO FIX, NO MARKS / NO RTCM / NO SLOT, then READY when RTK is fixed, or
+RTK FLT / GPS ONLY). The full page's top line says READY once the boat has
 heard the course marks (this run - a stored copy doesn't count), the correction bursts and the slot table from the base, and the bottom
 line says what it still needs (`need marks rtcm slot`); the console logs `[boatAgent] ready: ...` when that happens. The power schedule
 is not required: the base sends one only when it has one set.

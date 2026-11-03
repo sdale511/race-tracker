@@ -1,5 +1,6 @@
 // The Reverse TFT Feather's screen (#5691): the rover's status at a glance. Built only with -DHAS_TFT (the feather_s3_reversetft env).
-// The backlight is the costly part, so it comes on for SCREEN_ON_MS after boot or a press of the D1 button and then goes off.
+// The backlight is the costly part, so it comes on for SCREEN_ON_MS after boot or a button press and then goes off. D1 shows the
+// full status (eight lines), D0 a large page readable from across the boat: the boat id, the battery and one status word.
 #pragma once
 
 #include <string>
