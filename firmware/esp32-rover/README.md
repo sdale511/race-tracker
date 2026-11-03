@@ -77,12 +77,36 @@ The USB serial console reads like the Node rover's: the same startup summary (`[
 then gps, radio and a `config:` line of the settings by their Node names), the same `[status]` line (at once when the fix, radio or
 marks change, otherwise every minute), and the same wording for slots, parking, sleep, the RTCM watchdog and dropped frames. The
 version comes from git at build time (`tools/version.py`, as `src/version.js` does it), and its commit count is the status hello's build
-number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute. On the Reverse TFT the screen is lit for 30 s after boot and after a button press: D1 shows the full status, D0 a large page of
-just the boat id, the battery and one status word (ASLEEP, NO FIX, NO MARKS / NO RTCM / NO SLOT, then READY when RTK is fixed, or
-RTK FLT / GPS ONLY). The full page's top line says READY once the boat has
-heard the course marks (this run - a stored copy doesn't count), the correction bursts and the slot table from the base, and the bottom
-line says what it still needs (`need marks rtcm slot`); the console logs `[boatAgent] ready: ...` when that happens. The power schedule
-is not required: the base sends one only when it has one set.
+number. `-DGPS_LOG=1` logs every fix, like `GPS_LOG=1`. The battery is logged every minute.
+
+### The screen (Reverse TFT)
+
+The screen is lit for 30 s after boot and after a button press (a press while it is lit keeps it on for another 30 s); it shows the
+full page after boot.
+
+- **D1 - the full page**: eight lines - the boat id and READY / waiting / ASLEEP, the fix and satellites, corrections, the slot (or
+  parked on the grid), the battery, frames sent, the last note (e.g. why it is about to sleep) and, while waiting, what it still needs
+  from the base (`need marks rtcm slot`). The top line says READY once the boat has heard the course marks (this run - a stored copy
+  doesn't count), the correction bursts and the slot table from the base; the console logs `[boatAgent] ready: ...` when that happens.
+  The power schedule is not required: the base sends one only when it has one set.
+- **D0 - the large page**, readable from across the boat: the boat id (coloured as the full page's top line: yellow waiting, green
+  ready, white asleep), the battery % (red below 20 %), and one status word - the first of these that applies:
+
+  | Condition | Shows | Colour |
+  |---|---|---|
+  | about to deep sleep | `ASLEEP` | white |
+  | no GPS fix | `NO FIX` | red |
+  | the course marks not heard from the base this run | `NO MARKS` | yellow |
+  | marks heard, but no correction bursts | `NO RTCM` | yellow |
+  | marks and corrections heard, but no slot table (never with `TX_SLOT` pinned) | `NO SLOT` | yellow |
+  | not ready with nothing listed as missing (shouldn't happen) | `WAITING` | yellow |
+  | ready, RTK fixed | `READY` | green |
+  | ready, RTK float | `RTK FLT` | yellow |
+  | ready, GPS only | `GPS ONLY` | yellow |
+
+  `READY` here is stricter than on the full page: it also needs RTK fixed, so the one word says whether the boat can race. No fix
+  hides what the base hasn't sent yet (the full page's bottom line lists it), and parking isn't shown - a parked boat that has
+  everything reads `READY`.
 
 ## Settings
 

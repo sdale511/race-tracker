@@ -80,7 +80,7 @@ void bigStatus(const Status& s, std::string& text, uint16_t& color) {
 }
 
 void drawBig(const Status& s) {
-  bigLine(0, ST77XX_WHITE, s.boatId);
+  bigLine(0, s.sleeping ? ST77XX_WHITE : s.ready ? ST77XX_GREEN : ST77XX_YELLOW, s.boatId);  // coloured as the full page's top line
   char b[16];
   if (s.batteryPct >= 0) snprintf(b, sizeof b, "%d%%", s.batteryPct);
   else snprintf(b, sizeof b, "BAT ?");
