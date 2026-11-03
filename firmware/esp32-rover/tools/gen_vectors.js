@@ -424,6 +424,70 @@ for (let k = 0; k < 7; k++) {
 }
 out(`static const double JOIN_RANDS[] = {${jbRand.join(', ')}};`);
 out(`static const double JOIN_NEXT_AT[] = {${jbNext.map(num).join(', ')}};`);
+// 13. the settings: config.js run (in a child, with only these variables set) for each value, and what it ends up holding, in
+// lib/rover_core/src/settings.cpp's order and as its current() prints it
+const SETTING_PATHS = [
+  ['TX_DISTANCE_M', (c) => c.txDistanceM],
+  ['TX_INTERVAL_S', (c) => c.txIntervalMs / 1000],
+  ['TX_DELTA', (c) => +c.txDelta],
+  ['TX_BATCH_SIZE', (c) => c.txBatchSize],
+  ['TX_FINISH_APPROACH_ZONE_M', (c) => c.txFinishApproachZoneM],
+  ['TX_FINISH_DISTANCE_M', (c) => c.txFinishDistanceM],
+  ['PING_RESPONSE_JITTER_MS', (c) => c.pingResponseJitterMs],
+  ['HELLO_STARTUP_JITTER_MS', (c) => c.helloStartupJitterMs],
+  ['TX_GATE', (c) => +c.txGate.enabled],
+  ['TX_GATE_BEFORE_MS', (c) => c.txGate.blockBeforeMs],
+  ['TX_GATE_AFTER_MS', (c) => c.txGate.blockAfterMs],
+  ['TX_GATE_GUARD_MS', (c) => c.txGate.guardMs],
+  ['TX_GATE_MAX_QUEUE', (c) => (Number.isNaN(c.txGate.maxQueue) ? 0 : Math.max(0, c.txGate.maxQueue))], // a size_t: NaN reads 0
+  ['TX_GATE_MAX_AGE_MS', (c) => c.txGate.maxAgeMs],
+  ['RTCM_WATCHDOG', (c) => +c.txGate.rtcmWatch.enabled],
+  ['RTCM_WATCHDOG_WARN_S', (c) => c.txGate.rtcmWatch.warnS],
+  ['RTCM_WATCHDOG_REPEAT_S', (c) => c.txGate.rtcmWatch.repeatS],
+  ['RTCM_FORWARD', (c) => +c.rtcm.forward],
+  ['TX_SLOT_MODE', (c) => +c.txGate.slot.enabled],
+  // the C++ has no "null": an unset, garbage or negative TX_SLOT all mean follow the base there
+  ['TX_SLOT', (c) => (c.txGate.slot.index === null || !(c.txGate.slot.index >= 0) ? 'base' : c.txGate.slot.index)],
+  ['TX_SLOT_COUNT', (c) => (c.txGate.slot.countAuto ? 'auto' : c.txGate.slot.count)],
+  ['TX_SLOT_MS', (c) => c.txGate.slot.widthMs],
+  ['TX_SLOT_JOIN', (c) => c.txGate.slot.joinSlots],
+  ['RTCM_INTERVAL_S', (c) => c.txGate.slot.rtcmIntervalS],
+  ['TX_SLOT_MAX_HZ', (c) => c.txGate.slot.maxHz],
+  ['TX_SLOT_RESERVE_FRAMES', (c) => c.txGate.slot.reserveFrames],
+  ['TX_SLOT_MARK_ZONE_M', (c) => c.txGate.slot.markZoneM],
+  ['TX_JOIN_REPORT_S', (c) => c.txGate.slot.joinReportS],
+  ['TX_PARKED_REPORT_S', (c) => c.txGate.slot.parkedReportS],
+  ['TX_PARKED_FIRST_S', (c) => c.txGate.slot.parkedFirstS],
+  ['TX_PARKED_REPEAT_S', (c) => c.txGate.slot.parkedRepeatS],
+  ['TX_SLOT_UNPARK_FIXES', (c) => c.txGate.slot.unparkFixes],
+  ['TX_SLOT_PARK_DWELL_S', (c) => c.txGate.slot.parkDwellS],
+  ['TX_SLOT_MOVING_KN', (c) => c.txGate.slot.movingKn],
+  ['REGATTAUP_ONGRID_ZONE_M', (c) => c.regattaup.onGridZoneM],
+  ['SLEEP_CYCLE_S', (c) => c.sleep.cycleS],
+  ['SLEEP_LISTEN_MS', (c) => c.sleep.listenMs],
+  ['GPS_SLEEP_FORCE_USB', (c) => +c.sleep.gps.forceUsb],
+  ['GPS_LOG', (c) => +c.gps.logConsole],
+];
+const SETTING_VALUES = [null, '', '0', '1', '2.7', '-5', 'abc', 'true', 'false', '300', '12x', ' 7 ', '1e3', '0.05'];
+const { execFileSync } = require('child_process');
+const os = require('os');
+const configPath = path.join(src, 'config');
+const settingCases = SETTING_VALUES.map((value) => {
+  const env = { PATH: process.env.PATH, TZ: 'UTC', BOAT_ID: 'VECTR' };
+  if (value !== null) for (const [name] of SETTING_PATHS) env[name] = value;
+  // cwd: a folder with no .env, so dotenv adds nothing; it still prints a banner, so the values follow a marker
+  const script = `const c=require(${JSON.stringify(configPath)});process.stdout.write('\\n@@'+JSON.stringify([${SETTING_PATHS.map(
+    ([, f]) => `String((${f.toString()})(c))`
+  ).join(',')}]))`;
+  const raw = execFileSync(process.execPath, ['-e', script], { cwd: os.tmpdir(), env, encoding: 'utf8' });
+  return { value, held: JSON.parse(raw.slice(raw.lastIndexOf('@@') + 2)) };
+});
+out('// per value (nullptr = every setting unset), what config.js holds for each setting, in settings.cpp\'s order');
+out(`static const char* const SETTING_NAMES[] = {${SETTING_PATHS.map(([n]) => JSON.stringify(n)).join(', ')}};`);
+out('struct SettingCase { const char* value; const char* held[' + SETTING_PATHS.length + ']; };');
+out('static const SettingCase SETTING_CASES[] = {');
+for (const sc of settingCases) out(`  {${sc.value === null ? 'nullptr' : JSON.stringify(sc.value)}, {${sc.held.map((h) => JSON.stringify(h)).join(', ')}}},`);
+out('};');
 out('}  // namespace vec');
 out();
 

@@ -82,6 +82,29 @@ heard the course marks (this run - a stored copy doesn't count), the correction 
 line says what it still needs (`need marks rtcm slot`); the console logs `[boatAgent] ready: ...` when that happens. The power schedule
 is not required: the base sends one only when it has one set.
 
+## Settings
+
+The rover settings are the Node rover's environment variables - `TX_DISTANCE_M`, `TX_BATCH_SIZE`, `TX_SLOT_MAX_HZ`, `TX_PARKED_REPORT_S`,
+`RTCM_WATCHDOG`, `GPS_LOG` and the rest (`lib/rover_core/src/settings.cpp` lists them) - with the same defaults, and read exactly as
+`src/config.js` reads them (the vectors check every one against `config.js`).
+
+- **On the Mac**: set them in the environment, as for `npm run boat`: `TX_DISTANCE_M=2 .pio/build/mac/program ...`.
+  `program --settings` lists them all with the values this environment gives.
+- **On the ESP32**: type at the serial console (`pio device monitor`). They are kept in flash, survive firmware updates, and take
+  effect at the next boot:
+
+  ```
+  settings                  every setting, its value now, and what is saved for the next boot
+  get TX_DISTANCE_M
+  set TX_DISTANCE_M 2       (a number setting must be a number, a switch 1/0/true/false)
+  unset TX_DISTANCE_M       back to the default
+  boatid                    the boat id; "boatid QK3Q9" changes it (e.g. a replacement board taking over a boat)
+  restart
+  ```
+
+The console is stricter than `config.js`, which reads `12x` as 12 and `abc` as its default: it refuses both. The pins, baud rates, time
+zone and accelerometer threshold are build flags (top of `src/main.cpp`), not settings.
+
 ## Building and testing
 
 [PlatformIO](https://platformio.org) (`pipx install platformio`):
@@ -143,7 +166,7 @@ emulated.
 `lib/rover_core` is hardware-free C++ - one file per Node module it ports, with the same names, so a change to a Node module points at the
 C++ file to change: `protocol.js` -> `protocol.cpp`, `radioLink.js`'s scanner -> `radio_scanner.cpp`, `ubxParser.js` -> `ubx.cpp`,
 `burstTracker.js`, `txGate.js`, `txScheduler.js`, `slotTable.js`, `distanceGate.js`, `thinFixes.js`, `roverSleep.js`, `gpsSleep.js`,
-`roverDiag.js`, `xbeeAt.js` -> `xbee_at.cpp`, `onGridWatcher.js` / `finishLineWatcher.js` / `foulWatcher.js` / `finishApproach.js` /
+`roverDiag.js`, `xbeeAt.js` -> `xbee_at.cpp`, `config.js`'s rover settings -> `settings.cpp`, `onGridWatcher.js` / `finishLineWatcher.js` / `foulWatcher.js` / `finishApproach.js` /
 `eventBoost.js` -> `course_watchers.cpp`, `fleetShutdown.js` / `powerSchedule.js` / `sunSchedule.js` -> `power_policy.cpp`, and
 `boatAgent.js` -> `rover.cpp`. `src/main.cpp` (and `src/display.cpp`) are the only Arduino code.
 

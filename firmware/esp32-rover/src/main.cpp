@@ -17,8 +17,11 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <map>
+
 #include "display.h"
 #include "rover.h"
+#include "settings.h"
 #include "xbee_at.h"
 
 #ifndef GPS_BAUD
@@ -126,6 +129,29 @@ bool loadMarks(rover::protocol::Marks& m) {
   for (size_t i = 0; i < rover::protocol::MARK_COUNT; i++) m.mark[i] = {s.latLon[i * 2], s.latLon[i * 2 + 1]};
   m.pinBoundaryEnabled = s.pinBoundary;
   return true;
+}
+
+// The rover settings set at the console (TX_DISTANCE_M=2 ...), one "NAME=value" line each in one NVS string - the names are longer
+// than NVS's 15-character keys. Read at boot as config.js reads its environment (see settings.h).
+std::map<std::string, std::string> loadSettings() {
+  std::map<std::string, std::string> m;
+  const std::string all = prefs.getString("settings", "").c_str();
+  size_t start = 0;
+  while (start < all.size()) {
+    size_t end = all.find('\n', start);
+    if (end == std::string::npos) end = all.size();
+    const std::string line = all.substr(start, end - start);
+    const size_t eq = line.find('=');
+    if (eq != std::string::npos && rover::settings::find(line.substr(0, eq))) m[line.substr(0, eq)] = line.substr(eq + 1);
+    start = end + 1;
+  }
+  return m;
+}
+
+void saveSettings(const std::map<std::string, std::string>& m) {
+  std::string all;
+  for (const auto& kv : m) all += kv.first + "=" + kv.second + "\n";
+  prefs.putString("settings", all.c_str());
 }
 
 // PowerSchedule is plain data, kept as its bytes (a size change after a firmware update just reads as "none")
@@ -308,6 +334,90 @@ void logBattery(const display::Status& s) {
   else Serial.println("[battery] no MAX17048 answering");
 }
 
+// ---- the serial console ----
+// Typed at `pio device monitor`: rover settings by their Node names, saved in NVS and used from the next boot.
+//   settings              every setting: the value in effect, and what is saved for the next boot if that differs
+//   get NAME / set NAME VALUE / unset NAME
+//   boatid [ID]           show, or change (from the next boot), the boat id
+//   restart
+
+RoverConfig activeCfg;  // what this boot is running with
+std::string consoleLine;
+
+void consoleHelp() {
+  Serial.println("[console] settings | get NAME | set NAME VALUE | unset NAME | boatid [ID] | restart - settings take effect at the next boot");
+}
+
+void consoleCommand(const std::string& line) {
+  std::vector<std::string> w;
+  size_t i = 0;
+  while (i < line.size()) {
+    while (i < line.size() && line[i] == ' ') i++;
+    size_t j = i;
+    while (j < line.size() && line[j] != ' ') j++;
+    if (j > i) w.push_back(line.substr(i, j - i));
+    i = j;
+  }
+  if (w.empty()) return;
+  for (auto& c : w[0]) c = tolower(c);
+  if (w.size() > 1)
+    for (auto& c : w[1]) c = toupper(c);
+  std::map<std::string, std::string> saved = loadSettings();
+  RoverConfig next;
+  rover::settings::apply(next, [&](const char* n) {
+    auto it = saved.find(n);
+    return it == saved.end() ? (const char*)nullptr : it->second.c_str();
+  });
+
+  if (w[0] == "settings") {
+    for (const auto& st : rover::settings::all()) {
+      const std::string now = rover::settings::current(activeCfg, st.name), then = rover::settings::current(next, st.name);
+      Serial.printf("  %-26s %-8s%s  %s\n", st.name, now.c_str(), then != now ? (" -> " + then + " at the next boot").c_str() : (saved.count(st.name) ? " (set)" : ""), st.help);
+    }
+  } else if (w[0] == "get" && w.size() == 2) {
+    if (!rover::settings::find(w[1])) return (void)Serial.printf("[console] unknown setting %s\n", w[1].c_str());
+    Serial.printf("[console] %s=%s%s\n", w[1].c_str(), rover::settings::current(activeCfg, w[1]).c_str(), saved.count(w[1]) ? " (set)" : " (default)");
+  } else if (w[0] == "set" && w.size() == 3) {
+    std::string err;
+    if (!rover::settings::check(w[1], w[2], err)) return (void)Serial.printf("[console] %s\n", err.c_str());
+    saved[w[1]] = w[2];
+    saveSettings(saved);
+    rover::settings::apply(next, [&](const char* n) {
+      auto it = saved.find(n);
+      return it == saved.end() ? (const char*)nullptr : it->second.c_str();
+    });
+    Serial.printf("[console] %s=%s saved - in effect at the next boot (restart)\n", w[1].c_str(), rover::settings::current(next, w[1]).c_str());
+  } else if (w[0] == "unset" && w.size() == 2) {
+    if (!saved.erase(w[1])) return (void)Serial.printf("[console] %s is not set\n", w[1].c_str());
+    saveSettings(saved);
+    Serial.printf("[console] %s back to its default from the next boot (restart)\n", w[1].c_str());
+  } else if (w[0] == "boatid" && w.size() == 1) {
+    Serial.printf("[console] boat id %s\n", activeCfg.boatId.c_str());
+  } else if (w[0] == "boatid" && w.size() == 2) {
+    if (!rover::protocol::validBoatId(w[1])) return (void)Serial.printf("[console] a boat id is %u of A-Z and 0-9\n", (unsigned)rover::protocol::BOAT_ID_LEN);
+    prefs.putString("boatId", w[1].c_str());
+    Serial.printf("[console] boat id %s saved - in effect at the next boot (restart)\n", w[1].c_str());
+  } else if (w[0] == "restart") {
+    Serial.println("[console] restarting");
+    Serial.flush();
+    ESP.restart();
+  } else {
+    consoleHelp();
+  }
+}
+
+void pollConsole() {
+  while (Serial.available()) {
+    const char c = (char)Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (!consoleLine.empty()) consoleCommand(consoleLine);
+      consoleLine.clear();
+    } else if (consoleLine.size() < 120) {
+      consoleLine += c;
+    }
+  }
+}
+
 }  // namespace
 
 void setup() {
@@ -345,12 +455,18 @@ void setup() {
   Serial2.begin(RADIO_BAUD, SERIAL_8N1, XBEE_RX_PIN, XBEE_TX_PIN);
 
   RoverConfig cfg;
+  // the settings saved at the console, read as config.js reads its environment
+  const std::map<std::string, std::string> saved = loadSettings();
+  rover::settings::apply(cfg, [&](const char* n) {
+    auto it = saved.find(n);
+    return it == saved.end() ? (const char*)nullptr : it->second.c_str();
+  });
   cfg.boatId = loadBoatId();
   cfg.build = ROVER_BUILD;
   cfg.dirty = ROVER_DIRTY;
   cfg.version = ROVER_VERSION;
   cfg.motionWoken = motionWoken;
-  cfg.gpsLog = GPS_LOG;
+  if (GPS_LOG) cfg.gpsLog = true;
   char b[96];
   snprintf(b, sizeof b, "real Serial1@%d (rx %d, tx %d)", GPS_BAUD, GPS_RX_PIN, GPS_TX_PIN);
   cfg.gpsDesc = b;
@@ -379,7 +495,12 @@ void setup() {
   hal.loadSchedule = loadSchedule;
   hal.requestDeepSleep = deepSleep;
 
+  activeCfg = cfg;
   theRover = new Rover(cfg, hal);  // logs the startup summary; sends nothing until begin()
+  std::string set;
+  for (const auto& kv : saved) set += (set.empty() ? "" : " ") + kv.first + "=" + kv.second;
+  if (!set.empty()) Serial.printf("[boatAgent] settings saved at the console: %s\n", set.c_str());
+  consoleHelp();
   Serial.printf("[power] %s, accelerometer INT on %d\n", motionWoken ? "woken by motion" : cause == ESP_SLEEP_WAKEUP_TIMER ? "woken by the timer" : "power on",
                 ACCEL_INT_PIN);
   // before anything is sent: telemetry in AT command mode would be read as commands
@@ -395,6 +516,7 @@ void loop() {
   while ((n = Serial1.read(buf, min((int)sizeof buf, Serial1.available()))) > 0) theRover->onGpsBytes(buf, n);
   while ((n = Serial2.read(buf, min((int)sizeof buf, Serial2.available()))) > 0) theRover->onRadioBytes(buf, n);
   theRover->tick();
+  pollConsole();
   keepRtc();
   // twice a second is plenty for the screen, and keeps the battery's I2C reads and the strings off the fast loop
   static display::Status s;

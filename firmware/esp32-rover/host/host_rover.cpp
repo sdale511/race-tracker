@@ -31,6 +31,7 @@
 #include <string>
 
 #include "rover.h"
+#include "settings.h"
 #include "status_page.h"
 #include "xbee_at.h"
 
@@ -64,6 +65,7 @@ struct Options {
   bool setNi = false;
   bool gpsSleepForceUsb = false;
   bool gpsLog = false;
+  bool listSettings = false;
   int uiPort = 8095;
 };
 
@@ -79,6 +81,8 @@ void usage() {
                "  --gps-sleep-force-usb               let the ZED go into backup with its USB connected (disables its USB until a power cycle)\n"
                "  --gps-log                           a console line for every fix (the Node rover's GPS_LOG=1)\n"
                "  --ui-port N                         the status page's port (8095; 0 = none)\n"
+               "  --settings                          list the rover settings, as this environment sets them, and exit\n"
+               "  The rover settings are the Node rover's environment variables, read the same way: TX_DISTANCE_M=2 host_rover ...\n"
                "  kill -USR1 <pid> wakes an emulated deep sleep, as the accelerometer would\n");
 }
 
@@ -101,6 +105,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
     }
     if (a == "--rtcm-forward") o.rtcmForward = true;
     else if (a == "--gps-log") o.gpsLog = true;
+    else if (a == "--settings") o.listSettings = true;
     else if (a == "--set-ni") o.setNi = true;
     else if (a == "--gps-sleep-force-usb") o.gpsSleepForceUsb = true;
     else return false;
@@ -380,11 +385,13 @@ void boot(bool motionWoken) {
   delete theRover;
   radioAsleep = false;
   RoverConfig cfg;
+  // the Node rover's environment variables, read as config.js reads them; the flags below are shorthands that switch one on
+  rover::settings::apply(cfg, [](const char* name) { return std::getenv(name); });
   cfg.boatId = opts.boatId;
   cfg.motionWoken = motionWoken;
-  cfg.rtcmForward = opts.rtcmForward;
-  cfg.gpsSleepForceUsb = opts.gpsSleepForceUsb;
-  cfg.gpsLog = opts.gpsLog;
+  if (opts.rtcmForward) cfg.rtcmForward = true;
+  if (opts.gpsSleepForceUsb) cfg.gpsSleepForceUsb = true;
+  if (opts.gpsLog) cfg.gpsLog = true;
   cfg.version = ROVER_VERSION;
   cfg.build = ROVER_BUILD;
   cfg.dirty = ROVER_DIRTY;
@@ -418,6 +425,10 @@ void boot(bool motionWoken) {
   hal.requestDeepSleep = deepSleep;
 
   theRover = new Rover(cfg, hal);  // logs the startup summary; sends nothing until begin()
+  std::string fromEnv;
+  for (const auto& st : rover::settings::all())
+    if (const char* v = std::getenv(st.name)) fromEnv += std::string(fromEnv.empty() ? "" : " ") + st.name + "=" + v;
+  if (!fromEnv.empty()) log("[boatAgent] settings from the environment: " + fromEnv);
   log(fmt("[boatAgent] state=%s wake=%s%s", stateDir.c_str(), motionWoken ? "motion" : "power on",
           opts.uiPort > 0 ? fmt(" status page=http://localhost:%d", opts.uiPort).c_str() : ""));
   if (cfg.xbeeNi) setNodeIdentifier(cfg.boatId);  // before anything is sent
@@ -431,6 +442,15 @@ int main(int argc, char** argv) {
   if (!parseArgs(argc, argv, opts)) {
     usage();
     return 2;
+  }
+  if (opts.listSettings) {
+    RoverConfig cfg;
+    rover::settings::apply(cfg, [](const char* name) { return std::getenv(name); });
+    for (const auto& st : rover::settings::all()) {
+      const char* v = std::getenv(st.name);
+      std::printf("%-26s %-8s %s%s\n", st.name, rover::settings::current(cfg, st.name).c_str(), st.help, v ? " (set in the environment)" : "");
+    }
+    return 0;
   }
   signal(SIGPIPE, SIG_IGN);
   signal(SIGUSR1, [](int) { motion = 1; });

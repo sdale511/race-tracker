@@ -15,6 +15,7 @@
 #include "radio_scanner.h"
 #include "rover.h"
 #include "rover_diag.h"
+#include "settings.h"
 #include "slot_table.h"
 #include "thin_fixes.h"
 #include "ubx.h"
@@ -677,6 +678,39 @@ void test_xbee_node_identifier_is_set_once() {
   TEST_ASSERT_FALSE(xbee::setNodeIdentifier(silent, "QXZRA").ok);
 }
 
+// ---- settings ----
+
+// every setting, for every value in the vectors, holds what config.js holds; and the list is settings.cpp's, in order
+void test_settings_parse_like_config_js() {
+  const auto& all = rover::settings::all();
+  const size_t n = sizeof vec::SETTING_NAMES / sizeof vec::SETTING_NAMES[0];
+  TEST_ASSERT_EQUAL(n, all.size());
+  for (size_t i = 0; i < n; i++) TEST_ASSERT_EQUAL_STRING(vec::SETTING_NAMES[i], all[i].name);
+  for (const auto& sc : vec::SETTING_CASES) {
+    rover::RoverConfig cfg;
+    rover::settings::apply(cfg, [&](const char*) { return sc.value; });
+    for (size_t i = 0; i < n; i++) {
+      char msg[96];
+      snprintf(msg, sizeof msg, "%s=\"%s\"", vec::SETTING_NAMES[i], sc.value ? sc.value : "(unset)");
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(sc.held[i], rover::settings::current(cfg, vec::SETTING_NAMES[i]).c_str(), msg);
+    }
+  }
+}
+
+// the console is stricter than config.js: a typo is refused, not quietly read as a default or a prefix
+void test_settings_console_check() {
+  std::string err;
+  TEST_ASSERT_TRUE(rover::settings::check("TX_DISTANCE_M", "2.5", err));
+  TEST_ASSERT_TRUE(rover::settings::check("TX_INTERVAL_S", "1e3", err));
+  TEST_ASSERT_FALSE(rover::settings::check("TX_DISTANCE_M", "12x", err));
+  TEST_ASSERT_FALSE(rover::settings::check("TX_DISTANCE_M", "abc", err));
+  TEST_ASSERT_FALSE(rover::settings::check("TX_DISTANCE_M", "0x10", err));
+  TEST_ASSERT_FALSE(rover::settings::check("TX_DISTANCE_M", "", err));
+  TEST_ASSERT_TRUE(rover::settings::check("TX_DELTA", "false", err));
+  TEST_ASSERT_FALSE(rover::settings::check("TX_DELTA", "yes", err));
+  TEST_ASSERT_FALSE(rover::settings::check("TX_DISTANCE", "1", err));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_position_frames_match_node);
@@ -707,5 +741,7 @@ int main() {
   RUN_TEST(test_power_policy_sleeps_outside_the_window_and_wakes_at_its_start);
   RUN_TEST(test_power_policy_follows_the_shutdown_rule);
   RUN_TEST(test_rover_sleeps_when_the_base_schedule_says_so);
+  RUN_TEST(test_settings_parse_like_config_js);
+  RUN_TEST(test_settings_console_check);
   return UNITY_END();
 }
