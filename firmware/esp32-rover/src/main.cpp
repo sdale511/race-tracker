@@ -406,14 +406,28 @@ void consoleCommand(const std::string& line) {
   }
 }
 
+// Echoes what is typed (a serial monitor doesn't, by default) and takes Backspace; CR, LF or CR LF ends a line
 void pollConsole() {
+  static bool lastCr = false;
   while (Serial.available()) {
     const char c = (char)Serial.read();
+    if (c == '\n' && lastCr) {
+      lastCr = false;
+      continue;
+    }
+    lastCr = c == '\r';
     if (c == '\r' || c == '\n') {
+      Serial.print("\r\n");
       if (!consoleLine.empty()) consoleCommand(consoleLine);
       consoleLine.clear();
-    } else if (consoleLine.size() < 120) {
+    } else if (c == '\b' || c == 0x7f) {
+      if (!consoleLine.empty()) {
+        consoleLine.pop_back();
+        Serial.print("\b \b");
+      }
+    } else if (c >= ' ' && c < 0x7f && consoleLine.size() < 120) {
       consoleLine += c;
+      Serial.print(c);
     }
   }
 }

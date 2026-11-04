@@ -116,7 +116,8 @@ The rover settings are the Node rover's environment variables - `TX_DISTANCE_M`,
 
 - **On the Mac**: set them in the environment, as for `npm run boat`: `TX_DISTANCE_M=2 .pio/build/mac/program ...`.
   `program --settings` lists them all with the values this environment gives.
-- **On the ESP32**: type at the serial console (`pio device monitor`). They are kept in flash, survive firmware updates, and take
+- **On the ESP32**: type at the serial console (`pio device monitor`; it echoes what you type and takes Backspace, so no `--echo`
+  needed). Tap RESET first if the boat is asleep - its USB port is gone in deep sleep. They are kept in flash, survive firmware updates, and take
   effect at the next boot:
 
   ```
