@@ -59,7 +59,12 @@ session.
 
 Reads back and verifies every value actually stuck before reporting success,
 same as xbee_configure_at.py's own set_and_verify - a write that silently
-didn't take is worse than one that visibly failed.
+didn't take is worse than one that visibly failed. Both what the receiver is
+running (RAM) and what it loads at power-up (flash, or the factory default
+when flash holds none) are checked, so a value that only reached RAM - which a
+power cycle quietly undoes - is caught; one that is running but not saved
+(e.g. set in u-center without saving) is written again rather than shown as
+unchanged.
 
 USAGE
     pip install pyserial
@@ -89,6 +94,8 @@ ID_ACK_ACK = 0x01
 ID_ACK_NAK = 0x00
 
 LAYER_RAM = 0  # for VALGET reads - what's actually running right now
+LAYER_FLASH = 2  # for VALGET reads - what the receiver loads at power-up (NAK when flash holds no value for the key)
+LAYER_DEFAULT = 7  # for VALGET reads - the factory value, which power-up uses when flash holds none
 LAYERS_RAM_BBR_FLASH = 0b111  # for VALSET writes - matches ubxtool's own ",7"
 
 RESPONSE_TIMEOUT_S = 1.5
@@ -279,8 +286,8 @@ def build_frame(msg_class, msg_id, payload):
     return bytes([UBX_SYNC1, UBX_SYNC2]) + body + bytes([ck_a, ck_b])
 
 
-def build_valget_request(key_id):
-    payload = struct.pack("<BBHI", 0, LAYER_RAM, 0, key_id)
+def build_valget_request(key_id, layer=LAYER_RAM):
+    payload = struct.pack("<BBHI", 0, layer, 0, key_id)
     return build_frame(CLASS_CFG, ID_VALGET, payload)
 
 
@@ -364,9 +371,9 @@ def decode_value(kind, raw):
 SIZE_BYTES = {"u1": 1, "u2": 2, "u4": 4, "bool": 1, "tmode": 1}
 
 
-def poll_key(ser, key_id, kind):
+def poll_key(ser, key_id, kind, layer=LAYER_RAM):
     ser.reset_input_buffer()
-    ser.write(build_valget_request(key_id))
+    ser.write(build_valget_request(key_id, layer))
     deadline = time.time() + RESPONSE_TIMEOUT_S
     while time.time() < deadline:
         frame = read_next_frame(ser, deadline)
@@ -387,6 +394,15 @@ def poll_key(ser, key_id, kind):
                 continue
             return decode_value(kind, value_bytes)
     return None
+
+
+def poll_saved(ser, key_id, kind):
+    """The value the receiver comes back with after a power cycle: flash's copy, or the factory default when flash holds
+    none. (BBR's copy is left out: it is the same value when this script wrote it, and without a backup battery - the
+    simpleRTK2B Budget has the footprint but no cell - it is gone at power-off anyway.) A RAM-only change, e.g. from
+    u-center without saving, reads right in poll_key and is lost here."""
+    saved = poll_key(ser, key_id, kind, LAYER_FLASH)
+    return saved if saved is not None else poll_key(ser, key_id, kind, LAYER_DEFAULT)
 
 
 def set_keys(ser, items):
@@ -437,28 +453,49 @@ def show(name, value):
     return value
 
 
+def unsaved_note(name, saved):
+    """For a value that runs right but isn't what power-up loads: the 'running ... but' line."""
+    return f"(running, but a power cycle brings back {show(name, saved) if saved is not None else '?'} - not saved to flash)"
+
+
+def check_written(ser, name, key_id, kind, target_value):
+    """After a write: None when both RAM (running now) and flash (after a power cycle) hold target_value, else why not.
+    Same reasoning as xbee_configure_at.py's own set_and_verify - a write ACK alone doesn't prove the receiver is now
+    running the new value, or that it will still have it after a power cycle."""
+    running = poll_key(ser, key_id, kind)
+    if running != target_value:
+        return f"read back {show(name, running)} - did not stick"
+    saved = poll_saved(ser, key_id, kind)
+    if saved != target_value:
+        return f"running, but flash reads back {show(name, saved)} - lost at the next power cycle"
+    return None
+
+
 def apply_setting(ser, name, target_value, dry_run):
     key_id, kind, label = KEY_INFO[name]
     current = poll_key(ser, key_id, kind)
     current_display = show(name, current) if current is not None else "?"
     prefix = f"  {label:<{LABEL_WIDTH}}"
     if current == target_value:
-        print(f"{prefix} = {show(name, target_value)} (unchanged)")
-        return True
-    if dry_run:
+        saved = poll_saved(ser, key_id, kind)
+        if saved == target_value:
+            print(f"{prefix} = {show(name, target_value)} (unchanged)")
+            return True
+        # Running the right value from a RAM-only change: write it again so flash has it too
+        print(f"{prefix} = {show(name, target_value)} {unsaved_note(name, saved)}" + (" [dry run: would save]" if dry_run else ""))
+        if dry_run:
+            return True
+    elif dry_run:
         print(f"{prefix} {current_display} -> {show(name, target_value)} [dry run]")
         return True
     if not set_key(ser, key_id, kind, target_value):
         print(f"{prefix} {current_display} -> {show(name, target_value)} [FAILED]")
         return False
-    # Read back to confirm it actually stuck, same reasoning as
-    # xbee_configure_at.py's own set_and_verify - a write ACK alone doesn't
-    # prove the receiver is now actually running the new value.
-    verified = poll_key(ser, key_id, kind)
-    if verified == target_value:
-        print(f"{prefix} {current_display} -> {show(name, target_value)} [OK]")
+    problem = check_written(ser, name, key_id, kind, target_value)
+    if problem is None:
+        print(f"{prefix} = {show(name, target_value)} [saved]" if current == target_value else f"{prefix} {current_display} -> {show(name, target_value)} [OK, saved]")
         return True
-    print(f"{prefix} {current_display} -> {target_value} [wrote, read back {show(name, verified)} - did not stick]")
+    print(f"{prefix} {current_display} -> {show(name, target_value)} [wrote, {problem}]")
     return False
 
 
@@ -469,17 +506,21 @@ def apply_rtcm_rates(ser, rates, dry_run, force):
     interval) see a burst every second instead of every 2 s. So when any rate needs changing, or force (--realign-rtcm)
     is given, every rate is first switched off in one VALSET and then set in one VALSET - all counters start together."""
     current = {}
+    saved = {}
     for name in rates:
         key_id, kind, _label = KEY_INFO[name]
         current[name] = poll_key(ser, key_id, kind)
-    differs = [n for n in rates if current[n] != rates[n]]
+        saved[name] = poll_saved(ser, key_id, kind)
+    differs = [n for n in rates if current[n] != rates[n] or saved[n] != rates[n]]
     ok = True
     for name, target in rates.items():
         _key_id, _kind, label = KEY_INFO[name]
         prefix = f"  {label:<{LABEL_WIDTH}}"
         cur_display = show(name, current[name]) if current[name] is not None else "?"
-        if current[name] == target:
+        if current[name] == target and saved[name] == target:
             print(f"{prefix} = {show(name, target)} (unchanged)" + (" [re-applied together]" if force and not dry_run else ""))
+        elif current[name] == target:
+            print(f"{prefix} = {show(name, target)} {unsaved_note(name, saved[name])}" + (" [dry run: would save]" if dry_run else ""))
         else:
             print(f"{prefix} {cur_display} -> {show(name, target)}" + (" [dry run]" if dry_run else ""))
     if dry_run:
@@ -494,11 +535,11 @@ def apply_rtcm_rates(ser, rates, dry_run, force):
         return False
     for name, target in rates.items():
         key_id, kind, label = KEY_INFO[name]
-        got = poll_key(ser, key_id, kind)
-        if got != target:
-            print(f"  {label:<{LABEL_WIDTH}} wrote {show(name, target)}, read back {show(name, got)} - did not stick")
+        problem = check_written(ser, name, key_id, kind, target)
+        if problem is not None:
+            print(f"  {label:<{LABEL_WIDTH}} wrote {show(name, target)}, {problem}")
             ok = False
-    print(f"  RTCM rates written together{' and verified' if ok else ' - see above'}")
+    print(f"  RTCM rates written together{' and verified, saved' if ok else ' - see above'}")
     return ok
 
 
@@ -541,9 +582,15 @@ def apply_uart1_baud(ser, port, target, dry_run):
     current = poll_key(ser, key_id, kind)
     current_display = current if current is not None else "?"
     if current == target:
-        print(f"{prefix} = {target} (unchanged)")
-        return True, ser
-    if dry_run:
+        saved = poll_saved(ser, key_id, kind)
+        if saved == target:
+            print(f"{prefix} = {target} (unchanged)")
+            return True, ser
+        # Running at the right baud from a RAM-only change: the next power cycle would bring the old baud back
+        print(f"{prefix} = {target} {unsaved_note('CFG-UART1-BAUDRATE', saved)}" + (" [dry run: would save]" if dry_run else ""))
+        if dry_run:
+            return True, ser
+    elif dry_run:
         print(f"{prefix} {current_display} -> {target} [dry run]")
         return True, ser
     set_key(ser, key_id, kind, target)  # the ACK may already come at the new baud - the read-back decides
@@ -554,11 +601,15 @@ def apply_uart1_baud(ser, port, target, dry_run):
         ser = serial.Serial(port, target, timeout=0.1)
         verified = poll_key(ser, key_id, kind)
         via = f" (reconnected at {target})"
-    if verified == target:
-        print(f"{prefix} {current_display} -> {target} [OK]{via}")
-        return True, ser
-    print(f"{prefix} {current_display} -> {target} [FAILED - read back {verified if verified is not None else 'nothing'}]")
-    return False, ser
+    if verified != target:
+        print(f"{prefix} {current_display} -> {target} [FAILED - read back {verified if verified is not None else 'nothing'}]")
+        return False, ser
+    saved = poll_saved(ser, key_id, kind)
+    if saved != target:
+        print(f"{prefix} {current_display} -> {target} [running{via}, but flash reads back {saved if saved is not None else 'nothing'} - lost at the next power cycle]")
+        return False, ser
+    print(f"{prefix} = {target} [saved]" if current == target else f"{prefix} {current_display} -> {target} [OK, saved]{via}")
+    return True, ser
 
 
 def main():
@@ -697,7 +748,7 @@ def main():
         ser.close()
 
     if not args.dry_run:
-        print(f"\n[ubx_config_set] {'all settings applied and verified' if ok else 'one or more settings FAILED - see above'}")
+        print(f"\n[ubx_config_set] {'all settings applied, verified and saved to flash' if ok else 'one or more settings FAILED - see above'}")
         print("[ubx_config_set] run ubx_config_report.py to see the full picture, including anything this profile doesn't touch")
     sys.exit(0 if ok else 1)
 
