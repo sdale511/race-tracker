@@ -1,7 +1,10 @@
 // ESP32-S3 rover: the Arduino glue around lib/rover_core. Wiring (see README.md):
 //   ZED-F9P UART1  <-> Serial1 on the Feather's RX/TX pins (UBX at GPS_BAUD)
-//   XBee DOUT/DIN  <-> Serial2 on XBEE_RX_PIN/XBEE_TX_PIN (at RADIO_BAUD); the XBee's DOUT also goes to the ZED's UART2 RX for RTCM
-//   XBee SLEEP_RQ  <-  RADIO_SLEEP_PIN (high = asleep), with a 10k pull-down so the radio stays awake while the ESP32 boots
+//   XBee DOUT/DIN  <-> Serial2 on XBEE_RX_PIN/XBEE_TX_PIN (at RADIO_BAUD). With the XBee in the ArduSimple's socket: through its
+//                      "XBEE TX / GPS RX2" and "XBEE RX / GPS TX2" pins, the ZED's UART2 off and RTCM_FORWARD=1 (the socket build).
+//                      With the XBee on a breakout: the XBee's DOUT also goes to the ZED's UART2 RX for RTCM
+//   XBee SLEEP_RQ  <-  RADIO_SLEEP_PIN (high = asleep), with a 10k pull-down so the radio stays awake while the ESP32 boots;
+//                      breakout only - the ArduSimple's socket doesn't bring it out
 //   LIS3DH         on the Feather's I2C (SDA/SCL, address ACCEL_ADDR), powered from 3V; its INT1 to ACCEL_INT_PIN (an RTC GPIO)
 //   GPS_POWER_PIN / RADIO_POWER_PIN (optional): the enable pins of the GPS board's and the XBee's regulators, so deep sleep cuts them
 // The boat id, the last course marks and the base's last power schedule are kept in NVS (Preferences).

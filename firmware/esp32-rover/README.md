@@ -15,9 +15,11 @@ Ported, behaving as the Node rover does:
   keeps the turns, and the backfill after waiting for a slot.
 - The status hello with the rover's diagnosis (the same flags; `power` is always 0 - there is no Pi power record), ping replies.
 - Course marks from the base, kept in flash across a restart.
-- Radio sleep mode (the XBee's SLEEP_RQ) with the GPS in software backup, woken by a base wake frame.
-- RTCM from the radio: used for the burst timing, and optionally forwarded to the GPS (`rtcmForward`, off: the XBee's DOUT feeds the ZED's
-  UART2 directly - see Wiring).
+- Radio sleep mode (the XBee's SLEEP_RQ) with the GPS in software backup, woken by a base wake frame. With the XBee in the ArduSimple's
+  socket SLEEP_RQ isn't wired: the boat stops sending and the GPS still backs up, but the XBee stays awake (so it hears the wake frame at
+  once).
+- RTCM from the radio: used for the burst timing, and forwarded to the GPS over UART1 (`RTCM_FORWARD`, on in the
+  `feather_s3_reversetft_socket` build; off where the XBee's DOUT feeds the ZED's UART2 directly - see Hardware).
 - Start-grid parking: inside the on-grid zone behind the start line the boat takes no slot and reports in the join slots every ~15 s.
 - The event boost: the start, finish and foul detectors run on the boat's own fixes, so the pair of fixes straddling a crossing is always sent.
 - The finish-approach gate (TX_FINISH_APPROACH_ZONE_M, off by default as in Node).
@@ -28,7 +30,9 @@ Ported, behaving as the Node rover does:
 Left out on purpose: mark mode / set-mark / mark-log, the L1/L2 signal check, SD logging, log uploads, the local UDP broadcast and the admin
 page.
 
-Not tested on hardware yet: everything here is checked by the host tests below and builds for the ESP32, but has not run on a Feather.
+On hardware so far (a Reverse TFT with the XBee in the ArduSimple's socket): the fix, the course marks and slot table from the base, and
+frames the base hears. Not yet checked on hardware: an RTK fix from the forwarded corrections, deep sleep and the motion wake. Everything
+is checked by the host tests below.
 
 ## Power
 
@@ -45,31 +49,48 @@ and a Witty Pi switching it back on (`lib/rover_core/src/power_policy.cpp`):
 
 Before it sleeps the GPS goes into software backup and the XBee's SLEEP_RQ is held high; with `GPS_POWER_PIN` / `RADIO_POWER_PIN` set (the
 enable pins of their regulators) their supplies are cut too, which is what gets the sleep current down - without them the GPS board and the
-XBee keep drawing through the night. The schedule's times are local: set `ROVER_TZ` (a POSIX TZ string, Pacific by default). The base's last
+XBee keep drawing through the night. With the XBee in the ArduSimple's socket, the S9V11F5's EN as `GPS_POWER_PIN` cuts both (the socket
+runs off the ArduSimple's 3.3 V); left unconnected, an overnight sleep draws roughly 20-50 mA, mostly the XBee. The schedule's times are local: set `ROVER_TZ` (a POSIX TZ string, Pacific by default). The base's last
 schedule is kept in NVS, and the GPS's time in the RTC, so a boat that wakes keeps to them before it hears the base or gets a fix.
 
 ## Hardware
 
-Adafruit ESP32-S3 Feather - `feather_s3_nopsram` (#5323, the default), `feather_s3` (#5477) or `feather_s3_reversetft` (#5691) in
-`platformio.ini`.
+Adafruit ESP32-S3 Feather - `feather_s3_nopsram` (#5323, the default), `feather_s3` (#5477), `feather_s3_reversetft` (#5691) or
+`feather_s3_reversetft_socket` (the Reverse TFT with `RTCM_FORWARD=1`) in `platformio.ini`.
+
+The boat's setup: a Reverse TFT, an ArduSimple simpleRTK2B Budget with the XBee in its own socket, a LIS3DH, a Pololu S9V11F5 5 V
+regulator and a 1-cell LiPo. `docs/esp32-rover-wiring.pdf` has the diagrams and where each pin is on the boards.
 
 | From | To | Notes |
 |---|---|---|
-| ZED-F9P TX1 | Feather `RX` | UBX at 115200 (`GPS_BAUD`) |
-| ZED-F9P RX1 | Feather `TX` | polls, sleep and wake |
-| XBee DOUT (pin 2) | GPIO 5 (`XBEE_RX_PIN`) | everything the base sends |
-| XBee DOUT (pin 2) | the ArduSimple's empty XBee socket, pin 2 | the ZED's UART2 RX: RTCM straight to the GPS |
-| XBee DIN (pin 3) | GPIO 6 (`XBEE_TX_PIN`) | telemetry out |
-| XBee SLEEP_RQ (pin 9) | GPIO 9 (`RADIO_SLEEP_PIN`), 10 kohm to GND | high = asleep; the pull-down keeps it awake while the ESP32 boots |
+| LiPo | the Feather's JST battery socket | check the polarity first |
+| Feather `BAT` | S9V11F5 VIN | 3.0-4.2 V |
+| S9V11F5 VOUT | ArduSimple `5V IN/OUT` | the ArduSimple's IOREF/5V switch **down** (IOREF=N/C, 5V=INPUT) |
+| S9V11F5 EN | nothing, or `GPS_POWER_PIN` (optional) | its pull-up keeps it on; driven low in deep sleep it cuts the ArduSimple and the XBee |
+| Feather `3V` | ArduSimple `IOREF` | the ZED's UART pins at 3.3 V; with the switch down nothing else feeds IOREF |
+| ArduSimple `TX1` | Feather `RX` (GPIO 38) | UBX at 115200 (`GPS_BAUD`) |
+| Feather `TX` (GPIO 39) | ArduSimple `RX1` | polls, sleep and wake, and the forwarded RTCM |
+| ArduSimple `XBEE TX / GPS RX2` | GPIO 5 (`XBEE_RX_PIN`) | the XBee's DOUT: everything the base sends |
+| GPIO 6 (`XBEE_TX_PIN`) | ArduSimple `XBEE RX / GPS TX2` | the XBee's DIN: telemetry out. Only with the ZED's UART2 off (below) |
 | LIS3DH VIN, GND | Feather `3V`, GND | the main 3.3 V, not the STEMMA QT port: that supply is switched off in deep sleep |
 | LIS3DH SDA, SCL | Feather `SDA`, `SCL` | address 0x18 (`ACCEL_ADDR`) |
 | LIS3DH INT | GPIO 10 (`ACCEL_INT_PIN`) | the motion wake; must be an RTC GPIO (0-21) |
-| GPS / XBee regulator enable | `GPS_POWER_PIN` / `RADIO_POWER_PIN` (optional) | cut in deep sleep |
-| GND | GND | all grounds together |
+| GND | GND | the Feather, the ArduSimple (both power-header GNDs), the S9V11F5 and the LIS3DH |
 
-Leave the ArduSimple socket's pin 3 (DIN) unconnected - the ZED drives it. Check the pin numbers against Adafruit's pinout for the exact
-Feather before wiring, and change them with build flags (`-DXBEE_RX_PIN=...`) if needed. The XBee-PRO needs a few hundred mA when it
-transmits: give it its own 3.3 V buck-boost regulator from the battery.
+Before the first boot, set the ZED up from a computer with `python3 ubx_config_set.py --port <its port> --role rover`: UBX on UART1 at
+115200 and **UART2 off**, saved to flash. UART2's TX drives the XBee's DIN line; switched off it lets go, so the ESP32 can drive it
+through Feather 6 - with UART2 on the two outputs fight. The corrections then reach the ZED only through the ESP32
+(`feather_s3_reversetft_socket`, `RTCM_FORWARD=1`). The XBee: `BD` 115200 and `SM` 0 - the socket's SLEEP_RQ isn't wired, so leave
+`RADIO_SLEEP_PIN` alone (GPIO 9 drives nothing).
+
+**With the XBee on its own breakout instead** (a Pi-style rover profile): ZED `--role rover-pi` (UART2 on), the XBee's DOUT to GPIO 5
+and also to the ArduSimple's `XBEE TX / GPS RX2` pin (RTCM straight into UART2, so `RTCM_FORWARD` can stay off), its DIN to GPIO 6,
+SLEEP_RQ (pin 9) to GPIO 9 (`RADIO_SLEEP_PIN`) with 10 kohm to GND so it stays awake while the ESP32 boots, and `SM` 1. Leave
+`XBEE RX / GPS TX2` unconnected there - the ZED drives it. Its 3.3 V can come from the ArduSimple's 3V3 pin, with 100 uF + 0.1 uF at
+the XBee.
+
+Check the pin numbers against Adafruit's pinout for the exact Feather before wiring, and change them with build flags
+(`-DXBEE_RX_PIN=...`) if needed.
 
 The boat id (5 letters, made up on first boot), the last course marks and the last power schedule are kept in NVS.
 
@@ -170,8 +191,8 @@ adapter (`ls /dev/cu.*` to find them):
 ```
 
 - The ZED has to send NAV-PVT on its USB port too (`CFG-MSGOUT-UBX_NAV_PVT_USB`), not just UART1 as on the boat.
-- An XBee on the ArduSimple still feeds the ZED's UART2 with RTCM, as on the boat. An XBee on its own adapter doesn't: add
-  `--rtcm-forward` so the rover writes the RTCM it hears to the GPS.
+- An XBee on the ArduSimple feeds the ZED's UART2 with RTCM only if UART2 is on (`--role rover-pi`). With the ESP32 profile
+  (`--role rover`, UART2 off), or an XBee on its own adapter, add `--rtcm-forward` so the rover writes the RTCM it hears to the GPS.
 - `--set-ni` sets the XBee's node identifier as the firmware does at boot (it writes the XBee's config, so it's off by default).
 - The GPS won't go into backup with its USB connected (`--gps-sleep-force-usb` forces it, which turns the ZED's USB off until a power
   cycle). There is no SLEEP_RQ pin, so radio sleep mode is off with a serial XBee.
