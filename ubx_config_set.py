@@ -33,12 +33,18 @@ fleet's own pair of boards actually found wrong:
     survey-in (--svin-min-dur seconds, --svin-acc-limit-m metres); a fixed position
     or a survey already running is left alone and shown. --survey-in forces survey-in
     even over a fixed position.
-  - rover: UBX-NAV-PVT on (or this app sees nothing from it at all), TMODE3
+  - rover / rover-pi: UBX-NAV-PVT on (or this app sees nothing from it at all), TMODE3
     disabled (a rover is not a stationary reference station), UBX-RXM-RTCM on
     (RTCM_LOG visibility into corrections actually arriving), and fix
     rate set to 10Hz (not the 20Hz spec ceiling - see CFG-RATE-MEAS's own
     comment on why 20Hz risks carrSoln instability under a real correction
-    radio link, not just a bench test).
+    radio link, not just a bench test). The two differ only in UART2 itself:
+    rover is the ESP32 rover with the XBee left in the ArduSimple's socket, so
+    it switches UART2 OFF - an enabled UART2 drives the XBee's DIN line, which
+    the ESP32 transmits on instead, forwarding the corrections over UART1;
+    rover-pi (a Pi rover, or an ESP32 one with its XBee on a breakout) keeps
+    UART2 ON, the radio's corrections going straight into the receiver. The base
+    keeps it on too. --uart2 on/off overrides any role.
   Both roles also set UART2's baud (--uart2-baud, default 115200) - UART2 is
   the port the onboard correction radio is wired to, so it MUST equal that
   radio's own baud (the base's was 115200). And both set UART1 - the port the
@@ -69,10 +75,10 @@ unchanged.
 USAGE
     pip install pyserial
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base
-    python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
+    python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover-pi   # a Pi rover
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base --dry-run
-    python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 38400 --role rover      # a receiver reset to factory settings
-    python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role rover --uart2 off   # ESP32 rover, XBee left in the ArduSimple's socket
+    python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 38400 --role rover-pi   # a receiver reset to factory settings
+    python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role rover   # ESP32 rover, XBee left in the ArduSimple's socket (UART2 off)
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-ports uart2,usb,uart1
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --constellations gps,galileo,beidou
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-interval 2     # corrections every 2 s
@@ -618,7 +624,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyAMA0 or COM5")
     ap.add_argument("--baud", type=int, default=115200, help="Baud to connect at (default 115200, matches GPS_BAUD)")
-    ap.add_argument("--role", required=True, choices=["base", "rover"], help="Which settings profile to apply")
+    ap.add_argument(
+        "--role",
+        required=True,
+        choices=["base", "rover", "rover-pi"],
+        help="Which settings profile to apply: base; rover = an ESP32 rover with the XBee in the ArduSimple's own socket "
+        "(UART2 off); rover-pi = a Pi rover, or an ESP32 one with its XBee on a breakout (UART2 on)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Read current values and show what would change - write nothing")
     ap.add_argument(
         "--rtcm-ports",
@@ -680,10 +692,11 @@ def main():
         "--uart2",
         choices=["on", "off"],
         default=None,
-        help="switch UART2 itself on or off (default: leave it as it is). off is for an ESP32 rover with the XBee left in the "
-        "ArduSimple's own socket: an enabled UART2 drives the XBee's DIN line, which the ESP32 then can't use, so the ESP32 "
-        "transmits through the ArduSimple's 'XBEE RX / GPS TX2' pin and forwards the corrections over UART1 instead "
-        "(the feather_s3_reversetft_socket build, RTCM_FORWARD=1). on puts a board back to the usual direct XBee-to-ZED wiring",
+        help="switch UART2 itself on or off, overriding the role's own choice (rover: off; base and rover-pi: on). off is for "
+        "an ESP32 rover with the XBee left in the ArduSimple's own socket: an enabled UART2 drives the XBee's DIN line, which "
+        "the ESP32 then can't use, so the ESP32 transmits through the ArduSimple's 'XBEE RX / GPS TX2' pin and forwards the "
+        "corrections over UART1 instead (the feather_s3_reversetft_socket build, RTCM_FORWARD=1). on is the usual direct "
+        "XBee-to-ZED wiring",
     )
     ap.add_argument(
         "--uart1-baud",
@@ -718,11 +731,12 @@ def main():
         settings = dict(ROVER_SETTINGS)
     settings["CFG-UART2-BAUDRATE"] = args.uart2_baud
     settings["CFG-UART1OUTPROT-UBX"] = True  # NAV-PVT/NAV-SVIN go out on UART1 - UBX must be allowed there
-    if args.uart2:
-        settings["CFG-UART2-ENABLED"] = args.uart2 == "on"
-        if args.uart2 == "off":
-            print("[ubx_config_set] UART2 off: corrections no longer reach the ZED from its XBee socket directly - the host must "
-                  "forward them over UART1 (ESP32: feather_s3_reversetft_socket, RTCM_FORWARD=1)")
+    # The role decides unless --uart2 says otherwise: off only for the ESP32 rover with its XBee in the board's socket
+    uart2 = args.uart2 or ("off" if args.role == "rover" else "on")
+    settings["CFG-UART2-ENABLED"] = uart2 == "on"
+    if uart2 == "off":
+        print("[ubx_config_set] UART2 off: corrections no longer reach the ZED from its XBee socket directly - the host must "
+              "forward them over UART1 (ESP32: feather_s3_reversetft_socket, RTCM_FORWARD=1). A Pi rover: --role rover-pi")
     print(f"[ubx_config_set] UART2 baud {args.uart2_baud} - must equal the correction radio's own baud")
     print(f"[ubx_config_set] UART1 baud {args.uart1_baud} - must equal the app's GPS_BAUD")
 

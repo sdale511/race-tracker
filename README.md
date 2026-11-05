@@ -103,9 +103,13 @@ over the board's own USB port, with `ubx_config_set.py` (or u-center):
 
 ```
 pip install pyserial
-python3 ubx_config_set.py --port <the board's USB port> --role rover --dry-run   # shows what it would change
-python3 ubx_config_set.py --port <the board's USB port> --role rover
+python3 ubx_config_set.py --port <the board's USB port> --role rover-pi --dry-run   # shows what it would change
+python3 ubx_config_set.py --port <the board's USB port> --role rover-pi
 ```
+
+`rover-pi` is the Pi rover's profile and keeps UART2 on, so the XBee in the board's socket feeds the receiver directly.
+Plain `rover` is the ESP32 rover's (`firmware/esp32-rover`), which switches UART2 **off** - don't use it on a Pi boat,
+whose corrections would then stop reaching the receiver.
 
 The rover profile turns `UBX-NAV-PVT` on (without it this app sees nothing), sets 10 Hz, disables TMODE3, turns
 `UBX-RXM-RTCM` on, sets UART2's baud to match the XBee in the board's socket, and sets UART1 (the port the Pi reads) to
@@ -240,7 +244,7 @@ module comment.
 `ubx_config_set.py` applies the fix, same no-`ubxtool`-needed approach:
 ```
 python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base
-python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
+python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover-pi
 ```
 `--role base` makes the base's RTCM output clean: `1005`, the MSM4 observations
 (`1074`/`1084`/`1094`/`1124` - GPS/GLONASS/Galileo/BeiDou) and `1230` on, the
@@ -302,7 +306,7 @@ operates in the US, where all four have real satellites in view (including
 BeiDou-3's global coverage, not just the old Asia-Pacific-only BeiDou-2), and more
 satellites means better RTK fix reliability under real-world sky obstruction;
 pass `--constellations` (below) if you want fewer.
-`--role rover` enables `UBX-NAV-PVT`
+`--role rover-pi` (and the ESP32's `--role rover`) enables `UBX-NAV-PVT`
 (required, or this app sees nothing from it), disables TMODE3 (a rover
 isn't a stationary reference station), enables `UBX-RXM-RTCM` (for
 `RTCM_LOG` visibility), and sets the fix rate to 10Hz (`CFG-RATE-MEAS`)
@@ -736,7 +740,7 @@ messages arrive on that same serial port, mixed in with position frames, marks a
 - **Forwarded to the GPS only if asked.** With `RTCM_FORWARD=1` the rover writes each message,
   byte for byte, to the GPS receiver's serial port, which is what makes the shared radio an RTK
   link. That needs the Pi's TX line wired to the receiver's RX (nothing in this app wrote to the
-  GPS before), and `ubx_config_set.py --role rover` now also accepts RTCM3 as an input on UART1
+  GPS before), and `ubx_config_set.py --role rover-pi` now also accepts RTCM3 as an input on UART1
   and USB. Nothing is forwarded while the rover is in radio sleep: a byte written to a sleeping
   receiver wakes it.
 - **Is the GPS getting the corrections? (boat dashboard, "RTK corrections" card.)** "Radio received" counts the
@@ -746,7 +750,7 @@ messages arrive on that same serial port, mixed in with position frames, marks a
   hearing corrections the receiver isn't using. On an ArduSimple board whose XBee sits in the board's socket, the radio
   feeds the receiver's UART2 directly, so no forwarding is needed - **provided UART2's baud equals the XBee's `BD`
   (115200)**. A receiver left at ArduSimple's 38400 hears the radio but decodes nothing: "Radio received" counts up while
-  "GPS applied" stays 0 and the fix stays plain GPS. `ubx_config_set.py --role rover` sets UART2 to 115200 (check the
+  "GPS applied" stays 0 and the fix stays plain GPS. `ubx_config_set.py --role rover-pi` sets UART2 to 115200 (check the
   dry-run's `UART2 baud` line, and that TMODE3 reads 0 - a non-zero TMODE3 means that receiver is a base). With
   `RTCM_FORWARD=1` the Pi's TX/RX wires to the receiver's UART1 do the same job when the board does not route the radio
   to UART2.

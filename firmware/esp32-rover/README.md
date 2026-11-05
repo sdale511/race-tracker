@@ -131,7 +131,8 @@ The rover settings are the Node rover's environment variables - `TX_DISTANCE_M`,
 
 A build can carry its own defaults, `-DROVER_SETTINGS="NAME=value NAME=value"`, used where nothing is set at the console (the boot
 log says so; `settings` marks them `(this build)`). `feather_s3_reversetft_socket` is the Reverse TFT with `RTCM_FORWARD=1`, for an
-XBee left in the ArduSimple's own socket: with the ZED's UART2 switched off the ESP32 drives the XBee's DIN through the ArduSimple's
+XBee left in the ArduSimple's own socket: with the ZED's UART2 switched off (`ubx_config_set.py --role rover`, the ESP32
+rover's profile; a Pi rover uses `--role rover-pi`, which keeps UART2 on) the ESP32 drives the XBee's DIN through the ArduSimple's
 `XBEE RX / GPS TX2` pin (Feather 6) and hears its DOUT on `XBEE TX / GPS RX2` (Feather 5), and the corrections reach the ZED through
 the ESP32 and UART1 - no XBee breakout. With UART2 on, the ZED drives that DIN line itself, so Feather 6 must not be wired to it.
 

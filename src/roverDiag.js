@@ -97,10 +97,10 @@ function hasProblem(d) {
 const FLAG_TEXT = [
   [FLAGS.GPS_PORT_CLOSED, 'bad', 'GPS port not open', 'The Pi could not open GPS_PORT - check the port name, and that nothing else (gpsd) holds it'],
   [FLAGS.GPS_NO_DATA, 'bad', 'GPS silent', 'Not a byte from the GPS serial port - check the wiring and board power, and that the receiver is not left asleep'],
-  [FLAGS.GPS_NO_UBX, 'bad', 'GPS wrong baud?', "Bytes arrive from the GPS but none are UBX frames - almost always UART1 at a different baud from GPS_BAUD (a reset receiver is at 38400). Re-run ubx_config_set.py --role rover"],
-  [FLAGS.GPS_NO_PVT, 'bad', 'GPS: no NAV-PVT', 'The receiver sends UBX but no NAV-PVT, so there are no positions - re-run ubx_config_set.py --role rover'],
+  [FLAGS.GPS_NO_UBX, 'bad', 'GPS wrong baud?', "Bytes arrive from the GPS but none are UBX frames - almost always UART1 at a different baud from GPS_BAUD (a reset receiver is at 38400). Re-run ubx_config_set.py --role rover-pi (an ESP32 rover: --role rover)"],
+  [FLAGS.GPS_NO_PVT, 'bad', 'GPS: no NAV-PVT', 'The receiver sends UBX but no NAV-PVT, so there are no positions - re-run ubx_config_set.py --role rover-pi (an ESP32 rover: --role rover)'],
   [FLAGS.NO_BURSTS, 'warn', 'no corrections heard', "This rover's radio hears no RTCM correction bursts - the base's correction radio is off or out of range, or this XBee's settings differ from the base's. No RTK, and no transmit slot timing"],
-  [FLAGS.RTCM_NOT_REACHING_GPS, 'warn', 'corrections not reaching GPS', "The rover hears correction bursts but the receiver reports none arriving (UBX-RXM-RTCM) - UART2's baud must match the XBee's (115200). Re-run ubx_config_set.py --role rover"],
+  [FLAGS.RTCM_NOT_REACHING_GPS, 'warn', 'corrections not reaching GPS', "The rover hears correction bursts but the receiver reports none arriving (UBX-RXM-RTCM) - UART2's baud must match the XBee's (115200). Re-run ubx_config_set.py --role rover-pi; an ESP32 rover with UART2 off (--role rover) needs RTCM_FORWARD on"],
   [FLAGS.NO_BASE_RX, 'warn', 'hears nothing from base', 'No marks, slot table or ping from the base for 2.5 minutes, though the base hears this rover - the radio works one way only'],
 ];
 
