@@ -148,6 +148,41 @@ std::map<std::string, std::string> loadSettings() {
   return m;
 }
 
+#ifndef ROVER_SETTINGS
+#define ROVER_SETTINGS ""  // this build's own defaults, "NAME=value NAME=value" (e.g. RTCM_FORWARD=1 for the XBee in the ArduSimple's socket)
+#endif
+
+// ROVER_SETTINGS as a map - unknown names left out, as in NVS
+const std::map<std::string, std::string>& buildSettings() {
+  static std::map<std::string, std::string> m;
+  static bool parsed = false;
+  if (!parsed) {
+    parsed = true;
+    const std::string all = ROVER_SETTINGS;
+    size_t i = 0;
+    while (i < all.size()) {
+      while (i < all.size() && all[i] == ' ') i++;
+      size_t j = all.find(' ', i);
+      if (j == std::string::npos) j = all.size();
+      const std::string word = all.substr(i, j - i);
+      const size_t eq = word.find('=');
+      if (eq != std::string::npos && rover::settings::find(word.substr(0, eq))) m[word.substr(0, eq)] = word.substr(eq + 1);
+      i = j;
+    }
+  }
+  return m;
+}
+
+// A setting's value as settings::apply wants it: set at the console, else this build's default, else unset (config.js's default)
+std::function<const char*(const char*)> settingsSource(const std::map<std::string, std::string>& saved) {
+  return [&saved](const char* n) {
+    auto it = saved.find(n);
+    if (it != saved.end()) return it->second.c_str();
+    auto b = buildSettings().find(n);
+    return b == buildSettings().end() ? (const char*)nullptr : b->second.c_str();
+  };
+}
+
 void saveSettings(const std::map<std::string, std::string>& m) {
   std::string all;
   for (const auto& kv : m) all += kv.first + "=" + kv.second + "\n";
@@ -364,33 +399,28 @@ void consoleCommand(const std::string& line) {
     for (auto& c : w[1]) c = toupper(c);
   std::map<std::string, std::string> saved = loadSettings();
   RoverConfig next;
-  rover::settings::apply(next, [&](const char* n) {
-    auto it = saved.find(n);
-    return it == saved.end() ? (const char*)nullptr : it->second.c_str();
-  });
+  rover::settings::apply(next, settingsSource(saved));
+  const auto origin = [&](const std::string& n) { return saved.count(n) ? " (set)" : buildSettings().count(n) ? " (this build)" : ""; };
 
   if (w[0] == "settings") {
     for (const auto& st : rover::settings::all()) {
       const std::string now = rover::settings::current(activeCfg, st.name), then = rover::settings::current(next, st.name);
-      Serial.printf("  %-26s %-8s%s  %s\n", st.name, now.c_str(), then != now ? (" -> " + then + " at the next boot").c_str() : (saved.count(st.name) ? " (set)" : ""), st.help);
+      Serial.printf("  %-26s %-8s%s  %s\n", st.name, now.c_str(), then != now ? (" -> " + then + " at the next boot").c_str() : origin(st.name), st.help);
     }
   } else if (w[0] == "get" && w.size() == 2) {
     if (!rover::settings::find(w[1])) return (void)Serial.printf("[console] unknown setting %s\n", w[1].c_str());
-    Serial.printf("[console] %s=%s%s\n", w[1].c_str(), rover::settings::current(activeCfg, w[1]).c_str(), saved.count(w[1]) ? " (set)" : " (default)");
+    Serial.printf("[console] %s=%s%s\n", w[1].c_str(), rover::settings::current(activeCfg, w[1]).c_str(), *origin(w[1]) ? origin(w[1]) : " (default)");
   } else if (w[0] == "set" && w.size() == 3) {
     std::string err;
     if (!rover::settings::check(w[1], w[2], err)) return (void)Serial.printf("[console] %s\n", err.c_str());
     saved[w[1]] = w[2];
     saveSettings(saved);
-    rover::settings::apply(next, [&](const char* n) {
-      auto it = saved.find(n);
-      return it == saved.end() ? (const char*)nullptr : it->second.c_str();
-    });
+    rover::settings::apply(next, settingsSource(saved));
     Serial.printf("[console] %s=%s saved - in effect at the next boot (restart)\n", w[1].c_str(), rover::settings::current(next, w[1]).c_str());
   } else if (w[0] == "unset" && w.size() == 2) {
     if (!saved.erase(w[1])) return (void)Serial.printf("[console] %s is not set\n", w[1].c_str());
     saveSettings(saved);
-    Serial.printf("[console] %s back to its default from the next boot (restart)\n", w[1].c_str());
+    Serial.printf("[console] %s back to %s from the next boot (restart)\n", w[1].c_str(), buildSettings().count(w[1]) ? "this build's default" : "its default");
   } else if (w[0] == "boatid" && w.size() == 1) {
     Serial.printf("[console] boat id %s\n", activeCfg.boatId.c_str());
   } else if (w[0] == "boatid" && w.size() == 2) {
@@ -469,12 +499,10 @@ void setup() {
   Serial2.begin(RADIO_BAUD, SERIAL_8N1, XBEE_RX_PIN, XBEE_TX_PIN);
 
   RoverConfig cfg;
-  // the settings saved at the console, read as config.js reads its environment
+  // the settings saved at the console (else this build's defaults), read as config.js reads its environment
   const std::map<std::string, std::string> saved = loadSettings();
-  rover::settings::apply(cfg, [&](const char* n) {
-    auto it = saved.find(n);
-    return it == saved.end() ? (const char*)nullptr : it->second.c_str();
-  });
+  rover::settings::apply(cfg, settingsSource(saved));
+  if (!buildSettings().empty()) Serial.printf("[boatAgent] this build's settings: %s (one set at the console wins)\n", ROVER_SETTINGS);
   cfg.boatId = loadBoatId();
   cfg.build = ROVER_BUILD;
   cfg.dirty = ROVER_DIRTY;

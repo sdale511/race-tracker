@@ -72,6 +72,7 @@ USAGE
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role rover
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 115200 --role base --dry-run
     python3 ubx_config_set.py --port /dev/ttyAMA0 --baud 38400 --role rover      # a receiver reset to factory settings
+    python3 ubx_config_set.py --port /dev/cu.usbmodem101 --role rover --uart2 off   # ESP32 rover, XBee left in the ArduSimple's socket
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-ports uart2,usb,uart1
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --constellations gps,galileo,beidou
     python3 ubx_config_set.py --port /dev/ttyACM0 --role base --rtcm-interval 2     # corrections every 2 s
@@ -118,6 +119,7 @@ KEY_INFO = {
     "CFG-RATE-MEAS": (0x30210001, "u2", "fix rate (ms)"),
     "CFG-UART2INPROT-RTCM3X": (0x10750004, "bool", "RTCM3 input UART2"),
     "CFG-UART2-BAUDRATE": (0x40530001, "u4", "UART2 baud"),
+    "CFG-UART2-ENABLED": (0x10530005, "bool", "UART2 enabled"),
     "CFG-UART2OUTPROT-UBX": (0x10760001, "bool", "UBX output UART2"),
     "CFG-UART2OUTPROT-NMEA": (0x10760002, "bool", "NMEA output UART2"),
     "CFG-UART1INPROT-RTCM3X": (0x10730004, "bool", "RTCM3 input UART1"),
@@ -675,6 +677,15 @@ def main():
         "(default 115200)",
     )
     ap.add_argument(
+        "--uart2",
+        choices=["on", "off"],
+        default=None,
+        help="switch UART2 itself on or off (default: leave it as it is). off is for an ESP32 rover with the XBee left in the "
+        "ArduSimple's own socket: an enabled UART2 drives the XBee's DIN line, which the ESP32 then can't use, so the ESP32 "
+        "transmits through the ArduSimple's 'XBEE RX / GPS TX2' pin and forwards the corrections over UART1 instead "
+        "(the feather_s3_reversetft_socket build, RTCM_FORWARD=1). on puts a board back to the usual direct XBee-to-ZED wiring",
+    )
+    ap.add_argument(
         "--uart1-baud",
         type=int,
         default=115200,
@@ -707,6 +718,11 @@ def main():
         settings = dict(ROVER_SETTINGS)
     settings["CFG-UART2-BAUDRATE"] = args.uart2_baud
     settings["CFG-UART1OUTPROT-UBX"] = True  # NAV-PVT/NAV-SVIN go out on UART1 - UBX must be allowed there
+    if args.uart2:
+        settings["CFG-UART2-ENABLED"] = args.uart2 == "on"
+        if args.uart2 == "off":
+            print("[ubx_config_set] UART2 off: corrections no longer reach the ZED from its XBee socket directly - the host must "
+                  "forward them over UART1 (ESP32: feather_s3_reversetft_socket, RTCM_FORWARD=1)")
     print(f"[ubx_config_set] UART2 baud {args.uart2_baud} - must equal the correction radio's own baud")
     print(f"[ubx_config_set] UART1 baud {args.uart1_baud} - must equal the app's GPS_BAUD")
 
