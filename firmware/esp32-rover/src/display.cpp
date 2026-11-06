@@ -12,6 +12,9 @@
 #ifndef BIG_BUTTON_PIN
 #define BIG_BUTTON_PIN 0  // the D0 (BOOT) button, low when pressed: the large page
 #endif
+#ifndef VERSION_BUTTON_PIN
+#define VERSION_BUTTON_PIN 2  // the D2 button, high when pressed: the firmware version
+#endif
 #ifndef SCREEN_ON_MS
 #define SCREEN_ON_MS 30000
 #endif
@@ -23,7 +26,9 @@ Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 bool lit = false;
 uint32_t litAt = 0;
 uint32_t drawnAt = 0;
-bool big = false;          // the large page (D0) rather than the full status (D1)
+enum Page { FULL, BIG, VERSION };
+Page page = FULL;          // D1, D0, D2
+std::string version;       // tools/version.py's label: "v0.1.290 (abc1234, 2026-11-06) + local changes"
 std::string bigShown[3];   // what each large line shows now, so only a changed line is cleared and redrawn
 
 void light(bool on) {
@@ -33,9 +38,9 @@ void light(bool on) {
 }
 
 // lights the screen on a page, redrawing at once; a press on the page already shown keeps it lit for another SCREEN_ON_MS
-void show(bool bigPage) {
-  if (bigPage != big) {
-    big = bigPage;
+void show(Page p) {
+  if (p != page) {
+    page = p;
     tft.fillScreen(ST77XX_BLACK);
     for (auto& s : bigShown) s.clear();
     drawnAt = 0;
@@ -91,6 +96,25 @@ void drawBig(const Status& s) {
   bigLine(2, color, text);
 }
 
+// the version label split to fit: the number large, then the commit and date, then "+ local changes" (a build from edited files)
+void drawVersion(const Status& s) {
+  const size_t paren = version.find(" (");
+  const size_t close = version.find(')', paren);
+  const std::string number = version.substr(0, paren);
+  std::string details = paren == std::string::npos || close == std::string::npos ? "" : version.substr(paren + 2, close - paren - 2);
+  const size_t comma = details.find(", ");
+  if (comma != std::string::npos) details.replace(comma, 2, " ");
+  const bool dirty = version.find("+ local changes") != std::string::npos;
+  line(0, ST77XX_WHITE, s.boatId.c_str());
+  line(17, ST77XX_CYAN, "firmware");
+  tft.setTextSize(4);  // 24x32 px: 9 characters to a line
+  tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+  tft.setCursor(4, 40);
+  tft.print(number.substr(0, 9).c_str());
+  line(85, ST77XX_WHITE, details.substr(0, 19).c_str());
+  line(102, ST77XX_YELLOW, dirty ? "+ local changes" : "");
+}
+
 void drawFull(const Status& s) {
   char b[32];
   snprintf(b, sizeof b, "%s %s", s.boatId.c_str(), s.sleeping ? "ASLEEP" : s.ready ? "READY" : "waiting");
@@ -114,8 +138,10 @@ void drawFull(const Status& s) {
 }
 }  // namespace
 
-void begin() {
+void begin(const char* firmwareVersion) {
+  version = firmwareVersion;
   pinMode(SCREEN_BUTTON_PIN, INPUT_PULLDOWN);
+  pinMode(VERSION_BUTTON_PIN, INPUT_PULLDOWN);
   pinMode(BIG_BUTTON_PIN, INPUT_PULLUP);
   pinMode(TFT_BACKLITE, OUTPUT);
   tft.init(135, 240);
@@ -127,12 +153,14 @@ void begin() {
 
 void update(const Status& s) {
   const uint32_t now = millis();
-  if (digitalRead(SCREEN_BUTTON_PIN) == HIGH) show(false);
-  if (digitalRead(BIG_BUTTON_PIN) == LOW) show(true);
+  if (digitalRead(SCREEN_BUTTON_PIN) == HIGH) show(FULL);
+  if (digitalRead(BIG_BUTTON_PIN) == LOW) show(BIG);
+  if (digitalRead(VERSION_BUTTON_PIN) == HIGH) show(VERSION);
   if (lit && now - litAt > SCREEN_ON_MS) light(false);
   if (!lit || (drawnAt && now - drawnAt < 1000)) return;
   drawnAt = now;
-  if (big) drawBig(s);
+  if (page == BIG) drawBig(s);
+  else if (page == VERSION) drawVersion(s);
   else drawFull(s);
 }
 
@@ -148,7 +176,7 @@ void off() {
 #else
 
 namespace display {
-void begin() {}
+void begin(const char*) {}
 void update(const Status&) {}
 void off() {}
 }  // namespace display

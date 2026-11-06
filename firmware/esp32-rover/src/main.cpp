@@ -494,7 +494,7 @@ void setup() {
     accelRead(0x31);  // clear the latched motion that woke us
   }
   batteryOk = battery.begin();
-  display::begin();
+  display::begin(ROVER_VERSION);
 
   Serial1.setRxBufferSize(4096);  // a NAV-SIG can run to a kilobyte
   Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);

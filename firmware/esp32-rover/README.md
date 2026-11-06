@@ -130,6 +130,8 @@ full page after boot.
   `READY` here is stricter than on the full page: it also needs RTK fixed, so the one word says whether the boat can race. No fix
   hides what the base hasn't sent yet (the full page's bottom line lists it), and parking isn't shown - a parked boat that has
   everything reads `READY`.
+- **D2 - the firmware version**: the boat id, the version number large (`v0.1.290`), the commit and its date, and
+  `+ local changes` when it was built from edited files - the same version the console prints at startup.
 
 ## Settings
 

@@ -1,6 +1,7 @@
 // The Reverse TFT Feather's screen (#5691): the rover's status at a glance. Built only with -DHAS_TFT (the feather_s3_reversetft env).
 // The backlight is the costly part, so it comes on for SCREEN_ON_MS after boot or a button press and then goes off. D1 shows the
-// full status (eight lines), D0 a large page readable from across the boat: the boat id, the battery and one status word.
+// full status (eight lines), D0 a large page readable from across the boat: the boat id, the battery and one status word, and D2
+// the firmware version.
 #pragma once
 
 #include <string>
@@ -24,7 +25,7 @@ struct Status {
   std::string need;    // what it is still waiting for, short: "marks rtcm slot"
 };
 
-void begin();
+void begin(const char* firmwareVersion);  // tools/version.py's ROVER_VERSION, for the D2 page
 void update(const Status& s);  // call every loop pass; redraws about once a second while the screen is on
 void off();                    // backlight and the TFT's power, before deep sleep
 
