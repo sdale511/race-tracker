@@ -461,17 +461,30 @@ function decodeHello(buf) {
 //   [9]     fix        uint8, fixType (low nibble) | carrSoln << 4 from the last NAV-PVT; 0xFF = no NAV-PVT yet
 //   [10..11] build     uint16, the rover's commit count (version.js's last part), top bit set for local changes; 0 = unknown
 //   [12]    checksum   uint8 (sum of bytes 1..11 mod 256)
+//
+// A rover with a battery fuel gauge (the ESP32 rover's MAX17048) sends the same hello with the battery added, under its own
+// sync byte - a base that predates it skips it as noise. Rovers without one (the Pi) keep sending the frame above.
+//   [0]     sync byte  0x9E
+//   [1..11] as above
+//   [12]    batteryPct uint8, state of charge 0..100 %
+//   [13]    batteryV   uint8, cell voltage in 20 mV steps (0..5.10 V)
+//   [14]    checksum   uint8 (sum of bytes 1..13 mod 256)
 const STATUS_HELLO_SYNC = 0x9d;
 const STATUS_HELLO_FRAME_LEN = 1 + BOAT_ID_LEN + 6 + 1;
+const STATUS_HELLO_BATTERY_SYNC = 0x9e;
+const STATUS_HELLO_BATTERY_FRAME_LEN = STATUS_HELLO_FRAME_LEN + 2;
 const NO_PVT = 0xff;
+const BATTERY_V_STEP = 0.02;
 
-function encodeStatusHello({ boatId, flags = 0, power = 0, numSV = 0, fixType = null, carrSoln = 0, build = 0, dirty = false }) {
+// batteryPct/batteryV: the fuel gauge's reading, or null (the default) for a rover without one - the plain status hello.
+function encodeStatusHello({ boatId, flags = 0, power = 0, numSV = 0, fixType = null, carrSoln = 0, build = 0, dirty = false, batteryPct = null, batteryV = null }) {
   if (typeof boatId !== 'string' || boatId.length !== BOAT_ID_LEN) {
     throw new Error(`boatId must be exactly ${BOAT_ID_LEN} characters, got ${JSON.stringify(boatId)}`);
   }
-  const buf = Buffer.alloc(STATUS_HELLO_FRAME_LEN);
+  const battery = batteryPct != null;
+  const buf = Buffer.alloc(battery ? STATUS_HELLO_BATTERY_FRAME_LEN : STATUS_HELLO_FRAME_LEN);
   let o = 0;
-  buf.writeUInt8(STATUS_HELLO_SYNC, o++);
+  buf.writeUInt8(battery ? STATUS_HELLO_BATTERY_SYNC : STATUS_HELLO_SYNC, o++);
   buf.write(boatId, o, BOAT_ID_LEN, 'ascii');
   o += BOAT_ID_LEN;
   buf.writeUInt8(flags & 0xff, o++);
@@ -480,19 +493,27 @@ function encodeStatusHello({ boatId, flags = 0, power = 0, numSV = 0, fixType = 
   buf.writeUInt8(fixType == null ? NO_PVT : (fixType & 0x0f) | ((carrSoln & 0x0f) << 4), o++);
   buf.writeUInt16LE((Math.min(0x7fff, Math.max(0, build | 0)) | (dirty ? 0x8000 : 0)) & 0xffff, o);
   o += 2;
+  if (battery) {
+    buf.writeUInt8(Math.min(100, Math.max(0, Math.round(batteryPct))), o++);
+    buf.writeUInt8(Math.min(255, Math.max(0, Math.round((batteryV || 0) / BATTERY_V_STEP))), o++);
+  }
   let sum = 0;
   for (let i = 1; i < o; i++) sum = (sum + buf[i]) & 0xff;
   buf.writeUInt8(sum, o);
   return buf;
 }
 
-// Returns { boatId, diag: { flags, power, numSV, fixType, carrSoln, build, dirty } }, or null if the buffer isn't one.
-// fixType is null when the rover has had no NAV-PVT at all; build is null when the rover couldn't tell.
+// Returns { boatId, diag: { flags, power, numSV, fixType, carrSoln, build, dirty, battery } }, or null if the buffer isn't
+// either status hello. fixType is null when the rover has had no NAV-PVT at all; build is null when the rover couldn't tell;
+// battery is { pct, v } from the battery hello, null from the plain one.
 function decodeStatusHello(buf) {
-  if (buf.length !== STATUS_HELLO_FRAME_LEN || buf[0] !== STATUS_HELLO_SYNC) return null;
+  const battery = buf[0] === STATUS_HELLO_BATTERY_SYNC;
+  if (!battery && buf[0] !== STATUS_HELLO_SYNC) return null;
+  const len = battery ? STATUS_HELLO_BATTERY_FRAME_LEN : STATUS_HELLO_FRAME_LEN;
+  if (buf.length !== len) return null;
   let sum = 0;
-  for (let i = 1; i < STATUS_HELLO_FRAME_LEN - 1; i++) sum = (sum + buf[i]) & 0xff;
-  if (sum !== buf[STATUS_HELLO_FRAME_LEN - 1]) return null;
+  for (let i = 1; i < len - 1; i++) sum = (sum + buf[i]) & 0xff;
+  if (sum !== buf[len - 1]) return null;
   const o = 1 + BOAT_ID_LEN;
   const fix = buf[o + 3];
   const build = buf.readUInt16LE(o + 4);
@@ -506,6 +527,7 @@ function decodeStatusHello(buf) {
       carrSoln: fix === NO_PVT ? 0 : fix >> 4,
       build: build & 0x7fff || null,
       dirty: (build & 0x8000) !== 0,
+      battery: battery ? { pct: buf[o + 6], v: Math.round(buf[o + 7] * BATTERY_V_STEP * 100) / 100 } : null,
     },
   };
 }
@@ -1309,6 +1331,8 @@ module.exports = {
   decodeStatusHello,
   STATUS_HELLO_FRAME_LEN,
   STATUS_HELLO_SYNC,
+  STATUS_HELLO_BATTERY_FRAME_LEN,
+  STATUS_HELLO_BATTERY_SYNC,
   encodeBatch,
   decodeBatch,
   batchFrameLen,

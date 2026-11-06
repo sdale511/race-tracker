@@ -21,7 +21,7 @@ test('status hello: round trip, and a corrupt one is rejected', () => {
   assert.strictEqual(buf.length, protocol.STATUS_HELLO_FRAME_LEN);
   assert.deepStrictEqual(protocol.decodeStatusHello(buf), {
     boatId: '0MM9N',
-    diag: { flags: FLAGS.GPS_NO_UBX | FLAGS.NO_BURSTS, power: POWER.UNDERVOLT_SINCE_BOOT, numSV: 0, fixType: null, carrSoln: 0, build: 290, dirty: true },
+    diag: { flags: FLAGS.GPS_NO_UBX | FLAGS.NO_BURSTS, power: POWER.UNDERVOLT_SINCE_BOOT, numSV: 0, fixType: null, carrSoln: 0, build: 290, dirty: true, battery: null },
   });
   const withFix = protocol.decodeStatusHello(protocol.encodeStatusHello({ boatId: '0MM9N', numSV: 28, fixType: 3, carrSoln: 1, build: 0 }));
   assert.strictEqual(withFix.diag.fixType, 3);
@@ -30,6 +30,38 @@ test('status hello: round trip, and a corrupt one is rejected', () => {
   const bad = Buffer.from(buf);
   bad[6] ^= 0xff;
   assert.strictEqual(protocol.decodeStatusHello(bad), null);
+});
+
+test('battery hello: its own sync and length, the reading rounded and clamped', () => {
+  const buf = protocol.encodeStatusHello({ boatId: 'ESP01', numSV: 21, fixType: 3, carrSoln: 2, build: 330, batteryPct: 87.4, batteryV: 3.951 });
+  assert.strictEqual(buf[0], protocol.STATUS_HELLO_BATTERY_SYNC);
+  assert.strictEqual(buf.length, protocol.STATUS_HELLO_BATTERY_FRAME_LEN);
+  const d = protocol.decodeStatusHello(buf).diag;
+  assert.deepStrictEqual(d.battery, { pct: 87, v: 3.96 });
+  assert.strictEqual(d.numSV, 21);
+  assert.strictEqual(d.build, 330);
+  assert.deepStrictEqual(protocol.decodeStatusHello(protocol.encodeStatusHello({ boatId: 'ESP01', batteryPct: 101.7, batteryV: 4.213 })).diag.battery, { pct: 100, v: 4.22 });
+  assert.deepStrictEqual(protocol.decodeStatusHello(protocol.encodeStatusHello({ boatId: 'ESP01', batteryPct: -2, batteryV: 3 })).diag.battery, { pct: 0, v: 3 });
+  const bad = Buffer.from(buf);
+  bad[12] ^= 0x01;
+  assert.strictEqual(protocol.decodeStatusHello(bad), null);
+  // a battery hello cut to the plain hello's length is not a plain hello
+  assert.strictEqual(protocol.decodeStatusHello(buf.subarray(0, protocol.STATUS_HELLO_FRAME_LEN)), null);
+});
+
+test('a low battery is a rover issue, an old reading still shows in the stats', () => {
+  const diag = (pct) => ({ flags: 0, power: 0, numSV: 20, fixType: 3, carrSoln: 2, build: null, dirty: false, battery: { pct, v: 3.6 } });
+  assert.deepStrictEqual(roverDiag.describe(diag(55)), []);
+  assert.deepStrictEqual(roverDiag.describe(diag(15)).map((i) => [i.level, i.text]), [['warn', 'battery 15%']]);
+  assert.deepStrictEqual(roverDiag.describe(diag(5)).map((i) => [i.level, i.text]), [['bad', 'battery 5%']]);
+  const t0 = 5_000_000;
+  stats.recordRoverDiag('BATT1', diag(42), t0);
+  const later = stats.snapshot(t0 + 60 * 60 * 1000).boats.BATT1;
+  assert.strictEqual(later, undefined, 'snapshot lists boats it has heard frames from');
+  stats.recordFrame('BATT1', null, null);
+  const snap = stats.snapshot(t0 + 60 * 60 * 1000).boats.BATT1;
+  assert.strictEqual(snap.diag, null, 'the diag is gone after 3 minutes');
+  assert.deepStrictEqual(snap.battery, { pct: 42, v: 3.6, at: t0 }, 'the battery reading is kept with its time');
 });
 
 test('the radio scanner hands both the plain and the status hello on as a hello', () => {
@@ -41,6 +73,9 @@ test('the radio scanner hands both the plain and the status hello on as a hello'
   assert.deepStrictEqual(heard[0], { boatId: 'OLD01' });
   assert.strictEqual(heard[1].boatId, 'NEW01');
   assert.strictEqual(heard[1].diag.flags, FLAGS.NO_BASE_RX);
+  link._onData(protocol.encodeStatusHello({ boatId: 'ESP01', batteryPct: 70, batteryV: 3.9 }));
+  assert.strictEqual(heard.length, 3);
+  assert.deepStrictEqual(heard[2].diag.battery, { pct: 70, v: 3.9 });
 });
 
 const T = 1_000_000;

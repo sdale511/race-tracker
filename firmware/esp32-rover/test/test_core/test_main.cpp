@@ -71,6 +71,9 @@ void test_status_hello_matches_node() {
     s.carrSoln = h.carrSoln;
     s.build = h.build;
     s.dirty = h.dirty;
+    s.hasBattery = h.hasBattery;
+    s.batteryPct = h.batteryPct;
+    s.batteryV = h.batteryV;
     assertBytes(vec::HELLO_FRAMES[i], protocol::encodeStatusHello(s));
   }
 }
@@ -324,6 +327,8 @@ struct Harness {
   std::vector<std::vector<uint8_t>> sent;
   std::vector<std::vector<uint8_t>> toGps;
   bool radioAsleep = false;
+  bool hasBattery = false;  // the fuel gauge: off unless a test turns it on
+  double batteryPct = 0, batteryV = 0;
   std::unique_ptr<Rover> rover;
 
   explicit Harness(RoverConfig cfg = RoverConfig()) {
@@ -348,6 +353,11 @@ struct Harness {
     hal.requestDeepSleep = [this](const PowerPolicy::Decision& d) {
       slept = true;
       sleepDecision = d;
+    };
+    hal.readBattery = [this](double& pct, double& volts) {
+      pct = batteryPct;
+      volts = batteryV;
+      return hasBattery;
     };
     rover.reset(new Rover(cfg, hal));
     rover->setGpsPortOpen(true);
@@ -374,6 +384,24 @@ void test_rover_says_hello_then_sends_fixes_in_delta_frames() {
   }
   TEST_ASSERT_EQUAL_UINT32(1, h.count(protocol::DELTA_SYNC));
   assertBytes(vec::DELTA_FRAMES[0][0], h.sent.back());
+}
+
+void test_rover_with_a_fuel_gauge_sends_the_battery_hello() {
+  Harness h;
+  h.hasBattery = true;
+  h.batteryPct = 64.4;
+  h.batteryV = 3.817;
+  h.run(2000);
+  TEST_ASSERT_EQUAL_UINT32(0, h.count(protocol::STATUS_HELLO_SYNC));
+  TEST_ASSERT_EQUAL_UINT32(1, h.count(protocol::STATUS_HELLO_BATTERY_SYNC));
+  const auto& f = h.sent.back();
+  TEST_ASSERT_EQUAL_UINT32(protocol::STATUS_HELLO_BATTERY_FRAME_LEN, f.size());
+  TEST_ASSERT_EQUAL_UINT8(64, f[12]);   // percent, rounded
+  TEST_ASSERT_EQUAL_UINT8(191, f[13]);  // 3.817 V in 20 mV steps
+  // the gauge stops answering: the next hello is the plain one again
+  h.hasBattery = false;
+  h.run(60000);
+  TEST_ASSERT_TRUE(h.count(protocol::STATUS_HELLO_SYNC) >= 1);
 }
 
 void test_rover_sleeps_and_wakes_on_power_frames() {
@@ -715,6 +743,7 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_position_frames_match_node);
   RUN_TEST(test_status_hello_matches_node);
+  RUN_TEST(test_rover_with_a_fuel_gauge_sends_the_battery_hello);
   RUN_TEST(test_batch_frames_match_node);
   RUN_TEST(test_delta_frames_match_node);
   RUN_TEST(test_marks_decode_like_node);

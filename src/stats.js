@@ -53,6 +53,10 @@ const BOAT_IP_MAX_AGE_MS = 2 * 60 * 1000;
 // dropped after DIAG_MAX_AGE_MS rather than shown as if current.
 const boatDiag = new Map();
 const DIAG_MAX_AGE_MS = 3 * 60 * 1000;
+// boatId -> { pct, v, at }: the last battery reading from a rover's battery hello. Kept much longer than the diag - a rover
+// sends it every few minutes and a sleeping one not at all, and its last level is still worth seeing (with its age).
+const boatBattery = new Map();
+const BATTERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const boatAdminPort = new Map(); // boatId -> its own admin dashboard port, self-reported (see uploadClient.js)
 
 function _boatUpload(boatId) {
@@ -197,11 +201,17 @@ function recordBoatAdminPort(boatId, port) {
 
 function recordRoverDiag(boatId, diag, now = Date.now()) {
   boatDiag.set(normalizeBoatId(boatId), { diag, at: now });
+  if (diag.battery) boatBattery.set(normalizeBoatId(boatId), { ...diag.battery, at: now });
 }
 
 function currentDiag(boatId, now) {
   const entry = boatDiag.get(boatId);
   return entry && now - entry.at < DIAG_MAX_AGE_MS ? { ...entry.diag, at: entry.at } : null;
+}
+
+function currentBattery(boatId, now) {
+  const entry = boatBattery.get(boatId);
+  return entry && now - entry.at < BATTERY_MAX_AGE_MS ? entry : null;
 }
 
 // One combined, JSON-friendly snapshot for adminServer.js's /api/stats.
@@ -223,6 +233,7 @@ function snapshot(now = Date.now()) {
       ip: currentBoatIp(boatId, now),
       adminPort: boatAdminPort.get(boatId) || null,
       diag: currentDiag(boatId, now),
+      battery: currentBattery(boatId, now),
     };
   }
   return {

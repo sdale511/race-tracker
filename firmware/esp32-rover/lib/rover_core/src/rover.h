@@ -108,6 +108,8 @@ struct RoverHal {
   std::function<void(const protocol::PowerSchedule&)> saveSchedule;
   std::function<bool(protocol::PowerSchedule&)> loadSchedule;
   std::function<void(const PowerPolicy::Decision&)> requestDeepSleep;  // the GPS has been put in backup; the HAL does the rest
+  // the battery fuel gauge: state of charge (%) and cell volts; false (or unset) = no reading, and the hello goes out without it
+  std::function<bool(double& pct, double& volts)> readBattery;
 };
 
 class Rover {
@@ -283,6 +285,7 @@ class Rover {
 
   static constexpr double HELLO_RETRY_MS = 30000;
   static constexpr double HELLO_PROBLEM_MS = 60000;
+  static constexpr double BATTERY_HELLO_MS = 5 * 60000;  // with a battery reading, a hello at least this often, problem or not
   static constexpr double INVALID_FIX_WARN_INTERVAL_MS = 30000;
   static constexpr size_t SLOT_PENDING_CAP = 200;
   static constexpr int64_t BACKFILL_MAX_AGE_MS = 15000;

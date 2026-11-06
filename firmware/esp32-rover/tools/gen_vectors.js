@@ -134,10 +134,17 @@ const HELLOS = [
   { boatId: BOAT, flags: 0, power: 0, numSV: 0, fixType: null, carrSoln: 0, build: 0, dirty: false },
   { boatId: BOAT, flags: 0x52, power: 0, numSV: 27, fixType: 3, carrSoln: 2, build: 312, dirty: true },
   { boatId: BOAT, flags: 0x7f, power: 0, numSV: 255, fixType: 15, carrSoln: 1, build: 40000, dirty: false },
+  // the battery hello (a fuel gauge reading), including its rounding and clamping
+  { boatId: BOAT, flags: 0, power: 0, numSV: 21, fixType: 3, carrSoln: 2, build: 330, dirty: false, batteryPct: 87.4, batteryV: 3.951 },
+  { boatId: BOAT, flags: 0x10, power: 0, numSV: 0, fixType: null, carrSoln: 0, build: 330, dirty: false, batteryPct: 101.7, batteryV: 4.213 },
+  { boatId: BOAT, flags: 0, power: 0, numSV: 9, fixType: 2, carrSoln: 0, build: 330, dirty: true, batteryPct: -2, batteryV: 3.0 },
 ];
-out('struct HelloV { uint8_t flags, power, numSV; bool hasPvt; uint8_t fixType, carrSoln; uint16_t build; bool dirty; };');
+out('struct HelloV { uint8_t flags, power, numSV; bool hasPvt; uint8_t fixType, carrSoln; uint16_t build; bool dirty; bool hasBattery; double batteryPct, batteryV; };');
 out('static const HelloV HELLOS[] = {');
-for (const h of HELLOS) out(`  {${h.flags}, ${h.power}, ${h.numSV}, ${h.fixType != null}, ${h.fixType || 0}, ${h.carrSoln}, ${Math.min(h.build, 0x7fff)}, ${h.dirty}},`);
+for (const h of HELLOS) {
+  const batt = h.batteryPct != null ? `true, ${h.batteryPct}, ${h.batteryV}` : 'false, 0, 0';
+  out(`  {${h.flags}, ${h.power}, ${h.numSV}, ${h.fixType != null}, ${h.fixType || 0}, ${h.carrSoln}, ${Math.min(h.build, 0x7fff)}, ${h.dirty}, ${batt}},`);
+}
 out('};');
 bytesArray('HELLO_FRAMES', HELLOS.map((h) => protocol.encodeStatusHello(h)));
 out();

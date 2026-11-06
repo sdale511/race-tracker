@@ -127,9 +127,9 @@ Bytes encode(const std::string& boatId, const Pvt& pvt) {
 }
 
 Bytes encodeStatusHello(const StatusHello& d) {
-  Bytes buf(STATUS_HELLO_FRAME_LEN, 0);
+  Bytes buf(d.hasBattery ? STATUS_HELLO_BATTERY_FRAME_LEN : STATUS_HELLO_FRAME_LEN, 0);
   size_t o = 0;
-  buf[o++] = STATUS_HELLO_SYNC;
+  buf[o++] = d.hasBattery ? STATUS_HELLO_BATTERY_SYNC : STATUS_HELLO_SYNC;
   putBoatId(&buf[o], d.boatId);
   o += BOAT_ID_LEN;
   buf[o++] = d.flags;
@@ -137,6 +137,12 @@ Bytes encodeStatusHello(const StatusHello& d) {
   buf[o++] = d.numSV;
   buf[o++] = d.hasPvt ? ((d.fixType & 0x0f) | ((d.carrSoln & 0x0f) << 4)) : NO_PVT;
   putU16(&buf[o], ((d.build > 0x7fff ? 0x7fff : d.build) | (d.dirty ? 0x8000 : 0)) & 0xffff);
+  o += 2;
+  if (d.hasBattery) {
+    const double pct = jsRound(d.batteryPct), v = jsRound(d.batteryV / BATTERY_V_STEP);
+    buf[o++] = (uint8_t)(pct < 0 ? 0 : pct > 100 ? 100 : pct);
+    buf[o++] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+  }
   seal(buf);
   return buf;
 }
@@ -352,7 +358,9 @@ bool validPosition(const uint8_t* buf, size_t len) { return len == FRAME_LEN && 
 bool validPing(const uint8_t* buf, size_t len) { return len == PING_FRAME_LEN && buf[0] == PING_SYNC && sumOk(buf, len); }
 bool validHello(const uint8_t* buf, size_t len) { return len == HELLO_FRAME_LEN && buf[0] == HELLO_SYNC && sumOk(buf, len); }
 bool validStatusHello(const uint8_t* buf, size_t len) {
-  return len == STATUS_HELLO_FRAME_LEN && buf[0] == STATUS_HELLO_SYNC && sumOk(buf, len);
+  return ((len == STATUS_HELLO_FRAME_LEN && buf[0] == STATUS_HELLO_SYNC) ||
+          (len == STATUS_HELLO_BATTERY_FRAME_LEN && buf[0] == STATUS_HELLO_BATTERY_SYNC)) &&
+         sumOk(buf, len);
 }
 bool validBatch(const uint8_t* buf, size_t len) {
   if (len < BATCH_HEADER_LEN + 1 || buf[0] != BATCH_SYNC) return false;

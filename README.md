@@ -1082,6 +1082,7 @@ the radio's 9-byte encryption overhead), the slot table can reach 97 and the pow
 | `0xCC` | ping | base to boats | 6 | "report your position now" |
 | `0xDD` | hello | boat to base | 7 | "my radio is up", before a GPS fix (rovers before the status hello) |
 | `0x9D` | status hello | boat to base | 13 | the hello plus the rover's own diagnosis - see below |
+| `0x9E` | battery hello | boat to base | 15 | the status hello plus the battery level, from a rover with a fuel gauge (ESP32) |
 | `0xEE` | batch | boat to base | 27 to 84 (7 + 19 per fix + 1) | 1 to 4 full fixes (`TX_DELTA=0`) |
 | `0xE7` | delta batch | boat to base | 35 to 83 (26 + 8 per later fix + 1) | 2 to 8 fixes, first in full, the rest as changes |
 | `0xFF` | set mark | boat to base | 17 | "set this mark to my position" |
@@ -1117,6 +1118,14 @@ the base too. The checks live in `src/roverDiag.js`:
 [10..11]  build        uint16 commit count, top bit = local changes; 0 = unknown
 [12]      checksum
 ```
+
+**Battery hello (`0x9E`).** A rover with a battery fuel gauge (the ESP32 rover's MAX17048) sends the status hello in this
+form instead, with two more bytes before the checksum: `[12]` state of charge 0-100 % and `[13]` cell voltage in 20 mV
+steps. It sends a hello at least every 5 minutes while awake, problem or not, so the reading stays current. The base keeps
+the last reading for 24 hours and shows it in the fleet table's **Battery** column: orange below 20 %, red below 10 % (also
+a **Rover issues** badge), and greyed with its age once it is more than 11 minutes old (a sleeping rover). The base log's
+hello line ends `, battery 87% 3.96V`. A Pi rover has no gauge and keeps sending the 13-byte frame. A base older than this
+frame skips it, so update the base before the ESP32 rovers.
 
 **Slot table frame (`0xA7`).** Sent by the base, in the base's own slot, every `TX_SLOT_TABLE_S` seconds and
 whenever the table changes, as many frames as needed (up to 15 boats each; every frame also carries the slot count, width and join

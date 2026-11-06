@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <cmath>
 #include <map>
 
 #include "display.h"
@@ -539,6 +540,13 @@ void setup() {
   hal.saveSchedule = saveSchedule;
   hal.loadSchedule = loadSchedule;
   hal.requestDeepSleep = deepSleep;
+  // the MAX17048's reading goes to the base in the hello; a gauge that isn't answering reads 0 V or NaN
+  hal.readBattery = [](double& pct, double& volts) {
+    if (!batteryOk) return false;
+    volts = battery.cellVoltage();
+    pct = battery.cellPercent();
+    return std::isfinite(volts) && std::isfinite(pct) && volts > 0.5;
+  };
 
   activeCfg = cfg;
   theRover = new Rover(cfg, hal);  // logs the startup summary; sends nothing until begin()

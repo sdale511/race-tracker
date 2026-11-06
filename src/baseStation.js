@@ -2538,7 +2538,7 @@ function main() {
     const text =
       `boat=${boatId} ${noFix ? 'radio online (no GPS fix yet)' : problems.length ? 'reports' : 'reports no problems now'}` +
       (problems.length ? `${noFix ? ' -' : ''} ${problems.join(', ')}` : '') +
-      (diag ? ` - ${diag.fixType == null ? 'no GPS data' : `sv=${diag.numSV}`}${diag.build ? `, build ${diag.build}` : ''}` : '');
+      (diag ? ` - ${diag.fixType == null ? 'no GPS data' : `sv=${diag.numSV}`}${diag.build ? `, build ${diag.build}` : ''}${diag.battery ? `, battery ${diag.battery.pct}% ${diag.battery.v.toFixed(2)}V` : ''}` : '');
     const now = Date.now();
     const last = helloLog.get(boatId);
     const changed = !last || last.text.replace(/ - (sv=|no GPS data).*$/, '') !== text.replace(/ - (sv=|no GPS data).*$/, '');

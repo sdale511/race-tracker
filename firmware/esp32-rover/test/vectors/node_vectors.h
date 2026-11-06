@@ -22,16 +22,22 @@ static const std::vector<std::vector<uint8_t>> ENCODE = {
   {170,81,88,90,82,65,138,193,232,106,0,0,255,232,164,53,1,46,182,148,244,1,8,7,253,109},
 };
 
-struct HelloV { uint8_t flags, power, numSV; bool hasPvt; uint8_t fixType, carrSoln; uint16_t build; bool dirty; };
+struct HelloV { uint8_t flags, power, numSV; bool hasPvt; uint8_t fixType, carrSoln; uint16_t build; bool dirty; bool hasBattery; double batteryPct, batteryV; };
 static const HelloV HELLOS[] = {
-  {0, 0, 0, false, 0, 0, 0, false},
-  {82, 0, 27, true, 3, 2, 312, true},
-  {127, 0, 255, true, 15, 1, 32767, false},
+  {0, 0, 0, false, 0, 0, 0, false, false, 0, 0},
+  {82, 0, 27, true, 3, 2, 312, true, false, 0, 0},
+  {127, 0, 255, true, 15, 1, 32767, false, false, 0, 0},
+  {0, 0, 21, true, 3, 2, 330, false, true, 87.4, 3.951},
+  {16, 0, 0, false, 0, 0, 330, false, true, 101.7, 4.213},
+  {0, 0, 9, true, 2, 0, 330, true, true, -2, 3},
 };
 static const std::vector<std::vector<uint8_t>> HELLO_FRAMES = {
   {157,81,88,90,82,65,0,0,0,255,0,0,149},
   {157,81,88,90,82,65,82,0,27,35,56,129,223},
   {157,81,88,90,82,65,127,0,255,31,255,127,177},
+  {158,81,88,90,82,65,0,0,21,35,74,1,87,198,54},
+  {158,81,88,90,82,65,16,0,0,255,74,1,100,211,39},
+  {158,81,88,90,82,65,0,0,9,2,74,129,0,150,2},
 };
 
 static const PvtV TRACK[] = {

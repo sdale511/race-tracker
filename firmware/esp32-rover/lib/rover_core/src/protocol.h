@@ -49,6 +49,10 @@ constexpr size_t HELLO_FRAME_LEN = 1 + BOAT_ID_LEN + 1;
 
 constexpr uint8_t STATUS_HELLO_SYNC = 0x9d;
 constexpr size_t STATUS_HELLO_FRAME_LEN = 1 + BOAT_ID_LEN + 6 + 1;  // 13
+// the same hello with the fuel gauge's reading added (protocol.js's battery hello)
+constexpr uint8_t STATUS_HELLO_BATTERY_SYNC = 0x9e;
+constexpr size_t STATUS_HELLO_BATTERY_FRAME_LEN = STATUS_HELLO_FRAME_LEN + 2;  // 15
+constexpr double BATTERY_V_STEP = 0.02;
 constexpr uint8_t NO_PVT = 0xff;
 
 constexpr uint8_t BATCH_SYNC = 0xee;
@@ -97,6 +101,9 @@ struct StatusHello {
   uint8_t carrSoln = 0;
   uint16_t build = 0;
   bool dirty = false;
+  bool hasBattery = false;  // true: the battery hello, with the two fields below
+  double batteryPct = 0;
+  double batteryV = 0;
 };
 Bytes encodeStatusHello(const StatusHello& d);
 

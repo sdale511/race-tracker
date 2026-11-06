@@ -12,6 +12,7 @@ bool RadioScanner::isSync(uint8_t b) {
     case POWER_SCHEDULE_SYNC:
     case HELLO_SYNC:
     case STATUS_HELLO_SYNC:
+    case STATUS_HELLO_BATTERY_SYNC:
     case BATCH_SYNC:
     case SET_MARK_SYNC:
     case MARK_LOG_SYNC:
@@ -33,6 +34,7 @@ size_t RadioScanner::lenFor(const uint8_t* buf, size_t avail) {
     case POWER_SCHEDULE_SYNC: return POWER_SCHEDULE_FRAME_LEN;
     case HELLO_SYNC: return HELLO_FRAME_LEN;
     case STATUS_HELLO_SYNC: return STATUS_HELLO_FRAME_LEN;
+    case STATUS_HELLO_BATTERY_SYNC: return STATUS_HELLO_BATTERY_FRAME_LEN;
     case BATCH_SYNC: return batchFrameLenFromHeader(buf, avail);
     case SET_MARK_SYNC: return SET_MARK_FRAME_LEN;
     case MARK_LOG_SYNC: return MARK_LOG_FRAME_LEN;
@@ -83,7 +85,8 @@ bool RadioScanner::dispatch(const uint8_t* buf, size_t len) {
     }
     case SYNC: return validPosition(buf, len);
     case HELLO_SYNC: return validHello(buf, len);
-    case STATUS_HELLO_SYNC: return validStatusHello(buf, len);
+    case STATUS_HELLO_SYNC:
+    case STATUS_HELLO_BATTERY_SYNC: return validStatusHello(buf, len);
     case BATCH_SYNC: return validBatch(buf, len);
     case SET_MARK_SYNC: return validSetMark(buf, len);
     case MARK_LOG_SYNC: return validMarkLog(buf, len);

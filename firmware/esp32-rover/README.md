@@ -14,6 +14,8 @@ Ported, behaving as the Node rover does:
   back-off, the slot's frame budget (TX_SLOT_MAX_HZ, the reserve, the full-rate zone around the marks and the finish line), thinning that
   keeps the turns, and the backfill after waiting for a slot.
 - The status hello with the rover's diagnosis (the same flags; `power` is always 0 - there is no Pi power record), ping replies.
+  With the MAX17048 answering it goes out as the battery hello (`0x9E`), with the charge and cell voltage, at least every 5 minutes -
+  the base shows it in the fleet table's Battery column.
 - Course marks from the base, kept in flash across a restart.
 - Radio sleep mode (the XBee's SLEEP_RQ) with the GPS in software backup, woken by a base wake frame. With the XBee in the ArduSimple's
   socket SLEEP_RQ isn't wired: the boat stops sending and the GPS still backs up, but the XBee stays awake (so it hears the wake frame at

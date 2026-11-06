@@ -108,7 +108,8 @@ have to touch it whenever you fit or remove the charger.
 ## Check before ordering
 
 1. **Print the board at 100 % and press the modules' pins into the paper.**
-   - Print `fab/esp32-rover-carrier-board.pdf`, top copper page.
+   - Print `fab/esp32-rover-carrier-fitcheck.pdf` at 100 % ("Actual size"). It shows the outlines, pads and real drill
+     holes with no copper pour. The board outline should measure 146.5 × 53.34 mm.
    - The ArduSimple's header pattern is the Arduino Uno R3 layout. I measured it against ArduSimple's pinout image, not a
      drawing.
    - The Feather, LIS3DH and bq24074 positions come from Adafruit's own board files.

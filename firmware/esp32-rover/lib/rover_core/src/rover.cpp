@@ -568,9 +568,16 @@ void Rover::sendHello(bool force) {
   const diag::Report d = currentDiag();
   const std::string key = diag::problemKey(d);
   const double t = now();
-  const bool due = force || !hasLastTx_ || !hasLastHelloKey_ || key != lastHelloKey_ || (diag::hasProblem(d) && t - lastHelloAt_ >= HELLO_PROBLEM_MS);
+  double batteryPct = 0, batteryV = 0;
+  const bool hasBattery = hal_.readBattery && hal_.readBattery(batteryPct, batteryV);
+  const bool due = force || !hasLastTx_ || !hasLastHelloKey_ || key != lastHelloKey_ ||
+                   (diag::hasProblem(d) && t - lastHelloAt_ >= HELLO_PROBLEM_MS) ||
+                   (hasBattery && t - lastHelloAt_ >= BATTERY_HELLO_MS);
   if (!due) return;
   protocol::StatusHello h;
+  h.hasBattery = hasBattery;
+  h.batteryPct = batteryPct;
+  h.batteryV = batteryV;
   h.boatId = cfg_.boatId;
   h.flags = d.flags;
   h.power = d.power;

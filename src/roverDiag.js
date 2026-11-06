@@ -27,6 +27,10 @@ const POWER = {
   THROTTLED_SINCE_BOOT: 0x08,
 };
 
+// A rover's battery (from the battery hello, protocol.js) below these is reported as a problem
+const BATTERY_LOW_PCT = 20;
+const BATTERY_CRITICAL_PCT = 10;
+
 const GPS_STALE_MS = 5000; // the receiver sends several frames a second; this long with nothing is a real gap
 const RXM_RTCM_STALE_MS = 15000; // corrections come every 2-4 s; a few bursts with no RXM-RTCM back
 const BURST_GRACE_MS = 20000; // same grace as rtcmWatchdog.js's default before "no bursts" counts
@@ -125,6 +129,14 @@ function describe(diag, { baseBuild = null, hasPosition = false } = {}) {
   } else if (diag.power & (POWER.THROTTLED_NOW | POWER.THROTTLED_SINCE_BOOT)) {
     items.push({ level: 'warn', text: 'CPU throttled', title: 'The Pi slowed its CPU down (heat or power)' + (diag.power & POWER.THROTTLED_NOW ? ' - now' : ' - at some point since boot') });
   }
+  if (diag.battery && diag.battery.pct < BATTERY_LOW_PCT) {
+    const critical = diag.battery.pct < BATTERY_CRITICAL_PCT;
+    items.push({
+      level: critical ? 'bad' : 'warn',
+      text: `battery ${diag.battery.pct}%`,
+      title: `The rover's battery is at ${diag.battery.pct}% (${diag.battery.v.toFixed(2)} V)${critical ? ' - it will stop soon' : ''}: charge or swap it`,
+    });
+  }
   if (diag.build != null && baseBuild != null && diag.build !== baseBuild) {
     items.push({
       level: 'warn',
@@ -144,4 +156,4 @@ function buildNumber(version) {
   return Number.isFinite(n) ? n : null;
 }
 
-module.exports = { FLAGS, POWER, computeFlags, powerFromThrottled, readPower, problemKey, hasProblem, describe, buildNumber };
+module.exports = { FLAGS, POWER, BATTERY_LOW_PCT, BATTERY_CRITICAL_PCT, computeFlags, powerFromThrottled, readPower, problemKey, hasProblem, describe, buildNumber };

@@ -24,6 +24,9 @@ const {
 // threshold than any single TX_DISTANCE_M-driven gap, just enough to tell
 // "actively out there" from "was here earlier, gone quiet."
 const ONLINE_THRESHOLD_MS = 60000;
+// A rover awake sends its battery every 5 minutes (the firmware's BATTERY_HELLO_MS); older than two of those, it's asleep
+// or gone quiet, and the reading is shown greyed with its age.
+const BATTERY_STALE_MS = 11 * 60 * 1000;
 
 // The map's "Set from rover" picker refuses a rover heard longer ago than this. A rover sitting still at a mark sends
 // nothing until it moves TX_DISTANCE_M or its TX_INTERVAL_S heartbeat falls due, so a quiet minute is normal there; past
@@ -869,6 +872,22 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
       const fixCell = b.lastFix
         ? `<span class="dot ${fixDotClass}"></span>${fixQualityText(b.lastFix)} <span class="muted">${b.lastFix.numSV}sv</span>`
         : '<span class="muted">—</span>';
+      // The rover's battery from its battery hello (protocol.js): the ESP32 rover's fuel gauge, every few minutes while
+      // awake. '—' for a rover without one (the Pi). Greyed once it is older than BATTERY_STALE_MS - a sleeping rover's
+      // last reading, still worth seeing.
+      const battery = b.battery;
+      const batteryStale = battery && Date.now() - battery.at > BATTERY_STALE_MS;
+      const batteryClass = !battery || batteryStale
+        ? 'muted'
+        : battery.pct < roverDiag.BATTERY_CRITICAL_PCT
+        ? 'batt-bad'
+        : battery.pct < roverDiag.BATTERY_LOW_PCT
+        ? 'batt-warn'
+        : '';
+      const batteryCell = battery
+        ? `<span class="${batteryClass}" title="${battery.v.toFixed(2)} V, reported ${formatAgo(battery.at)}">${battery.pct}%</span>` +
+          (batteryStale ? ` <span class="muted">${formatAgoShort(battery.at)}</span>` : '')
+        : '<span class="muted">—</span>';
       // What the rover itself reports is wrong (its status hello - see roverDiag.js), worst first; the full explanation is in
       // each badge's tooltip. '—' for a rover that has reported nothing (an older rover, or none in the last 3 minutes).
       const issueItems = b.diag ? roverDiag.describe(b.diag, { baseBuild: roverDiag.buildNumber(s.version || VERSION), hasPosition: !!b.lastFix }) : [];
@@ -886,6 +905,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
           <td>${fixRate}</td>
           <td>${maxFixRate}</td>
           <td>${fixCell}</td>
+          <td>${batteryCell}</td>
           <td class="wrap">${issuesCell}</td>
           <td>${laps}</td>
           <td>${b.upload.successes}/${b.upload.attempts} <span class="muted">${pct(b.upload.successes, b.upload.attempts)}</span></td>
@@ -997,6 +1017,8 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
   .dot-gray { background: #4b535e; }
   .dot-red { background: #f85149; box-shadow: 0 0 6px #f8514980; }
   .dot-orange { background: #f2b84b; box-shadow: 0 0 6px #f2b84b80; }
+  .batt-warn { color: #f2b84b; font-weight: 600; }
+  .batt-bad { color: #ff7b72; font-weight: 600; }
   .muted { color: #8b94a3; }
   .empty { color: #8b94a3; padding: 20px; text-align: center; }
   a { color: #58a6ff; text-decoration: none; }
@@ -1133,6 +1155,7 @@ function renderDashboard(s, rtkControlsEnabled, page = 'home', { readOnly = fals
           <th title="Fix rate, frames per second: how often radio frames are actually arriving at THIS base right now - not the boat's own onboard GPS rate, since TX_DISTANCE_M gates what's ever transmitted, and a stationary boat legitimately reads near zero">Rate Hz</th>
           <th title="Max rate, frames per second: highest Fix rate this boat has sustained (measured over a rolling 10s window, sampled only once at least 5s of frames are in it) since this base started - resets on restart">Max Hz</th>
           <th title="GPS/RTK fix quality from the last radio frame received: RTK fixed (cm-level) > RTK float (dm-level) > GPS (no RTK correction) > No fix. Satellite count after it (sv)">Fix</th>
+          <th title="Battery charge the rover reports (ESP32 rovers with a fuel gauge, every few minutes while awake). Orange below ${roverDiag.BATTERY_LOW_PCT}%, red below ${roverDiag.BATTERY_CRITICAL_PCT}%; grey with its age once the reading is old (a sleeping rover). Hover for the voltage">Battery</th>
           <th title="What the rover itself reports is wrong - GPS link, corrections, radio, power, software build - sent with its hello while it waits for a fix and whenever it has a problem. Hover a badge for what it means and what to check">Rover issues</th>
           <th title="Completed lap count for this boat this race">Laps</th>
           <th title="Uploads this session: successful vs. attempted SD-card log uploads since this base station started">Uploads</th>
