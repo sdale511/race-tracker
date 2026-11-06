@@ -74,6 +74,7 @@ The firmware pins are unchanged (`feather_s3_reversetft_socket` build).
 ### Optional connections
 
 These are wired but not used by the firmware yet, except `GPS_POWER_PIN`, which already exists as a build flag.
+[OPTIONAL-CONNECTIONS.md](OPTIONAL-CONNECTIONS.md) explains what each one gives and what it would take to use it.
 
 | Net | Joins | Use |
 |---|---|---|
