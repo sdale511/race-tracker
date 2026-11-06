@@ -3,7 +3,9 @@
 A 146.5 × 53.34 mm, 2-layer motherboard with sockets for every module of the ESP32 rover:
 
 - **ArduSimple simpleRTK2B Budget:** XBee in its own socket, ZED UART2 off (`--role rover`), switch down.
-- **Feather ESP32-S3 Reverse TFT:** plugs in display side up, USB-C at the front edge.
+- **Feather ESP32-S3 Reverse TFT:** on 8.5 mm stacking headers, display side up, USB-C at the front edge.
+
+Every module plugs into female sockets on the carrier (J1–J10). The only male pins on the carrier are JP1 and J12.
 - **Adafruit LIS3DH.**
 - **Pololu S9V11F5.**
 - **Adafruit bq24074 charger:** optional.
@@ -122,10 +124,15 @@ have to touch it whenever you fit or remove the charger.
 
 ## Assembly
 
-1. Solder the female headers onto the carrier (8.5 mm tall), then the JST, JP1 and (optional) J12.
+1. Solder the female sockets onto the carrier (8.5 mm tall), then the JST, JP1 and (optional) J12.
 2. Solder male headers pins-down onto the ArduSimple: 10 + 8 on the top edge, 8 + 6 on the bottom edge.
 3. Solder male headers pins-down onto the LIS3DH (both rows), the bq24074 (the 11-pin edge) and the S9V11F5.
-4. Plug in the modules. The Feather goes display up, with USB-C at the front edge.
+4. Solder 8.5 mm stacking headers (a 1x16 and a 1x12) to the Feather instead of its male headers. The housings go on
+   the display side, along both long edges, and the long tails come out underneath.
+5. Plug in the modules. The Feather's tails go into J5 and J6, display up, with USB-C at the front edge.
+   - The Feather sits higher than the other modules: the carrier socket, plus the length of tail left showing.
+   - Measure that height before cutting standoffs for the optional M2 hold-downs (H12–H15).
+   - Check that the stacking housings line up with the lid window, as the case expects.
 
 ## Ordering (JLCPCB)
 

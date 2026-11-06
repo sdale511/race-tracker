@@ -145,7 +145,7 @@ def main():
     notes = [
         'Plug-in carrier: every module sits on sockets. Nets join by label name.',
         'ArduSimple: male headers soldered underneath; power switch DOWN (5V IN, IOREF N/C); --role rover (UART2 off).',
-        'Feather plugs in display side up, USB-C at the front edge. LIS3DH runs from VSYS (its own 3.3 V regulator).',
+        'Feather on 8.5 mm stacking headers (housings on the display side), tails into J5/J6; display up, USB-C at the front. LIS3DH runs from VSYS (its own 3.3 V regulator).',
         'bq24074 optional: fitted -> JP1 open, battery feeds the charger, charger OUT feeds VSYS.',
         'No bq24074 -> fit the JP1 shunt (BATT to VSYS). Never both: the shunt would bypass the charger.',
         '~CHG and ~PGOOD are open drain to Feather D11 / D12 (read with INPUT_PULLUP); the firmware does not use them yet.',

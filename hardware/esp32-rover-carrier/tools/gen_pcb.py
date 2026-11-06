@@ -411,7 +411,7 @@ def silkscreen(board):
     add_text(board, S, 'ArduSimple: solder male headers underneath, plug in here', 34.0, 38.5, 0.9)
     add_text(board, S, 'switch DOWN (5V IN, IOREF N/C)', 34.0, 36.3, 0.9)
     add_text(board, S, 'BATT  - +', 81.0, 10.5, 0.9)
-    add_text(board, S, 'FEATHER  display up', FX + 11.43, 26.0, 0.9, rot=90)
+    add_text(board, S, 'FEATHER  display up, on stacking headers', FX + 11.43, 26.0, 0.9, rot=90)
     add_text(board, S, 'USB-C', FX + 11.43, 1.5, 0.9)
     add_text(board, S, 'bq24074 charger (optional)', 85.0, 27.0, 0.9)
     add_text(board, S, 'USB-C', 92.0, 1.5, 0.9)

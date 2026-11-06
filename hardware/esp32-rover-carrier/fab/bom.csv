@@ -5,17 +5,18 @@ J1,1,"Female header 1x10, 2.54 mm, 8.5 mm tall",ArduSimple SCL..D8 (Uno R3 patte
 J5,1,"Female header 1x16, 2.54 mm, 8.5 mm tall",Feather left row
 J6,1,"Female header 1x12, 2.54 mm, 8.5 mm tall",Feather right row
 J7,1,"Female header 1x11, 2.54 mm, 8.5 mm tall",bq24074 (cut from a longer strip; fit even without the charger)
-J10,1,"Female header 1x03, 2.54 mm",S9V11F5
+J10,1,"Female header 1x03, 2.54 mm, 8.5 mm tall",S9V11F5
 J11,1,"JST S2B-PH-K-S (PH 2.0 mm, right angle, through hole)",Battery; pin 1 GND, pin 2 + (same as the Feather's)
 JP1,1,"Male header 1x02, 2.54 mm + 2.54 mm shunt",Shunt ONLY when no bq24074 is fitted
 J12,1,"Male header 1x02, 2.54 mm (optional)",Feather off: EN and GND; a switch or a shunt shorts them
 TP2,1,"Thin insulated wire, about 30 mm (optional)",From pad TP2 to the S9V11F5's EN hole; with -DGPS_POWER_PIN=18
 "H1-H3,H16",4,M3 screw + standoff,Carrier to case
 H4-H11,8,M2.5 standoff + screw (optional),bq24074 and LIS3DH hold-downs
-H12-H15,4,M2 standoff + screw (optional),Feather hold-downs; 8.5 mm header height + pin shoulder
+H12-H15,4,M2 standoff + screw (optional),Feather hold-downs; measure the Feather's height on its stacking headers first
 -,1,"Male header 1x10, 2x 1x08, 1x06, 2.54 mm","Soldered underneath the ArduSimple, pins down"
 -,1,"Male header 1x11, 2x 1x06, 1x03","Soldered to the bq24074, LIS3DH and S9V11F5, pins down"
-Module,1,Adafruit ESP32-S3 Reverse TFT Feather (5691),Comes with male headers
+-,1,"Stacking headers 1x16 + 1x12, 2.54 mm, 8.5 mm housing (Adafruit 2830 or similar)","Soldered to the Feather: housings on the display side, tails into J5/J6"
+Module,1,Adafruit ESP32-S3 Reverse TFT Feather (5691),Its own male headers aren't used
 Module,1,ArduSimple simpleRTK2B Budget,XBee in its own socket; switch DOWN; --role rover
 Module,1,Adafruit LIS3DH breakout (2809),
 Module,1,Pololu S9V11F5 (2836),
