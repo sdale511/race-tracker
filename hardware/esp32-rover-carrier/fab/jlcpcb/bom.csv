@@ -1,0 +1,8 @@
+Comment,Designator,Footprint,LCSC Part #
+Female header 1x10 2.54mm 8.5mm (KH-2.54FH-1X10P-H8.5),J1,PinSocket_1x10_P2.54mm_Vertical,C2905418
+JST PH 2-pin right angle (S2B-PH-K-S),J11,JST_PH_S2B-PH-K_1x02_P2.00mm_Horizontal,C173752
+Male header 1x02 2.54mm,"J12,JP1",PinHeader_1x02_P2.54mm_Vertical,C32713268
+Female header 1x08 2.54mm 8.5mm (KH-2.54FH-1X8P-H8.5),"J2,J3",PinSocket_1x08_P2.54mm_Vertical,C2905417
+Female header 1x06 2.54mm 8.5mm (KH-2.54FH-1X6P-H8.5),J4,PinSocket_1x06_P2.54mm_Vertical,C2905416
+Female header 1x16 2.54mm 8.5mm (KH-2.54FH-1X16P-H8.5),J5,PinSocket_1x16_P2.54mm_Vertical,C2905421
+Female header 1x12 2.54mm 8.5mm (KH-2.54FH-1X12P-H8.5),J6,PinSocket_1x12_P2.54mm_Vertical,C2905419

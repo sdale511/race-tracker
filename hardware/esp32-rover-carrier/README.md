@@ -158,6 +158,36 @@ Upload `fab/esp32-rover-carrier-gerbers.zip` with these settings:
 - 2 layers, 1.6 mm FR-4, 1 oz copper.
 - HASL finish.
 - Any solder mask colour.
-- Size 146.5 × 53.34 mm.
+- Size 134 × 53.34 mm.
 
 Every track and clearance is at least 0.2 mm, well inside the standard process.
+
+### Having JLCPCB solder the connectors
+
+JLCPCB can fit the parts that go on the carrier itself: the six female sockets (J1–J6), the battery JST (J11) and the
+two 2-pin headers (JP1, J12). That's 66 joints. You then solder only the charger, LIS3DH and S9V11F5 (soldered low,
+J7–J10), plus the headers on the ArduSimple and the Feather.
+
+1. Turn on **PCB Assembly** and pick **Standard** (Economic doesn't do through-hole). Assemble the **top side**.
+2. Upload `fab/jlcpcb/bom.csv` and `fab/jlcpcb/cpl.csv`.
+3. Check the parts it matches against this list (all were in stock on 2026-11-07):
+
+   | Ref | Part | LCSC |
+   |---|---|---|
+   | J1 | Female header 1x10, 8.5 mm (Kinghelm KH-2.54FH-1X10P-H8.5) | C2905418 |
+   | J2, J3 | Female header 1x08, 8.5 mm (KH-2.54FH-1X8P-H8.5) | C2905417 |
+   | J4 | Female header 1x06, 8.5 mm (KH-2.54FH-1X6P-H8.5) | C2905416 |
+   | J5 | Female header 1x16, 8.5 mm (KH-2.54FH-1X16P-H8.5) | C2905421 |
+   | J6 | Female header 1x12, 8.5 mm (KH-2.54FH-1X12P-H8.5) | C2905419 |
+   | J11 | JST S2B-PH-K-S, right angle | C173752 |
+   | JP1, J12 | Male header 1x02, 2.54 mm | C32713268 |
+
+4. **In the placement preview, check the battery JST (J11)**: its opening must face the board's **back edge** (away
+   from the USB-C side), next to the "BATT" label. If it shows facing inwards, rotate it 180° there. The sockets and
+   headers are symmetrical, so their rotation doesn't matter.
+5. J7–J10, TP1, TP2 and the holes aren't in the files: they stay empty for you. The JP1 shunt isn't fitted; add one
+   only if there's no charger.
+
+To regenerate the two files after a board change, run
+`~/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 tools/gen_jlc.py`.
+Positions are each part's pad centre, in the same coordinates as the Gerbers.
