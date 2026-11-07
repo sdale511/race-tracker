@@ -109,7 +109,7 @@ class Sheet:
     def write(self, path):
         libs = '\n'.join(block for block, _ in self.libs.values())
         body = '\n'.join(self.items)
-        tb = ('(title_block (title "ESP32 rover carrier") (rev "B") (company "race-tracker") '
+        tb = ('(title_block (title "ESP32 rover carrier") (rev "C") (company "race-tracker") '
               '(comment 1 "Feather S3 Reverse TFT, ArduSimple Budget, LIS3DH, S9V11F5, optional bq24074"))')
         with open(path, 'w') as f:
             f.write(f'(kicad_sch (version 20250114) (generator "gen_sch.py") (generator_version "10.0") '
@@ -129,7 +129,8 @@ def main():
         n = len(s['pins'])
         x, y = cols[s['ref']]
         sh.symbol('Connector_Generic', f'Conn_01x{n:02d}', s['ref'], s['label'],
-                  f"Connector_PinSocket_2.54mm:{s['fp']}_P2.54mm_Vertical", g(x), g(y), s['nets'], s['names'])
+                  f"Connector_Pin{'Header' if s['soldered'] else 'Socket'}_2.54mm:{s['fp']}_P2.54mm_Vertical", g(x), g(y),
+                  s['nets'], s['names'])
     other_pos = {'J11': (320, 60), 'JP1': (320, 100), 'TP1': (320, 140), 'TP2': (320, 165), 'J12': (320, 190)}
     names = {'J11': ['-', '+'], 'JP1': ['BATT', 'VSYS'], 'J12': ['EN', 'GND']}
     values = L.OTHER_VALUES
@@ -143,7 +144,7 @@ def main():
         sh.symbol(lib, name, o['ref'], values[o['ref']], f"{o['lib']}:{o['fp']}", g(x), g(y), nets,
                   names.get(o['ref']), in_bom=not o['ref'].startswith('TP'))
     notes = [
-        'Plug-in carrier: every module sits on sockets. Nets join by label name.',
+        'The ArduSimple and the Feather plug into sockets; the LIS3DH, S9V11F5 and bq24074 are soldered low on their own headers. Nets join by label name.',
         'ArduSimple: male headers soldered underneath; power switch DOWN (5V IN, IOREF N/C); --role rover (UART2 off).',
         'Feather on 8.5 mm stacking headers (housings on the display side), tails into J5/J6; display up, USB-C at the front. LIS3DH runs from VSYS (its own 3.3 V regulator).',
         'bq24074 optional: fitted -> JP1 open, battery feeds the charger, charger OUT feeds VSYS.',

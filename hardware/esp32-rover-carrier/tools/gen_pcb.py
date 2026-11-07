@@ -56,10 +56,11 @@ def link(fp, lib, name):
 
 def place_socket(board, nets, s):
     n = len(s['pins'])
-    fp = load('Connector_PinSocket_2.54mm', f"{s['fp']}_P2.54mm_Vertical")
+    lib = 'Connector_PinHeader_2.54mm' if s['soldered'] else 'Connector_PinSocket_2.54mm'
+    fp = load(lib, f"{s['fp']}_P2.54mm_Vertical")
     fp.SetReference(s['ref'])
     fp.SetValue(s['label'])
-    link(fp, 'Connector_PinSocket_2.54mm', f"{s['fp']}_P2.54mm_Vertical")
+    link(fp, lib, f"{s['fp']}_P2.54mm_Vertical")
     board.Add(fp)
     want = s['pins']
     for rot in (0, 90, 180, 270):
@@ -407,28 +408,28 @@ def silkscreen(board):
     for name, (x, y, w, h) in [('ArduSimple simpleRTK2B Budget', (0, 0, 68.58, L.H)), ('Feather', L.FEATHER),
                                ('bq24074', L.BQ), ('LIS3DH', L.LIS), ('S9V11F5', L.REG)]:
         add_rect(board, FAB, x, y, w, h, 0.1)
-    add_text(board, S, 'RACE-TRACKER ESP32 ROVER CARRIER  rev B', 34.0, 41.0, 1.2)
-    add_text(board, S, 'ArduSimple: solder male headers underneath, plug in here', 34.0, 38.5, 0.9)
-    add_text(board, S, 'switch DOWN (5V IN, IOREF N/C)', 34.0, 36.3, 0.9)
-    add_text(board, S, 'BATT  - +', 81.0, 10.5, 0.9)
+    BX, BY = L.BQ[0], L.BQ[1]
+    add_text(board, S, 'RACE-TRACKER ESP32 ROVER CARRIER  rev C', 34.0, 11.6, 1.2)
+    add_text(board, S, 'ArduSimple: solder male headers underneath, plug in here', 34.0, 9.1, 0.9)
+    add_text(board, S, 'switch DOWN (5V IN, IOREF N/C)', 34.0, 6.9, 0.9)
+    add_text(board, S, 'LIS3DH  soldered low', L.LIS[0] + 12.7, L.LIS[1] + 8.9, 0.9)
+    add_text(board, S, 'S9V11F5  soldered low', 47.7, 38.3, 0.9)
+    add_text(board, S, 'OUT G IN', 40.6, 43.8, 0.9, rot=90)
+    add_text(board, S, 'EN wire', 57.0, 47.6, 0.9)
     add_text(board, S, 'FEATHER  display up, on stacking headers', FX + 11.43, 26.0, 0.9, rot=90)
     add_text(board, S, 'USB-C', FX + 11.43, 1.5, 0.9)
-    add_text(board, S, 'bq24074 charger (optional)', 85.0, 27.0, 0.9)
-    add_text(board, S, 'USB-C', 92.0, 1.5, 0.9)
-    add_text(board, S, 'JP1: shunt ONLY', 87.5, 22.6, 0.9)
-    add_text(board, S, 'without charger', 87.5, 21.2, 0.9)
-    add_text(board, S, 'LIS3DH', 112.9, 20.0, 0.9)
-    add_text(board, S, 'GND', 97.0, 9.3, 0.9)
-    add_text(board, S, 'BATT', 90.2, 17.54, 0.9)  # JP1 pin 1
-    add_text(board, S, 'VSYS', 90.2, 15.0, 0.9)
-    add_text(board, S, 'S9V11F5', 75.8, 47.5, 0.9)
-    add_text(board, S, 'IN G OUT', 75.8, 43.8, 0.9)
-    add_text(board, S, 'wire to', 84.0, 50.0, 0.9)
-    add_text(board, S, 'S9V11F5 EN', 84.0, 48.6, 0.9)
-    add_text(board, S, 'FEATHER OFF', 109.0, 42.6, 0.9)
-    add_text(board, S, 'EN', 111.4, 40.0, 0.9)  # J12 pin 1
-    add_text(board, S, 'GND', 111.8, 37.46, 0.9)
-
+    add_text(board, S, 'bq24074 charger (optional)', BX + 15.0, BY + 24.0, 0.9)
+    add_text(board, S, 'soldered low', BX + 15.0, BY + 22.6, 0.9)
+    add_text(board, S, 'USB-C', BX + 22.0, BY + 1.5, 0.9)
+    add_text(board, S, 'BATT', 99.0, 43.0, 0.9)
+    add_text(board, S, 'JP1: shunt ONLY', 87.5, 52.3, 0.9)
+    add_text(board, S, 'without charger', 87.5, 44.2, 0.9)
+    add_text(board, S, 'BATT', 84.3, 49.5, 0.9)  # JP1 pin 1
+    add_text(board, S, 'VSYS', 84.3, 46.96, 0.9)
+    add_text(board, S, 'GND', 91.3, 50.4, 0.9)
+    add_text(board, S, 'FEATHER OFF', 75.0, 52.3, 0.9)
+    add_text(board, S, 'EN', 72.6, 49.5, 0.9)  # J12 pin 1
+    add_text(board, S, 'GND', 72.2, 46.96, 0.9)
 
 def main():
     board = pcbnew.BOARD()

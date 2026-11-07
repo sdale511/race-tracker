@@ -1,0 +1,9 @@
+base        -> clear
+lid         -> ArduSimple 11.58 (intended: 4 posts press its holes 0.15 mm), carrier 1.51 (intended: the H3 post presses the carrier 0.1 mm)
+keypad      -> clear
+window pane -> clear
+printed parts vs each other: clear
+boards vs each other: clear
+size 163.7 x 72.8 x 47.8 mm;  carrier z 17.9..19.5;  ArduSimple top 32.1;  lid underside 45.4;  TFT top 42.1 (gap to the lid 3.3);  charger top 23.6, its JSTs 29.6 under the XBee plug from 33.5
+pieces: base 1  lid 1  keypad 1  pane 1
+ArduSimple from its STEP (AS-RTK2B-F9P-L1L2-NH-03-R00), one box per part; XBee and Feather from the v12 boxes.

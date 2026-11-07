@@ -1,15 +1,18 @@
-# ESP32 rover carrier board (rev B)
+# ESP32 rover carrier board (rev C)
 
-A 146.5 × 53.34 mm, 2-layer motherboard with sockets for every module of the ESP32 rover:
+A 134 × 53.34 mm, 2-layer motherboard for the ESP32 rover, laid out to fit the enclosure (the 2026-11-07 handoff).
 
-- **ArduSimple simpleRTK2B Budget:** XBee in its own socket, ZED UART2 off (`--role rover`), switch down.
-- **Feather ESP32-S3 Reverse TFT:** on 8.5 mm stacking headers, display side up, USB-C at the front edge.
+Plugged into female sockets:
+- **ArduSimple simpleRTK2B Budget (J1–J4):** XBee in its own socket, ZED UART2 off (`--role rover`), switch down.
+- **Feather ESP32-S3 Reverse TFT (J5, J6):** on 8.5 mm stacking headers, display side up, USB-C at the front edge.
 
-Every module plugs into female sockets on the carrier (J1–J10). The only male pins on the carrier are JP1 and J12.
-- **Adafruit LIS3DH.**
-- **Pololu S9V11F5.**
-- **Adafruit bq24074 charger:** optional.
-- **Battery:** connects through a JST-PH socket.
+Soldered low on their own male headers, because there isn't height for sockets:
+- **Adafruit LIS3DH (J8, J9)** and **Pololu S9V11F5 (J10):** under the ArduSimple, which leaves about 9.5 mm.
+- **Adafruit bq24074 charger (J7), optional:** on 8.5 mm sockets its BATT and SYSOUT JSTs would hit the XBee's antenna plug.
+
+The battery connects through a JST-PH socket on the back edge (J11), its plug facing the back wall.
+
+The case for it is in [../esp32-rover-enclosure](../esp32-rover-enclosure), built from this board's `tools/layout.py`.
 
 Everything is through-hole and hand-solderable. It replaces the loose wiring in
 [docs/esp32-rover-wiring.pdf](../../docs/esp32-rover-wiring.pdf) and the harness in
@@ -17,15 +20,23 @@ Everything is through-hole and hand-solderable. It replaces the loose wiring in
 
 ![top](fab/esp32-rover-carrier-top.png)
 
-From left to right: the ArduSimple, then the charger with the regulator behind it, then the LIS3DH, then the Feather on
+From left to right: the ArduSimple (with the LIS3DH and the regulator under it), then the charger, then the Feather on
 its own at the right end. The XBee's RP-SMA overhangs the ArduSimple's right edge, over the charger. Nothing sits above
 the Feather's display, so the enclosure can have a window over it.
 
-Rev B against rev A:
+Rev C against rev B, for the enclosure:
 
-- **The Feather moved to the far right.** In rev A it sat right of the ArduSimple, under the XBee's SMA.
-- **The bq24074 turned** so its USB-C faces the front edge, beside the Feather's.
-- **New optional connections:** see the table below.
+- **12.5 mm shorter** (146.5 → 134 mm): the LIS3DH moved under the ArduSimple.
+- **The regulator moved under the ArduSimple**, out of the charger's way.
+- **The charger is soldered low and sits 3.22 mm back from the front edge**, so its DC jack stays inside the case's
+  front wall. Only the two USB-C faces reach the front edge.
+- **The battery JST moved to the back edge**, plug facing the back wall; JP1, TP1 and J12 moved behind the charger.
+- **H3 sits between the charger and the Feather** with no screw: a post on the lid presses it down, so keep a 5 mm
+  column above it clear. H1 and H2 screw to floor posts. H16 is gone: the case's fourth lid-screw boss sits in that
+  front corner.
+
+Rev B against rev A: the Feather moved to the far right, the bq24074 turned so its USB-C faces the front edge, and the
+optional connections were added.
 
 ## Files
 
@@ -51,8 +62,8 @@ both layers. Check the result with:
 ~/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc --schematic-parity esp32-rover-carrier.kicad_pcb
 ```
 
-Rev B results: 0 violations, 0 unconnected items, 0 schematic-parity issues. The only warnings say that KiCad's library
-tables aren't set up on this machine.
+Rev C results: 0 violations, 0 unconnected items, 0 schematic-parity issues. The only warnings say that KiCad's library
+tables aren't set up on this machine, and that the battery JST's outline meets the back edge (on purpose).
 
 ## Connections
 
@@ -102,14 +113,15 @@ There are two differences from the hand wiring:
 - **bq24074 fitted:** remove the shunt. The battery feeds the charger, and the charger's OUT feeds VSYS. Charge it through
   the bq24074's USB-C on the front edge.
 
-Never fit both. With both in place, the shunt bypasses the charger's battery control. JP1 sits under the bq24074, so you
-have to touch it whenever you fit or remove the charger.
+Never fit both. With both in place, the shunt bypasses the charger's battery control. JP1 sits behind the charger, on
+the back edge beside the battery JST. The charger's own BATT and SYSOUT JSTs stay empty: the battery and VSYS go
+through its 11-pin header (VLIPO pin 2, OUT pin 4).
 
 ## Check before ordering
 
 1. **Print the board at 100 % and press the modules' pins into the paper.**
    - Print `fab/esp32-rover-carrier-fitcheck.pdf` at 100 % ("Actual size"). It shows the outlines, pads and real drill
-     holes with no copper pour. The board outline should measure 146.5 × 53.34 mm.
+     holes with no copper pour. The board outline should measure 134 × 53.34 mm.
    - The ArduSimple's header pattern is the Arduino Uno R3 layout. I measured it against ArduSimple's pinout image, not a
      drawing.
    - The Feather, LIS3DH and bq24074 positions come from Adafruit's own board files.
@@ -118,16 +130,20 @@ have to touch it whenever you fit or remove the charger.
 3. **Check that your LIS3DH matches the 2809 pinout:**
    - The VIN, 3Vo, GND, SCL, SDA, INT1 row is 0.5" from the CS, SDO, ADC1–3, INT2 row.
    - The board is 0.7 × 1.0".
-4. **Check clearance under the ArduSimple.** It sits on its headers about 11 mm above the carrier. Under it are only
-   traces, vias and the heads of two M3 case screws (H1, H2). Fit those screws before the ArduSimple goes on.
-5. **Check that the XBee's RP-SMA clears the charger.** The connector sits roughly 20 mm above the carrier. The
-   bq24074's USB-C top is about 16 mm up. I estimated these heights; I didn't measure them.
+4. **Check clearance under the ArduSimple.** The case expects about 9.5 mm between the carrier and the ArduSimple's
+   underside. Under it are the LIS3DH and the S9V11F5, each soldered on a 2.5 mm header (about 5 mm tall in all), plus
+   the heads of two M3 case screws (H1, H2). Fit those screws before the ArduSimple goes on.
+5. **Check that the charger stays under the XBee's antenna plug.** Soldered low, its JST bodies top out about 10 mm
+   above the carrier; the case puts the plug about 14 mm up. These heights are the enclosure's estimates.
 
 ## Assembly
 
-1. Solder the female sockets onto the carrier (8.5 mm tall), then the JST, JP1 and (optional) J12.
-2. Solder male headers pins-down onto the ArduSimple: 10 + 8 on the top edge, 8 + 6 on the bottom edge.
-3. Solder male headers pins-down onto the LIS3DH (both rows), the bq24074 (the 11-pin edge) and the S9V11F5.
+1. If you want the GPS power cut, solder the EN wire to the S9V11F5's EN hole first (see OPTIONAL-CONNECTIONS.md).
+2. Solder male headers pins-down onto the LIS3DH (both rows), the bq24074 (the 11-pin edge) and the S9V11F5, and
+   solder each module straight into the carrier, its header's plastic flat on the board. Fit the charger's four M2.5
+   standoffs (2.5 mm, H4–H7) first: it hangs off one header row.
+3. Solder the female sockets onto the carrier (8.5 mm tall) for the ArduSimple and the Feather, then the JST, JP1 and
+   (optional) J12. Solder male headers pins-down onto the ArduSimple: 10 + 8 on the top edge, 8 + 6 on the bottom edge.
 4. Solder 8.5 mm stacking headers (a 1x16 and a 1x12) to the Feather instead of its male headers. The housings go on
    the display side, along both long edges, and the long tails come out underneath.
 5. Plug in the modules. The Feather's tails go into J5 and J6, display up, with USB-C at the front edge.
