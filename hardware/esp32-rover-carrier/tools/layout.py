@@ -103,7 +103,7 @@ OTHER = [
          nets={'1': 'BATT', '2': 'VSYS'}),
     # Ground probe beside JP1; JP1's pins are BATT and VSYS, the S9V11F5 carries 5V.
     dict(ref='TP1', lib='TestPoint', fp='TestPoint_Pad_D1.5mm', at=(91.3, 48.2), rot=0, nets={'1': 'GND'}),
-    # Wire pad for the S9V11F5's EN (a through-hole on the module, not a header pin): Feather A0 cuts the GPS supply.
+    # Wire pad for the S9V11F5's EN (a solder pad on the module, not one of its three holes): Feather A0 cuts the GPS supply.
     dict(ref='TP2', lib='TestPoint', fp='TestPoint_THTPad_D2.0mm_Drill1.0mm', at=(57.0, 45.1), rot=0,
          nets={'1': 'GPS_EN'}),
     # The Feather's EN: short the two pins to switch the Feather off.

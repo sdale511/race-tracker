@@ -28,8 +28,9 @@ moves, the case follows.
 | `print/TPU_rover_keypad.stl`, `print/TPU_usbc_dust_plug.stl` | TPU parts (print two dust plugs) |
 | `print/clash_check.txt` | The last clash check |
 | `print/rover_case_dims.json` | Size, window pane, lid-screw and carrier-hole positions |
-| `lib/` | The v12 case's geometry code (`build_esp.py`, `parts_esp.py`, `dsl.py`, ...) and its XBee and Feather boxes |
-| `lib/ardusimple_step_boxes.json` | One box per part of ArduSimple's STEP (AS-RTK2B-F9P-L1L2-NH-03-R00), from `tools/step_boxes.py` |
+| `lib/` | The v12 case's geometry code (`build_esp.py`, `parts_esp.py`, `dsl.py`, ...) and its XBee boxes |
+| `lib/*_step_boxes.json` | One box per part of each module's own STEP, from `tools/step_boxes.py` (sources below) |
+| `cad/` | The makers' STEP files the models come from, Pololu's S9V11F5 drawing, and Adafruit's board files for the charger and LIS3DH |
 | `gerb_render.py` | A quick Gerber rasterizer, to eyeball the carrier's fab zip |
 
 To rebuild after changing the carrier's `layout.py`:
@@ -39,7 +40,7 @@ python3 carrier_case.py
 ```
 
 It needs `manifold3d`, `numpy` and `pillow` (`pip install manifold3d numpy pillow`). `tools/step_boxes.py` also needs
-`cadquery-ocp`, but only to re-extract the ArduSimple boxes from a new STEP.
+`cadquery-ocp`, but only to re-extract a module's boxes from a new STEP.
 
 ## The clash check
 
@@ -51,12 +52,32 @@ touches. The current result ([print/clash_check.txt](print/clash_check.txt)):
   carrier by 0.1 mm.
 - **The printed parts against each other:** clear. **The boards against each other:** clear, including the LIS3DH and
   the regulator under the ArduSimple against the XBee socket pins below its board.
-- **Heights:** the charger's JSTs top out at 29.6 mm, under the XBee plug from 33.5 mm. The TFT is 3.3 mm under the
-  lid.
+- **Heights:** the charger's JSTs top out at 28.4 mm, under the XBee plug from 33.5 mm. Its DC jack reaches 34.6 mm, at
+  the front and clear of the plug. Under the ArduSimple (its lowest part at 28.9 mm, the XBee socket pins), the LIS3DH
+  reaches 26.5 mm and the regulator 24.8 mm. The TFT is 2.9 mm under the lid.
 
-The ArduSimple comes from its own STEP. The XBee and Feather come from the boxes the v12 case was checked with. The
-charger, LIS3DH and regulator are simple boxes from their datasheet sizes. This is a check of the models, not a test
-print.
+This is a check of the models, not a test print.
+
+## Component models
+
+Every module is modelled as one box per solid of its maker's STEP file:
+
+| Module | STEP | From |
+|---|---|---|
+| ArduSimple simpleRTK2B Budget | AS-RTK2B-F9P-L1L2-NH-03-R00 | ArduSimple |
+| Feather ESP32-S3 Reverse TFT (5691) | `5691 ESP32 S3 Reverse TFT Feather.step` | [Adafruit_CAD_Parts](https://github.com/adafruit/Adafruit_CAD_Parts) |
+| bq24074 charger (4755) | `4755 USB Solar Charger.step` | Adafruit_CAD_Parts |
+| LIS3DH (2809) | `2809 LIS3DH.step` | Adafruit_CAD_Parts |
+| S9V11F5 (2836) | `pololu-5v-step-up-step-down-voltage-regulator-s9v11f5.step` | [Pololu](https://www.pololu.com/product/2836/resources) |
+| XBee-PRO S3B | the v12 case's boxes, from Digi's STEP | v12 |
+
+Each is placed the way `layout.py` places it. The charger, LIS3DH and regulator are a quarter turn, not a mirror. I
+checked that against Adafruit's board files: the charger's 11-pin header (pin 1 GND at the JST end) and the LIS3DH's
+VIN…INT1 row land on J7 and J8 as laid out. To refresh a model from a new STEP:
+
+```bash
+python3 tools/step_boxes.py <module>.step lib/<name>_step_boxes.json
+```
 
 ## Print
 
@@ -99,6 +120,7 @@ The board's own parts are in [../esp32-rover-carrier/fab/bom.csv](../esp32-rover
 ## Not checked yet
 
 - Nothing has been printed. The fit, the seal and the keypad feel are all unknown.
-- The charger, LIS3DH and regulator models are boxes, so check their actual heights against your parts.
+- Each model is a set of boxes around the parts' solids, so it's slightly bigger than the real part: a clear result
+  holds, but a near miss may have a little more room than shown.
 - The Feather's front-right corner sits where the v12 case put a lid-screw block. That's why the fourth screw moved to
   the boss between the charger and the Feather.

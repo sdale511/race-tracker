@@ -59,6 +59,16 @@ def ardusimple():
     return Manifold.batch_boolean(a, OpType.Add)
 
 
+def step_boxes(name, place):
+    """One box per solid of a module's STEP (lib/<name>_step_boxes.json), each corner put through place(x, y, z)."""
+    a = []
+    for s in json.load(open(os.path.join(HERE, "lib", f"{name}_step_boxes.json"))):
+        c = [place(x, y, z) for x in (s["lo"][0], s["hi"][0]) for y in (s["lo"][1], s["hi"][1]) for z in (s["lo"][2], s["hi"][2])]
+        lo = [min(p[i] for p in c) for i in range(3)]; hi = [max(p[i] for p in c) for i in range(3)]
+        a.append(B(lo[0], hi[0], lo[1], hi[1], lo[2], max(hi[2], lo[2] + 0.01)))
+    return Manifold.batch_boolean(a, OpType.Add)
+
+
 ard = ardusimple(); xb = K.xbee().translate(ad); kk = K.keepouts()
 xplug = kk["XBee right-angle RP-SMA plug (inside)"].translate(ad)
 _gy, _gz = E.GNSS[0], E.GNSS[1] + X.DZ
@@ -70,26 +80,29 @@ FXL = gx(L.FX0)
 FEATHER_RAISE = 8.5
 FPCB0 = CT + SOCK + MALE + FEATHER_RAISE          # Feather board underside (parts side)
 fdz = (FPCB0 + 1.57) - X.FB
-fth = K.feather().translate((FXL - X.FX0, gy(0) - X.FY0, fdz))
+# Adafruit's STEP (5691): board x 0..50.8 from the USB-C end, y 0..22.86, PCB z 0..1.57, TFT and buttons on z < 0;
+# display up, so STEP x -> case Y (USB-C at the front), STEP y -> case X, STEP z -> down
+fth = step_boxes("feather_5691", lambda x, y, z: (FXL + y, gy(0) + x, FPCB0 + 1.57 - z))
 def FX(ys): return FXL + ys
 def FY(xs): return gy(xs)
 def FZ(zs): return FPCB0 + 1.57 - zs
 
-# bq24074, soldered low: its 38.1 edge front to back from BQ_Y, its 33.02 edge left to right from BQ_X
+# bq24074, soldered low. Adafruit's STEP and board file (4755): x 0..38.1 from the USB-C / DC-jack edge, y 0..33.02 with
+# the 11-pin header at y 2.54. USB-C to the front and the header on the right (as J7) is a quarter turn, not a mirror:
+# STEP x -> case Y from BQ_Y, STEP y -> case X back from the charger's right edge
 CX0, CY0 = gx(L.BQ[0]), gy(L.BQ[1])
-def cb(bx0, bx1, by0, by1, z0, z1): return B(CX0 + by0, CX0 + by1, CY0 + bx0, CY0 + bx1, z0, z1)
-t = CT + LOW + 1.6                                # charger top
-chg = (cb(0, 38.1, 0, 33.02, CT + LOW, t) + cb(-1.02, 6.91, 5.69, 14.63, t, t + 3.2)   # board, USB-C
-       + cb(-3.22, 12.03, 15.22, 28.22, t, t + 6.5)                                    # DC jack (to the board's front edge)
-       + cb(28.54, 37.54, 5.7, 15.89, t, t + 6.0) + cb(28.54, 37.54, 17.12, 27.33, t, t + 6.0))   # BATT, SYSOUT JSTs (empty)
+t = CT + LOW + 1.57                               # charger top
+chg = step_boxes("bq24074_4755", lambda x, y, z: (CX0 + 33.02 - y, CY0 + x, CT + LOW + z))
 j7x = gx(L.SOCKETS[[s['ref'] for s in L.SOCKETS].index('J7')]['pins'][0][0])
 chg_pins = B(j7x - 1.0, j7x + 1.0, CY0 + 2.0, CY0 + 36.0, t, t + 3.0)                # header pin tips above the charger
-CHG_USB = (CX0 + 10.16, t + 1.6)
+CHG_USB = (CX0 + 33.02 - 10.16, CT + LOW + 2.68)  # USB-C centre: STEP y 10.16, z 0.57..4.79
 
 lx, ly, lw, lh = L.LIS
-lis = B(gx(lx), gx(lx + lw), gy(ly), gy(ly + lh), CT + LOW, CT + LOW + 1.6) + B(gx(lx + 3), gx(lx + lw - 3), gy(ly + 3), gy(ly + lh - 3), CT + LOW + 1.6, CT + LOW + 2.9)
+# Adafruit's STEP (2809): x 0..17.78, y 0..25.4 (VIN..INT1 row at x 15.24), turned a quarter as in layout.py
+lis = step_boxes("lis3dh_2809", lambda x, y, z: (gx(lx) + y, gy(ly) + 17.78 - x, CT + LOW + z))
 rx, ry, rw, rh = L.REG
-reg = B(gx(rx), gx(rx + rw), gy(ry), gy(ry + rh), CT + LOW, CT + LOW + 3.8)
+# Pololu's STEP (one solid, 7.62 x 11.43, PCB z 0..1.02, parts 1.8 above and 1.4 below), turned a quarter as in layout.py
+reg = step_boxes("s9v11f5", lambda x, y, z: (gx(rx) + y, gy(ry) + 7.6 - x, CT + LOW + z))
 j11 = [o for o in L.OTHER if o['ref'] == 'J11'][0]['at']
 jst = B(gx(j11[0] - 4.1), gx(j11[0] + 2.1), gy(45.5), gy(L.H), CT, CT + 6.0)          # S2B-PH-K body, opening on the back edge
 jplug = B(gx(j11[0] - 3.6), gx(j11[0] + 1.6), gy(L.H), gy(L.H + 8.0), CT, CT + 5.5)  # PH plug + lead bending down behind the board
@@ -195,10 +208,10 @@ bb_hits = [(a, c, vol(boards[a], boards[c])) for i, a in enumerate(names) for c 
 lines.append("boards vs each other: " + (", ".join(f"{a}/{c} {v}" for a, c, v in bb_hits if v > 0.01) or "clear"))
 bbx = b.bounding_box()
 lines.append(f"size {bbx[3] - bbx[0]:.1f} x {bbx[4] - bbx[1]:.1f} x {TOP:.1f} mm;  carrier z {CB:.1f}..{CT:.1f};  ArduSimple top {ARD_TOP:.1f};"
-             f"  lid underside {RIM:.1f};  TFT top {FZ(-1.52):.1f} (gap to the lid {RIM - FZ(-1.52):.1f});  charger top {t:.1f}, its JSTs {t + 6:.1f}"
-             f" under the XBee plug from {xplug.bounding_box()[2]:.1f}")
+             f"  lid underside {RIM:.1f};  TFT top {fth.bounding_box()[5]:.1f} (gap to the lid {RIM - fth.bounding_box()[5]:.1f});  its DC jack up to {chg.bounding_box()[5]:.1f} at the front, clear of the XBee plug")
 lines.append("pieces: " + "  ".join(f"{n} {m.decompose().__len__()}" for n, m in pieces.items()))
-lines.append("ArduSimple from its STEP (AS-RTK2B-F9P-L1L2-NH-03-R00), one box per part; XBee and Feather from the v12 boxes.")
+lines.append(f"charger JSTs up to {(chg ^ B(0, 500, CY0 + 29, CY0 + 40, t + 0.01, 100)).bounding_box()[5]:.1f}, under the XBee plug from {xplug.bounding_box()[2]:.1f};  LIS3DH up to {lis.bounding_box()[5]:.1f}, regulator up to {reg.bounding_box()[5]:.1f}, under the ArduSimple from {ard.bounding_box()[2]:.1f}")
+lines.append("models: one box per solid of each module's own STEP (ArduSimple AS-RTK2B-F9P-L1L2-NH-03-R00; Adafruit 5691, 4755, 2809; Pololu 2836); XBee from the v12 boxes")
 report = "\n".join(lines)
 print(report)
 open(os.path.join(OUT, "clash_check.txt"), "w").write(report + "\n")

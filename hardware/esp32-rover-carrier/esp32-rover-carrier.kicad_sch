@@ -3104,7 +3104,7 @@
 (text "No bq24074 -> fit the JP1 shunt (BATT to VSYS). Never both: the shunt would bypass the charger." (exclude_from_sim no) (at 30.48 259.08 0) (effects (font (size 1.5 1.5)) (justify left)) (uuid "6d90d5b8-4681-55b8-ac86-b8d8f8e4c97c"))
 (text "~CHG and ~PGOOD are open drain to Feather D11 / D12 (read with INPUT_PULLUP); the firmware does not use them yet." (exclude_from_sim no) (at 30.48 264.16 0) (effects (font (size 1.5 1.5)) (justify left)) (uuid "ff2ba986-13f4-54a9-975e-d4a5da12259d"))
 (text "Optional, unused by the firmware so far: TIMEPULSE -> A1, EXTINT <- A2, bq ~CE <- A3 (high stops charging; 10k pull-down on the bq), LIS3DH INT2 -> A4." (exclude_from_sim no) (at 30.48 269.24 0) (effects (font (size 1.5 1.5)) (justify left)) (uuid "23ba9286-96fb-55c9-9591-d7357cbce7d5"))
-(text "GPS_EN: Feather A0 to pad TP2; wire TP2 to the S9V11F5 EN hole. Build with -DGPS_POWER_PIN=18 to cut the GPS and XBee in deep sleep." (exclude_from_sim no) (at 30.48 274.32 0) (effects (font (size 1.5 1.5)) (justify left)) (uuid "95e57b23-14cc-5c9a-8378-4d1721fecc7f"))
+(text "GPS_EN: Feather A0 to pad TP2; wire TP2 to the S9V11F5 EN pad. Build with -DGPS_POWER_PIN=18 to cut the GPS and XBee in deep sleep." (exclude_from_sim no) (at 30.48 274.32 0) (effects (font (size 1.5 1.5)) (justify left)) (uuid "eb6da490-333c-5f15-9205-38f7984bdaf6"))
 (text "J12: short EN to GND to switch the Feather off (the regulator and ArduSimple stay on battery power)." (exclude_from_sim no) (at 30.48 279.40 0) (effects (font (size 1.5 1.5)) (justify left)) (uuid "222c057f-ab10-5a21-9ce1-8eb38e104e95"))
 (sheet_instances (path "/" (page "1")))
 (embedded_fonts no)

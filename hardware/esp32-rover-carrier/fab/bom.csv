@@ -7,7 +7,7 @@ J6,1,"Female header 1x12, 2.54 mm, 8.5 mm tall",Feather right row
 J11,1,"JST S2B-PH-K-S (PH 2.0 mm, right angle, through hole)",Battery on the back edge; pin 1 GND, pin 2 + (same as the Feather's)
 JP1,1,"Male header 1x02, 2.54 mm + 2.54 mm shunt",Shunt ONLY when no bq24074 is fitted
 J12,1,"Male header 1x02, 2.54 mm (optional)",Feather off: EN and GND; a switch or a shunt shorts them
-TP2,1,"Thin insulated wire, about 30 mm (optional)",From pad TP2 to the S9V11F5's EN hole; with -DGPS_POWER_PIN=18
+TP2,1,"Thin insulated wire, about 30 mm (optional)",From pad TP2 to the S9V11F5's EN pad; with -DGPS_POWER_PIN=18
 "H1,H2",2,"M3 x 8 self-tapping screw","Carrier to the case's floor posts; H3 has no screw: a lid post presses it down"
 H4-H7,4,"M2.5 standoff, 2.5 mm + screw",bq24074 hold-downs (it hangs off one header row)
 H12-H15,4,M2 standoff + screw (optional),Feather hold-downs; measure the Feather's height on its stacking headers first

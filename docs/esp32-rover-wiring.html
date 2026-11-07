@@ -193,7 +193,7 @@ svg text{font-family:-apple-system,Helvetica,Arial,sans-serif}
 <circle cx="310" cy="568" r="6" fill="#7F77DD"/><text class="ts" x="322" y="568" dominant-baseline="central">LIS3DH</text>
 <circle cx="410" cy="568" r="6" fill="#888780"/><text class="ts" x="422" y="568" dominant-baseline="central">ground</text>
 <circle cx="510" cy="568" r="6" fill="none" stroke="#888780" stroke-width="1.5"/><text class="ts" x="522" y="568" dominant-baseline="central">unused</text>
-</svg><p>The Feather seen from the header side, USB-C at the top. GPIO 9 (SLEEP_RQ) is unused with the XBee in the socket. A0 (GPIO 18) to the regulator's EN hole is optional, only for cutting the GPS and XBee power in deep sleep (<code>-DGPS_POWER_PIN=18</code>, the same pin as the carrier board).</p></section>
+</svg><p>The Feather seen from the header side, USB-C at the top. GPIO 9 (SLEEP_RQ) is unused with the XBee in the socket. A0 (GPIO 18) to the regulator's EN pad is optional, only for cutting the GPS and XBee power in deep sleep (<code>-DGPS_POWER_PIN=18</code>, the same pin as the carrier board).</p></section>
 <section><h2>4. GPS link detail</h2><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 400" role="img">
 <title>Feather to ArduSimple UART1 wiring</title>
 <desc>Four wires between the Feather S3 Reverse TFT and the ArduSimple Budget's Arduino header: Feather TX GPIO 39 to RX1 carrying commands into the ZED; ArduSimple TX1 to Feather RX GPIO 38 carrying UBX fixes at 115200 baud; Feather 3V to IOREF setting 3.3 volt logic; and GND to GND.</desc>

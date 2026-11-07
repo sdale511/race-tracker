@@ -152,7 +152,7 @@ def main():
         '~CHG and ~PGOOD are open drain to Feather D11 / D12 (read with INPUT_PULLUP); the firmware does not use them yet.',
         'Optional, unused by the firmware so far: TIMEPULSE -> A1, EXTINT <- A2, bq ~CE <- A3 (high stops charging; '
         '10k pull-down on the bq), LIS3DH INT2 -> A4.',
-        'GPS_EN: Feather A0 to pad TP2; wire TP2 to the S9V11F5 EN hole. Build with -DGPS_POWER_PIN=18 to cut the GPS '
+        'GPS_EN: Feather A0 to pad TP2; wire TP2 to the S9V11F5 EN pad. Build with -DGPS_POWER_PIN=18 to cut the GPS '
         'and XBee in deep sleep.',
         'J12: short EN to GND to switch the Feather off (the regulator and ArduSimple stay on battery power).',
     ]

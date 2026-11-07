@@ -4,6 +4,7 @@ keypad      -> clear
 window pane -> clear
 printed parts vs each other: clear
 boards vs each other: clear
-size 163.7 x 72.8 x 47.8 mm;  carrier z 17.9..19.5;  ArduSimple top 32.1;  lid underside 45.4;  TFT top 42.1 (gap to the lid 3.3);  charger top 23.6, its JSTs 29.6 under the XBee plug from 33.5
+size 163.7 x 72.8 x 47.8 mm;  carrier z 17.9..19.5;  ArduSimple top 32.1;  lid underside 45.4;  TFT top 42.5 (gap to the lid 2.9);  its DC jack up to 34.6 at the front, clear of the XBee plug
 pieces: base 1  lid 1  keypad 1  pane 1
-ArduSimple from its STEP (AS-RTK2B-F9P-L1L2-NH-03-R00), one box per part; XBee and Feather from the v12 boxes.
+charger JSTs up to 28.4, under the XBee plug from 33.5;  LIS3DH up to 26.5, regulator up to 24.8, under the ArduSimple from 28.9
+models: one box per solid of each module's own STEP (ArduSimple AS-RTK2B-F9P-L1L2-NH-03-R00; Adafruit 5691, 4755, 2809; Pololu 2836); XBee from the v12 boxes

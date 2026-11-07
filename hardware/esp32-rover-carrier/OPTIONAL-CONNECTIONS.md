@@ -11,7 +11,7 @@ trace between two otherwise-unused pins. The firmware never drives GPIO 14–18,
 
 | Connection | Pins | What it gives | Firmware needed | Value |
 |---|---|---|---|---|
-| [GPS power cut](#1-gps-power-cut-gps_en) | Feather A0 (GPIO 18) → pad TP2 → wire to the S9V11F5 EN hole | Overnight standby goes from days to weeks | No: build flag `-DGPS_POWER_PIN=18` | High |
+| [GPS power cut](#1-gps-power-cut-gps_en) | Feather A0 (GPIO 18) → pad TP2 → wire to the S9V11F5 EN pad | Overnight standby goes from days to weeks | No: build flag `-DGPS_POWER_PIN=18` | High |
 | [TIMEPULSE](#2-zed-timepulse-gps_pps) | ArduSimple D13 (TPS) → Feather A1 (GPIO 17) | Sub-millisecond timing of line crossings and gun time | Yes | Medium–high if timing matters |
 | [EXTINT](#3-zed-extint-gps_extint) | Feather A2 (GPIO 16) → ArduSimple D12 (EXTINT) | GPS-timed event marks; a hardware GPS wake | Yes | Low–medium |
 | [Charger enable](#4-charger-enable-chg_dis) | Feather A3 (GPIO 15) → bq24074 ~CE | Charging rules for cold weather and storage | Yes, small | Low–medium |
@@ -37,7 +37,7 @@ to the Feather and LIS3DH alone. On a 2,000 mAh battery, that's roughly 2–4 da
 - The boat can't hear the base while it's asleep, which is already true today.
 
 **To use it.**
-1. Solder a short insulated wire from pad TP2 to the S9V11F5's EN hole. EN is a through-hole on the module, not a
+1. Solder a short insulated wire from pad TP2 to the S9V11F5's EN pad. EN is a small solder pad on the module, not a
    header pin.
 2. Build with `-DGPS_POWER_PIN=18`. The firmware already drives this pin high when awake and low in deep sleep.
 

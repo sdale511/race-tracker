@@ -91,7 +91,7 @@ These are wired but not used by the firmware yet, except `GPS_POWER_PIN`, which 
 
 | Net | Joins | Use |
 |---|---|---|
-| GPS_EN | Feather A0 (GPIO 18) → pad TP2 | Wire TP2 to the S9V11F5's EN hole, then build with `-DGPS_POWER_PIN=18`. Deep sleep then cuts the ArduSimple and the XBee (about 20–50 mA saved overnight). The GPS loses its almanac unless V_BCKP is supplied, so expect slower fixes after a sleep. |
+| GPS_EN | Feather A0 (GPIO 18) → pad TP2 | Wire TP2 to the S9V11F5's EN pad, then build with `-DGPS_POWER_PIN=18`. Deep sleep then cuts the ArduSimple and the XBee (about 20–50 mA saved overnight). The GPS loses its almanac unless V_BCKP is supplied, so expect slower fixes after a sleep. |
 | GPS_PPS | ArduSimple D13 (TIMEPULSE) → Feather A1 (GPIO 17) | The ZED's 1 PPS edge, for exact timing |
 | GPS_EXTINT | Feather A2 (GPIO 16) → ArduSimple D12 (EXTINT) | A hardware wake or time mark for the ZED |
 | CHG_DIS | Feather A3 (GPIO 15) → bq24074 ~CE | High stops charging. The bq's 10 kΩ pull-down keeps charging on while the pin floats. |
@@ -104,7 +104,7 @@ There are two differences from the hand wiring:
 
 - **The LIS3DH runs from VSYS, not the Feather's 3V.** The breakout has its own 3.3 V regulator. This shortens the wiring,
   and VSYS stays on in deep sleep, so motion wake still works.
-- **The S9V11F5 has no EN pin.** It has only VIN, GND and VOUT; its enable is a small hole on the module. That's why
+- **The S9V11F5 has no EN pin.** It has only VIN, GND and VOUT; its enable is a small solder pad on the module (Pololu's drawing shows only the three holes). That's why
   GPS_EN goes to a wire pad (TP2) rather than to the socket.
 
 ## Battery and charger: JP1
@@ -138,7 +138,7 @@ through its 11-pin header (VLIPO pin 2, OUT pin 4).
 
 ## Assembly
 
-1. If you want the GPS power cut, solder the EN wire to the S9V11F5's EN hole first (see OPTIONAL-CONNECTIONS.md).
+1. If you want the GPS power cut, solder the EN wire to the S9V11F5's EN pad first (see OPTIONAL-CONNECTIONS.md).
 2. Solder male headers pins-down onto the LIS3DH (both rows), the bq24074 (the 11-pin edge) and the S9V11F5, and
    solder each module straight into the carrier, its header's plastic flat on the board. Fit the charger's four M2.5
    standoffs (2.5 mm, H4–H7) first: it hangs off one header row.
